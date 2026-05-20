@@ -1,0 +1,251 @@
+/**
+ * Thin TypeScript wrapper around the Tauri ADO commands.
+ *
+ * Each function:
+ *   - Sends a single typed Tauri invoke.
+ *   - Validates the response with the corresponding zod schema (catches
+ *     wire-format drift early during development).
+ *   - Re-throws errors with the original AdoError shape so the UI can switch
+ *     on `kind` for targeted handling (e.g. show "Re-authorize SSO" hint).
+ */
+import { invoke } from "@tauri-apps/api/core";
+import {
+  ConnectionStatusSchema,
+  CommitInfoSchema,
+  CreatedWorkItemSchema,
+  FileContentSchema,
+  RepoRefSchema,
+  StaleCaseInfoSchema,
+  SuiteRefSchema,
+  TestCaseRefSchema,
+  TestCaseSchema,
+  TestConnectionResultSchema,
+  TestPlanRefSchema,
+  type AdoError,
+  type CommitInfo,
+  type ConnectionStatus,
+  type CreatedWorkItem,
+  type DraftBug,
+  type DraftCase,
+  type FileContent,
+  type RepoRef,
+  type StaleCaseInfo,
+  type SuiteRef,
+  type TestCase,
+  type TestCaseRef,
+  type TestConnectionResult,
+  type TestPlanRef,
+} from "./types";
+
+/** Convert an unknown Tauri rejection value into a typed AdoError when possible. */
+export function toAdoError(err: unknown): AdoError {
+  if (err && typeof err === "object" && "kind" in (err as Record<string, unknown>)) {
+    return err as AdoError;
+  }
+  return { kind: "local", message: String(err) };
+}
+
+/** Produce a one-line human-readable string from an AdoError for UI display. */
+export function adoErrorMessage(err: AdoError | null | undefined): string {
+  if (!err) return "";
+  switch (err.kind) {
+    case "not-configured":
+      return "Azure DevOps is not configured. Open settings to connect.";
+    case "bad-pat":
+      return `PAT rejected: ${err.reason}`;
+    case "sso-required":
+      return "PAT is not SSO-authorized. Open the PAT page and click Authorize SSO.";
+    case "forbidden":
+      return `Access denied to ${err.resource}.`;
+    case "not-found":
+      return `Not found: ${err.resource}.`;
+    case "rate-limited":
+      return `Rate limited — retry in ${err.retryAfterS}s.`;
+    case "network":
+      return `Network error: ${err.message}`;
+    case "server":
+      return `Server returned ${err.status}.`;
+    case "local":
+      return err.message;
+  }
+}
+
+// --- Connection ---
+
+export type SetConnectionArgs = {
+  orgUrl: string;
+  project: string;
+  /** Provide a non-empty PAT to set; empty string clears it; undefined leaves it as-is. */
+  pat?: string;
+  defaultPlanId?: number | null;
+  defaultTrackingBranch?: string;
+};
+
+export async function setConnection(input: SetConnectionArgs): Promise<void> {
+  await invoke("ado_set_connection", { input });
+}
+
+export async function getConnection(): Promise<ConnectionStatus> {
+  const raw = await invoke("ado_get_connection");
+  return ConnectionStatusSchema.parse(raw);
+}
+
+export async function testConnection(): Promise<TestConnectionResult> {
+  const raw = await invoke("ado_test_connection");
+  return TestConnectionResultSchema.parse(raw);
+}
+
+export async function clearPat(): Promise<void> {
+  await invoke("ado_clear_pat");
+}
+
+// --- Test Plans reads ---
+
+export async function listPlans(): Promise<TestPlanRef[]> {
+  const raw = await invoke("ado_list_plans");
+  return TestPlanRefSchema.array().parse(raw);
+}
+
+export async function listSuites(planId: number): Promise<SuiteRef[]> {
+  const raw = await invoke("ado_list_suites", { planId });
+  return SuiteRefSchema.array().parse(raw);
+}
+
+export async function listSuiteCases(
+  planId: number,
+  suiteId: number,
+): Promise<TestCaseRef[]> {
+  const raw = await invoke("ado_list_suite_cases", { planId, suiteId });
+  return TestCaseRefSchema.array().parse(raw);
+}
+
+export async function getCase(caseId: number): Promise<TestCase> {
+  const raw = await invoke("ado_get_case", { caseId });
+  return TestCaseSchema.parse(raw);
+}
+
+// --- Publishing ---
+
+export async function createCaseInSuite(
+  planId: number,
+  suiteId: number,
+  draft: DraftCase,
+): Promise<CreatedWorkItem> {
+  const raw = await invoke("ado_create_case_in_suite", {
+    input: { planId, suiteId, draft },
+  });
+  return CreatedWorkItemSchema.parse(raw);
+}
+
+export async function createBugAndLink(
+  caseId: number,
+  draft: DraftBug,
+): Promise<CreatedWorkItem> {
+  const raw = await invoke("ado_create_bug_and_link", {
+    input: { caseId, draft },
+  });
+  return CreatedWorkItemSchema.parse(raw);
+}
+
+export async function updateCaseDescription(
+  caseId: number,
+  description: string,
+): Promise<void> {
+  await invoke("ado_update_case_description", {
+    input: { caseId, description },
+  });
+}
+
+export async function addTag(workItemId: number, tag: string): Promise<void> {
+  await invoke("ado_add_tag", { input: { workItemId, tag } });
+}
+
+export async function removeTag(workItemId: number, tag: string): Promise<void> {
+  await invoke("ado_remove_tag", { input: { workItemId, tag } });
+}
+
+// --- Repos ---
+
+export async function listRepos(): Promise<RepoRef[]> {
+  const raw = await invoke("ado_list_repos");
+  return RepoRefSchema.array().parse(raw);
+}
+
+export async function getFile(
+  repoId: string,
+  branch: string,
+  path: string,
+): Promise<FileContent> {
+  const raw = await invoke("ado_get_file", {
+    input: { repoId, branch, path },
+  });
+  return FileContentSchema.parse(raw);
+}
+
+export async function listCommitsSince(
+  repoId: string,
+  branch: string,
+  sinceSha?: string,
+): Promise<CommitInfo[]> {
+  const raw = await invoke("ado_list_commits_since", {
+    input: { repoId, branch, sinceSha },
+  });
+  return CommitInfoSchema.array().parse(raw);
+}
+
+// --- Staleness ---
+
+export async function scanStaleness(): Promise<StaleCaseInfo[]> {
+  const raw = await invoke("ado_scan_staleness");
+  return StaleCaseInfoSchema.array().parse(raw);
+}
+
+export async function acknowledgeCase(caseId: number): Promise<void> {
+  await invoke("ado_acknowledge_case", { input: { caseId } });
+}
+
+export async function markForReview(
+  caseId: number,
+  reason: string,
+): Promise<void> {
+  await invoke("ado_mark_for_review", { input: { caseId, reason } });
+}
+
+export type IndexLinkInput = {
+  repoId: string;
+  branch: string;
+  filePath: string;
+  symbol?: string | null;
+  baselineSha?: string;
+};
+
+export async function indexCaseLinks(
+  caseId: number,
+  links: IndexLinkInput[],
+): Promise<void> {
+  await invoke("ado_index_case_links", { input: { caseId, links } });
+}
+
+/**
+ * Build a deep-link to ADO Repos web for a given source link.
+ * Used by Phase 7 source-link chips.
+ */
+export function buildAdoReposWebUrl(args: {
+  orgUrl: string;
+  project: string;
+  repoName: string;
+  branch: string;
+  filePath: string;
+  lineRange?: { start: number; end: number };
+}): string {
+  const params = new URLSearchParams({
+    path: args.filePath,
+    version: `GB${args.branch}`,
+  });
+  if (args.lineRange) {
+    params.set("line", String(args.lineRange.start));
+    params.set("lineEnd", String(args.lineRange.end));
+  }
+  const org = args.orgUrl.replace(/\/$/, "");
+  return `${org}/${encodeURIComponent(args.project)}/_git/${encodeURIComponent(args.repoName)}?${params}`;
+}

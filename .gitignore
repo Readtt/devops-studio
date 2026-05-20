@@ -1,0 +1,45 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Build output
+node_modules
+dist
+dist-ssr
+*.local
+*.tsbuildinfo
+
+# Tauri / Cargo
+src-tauri/target
+src-tauri/gen/schemas
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS junk
+Thumbs.db
+
+# Carried over from upstream Terax — kept locally, not committed to the
+# DevOps Studio fork until we re-author them for this project.
+.github/
+docs/
+CHANGELOG.md
+ROADMAP.md
+CONTRIBUTING.md
+SECURITY.md
+CODE_OF_CONDUCT.md
+AGENTS.md
+TERAX.md
