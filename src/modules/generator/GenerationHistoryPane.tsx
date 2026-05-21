@@ -6,7 +6,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { deleteRun, listRuns, type GenerationRun } from "./lib/history";
+import {
+  deleteRun,
+  listRuns,
+  type GenerationRun,
+  type RunStatus,
+} from "./lib/history";
 import {
   Bug01Icon,
   Cancel01Icon,
@@ -15,7 +20,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type Props = {
   onOpenCase: (input: { caseId: number; title: string }) => void;
@@ -30,6 +35,8 @@ type Props = {
 export function GenerationHistoryPane({ onOpenCase, onOpenBug }: Props) {
   const [runs, setRuns] = useState<GenerationRun[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<"all" | RunStatus>("all");
+  const [textFilter, setTextFilter] = useState("");
 
   const refresh = useCallback(async () => {
     try {
@@ -44,6 +51,29 @@ export function GenerationHistoryPane({ onOpenCase, onOpenBug }: Props) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  const filteredRuns = useMemo(() => {
+    if (!runs) return null;
+    const needle = textFilter.trim().toLowerCase();
+    return runs.filter((r) => {
+      const effectiveStatus = r.status ?? "published";
+      if (statusFilter !== "all" && effectiveStatus !== statusFilter) {
+        return false;
+      }
+      if (!needle) return true;
+      const haystack = [
+        r.planName ?? "",
+        r.suiteName ?? "",
+        r.mode,
+        r.specExcerpt ?? "",
+        ...r.cases.map((c) => c.title),
+        ...r.bugs.map((b) => b.title),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(needle);
+    });
+  }, [runs, statusFilter, textFilter]);
 
   const onDelete = useCallback(
     async (runId: string) => {
@@ -67,6 +97,10 @@ export function GenerationHistoryPane({ onOpenCase, onOpenBug }: Props) {
     );
   }
 
+  const visibleRuns = filteredRuns ?? [];
+  const showingEmpty = runs.length === 0;
+  const showingFilteredEmpty = !showingEmpty && visibleRuns.length === 0;
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between gap-1.5 border-b border-border/60 px-2 py-1.5">
@@ -88,21 +122,57 @@ export function GenerationHistoryPane({ onOpenCase, onOpenBug }: Props) {
           </TooltipContent>
         </Tooltip>
       </div>
+
+      <div className="flex flex-col gap-1.5 border-b border-border/60 px-2 py-1.5">
+        <input
+          value={textFilter}
+          onChange={(e) => setTextFilter(e.target.value)}
+          placeholder="Filter by plan, suite, case, or text…"
+          className="w-full rounded-md border border-border/60 bg-background/70 px-2 py-1 text-[11.5px] outline-none focus:border-primary/50"
+        />
+        <div className="flex items-center gap-1">
+          {(["all", "draft", "published"] as const).map((id) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setStatusFilter(id)}
+              className={cn(
+                "rounded-sm border px-1.5 py-0.5 text-[10px] font-medium tracking-tight transition-colors",
+                statusFilter === id
+                  ? "border-primary/40 bg-primary/[0.08] text-primary"
+                  : "border-border/40 bg-card/40 text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {id === "all"
+                ? `All (${runs.length})`
+                : id === "draft"
+                  ? `Drafts (${runs.filter((r) => (r.status ?? "published") === "draft").length})`
+                  : `Published (${runs.filter((r) => (r.status ?? "published") === "published").length})`}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="min-h-0 flex-1 overflow-y-auto">
         {error ? (
           <div className="px-3 py-2 text-[11px] text-destructive">{error}</div>
         ) : null}
-        {runs.length === 0 ? (
+        {showingEmpty ? (
           <div className="px-3 py-4 text-[11px] leading-relaxed text-muted-foreground">
             <p className="font-medium text-foreground/85">No runs yet.</p>
             <p className="mt-1">
-              Once you publish from the Generator, each run lands here so you
-              can revisit titles, statuses, and direct ADO links.
+              Once you analyze a spec, the draft lands here. Publishing flips
+              it to a "published" row with direct ADO links.
             </p>
           </div>
         ) : null}
+        {showingFilteredEmpty ? (
+          <div className="px-3 py-4 text-[11px] text-muted-foreground">
+            No runs match the current filter.
+          </div>
+        ) : null}
         <ul className="flex flex-col gap-px px-1 py-1">
-          {runs.map((r) => (
+          {visibleRuns.map((r) => (
             <RunCard
               key={r.id}
               run={r}
@@ -146,6 +216,7 @@ function RunCard({
             <span className="text-[10.5px] text-muted-foreground">
               {run.mode}
             </span>
+            <StatusBadge status={run.status ?? "published"} />
             {hasFailures ? (
               <span className="rounded bg-destructive/15 px-1.5 py-0.5 text-[10px] font-medium text-destructive">
                 {failCount} failed
@@ -285,6 +356,21 @@ function RowAction({
         </button>
       ) : null}
     </div>
+  );
+}
+
+function StatusBadge({ status }: { status: RunStatus }) {
+  if (status === "draft") {
+    return (
+      <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
+        draft
+      </span>
+    );
+  }
+  return (
+    <span className="rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+      published
+    </span>
   );
 }
 

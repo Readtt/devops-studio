@@ -38,6 +38,13 @@ pub struct GenerationRun {
     pub cases: Vec<CaseSummary>,
     pub bugs: Vec<BugSummary>,
     pub publish_log: Vec<PublishLogEntry>,
+    /// "draft" — generated and saved at review time, never published.
+    /// "published" — at least one case/bug was published (see publish_log).
+    /// Old entries from before this field existed were only saved by the
+    /// publish path; migrate them to "published" on read so the UI doesn't
+    /// surface them all as drafts.
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,10 +87,19 @@ fn load_runs(app: &AppHandle) -> Vec<GenerationRun> {
     let Ok(store) = app.store(STORE_PATH) else {
         return Vec::new();
     };
-    match store.get(KEY_RUNS) {
+    let mut runs: Vec<GenerationRun> = match store.get(KEY_RUNS) {
         Some(v) => serde_json::from_value(v).unwrap_or_default(),
         None => Vec::new(),
+    };
+    // Migrate pre-status entries: anything stored before the status field
+    // existed could only have come from the publish path, so treat it as
+    // published rather than surfacing the whole archive as drafts.
+    for r in &mut runs {
+        if r.status.is_none() {
+            r.status = Some("published".into());
+        }
     }
+    runs
 }
 
 fn save_runs(app: &AppHandle, runs: &[GenerationRun]) -> Result<(), String> {
@@ -153,6 +169,7 @@ mod tests {
             cases: vec![],
             bugs: vec![],
             publish_log: vec![],
+            status: Some("draft".into()),
         };
         let j = serde_json::to_value(&run).unwrap();
         assert_eq!(j["planId"], 7);

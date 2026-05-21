@@ -23,6 +23,8 @@ export type PublishLogEntry = {
   error?: string | null;
 };
 
+export type RunStatus = "draft" | "published";
+
 export type GenerationRun = {
   /** Stable id. Re-saving the same id replaces the prior entry. */
   id: string;
@@ -37,6 +39,11 @@ export type GenerationRun = {
   cases: CaseSummary[];
   bugs: BugSummary[];
   publishLog: PublishLogEntry[];
+  /** "draft" = generated to review but not yet published. "published" = at
+   *  least one case/bug was published (per publishLog). Existing runs from
+   *  before this field landed migrate to "published" on read since the only
+   *  way they were saved was via the publish path. */
+  status?: RunStatus;
 };
 
 export async function saveRun(run: GenerationRun): Promise<void> {

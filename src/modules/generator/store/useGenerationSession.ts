@@ -107,6 +107,10 @@ export type SessionState = {
    *  can see what the agent is doing (which files it read, what it grepped). */
   activityLog: ActivityEntry[];
   durationMs: number | null;
+  /** History run id assigned when the session reaches review. The draft
+   *  snapshot is saved under this id; the later publish path upserts on the
+   *  same id so the row reads "published" instead of creating a duplicate. */
+  runId: string | null;
   // Review
   cases: ReviewedCase[];
   bugs: ReviewedBug[];
@@ -180,6 +184,7 @@ const initialState: Omit<
   stepLabel: "",
   activityLog: [],
   durationMs: null,
+  runId: null,
   cases: [],
   bugs: [],
   rawText: "",
@@ -333,6 +338,7 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
       // If the user cancelled while the model was running, don't drop them
       // into review — the cancel() action already moved us back to input.
       if (get().phase !== "analyzing") return;
+      const runId = get().runId ?? newRunId();
       set({
         phase: "review",
         cases,
@@ -340,7 +346,41 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
         rawText: result.rawText,
         durationMs: result.durationMs,
         stepLabel: "",
+        runId,
       });
+
+      // Persist a draft snapshot as soon as we reach review so a closed
+      // window or restart doesn't lose the generated cases. The publish
+      // path later upserts on the same id with status=published.
+      try {
+        const s = get();
+        const draftRun: GenerationRun = {
+          id: runId,
+          timestamp: newTimestamp(),
+          planId: s.planId,
+          planName: targetContext?.planName ?? null,
+          suiteId: s.suiteId,
+          suiteName: targetContext?.suiteName ?? null,
+          mode: s.mode,
+          specExcerpt: specExcerpt(s.requirements ?? ""),
+          cases: s.cases.map((c) => ({
+            title: c.title,
+            adoId: null,
+            webUrl: null,
+          })),
+          bugs: s.bugs.map((b) => ({
+            title: b.title,
+            severity: b.severity,
+            adoId: null,
+            webUrl: null,
+          })),
+          publishLog: [],
+          status: "draft",
+        };
+        void saveRun(draftRun);
+      } catch {
+        // Persistence is best-effort.
+      }
     } catch (e) {
       if (get().phase !== "analyzing") return;
       set({
@@ -513,13 +553,13 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
 
     set({ phase: "done" });
 
-    // Persist a snapshot of the run so the user can revisit it from the
-    // Generation history sidebar tab. Best-effort: failures here don't fail
-    // the publish flow.
+    // Persist (or upsert) the publish snapshot. Reuses the runId allocated
+    // at review time so the row that was sitting as a "draft" flips to
+    // "published" in place instead of producing a duplicate entry.
     try {
       const s = get();
       const run: GenerationRun = {
-        id: newRunId(),
+        id: s.runId ?? newRunId(),
         timestamp: newTimestamp(),
         planId: s.planId,
         // Names aren't tracked in the session yet — the history pane shows
@@ -550,6 +590,7 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
           status: l.status === "pending" ? "skipped" : l.status,
           error: l.error ?? null,
         })),
+        status: "published",
       };
       void saveRun(run);
     } catch {
