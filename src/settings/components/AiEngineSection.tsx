@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import {
+  cancelSetupClaudeToken,
   claudeErrorMessage,
   extractAuthUrl,
   probeClaude,
@@ -234,7 +235,15 @@ export function AiEngineSection() {
                       size="sm"
                       variant="ghost"
                       className="h-7 gap-1 px-2 text-[11px]"
-                      onClick={() => void runProbe()}
+                      onClick={async () => {
+                        // Kill the stuck setup-token child (some CLI builds
+                        // wait on stdin after the browser callback), then
+                        // re-probe. Once the child is dead, setSetupRunning
+                        // flips to false via the awaited setupClaudeToken
+                        // promise resolving in onConnectMax.
+                        await cancelSetupClaudeToken();
+                        await runProbe();
+                      }}
                     >
                       <HugeiconsIcon
                         icon={RefreshIcon}

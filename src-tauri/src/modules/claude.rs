@@ -28,6 +28,11 @@ use tokio::process::Command;
 #[derive(Default)]
 pub struct ClaudeState {
     pub running: Mutex<Vec<RunningHandle>>,
+    /// PID of the in-flight `claude setup-token` child, if any. Used by
+    /// `claude_cancel_setup_token` to break the user out of an OAuth flow
+    /// that didn't self-terminate after the browser callback (some CLI
+    /// builds wait for an Enter key on stdin we can't provide from Tauri).
+    pub setup_token_pid: Mutex<Option<u32>>,
 }
 
 pub struct RunningHandle {
@@ -314,7 +319,10 @@ pub async fn claude_run_query(
 /// Event channel: `claude:setup-token:line`
 /// Payload: `{ stream: "stdout" | "stderr", line: string }`
 #[tauri::command]
-pub async fn claude_setup_token(app: AppHandle) -> Result<String, ClaudeError> {
+pub async fn claude_setup_token(
+    app: AppHandle,
+    state: tauri::State<'_, ClaudeState>,
+) -> Result<String, ClaudeError> {
     let path = which::which("claude").map_err(|_| ClaudeError::NotInstalled)?;
     let mut child = Command::new(&path)
         .arg("setup-token")
@@ -324,6 +332,15 @@ pub async fn claude_setup_token(app: AppHandle) -> Result<String, ClaudeError> {
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| ClaudeError::SpawnFailed { message: e.to_string() })?;
+
+    // Remember the PID so `claude_cancel_setup_token` can break us out if the
+    // CLI doesn't self-terminate after the browser callback (some builds wait
+    // on an Enter key on stdin, which Tauri can't provide).
+    if let Some(pid) = child.id() {
+        if let Ok(mut g) = state.setup_token_pid.lock() {
+            *g = Some(pid);
+        }
+    }
 
     let stdout = child.stdout.take().ok_or_else(|| ClaudeError::SpawnFailed {
         message: "failed to capture stdout".into(),
@@ -369,10 +386,21 @@ pub async fn claude_setup_token(app: AppHandle) -> Result<String, ClaudeError> {
         .await
         .map_err(|e| ClaudeError::SpawnFailed { message: e.to_string() })?;
 
+    // Clear the PID — whatever happens from here, the child is gone.
+    if let Ok(mut g) = state.setup_token_pid.lock() {
+        *g = None;
+    }
+
     let stdout_out = stdout_task.await.unwrap_or_default();
     let stderr_out = stderr_task.await.unwrap_or_default();
 
     if !status.success() {
+        // SIGTERM/SIGKILL via claude_cancel_setup_token surfaces as a non-zero
+        // exit. Treat it as a clean cancel rather than a failure — the user
+        // explicitly asked to dismiss the flow.
+        if stderr_out.is_empty() && stdout_out.contains("https://") {
+            return Ok(stdout_out);
+        }
         return Err(ClaudeError::NonZeroExit {
             code: status.code(),
             stderr_excerpt: stderr_out,
@@ -380,4 +408,43 @@ pub async fn claude_setup_token(app: AppHandle) -> Result<String, ClaudeError> {
     }
 
     Ok(stdout_out)
+}
+
+/// Send a kill signal to the in-flight `claude setup-token` process. Used by
+/// the "I've authorized — recheck" affordance: after the user finishes the
+/// browser flow, if the CLI is stuck waiting on stdin or a callback that
+/// never arrives, we break it out so the UI can re-probe.
+#[tauri::command]
+pub async fn claude_cancel_setup_token(
+    state: tauri::State<'_, ClaudeState>,
+) -> Result<(), String> {
+    let pid = state
+        .setup_token_pid
+        .lock()
+        .ok()
+        .and_then(|mut g| g.take());
+    let Some(pid) = pid else { return Ok(()) };
+
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .await;
+    }
+    #[cfg(unix)]
+    {
+        // Try SIGTERM first, then fall back to SIGKILL after a brief grace.
+        let _ = Command::new("kill")
+            .arg(pid.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .await;
+    }
+    Ok(())
 }

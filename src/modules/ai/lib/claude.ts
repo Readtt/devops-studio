@@ -86,6 +86,13 @@ export function extractAuthUrl(line: string): string | null {
   return match ? match[0] : null;
 }
 
+/** Break out of a stuck `claude setup-token` flow — sends SIGTERM/taskkill
+ *  to the child if it's still running. Used by the "I've authorized" recheck
+ *  affordance when the CLI didn't exit on its own after the browser flow. */
+export async function cancelSetupClaudeToken(): Promise<void> {
+  return invoke<void>("claude_cancel_setup_token");
+}
+
 /** Run a one-shot query. If `onEvent` is provided, every NDJSON event the
  *  CLI emits is forwarded to it; the listener is detached on settle. */
 export async function runClaudeQuery(

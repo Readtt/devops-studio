@@ -68,6 +68,11 @@ export type SessionState = {
   planId: number | null;
   suiteId: number | null;
   mode: GenerationMode;
+  /** Let the Claude Code agent search the user's source directory while
+   *  generating. Only meaningful when engine === "claude-agent-sdk" AND a
+   *  source root is set. Defaults to true so first-time users get the
+   *  better experience without having to find a hidden toggle. */
+  allowCodeSearch: boolean;
   // Analyzing
   stepLabel: string;
   durationMs: number | null;
@@ -83,6 +88,7 @@ export type SessionState = {
   setRequirements: (s: string) => void;
   setMode: (m: GenerationMode) => void;
   setTarget: (planId: number | null, suiteId: number | null) => void;
+  setAllowCodeSearch: (v: boolean) => void;
   addAttachment: (path: string, content: string) => void;
   removeAttachment: (path: string) => void;
   analyze: () => Promise<void>;
@@ -105,6 +111,7 @@ const initialState: Omit<
   | "setRequirements"
   | "setMode"
   | "setTarget"
+  | "setAllowCodeSearch"
   | "addAttachment"
   | "removeAttachment"
   | "analyze"
@@ -121,6 +128,7 @@ const initialState: Omit<
   planId: null,
   suiteId: null,
   mode: "thorough",
+  allowCodeSearch: true,
   stepLabel: "",
   durationMs: null,
   cases: [],
@@ -136,6 +144,7 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
   setRequirements: (s) => set({ requirements: s }),
   setMode: (m) => set({ mode: m }),
   setTarget: (planId, suiteId) => set({ planId, suiteId }),
+  setAllowCodeSearch: (v) => set({ allowCodeSearch: v }),
   addAttachment: (path, content) =>
     set((s) => {
       if (s.attachments.some((a) => a.path === path)) return s;
@@ -147,7 +156,7 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
     })),
 
   analyze: async () => {
-    const { requirements, attachments, planId, suiteId, mode } = get();
+    const { requirements, attachments, planId, suiteId, mode, allowCodeSearch } = get();
     if (!requirements.trim()) {
       set({ phase: "error", error: "Paste requirements first." });
       return;
@@ -182,7 +191,10 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
           existingCaseTitles,
           mode,
           modelId,
-          sourceRoot: prefs.sourceRoot,
+          // Gate the agent's file-system tools behind the user's explicit
+          // toggle. When off (or no source root), the CLI runs without a
+          // cwd and can only reason from the spec + any inline attachments.
+          sourceRoot: allowCodeSearch ? prefs.sourceRoot : null,
           authMode: engineSel.authMode ?? "api-key",
           onStep: (label) => set({ stepLabel: label }),
         });

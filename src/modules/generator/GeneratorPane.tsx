@@ -9,6 +9,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import {
   Tooltip,
   TooltipContent,
@@ -25,6 +26,7 @@ import {
 import { useTestPlans } from "@/modules/test-plans";
 import { adoErrorMessage } from "@/modules/ado";
 import { useSourceDirGitInfo } from "@/modules/git";
+import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   AlertCircleIcon,
   ArrowLeft02Icon,
@@ -170,10 +172,16 @@ function InputPhase() {
   const mode = useGenerationSession((s) => s.mode);
   const planId = useGenerationSession((s) => s.planId);
   const suiteId = useGenerationSession((s) => s.suiteId);
+  const allowCodeSearch = useGenerationSession((s) => s.allowCodeSearch);
   const setRequirements = useGenerationSession((s) => s.setRequirements);
   const setMode = useGenerationSession((s) => s.setMode);
   const setTarget = useGenerationSession((s) => s.setTarget);
+  const setAllowCodeSearch = useGenerationSession((s) => s.setAllowCodeSearch);
   const analyze = useGenerationSession((s) => s.analyze);
+  const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
+  const aiEngine = usePreferencesStore((s) => s.aiEngine);
+  const showCodeSearchToggle =
+    aiEngine === "claude-agent-sdk" && !!sourceRoot;
 
   const {
     plans,
@@ -301,6 +309,42 @@ function InputPhase() {
           </RadioGroup>
         </Field>
 
+        {showCodeSearchToggle ? (
+          <label
+            className={cn(
+              "flex cursor-pointer items-start gap-2.5 rounded-md border px-3 py-2 transition-colors hover:bg-foreground/[0.03]",
+              allowCodeSearch
+                ? "border-primary/40 bg-primary/[0.04]"
+                : "border-border/50",
+            )}
+          >
+            <Switch
+              checked={allowCodeSearch}
+              onCheckedChange={setAllowCodeSearch}
+              className="mt-0.5"
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="text-[11.5px] font-medium">
+                  Let the analyzer read source code
+                </span>
+                <span className="rounded-sm bg-foreground/[0.06] px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-muted-foreground">
+                  Claude Code
+                </span>
+              </div>
+              <p className="mt-0.5 text-[10.5px] leading-relaxed text-muted-foreground">
+                Runs the agent at{" "}
+                <span className="font-mono text-foreground/85">
+                  {sourceRoot}
+                </span>{" "}
+                with Read / Glob / Grep so cases are grounded in actual
+                code paths. Off = spec + attachments only (faster, no disk
+                access).
+              </p>
+            </div>
+          </label>
+        ) : null}
+
         <div className="flex items-center justify-end gap-2 border-t border-border/40 pt-3">
           <Button onClick={analyze} disabled={!canAnalyze}>
             <HugeiconsIcon icon={PlayIcon} size={11} strokeWidth={2} />
@@ -337,6 +381,21 @@ function InputPhase() {
               )
             }
           />
+          {showCodeSearchToggle ? (
+            <PreviewRow
+              label="Code search"
+              value={
+                <span
+                  className={cn(
+                    "font-mono text-[10.5px]",
+                    allowCodeSearch ? "text-primary" : "text-muted-foreground",
+                  )}
+                >
+                  {allowCodeSearch ? "enabled" : "off"}
+                </span>
+              }
+            />
+          ) : null}
         </ul>
         <p className="text-[10px] leading-relaxed text-muted-foreground/85">
           The analyzer will read the spec above + any source files you've
