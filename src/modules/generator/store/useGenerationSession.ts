@@ -146,6 +146,10 @@ export type SessionState = {
   tryAgain: () => void;
   setCaseDecision: (uid: string, decision: "keep" | "skip") => void;
   setBugDecision: (uid: string, decision: "keep" | "skip") => void;
+  /** Re-link a bug to a different draft case (by case uid). The picker on
+   *  the bug card uses this when the user explicitly chooses a new parent
+   *  after the original case was skipped. */
+  setBugParent: (bugUid: string, caseUid: string | null) => void;
   publish: () => Promise<void>;
   reset: () => void;
   startNew: () => void;
@@ -169,6 +173,7 @@ const initialState: Omit<
   | "tryAgain"
   | "setCaseDecision"
   | "setBugDecision"
+  | "setBugParent"
   | "publish"
   | "reset"
   | "startNew"
@@ -407,13 +412,61 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
   },
 
   setCaseDecision: (uid, decision) =>
-    set((s) => ({
-      cases: s.cases.map((c) => (c.uid === uid ? { ...c, decision } : c)),
-    })),
+    set((s) => {
+      const nextCases = s.cases.map((c) =>
+        c.uid === uid ? { ...c, decision } : c,
+      );
+      // Cascade skip: when a case flips to "skip", any bug whose parent
+      // points at it must also skip — otherwise publish would silently
+      // drop the bug with "no parent case to link to". The flip is a soft
+      // cascade: re-keeping the parent doesn't re-keep dependent bugs,
+      // since the user might have wanted them off independently.
+      if (decision === "skip") {
+        const skippedIdx = nextCases.findIndex((c) => c.uid === uid);
+        if (skippedIdx >= 0) {
+          const nextBugs = s.bugs.map((b) =>
+            b.linkedDraftCaseIndex === skippedIdx
+              ? { ...b, decision: "skip" as const }
+              : b,
+          );
+          return { cases: nextCases, bugs: nextBugs };
+        }
+      }
+      return { cases: nextCases };
+    }),
   setBugDecision: (uid, decision) =>
-    set((s) => ({
-      bugs: s.bugs.map((b) => (b.uid === uid ? { ...b, decision } : b)),
-    })),
+    set((s) => {
+      // Guard: a bug can't be "keep" when its parent case is "skip" — the
+      // publish path would fail. If the user tries to keep a bug whose
+      // parent is gone, leave it as skip until they re-link to a kept case.
+      const bug = s.bugs.find((b) => b.uid === uid);
+      if (decision === "keep" && bug) {
+        const idx = bug.linkedDraftCaseIndex;
+        const parent =
+          idx != null && idx >= 0 && idx < s.cases.length
+            ? s.cases[idx]
+            : null;
+        if (!parent || parent.decision !== "keep") {
+          return {}; // refuse the keep — UI surfaces a "re-link first" hint
+        }
+      }
+      return {
+        bugs: s.bugs.map((b) => (b.uid === uid ? { ...b, decision } : b)),
+      };
+    }),
+  setBugParent: (bugUid, caseUid) =>
+    set((s) => {
+      const idx =
+        caseUid === null ? null : s.cases.findIndex((c) => c.uid === caseUid);
+      if (caseUid !== null && (idx === null || idx < 0)) return {};
+      return {
+        bugs: s.bugs.map((b) =>
+          b.uid === bugUid
+            ? { ...b, linkedDraftCaseIndex: idx ?? null }
+            : b,
+        ),
+      };
+    }),
 
   publish: async () => {
     const { cases, bugs, planId, suiteId } = get();

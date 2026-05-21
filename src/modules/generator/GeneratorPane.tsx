@@ -42,6 +42,7 @@ import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { AnalyzeActivityLog } from "./components/AnalyzeActivityLog";
 import { AttachmentList } from "./components/AttachmentList";
 import { TargetContextChip } from "./components/TargetContextChip";
+import { BugCaseLinkPicker } from "./components/BugCaseLinkPicker";
 import {
   ingestFile,
   synthesizeClipboardImageName,
@@ -960,22 +961,8 @@ function ReviewPhase({
                       </p>
                       <SeverityBadge severity={b.severity} />
                     </div>
-                    {(() => {
-                      const idx = b.linkedDraftCaseIndex;
-                      const parent =
-                        idx != null && idx >= 0 && idx < cases.length
-                          ? cases[idx]
-                          : null;
-                      if (!parent) return null;
-                      return (
-                        <p className="mt-0.5 text-[10.5px] text-muted-foreground">
-                          Reproduces in:{" "}
-                          <span className="font-medium text-foreground/85">
-                            {parent.title}
-                          </span>
-                        </p>
-                      );
-                    })()}
+                    <BugParentRow bug={b} />
+
                     <p className="mt-1 whitespace-pre-wrap text-[11px] text-foreground/85">
                       {b.reproSteps}
                     </p>
@@ -989,6 +976,55 @@ function ReviewPhase({
           </ul>
         </section>
       ) : null}
+    </div>
+  );
+}
+
+/** Inline row that shows a bug's parent test case + a re-link picker. When
+ *  the parent has been skipped, surfaces a warning so the user knows why
+ *  the bug auto-skipped and offers to re-link to a kept case. */
+function BugParentRow({
+  bug,
+}: {
+  bug: import("./lib/draftBatchSchema").ReviewedBug;
+}) {
+  const cases = useGenerationSession((s) => s.cases);
+  const setBugParent = useGenerationSession((s) => s.setBugParent);
+  const idx = bug.linkedDraftCaseIndex;
+  const parent =
+    idx != null && idx >= 0 && idx < cases.length ? cases[idx] : null;
+  const parentSkipped = parent && parent.decision !== "keep";
+
+  return (
+    <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10.5px] text-muted-foreground">
+      <span>Reproduces in:</span>
+      {parent ? (
+        <span
+          className={cn(
+            "font-medium",
+            parentSkipped
+              ? "text-muted-foreground/60 line-through"
+              : "text-foreground/85",
+          )}
+        >
+          {parent.title}
+        </span>
+      ) : (
+        <span className="italic text-muted-foreground/60">no parent case</span>
+      )}
+      {parentSkipped ? (
+        <span className="rounded-sm border border-amber-500/40 bg-amber-500/[0.08] px-1.5 py-px text-[9.5px] font-medium uppercase tracking-tight text-amber-700 dark:text-amber-300">
+          parent skipped
+        </span>
+      ) : null}
+      <BugCaseLinkPicker
+        cases={cases}
+        selectedCaseUid={parent?.uid ?? null}
+        onPick={(caseUid) => setBugParent(bug.uid, caseUid)}
+        triggerLabel={
+          parent ? "re-link parent" : "pick a parent case"
+        }
+      />
     </div>
   );
 }
