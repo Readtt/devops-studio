@@ -1,13 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -28,15 +22,23 @@ import { adoErrorMessage } from "@/modules/ado";
 import { useSourceDirGitInfo } from "@/modules/git";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
+  AiBrain01Icon,
   AlertCircleIcon,
   ArrowLeft02Icon,
   CheckmarkCircle02Icon,
   ExternalLink,
   GitBranchIcon,
+  Key01Icon,
   PlayIcon,
+  PlugSocketIcon,
+  RefreshIcon,
   RemoveCircleIcon,
+  Settings01Icon,
+  WifiDisconnected01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
+import { AnalyzeActivityLog } from "./components/AnalyzeActivityLog";
 
 const MODE_LABELS: Record<GenerationMode, string> = {
   happy: "Happy path only",
@@ -227,57 +229,56 @@ function InputPhase() {
 
         <div className="grid grid-cols-2 gap-3">
           <Field label="Test plan">
-            <Select
-              value={planId !== null ? String(planId) : ""}
+            <SearchableSelect
+              ariaLabel="Test plan"
+              value={planId !== null ? String(planId) : null}
               onValueChange={(v) => setTarget(Number(v), null)}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue
-                  placeholder={
-                    !configured
-                      ? "Connect ADO first"
-                      : plansLoading && plans.length === 0
-                        ? "Loading…"
-                        : plans.length === 0
-                          ? "No plans found"
-                          : "Choose a plan"
-                  }
-                />
-              </SelectTrigger>
-              <SelectContent>
-                {plans.map((p) => (
-                  <SelectItem key={p.id} value={String(p.id)}>
-                    {p.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              disabled={!configured || plans.length === 0}
+              placeholder={
+                !configured
+                  ? "Connect ADO first"
+                  : plansLoading && plans.length === 0
+                    ? "Loading plans…"
+                    : plans.length === 0
+                      ? "No plans found"
+                      : "Choose a plan"
+              }
+              emptyLabel={
+                plansLoading ? "Loading plans…" : "No plans in this project."
+              }
+              noResultsLabel="No matching plans"
+              options={plans.map((p) => ({
+                value: String(p.id),
+                label: p.name,
+                hint: `#${p.id}`,
+              }))}
+            />
           </Field>
           <Field label="Suite">
-            <Select
-              value={suiteId !== null ? String(suiteId) : ""}
+            <SearchableSelect
+              ariaLabel="Suite"
+              value={suiteId !== null ? String(suiteId) : null}
               onValueChange={(v) => setTarget(planId, Number(v))}
-              disabled={planId === null}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue
-                  placeholder={
-                    planId === null
-                      ? "Pick a plan first"
-                      : suites.length === 0
-                        ? "Loading…"
-                        : "Choose a suite"
-                  }
-                />
-              </SelectTrigger>
-              <SelectContent>
-                {suites.map((s) => (
-                  <SelectItem key={s.id} value={String(s.id)}>
-                    {s.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              disabled={planId === null || suites.length === 0}
+              placeholder={
+                planId === null
+                  ? "Pick a plan first"
+                  : suites.length === 0
+                    ? "Loading suites…"
+                    : "Choose a suite"
+              }
+              emptyLabel={
+                planId === null
+                  ? "Pick a plan first"
+                  : "No suites in this plan."
+              }
+              noResultsLabel="No matching suites"
+              options={suites.map((s) => ({
+                value: String(s.id),
+                label: s.name,
+                hint: `#${s.id}`,
+              }))}
+            />
           </Field>
         </div>
 
@@ -414,6 +415,7 @@ function AnalyzingPhase() {
   const cancel = useGenerationSession((s) => s.cancel);
   const requirements = useGenerationSession((s) => s.requirements);
   const mode = useGenerationSession((s) => s.mode);
+  const activityLog = useGenerationSession((s) => s.activityLog);
 
   // Allow Esc to cancel from any focus.
   useEffect(() => {
@@ -447,6 +449,13 @@ function AnalyzingPhase() {
           </TooltipTrigger>
           <TooltipContent side="bottom">Press Esc to cancel.</TooltipContent>
         </Tooltip>
+      </div>
+
+      <div>
+        <h2 className="mb-1.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
+          Activity
+        </h2>
+        <AnalyzeActivityLog entries={activityLog} />
       </div>
 
       <Field label={`Requirements (${MODE_LABELS[mode]})`}>
@@ -819,30 +828,403 @@ function DonePhase() {
   );
 }
 
+// --- Error phase ------------------------------------------------------------
+
+type ErrorClass = {
+  /** Short uppercase code rendered in the header — terminal-flavored
+   *  classification. Reads as a `grep`-able tag, not as casual copy. */
+  code: string;
+  /** Sentence-case title summarizing the failure. */
+  title: string;
+  /** Glyph in the left rail. Should map to the failure domain (key, plug,
+   *  wifi, brain) rather than a generic warning triangle. */
+  icon: typeof AlertCircleIcon;
+  /** Short paragraph explaining what likely happened. Two sentences max. */
+  why: string;
+  /** Concrete next steps, ordered. */
+  steps: string[];
+  /** Tone the surface should adopt. */
+  tone: "auth" | "config" | "network" | "validation" | "unknown";
+  /** Primary action (e.g. open the right settings tab). */
+  primary?: { label: string; icon: typeof Settings01Icon; onClick: () => void };
+};
+
+/** Map an error message to a structured remediation. Pattern-matches on the
+ *  string contents because the underlying APIs throw plain Errors with
+ *  human-readable messages — we lift those into something the user can act on
+ *  instead of just dumping the text. */
+function classifyError(
+  message: string,
+  errorPhase: ReturnType<typeof useGenerationSession.getState>["errorPhase"],
+): ErrorClass {
+  const lower = message.toLowerCase();
+
+  if (
+    /no api key configured for (\w+)/.test(lower) ||
+    /missing.*api.?key/.test(lower) ||
+    /api key.*not.*set/.test(lower)
+  ) {
+    const provider = lower.match(/no api key configured for (\w+)/)?.[1];
+    return {
+      code: "AUTH/01 · MISSING-KEY",
+      title: provider
+        ? `No ${capitalize(provider)} API key on file`
+        : "No API key on file for the selected model",
+      icon: Key01Icon,
+      tone: "auth",
+      why: provider
+        ? `The model you have selected uses ${capitalize(
+            provider,
+          )}, but no ${capitalize(
+            provider,
+          )} key is stored in the keychain. The Generator routes by the active model — if Claude Code is set as your engine, pick a Claude model so the run goes through the CLI instead.`
+        : "The active model needs an API key, and the keychain doesn't have one stored for that provider.",
+      steps: [
+        "Open Models settings and either paste a key for that provider, or switch the active model to one your current engine can drive.",
+        "If you connected Claude Code, switch the active model to Claude Sonnet/Opus/Haiku so it goes through the CLI instead of the API.",
+      ],
+      primary: {
+        label: "Open AI / Models",
+        icon: AiBrain01Icon,
+        onClick: () => void openSettingsWindow("models"),
+      },
+    };
+  }
+
+  if (
+    /claude.*not.*installed/.test(lower) ||
+    /claude.*path/.test(lower) ||
+    /claude.*spawn/.test(lower) ||
+    /not-installed/.test(lower)
+  ) {
+    return {
+      code: "AUTH/02 · CLAUDE-CLI",
+      title: "Claude Code CLI didn't respond",
+      icon: PlugSocketIcon,
+      tone: "auth",
+      why: "We tried to run the Claude CLI to drive the run, but the binary either wasn't found on PATH or it failed before producing any output.",
+      steps: [
+        "Install Claude Code from claude.ai/code if you haven't.",
+        "In Models settings, re-detect the CLI and run setup-token if the auth status is empty.",
+      ],
+      primary: {
+        label: "Open AI / Models",
+        icon: AiBrain01Icon,
+        onClick: () => void openSettingsWindow("models"),
+      },
+    };
+  }
+
+  if (
+    /network|timeout|econnreset|enotfound|fetch failed|getaddrinfo/.test(lower)
+  ) {
+    return {
+      code: "NET/01 · UNREACHABLE",
+      title: "Couldn't reach the model provider",
+      icon: WifiDisconnected01Icon,
+      tone: "network",
+      why: "The HTTP request to the model API failed before a response came back. Most often this is a corporate proxy, an off-VPN session, or transient DNS.",
+      steps: [
+        "Check if anything else on your machine can reach the internet right now.",
+        "If you're on a VPN/proxy, confirm the provider's domain isn't blocked.",
+        "Retry — the run is idempotent until you publish.",
+      ],
+    };
+  }
+
+  if (
+    /401|unauthorized|invalid.*api.?key|bad.?pat|forbidden|sso/.test(lower)
+  ) {
+    return {
+      code: "AUTH/03 · REJECTED",
+      title: "The provider rejected your credentials",
+      icon: Key01Icon,
+      tone: "auth",
+      why: "The provider returned a 401/403. Either the stored API key is wrong, the key has been revoked, or your PAT needs SSO authorization.",
+      steps: [
+        "Regenerate the API key (or PAT) in the provider's console.",
+        "Paste the new value into the relevant settings tab and retry.",
+      ],
+      primary: {
+        label: "Open AI / Models",
+        icon: AiBrain01Icon,
+        onClick: () => void openSettingsWindow("models"),
+      },
+    };
+  }
+
+  if (errorPhase === "validation") {
+    return {
+      code: "INPUT/01 · INCOMPLETE",
+      title: "Missing input",
+      icon: AlertCircleIcon,
+      tone: "validation",
+      why: message,
+      steps: [
+        "Fill in the highlighted field on the input form and retry.",
+      ],
+    };
+  }
+
+  if (errorPhase === "publish") {
+    return {
+      code: "PUBLISH/01 · BLOCKED",
+      title: "Publish couldn't start",
+      icon: AlertCircleIcon,
+      tone: "config",
+      why: message,
+      steps: [
+        "Re-check the target plan and suite on the input form.",
+        "If ADO authentication has expired, reconnect from settings.",
+      ],
+      primary: {
+        label: "Open Azure DevOps",
+        icon: Settings01Icon,
+        onClick: () => void openSettingsWindow("azure-devops"),
+      },
+    };
+  }
+
+  return {
+    code: "GEN/00 · UNCLASSIFIED",
+    title: "Something went wrong",
+    icon: AlertCircleIcon,
+    tone: "unknown",
+    why: "The run failed before we could route it into a specific recovery path. The raw message from the underlying SDK is below — paste it into an issue if it keeps happening.",
+    steps: ["Click Retry to bounce back to the input form with your spec preserved."],
+  };
+}
+
+function capitalize(s: string): string {
+  return s.length === 0 ? s : s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+const TONE_THEME: Record<
+  ErrorClass["tone"],
+  {
+    rail: string;
+    iconBg: string;
+    iconFg: string;
+    codeText: string;
+    dot: string;
+  }
+> = {
+  auth: {
+    rail: "border-amber-500/30 from-amber-500/[0.06]",
+    iconBg: "bg-amber-500/10 ring-amber-500/30",
+    iconFg: "text-amber-500 dark:text-amber-400",
+    codeText: "text-amber-600 dark:text-amber-300",
+    dot: "bg-amber-500",
+  },
+  config: {
+    rail: "border-sky-500/30 from-sky-500/[0.06]",
+    iconBg: "bg-sky-500/10 ring-sky-500/30",
+    iconFg: "text-sky-500 dark:text-sky-400",
+    codeText: "text-sky-600 dark:text-sky-300",
+    dot: "bg-sky-500",
+  },
+  network: {
+    rail: "border-orange-500/30 from-orange-500/[0.06]",
+    iconBg: "bg-orange-500/10 ring-orange-500/30",
+    iconFg: "text-orange-500 dark:text-orange-400",
+    codeText: "text-orange-600 dark:text-orange-300",
+    dot: "bg-orange-500",
+  },
+  validation: {
+    rail: "border-violet-500/30 from-violet-500/[0.06]",
+    iconBg: "bg-violet-500/10 ring-violet-500/30",
+    iconFg: "text-violet-500 dark:text-violet-400",
+    codeText: "text-violet-600 dark:text-violet-300",
+    dot: "bg-violet-500",
+  },
+  unknown: {
+    rail: "border-destructive/40 from-destructive/[0.06]",
+    iconBg: "bg-destructive/10 ring-destructive/30",
+    iconFg: "text-destructive",
+    codeText: "text-destructive",
+    dot: "bg-destructive",
+  },
+};
+
 function ErrorPhase() {
   const error = useGenerationSession((s) => s.error);
+  const errorPhase = useGenerationSession((s) => s.errorPhase);
+  const tryAgain = useGenerationSession((s) => s.tryAgain);
   const startNew = useGenerationSession((s) => s.startNew);
+
   const message =
     typeof error === "string"
       ? error
       : error
         ? adoErrorMessage(error)
         : "Unknown error";
+
+  const klass = useMemo(
+    () => classifyError(message, errorPhase),
+    [message, errorPhase],
+  );
+  const theme = TONE_THEME[klass.tone];
+
   return (
-    <div className="flex flex-col items-center gap-2 rounded-md border border-destructive/40 bg-destructive/[0.06] px-6 py-8 text-center">
-      <HugeiconsIcon
-        icon={AlertCircleIcon}
-        size={18}
-        strokeWidth={1.5}
-        className="text-destructive"
-      />
-      <p className="text-[12px] font-medium">Something went wrong.</p>
-      <p className="max-w-[460px] whitespace-pre-wrap text-[11px] text-muted-foreground">
-        {message}
-      </p>
-      <Button size="sm" variant="outline" onClick={startNew}>
-        Back to input
-      </Button>
+    <div className="flex flex-col gap-3">
+      {/* Header band — terminal-flavored classification badge. Matches the
+          rest of the app's editor density: a dotted status indicator + a
+          monospace code + the human-readable title. */}
+      <div
+        className={cn(
+          "overflow-hidden rounded-md border bg-gradient-to-br to-transparent",
+          theme.rail,
+        )}
+      >
+        <div className="flex items-center gap-1.5 border-b border-border/40 bg-background/40 px-3 py-1.5 backdrop-blur-sm">
+          <span
+            className={cn(
+              "h-1.5 w-1.5 shrink-0 rounded-full shadow-[0_0_6px_-1px]",
+              theme.dot,
+            )}
+          />
+          <span
+            className={cn(
+              "font-mono text-[10px] font-medium tracking-wider uppercase",
+              theme.codeText,
+            )}
+          >
+            {klass.code}
+          </span>
+          <span className="ml-auto font-mono text-[10px] text-muted-foreground/60">
+            {errorPhase ? `phase: ${errorPhase}` : "phase: —"}
+          </span>
+        </div>
+
+        <div className="flex items-start gap-3 px-4 py-4">
+          <div
+            className={cn(
+              "flex size-9 shrink-0 items-center justify-center rounded-md ring-1",
+              theme.iconBg,
+            )}
+          >
+            <HugeiconsIcon
+              icon={klass.icon}
+              size={18}
+              strokeWidth={1.5}
+              className={theme.iconFg}
+            />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[13px] font-semibold leading-tight">
+              {klass.title}
+            </p>
+            <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">
+              {klass.why}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Steps — numbered, terminal-style list. Looks like a debug protocol,
+          which is what it is. */}
+      {klass.steps.length > 0 ? (
+        <div className="rounded-md border border-border/60 bg-card/40">
+          <div className="flex items-center gap-1.5 border-b border-border/40 bg-foreground/[0.02] px-3 py-1.5">
+            <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70">
+              next steps
+            </span>
+            <span className="ml-auto font-mono text-[10px] text-muted-foreground/60">
+              {klass.steps.length.toString().padStart(2, "0")} action
+              {klass.steps.length === 1 ? "" : "s"}
+            </span>
+          </div>
+          <ol className="flex flex-col">
+            {klass.steps.map((step, i) => (
+              <li
+                key={i}
+                className={cn(
+                  "grid grid-cols-[auto_1fr] items-start gap-2.5 px-3 py-2",
+                  i < klass.steps.length - 1 && "border-b border-border/30",
+                )}
+              >
+                <span className="mt-0.5 font-mono text-[10px] text-muted-foreground/70">
+                  {(i + 1).toString().padStart(2, "0")}
+                </span>
+                <span className="text-[11.5px] leading-relaxed text-foreground/85">
+                  {step}
+                </span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      ) : null}
+
+      {/* Raw error excerpt — collapsed by default so the recovery panel
+          stays the focal point. Power users can still copy the original. */}
+      <details className="rounded-md border border-border/60 bg-card/40">
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-1.5 text-[10.5px] font-mono uppercase tracking-wider text-muted-foreground/70 hover:text-foreground">
+          <HugeiconsIcon
+            icon={AlertCircleIcon}
+            size={10}
+            strokeWidth={1.75}
+          />
+          show raw error
+        </summary>
+        <pre className="max-h-40 overflow-auto whitespace-pre-wrap border-t border-border/30 bg-background/40 px-3 py-2 font-mono text-[10.5px] leading-relaxed text-muted-foreground">
+          {message}
+        </pre>
+      </details>
+
+      {/* Action row — primary remediation on the left (when there is one)
+          and the two recovery actions on the right. Retry preserves the
+          form; Start over is the explicit "I'm done with this spec" path. */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/40 pt-3">
+        <div className="flex items-center gap-2">
+          {klass.primary ? (
+            <Button size="sm" onClick={klass.primary.onClick}>
+              <HugeiconsIcon
+                icon={klass.primary.icon}
+                size={11}
+                strokeWidth={1.75}
+              />
+              {klass.primary.label}
+            </Button>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-2">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={tryAgain}
+              >
+                <HugeiconsIcon
+                  icon={RefreshIcon}
+                  size={11}
+                  strokeWidth={1.75}
+                />
+                Retry
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="text-[11px]">
+              Bounce back to the input form. Your spec, target plan, and
+              attachments are kept intact.
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button size="sm" variant="ghost" onClick={startNew}>
+                <HugeiconsIcon
+                  icon={ArrowLeft02Icon}
+                  size={11}
+                  strokeWidth={1.75}
+                />
+                Start over
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="text-[11px]">
+              Clear the form and start a fresh session.
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      </div>
     </div>
   );
 }

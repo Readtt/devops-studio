@@ -18,7 +18,7 @@ import {
   runQaAnalyst,
 } from "../lib/qaAnalystRun";
 import { runQaAnalystClaude } from "../lib/qaAnalystRunClaude";
-import { selectEngine } from "@/modules/ai/lib/engine";
+import { resolveClaudeModelId, selectEngine } from "@/modules/ai/lib/engine";
 import {
   isDynamicTrackingBranch,
   resolveTrackingBranch,
@@ -40,6 +40,7 @@ import {
   specExcerpt,
   type GenerationRun,
 } from "../lib/history";
+import { entryToLabel, type ActivityEntry } from "../lib/activityLog";
 
 export type GenerationMode = Mode;
 
@@ -75,6 +76,10 @@ export type SessionState = {
   allowCodeSearch: boolean;
   // Analyzing
   stepLabel: string;
+  /** Streaming activity from the analyst engines: tool calls, results, and
+   *  thinking steps. The AnalyzingPhase renders this as a log so the user
+   *  can see what the agent is doing (which files it read, what it grepped). */
+  activityLog: ActivityEntry[];
   durationMs: number | null;
   // Review
   cases: ReviewedCase[];
@@ -84,6 +89,10 @@ export type SessionState = {
   publishLog: PublishLogEntry[];
   // Error
   error: AdoError | string | null;
+  /** Where the failure originated, so the error UI can render targeted
+   *  guidance ("open AI settings" for analyze-time failures, "open ADO
+   *  settings" for publish-time failures, etc.). */
+  errorPhase: "analyze" | "publish" | "validation" | null;
 
   setRequirements: (s: string) => void;
   setMode: (m: GenerationMode) => void;
@@ -96,6 +105,9 @@ export type SessionState = {
    *  request itself is not aborted (provider SDKs don't all support it) —
    *  this just dumps the result instead of moving to review. */
   cancel: () => void;
+  /** Return to the input phase from an error WITHOUT wiping form state.
+   *  Distinct from `startNew()`, which clears everything for a fresh run. */
+  tryAgain: () => void;
   setCaseDecision: (uid: string, decision: "keep" | "skip") => void;
   setBugDecision: (uid: string, decision: "keep" | "skip") => void;
   publish: () => Promise<void>;
@@ -116,6 +128,7 @@ const initialState: Omit<
   | "removeAttachment"
   | "analyze"
   | "cancel"
+  | "tryAgain"
   | "setCaseDecision"
   | "setBugDecision"
   | "publish"
@@ -130,12 +143,14 @@ const initialState: Omit<
   mode: "thorough",
   allowCodeSearch: true,
   stepLabel: "",
+  activityLog: [],
   durationMs: null,
   cases: [],
   bugs: [],
   rawText: "",
   publishLog: [],
   error: null,
+  errorPhase: null,
 };
 
 export const useGenerationSession = create<SessionState>((set, get) => ({
@@ -158,10 +173,37 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
   analyze: async () => {
     const { requirements, attachments, planId, suiteId, mode, allowCodeSearch } = get();
     if (!requirements.trim()) {
-      set({ phase: "error", error: "Paste requirements first." });
+      set({
+        phase: "error",
+        error: "Paste requirements first.",
+        errorPhase: "validation",
+      });
       return;
     }
-    set({ phase: "analyzing", stepLabel: "Reading suite…", error: null });
+    set({
+      phase: "analyzing",
+      stepLabel: "Reading suite…",
+      activityLog: [],
+      error: null,
+      errorPhase: null,
+    });
+
+    // Each activity entry either appends (new id) or replaces an earlier
+    // entry (same id — used when a tool_use is later completed by its
+    // tool_result, carrying duration and output). The most recent entry
+    // doubles as the transient stepLabel for compact displays.
+    const onActivity = (entry: ActivityEntry) => {
+      set((s) => {
+        const i = s.activityLog.findIndex((e) => e.id === entry.id);
+        const next = s.activityLog.slice();
+        if (i >= 0) {
+          next[i] = { ...next[i], ...entry };
+        } else {
+          next.push(entry);
+        }
+        return { activityLog: next, stepLabel: entryToLabel(entry) };
+      });
+    };
 
     let existingCaseTitles: { id: number; title: string }[] = [];
     if (planId && suiteId) {
@@ -190,13 +232,16 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
           attachments,
           existingCaseTitles,
           mode,
-          modelId,
+          // Claude CLI only understands anthropic model ids; substitute a
+          // safe default when the user's globally-selected model is from a
+          // different provider so the run doesn't fail on `--model gpt-…`.
+          modelId: resolveClaudeModelId(modelId) as typeof modelId,
           // Gate the agent's file-system tools behind the user's explicit
           // toggle. When off (or no source root), the CLI runs without a
           // cwd and can only reason from the spec + any inline attachments.
           sourceRoot: allowCodeSearch ? prefs.sourceRoot : null,
           authMode: engineSel.authMode ?? "api-key",
-          onStep: (label) => set({ stepLabel: label }),
+          onActivity,
         });
       } else {
         result = await runQaAnalyst({
@@ -206,7 +251,7 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
           mode,
           keys,
           modelId,
-          onStep: (label) => set({ stepLabel: label }),
+          onActivity,
         });
       }
       const cases: ReviewedCase[] = result.batch.cases.map((c) => ({
@@ -236,6 +281,7 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
       set({
         phase: "error",
         error: e instanceof Error ? e.message : String(e),
+        errorPhase: "analyze",
         stepLabel: "",
       });
     }
@@ -244,8 +290,15 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
   cancel: () => {
     const phase = get().phase;
     if (phase === "analyzing") {
-      set({ phase: "input", stepLabel: "", error: null });
+      set({ phase: "input", stepLabel: "", error: null, errorPhase: null });
     }
+  },
+
+  tryAgain: () => {
+    // Return to input keeping requirements / plan / suite / mode / attachments
+    // intact so the user can fix whatever caused the error (missing key,
+    // wrong target) without re-pasting their spec.
+    set({ phase: "input", error: null, errorPhase: null, stepLabel: "" });
   },
 
   setCaseDecision: (uid, decision) =>
@@ -260,7 +313,11 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
   publish: async () => {
     const { cases, bugs, planId, suiteId } = get();
     if (!planId || !suiteId) {
-      set({ phase: "error", error: "Pick a Test Plan and Suite first." });
+      set({
+        phase: "error",
+        error: "Pick a Test Plan and Suite first.",
+        errorPhase: "publish",
+      });
       return;
     }
     const keptCases = cases.filter((c) => c.decision === "keep");

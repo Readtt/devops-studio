@@ -13,6 +13,13 @@ import type { ClaudeAuthMode } from "@/modules/settings/store";
 import type { ModelId } from "@/modules/ai/config";
 import type { TestCaseRef } from "@/modules/ado";
 import type { GenerationMode, RunResult } from "./qaAnalystRun";
+import {
+  clampOutputFull,
+  clampOutputSummary,
+  newActivityId,
+  summarizeToolInput,
+  type ActivityEntry,
+} from "./activityLog";
 
 export type RunClaudeInput = {
   requirements: string;
@@ -27,7 +34,8 @@ export type RunClaudeInput = {
   /** "max-oauth" → rely on the CLI's own stored token. "api-key" → load the
    *  Anthropic key from the keyring and pass it via env. */
   authMode: ClaudeAuthMode;
-  onStep?: (label: string) => void;
+  /** Structured per-step activity for the streaming log UI. */
+  onActivity?: (entry: ActivityEntry) => void;
 };
 
 export async function runQaAnalystClaude(
@@ -42,6 +50,7 @@ export async function runQaAnalystClaude(
 
   const userPrompt = buildUserPrompt(input);
   const start = Date.now();
+  const tracker = new ActivityTracker(start, input.onActivity);
 
   const result = await runClaudeQuery(
     {
@@ -61,7 +70,7 @@ export async function runQaAnalystClaude(
       allowedTools: ["Read", "Glob", "Grep"],
       env: Object.keys(env).length > 0 ? env : undefined,
     },
-    (e) => emitStep(e, input.onStep),
+    (e) => tracker.consume(e),
   );
 
   const text = result.text || "";
@@ -75,25 +84,121 @@ function newRunId(): string {
   return `gen-${ts}-${rand}`;
 }
 
-function emitStep(event: ClaudeEvent, onStep: RunClaudeInput["onStep"]): void {
-  if (!onStep) return;
-  // The CLI emits assistant-content blocks; we translate the most useful
-  // ones into a human-readable step label. Anything else falls through
-  // as "thinking" so the UI shows the agent is alive.
-  if (event.type === "assistant") {
-    const msg = event.message as { content?: Array<{ type?: string; name?: string }> } | undefined;
-    const tool = msg?.content?.find?.((c) => c?.type === "tool_use");
-    if (tool?.name) {
-      onStep(`tool: ${tool.name}`);
+type PendingTool = {
+  activityId: string;
+  toolName: string;
+  startedAt: number;
+};
+
+/** Walks the CLI's NDJSON event stream and emits structured ActivityEntry
+ *  events. Pairs tool_use blocks with their later tool_result blocks (matched
+ *  by tool_use_id) so each log entry has both the input and the result the
+ *  agent saw. */
+class ActivityTracker {
+  private pending = new Map<string, PendingTool>();
+
+  constructor(
+    private readonly start: number,
+    private readonly emit: ((e: ActivityEntry) => void) | undefined,
+  ) {}
+
+  consume(event: ClaudeEvent): void {
+    if (!this.emit) return;
+    if (event.type === "assistant") {
+      const msg = event.message as
+        | { content?: Array<Record<string, unknown>> }
+        | undefined;
+      const content = msg?.content ?? [];
+      let sawTool = false;
+      for (const block of content) {
+        if (block && (block as { type?: string }).type === "tool_use") {
+          sawTool = true;
+          this.openToolUse(block);
+        }
+      }
+      if (!sawTool) {
+        this.emit({
+          id: newActivityId(),
+          ts: Date.now() - this.start,
+          kind: "thinking",
+        });
+      }
       return;
     }
-    onStep("thinking");
-    return;
+    if (event.type === "user") {
+      const msg = event.message as
+        | { content?: Array<Record<string, unknown>> }
+        | undefined;
+      for (const block of msg?.content ?? []) {
+        if (block && (block as { type?: string }).type === "tool_result") {
+          this.closeToolResult(block);
+        }
+      }
+      return;
+    }
   }
-  if (event.type === "tool_use") {
-    const name = (event as { name?: string }).name;
-    if (name) onStep(`tool: ${name}`);
+
+  private openToolUse(block: Record<string, unknown>): void {
+    if (!this.emit) return;
+    const toolName = typeof block.name === "string" ? block.name : "tool";
+    const id = typeof block.id === "string" ? block.id : `local-${newActivityId()}`;
+    const input = (block.input ?? {}) as Record<string, unknown>;
+    const activityId = newActivityId();
+    this.pending.set(id, {
+      activityId,
+      toolName,
+      startedAt: Date.now(),
+    });
+    this.emit({
+      id: activityId,
+      ts: Date.now() - this.start,
+      kind: "tool",
+      toolName,
+      inputSummary: summarizeToolInput(toolName, input),
+    });
   }
+
+  private closeToolResult(block: Record<string, unknown>): void {
+    if (!this.emit) return;
+    const id =
+      typeof block.tool_use_id === "string" ? block.tool_use_id : null;
+    if (!id) return;
+    const pending = this.pending.get(id);
+    if (!pending) return;
+    this.pending.delete(id);
+    const rawText = extractToolResultText(block.content);
+    const durationMs = Date.now() - pending.startedAt;
+    const isError = block.is_error === true;
+    this.emit({
+      id: pending.activityId,
+      ts: Date.now() - this.start,
+      kind: isError ? "error" : "tool",
+      toolName: pending.toolName,
+      // re-emit input so the UI can reconcile by id and overwrite with the
+      // completed entry (the store's reducer handles dedup-by-id).
+      outputSummary: rawText ? clampOutputSummary(rawText) : undefined,
+      outputFull: rawText ? clampOutputFull(rawText) : undefined,
+      durationMs,
+      error: isError ? rawText.slice(0, 200) : undefined,
+    });
+  }
+}
+
+function extractToolResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const block of content) {
+      if (block && typeof block === "object") {
+        const t = (block as { text?: unknown }).text;
+        if (typeof t === "string") parts.push(t);
+      } else if (typeof block === "string") {
+        parts.push(block);
+      }
+    }
+    return parts.join("\n");
+  }
+  return "";
 }
 
 function buildUserPrompt(input: RunClaudeInput): string {

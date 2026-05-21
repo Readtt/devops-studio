@@ -8,6 +8,13 @@ import {
 } from "./draftBatchSchema";
 import { QA_ANALYST_PROMPT } from "./qaAnalystPrompt";
 import type { TestCaseRef } from "@/modules/ado";
+import {
+  clampOutputFull,
+  clampOutputSummary,
+  newActivityId,
+  summarizeToolInput,
+  type ActivityEntry,
+} from "./activityLog";
 
 const MAX_STEPS = 12;
 
@@ -22,7 +29,9 @@ export type RunInput = {
   keys: ProviderKeys;
   modelId: ModelId;
   lmstudioBaseURL?: string;
-  onStep?: (label: string) => void;
+  /** Structured per-step activity for the streaming log UI. Called for each
+   *  tool call (with input + result) and for "thinking" steps without tools. */
+  onActivity?: (entry: ActivityEntry) => void;
 };
 
 export type RunResult = {
@@ -52,9 +61,40 @@ export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
     prompt: userPrompt,
     stopWhen: stepCountIs(MAX_STEPS),
     onStepFinish: (step) => {
-      if (!input.onStep) return;
-      const tool = step.toolCalls?.[step.toolCalls.length - 1];
-      input.onStep(tool ? `tool: ${tool.toolName}` : "thinking");
+      const onActivity = input.onActivity;
+      if (!onActivity) return;
+      const calls = step.toolCalls ?? [];
+      const results = step.toolResults ?? [];
+      if (calls.length === 0) {
+        // No tool — record the model's thinking step so the log has a
+        // breadcrumb even when nothing observable happened.
+        onActivity({
+          id: newActivityId(),
+          ts: Date.now() - start,
+          kind: "thinking",
+        });
+        return;
+      }
+      for (const call of calls) {
+        const matching = results.find(
+          (r) => (r as { toolCallId?: string }).toolCallId === call.toolCallId,
+        );
+        const rawResult = matching
+          ? stringifyResult((matching as { output?: unknown }).output)
+          : undefined;
+        onActivity({
+          id: newActivityId(),
+          ts: Date.now() - start,
+          kind: "tool",
+          toolName: call.toolName,
+          inputSummary: summarizeToolInput(
+            call.toolName,
+            (call.input ?? {}) as Record<string, unknown>,
+          ),
+          outputSummary: rawResult ? clampOutputSummary(rawResult) : undefined,
+          outputFull: rawResult ? clampOutputFull(rawResult) : undefined,
+        });
+      }
     },
   });
 
@@ -136,6 +176,16 @@ function parseBatch(text: string): DraftBatchLLM {
   } catch {
     // Be permissive — return an empty batch rather than crashing the UI.
     return { cases: [], bugs: [] };
+  }
+}
+
+function stringifyResult(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
   }
 }
 
