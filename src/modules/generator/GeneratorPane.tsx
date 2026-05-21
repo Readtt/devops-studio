@@ -12,7 +12,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type GenerationMode,
   useGenerationSession,
@@ -39,6 +39,12 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { AnalyzeActivityLog } from "./components/AnalyzeActivityLog";
+import { AttachmentList } from "./components/AttachmentList";
+import {
+  ingestFile,
+  synthesizeClipboardImageName,
+} from "./lib/ingestAttachment";
+import { Attachment01Icon } from "@hugeicons/core-free-icons";
 
 const MODE_LABELS: Record<GenerationMode, string> = {
   happy: "Happy path only",
@@ -175,15 +181,79 @@ function InputPhase() {
   const planId = useGenerationSession((s) => s.planId);
   const suiteId = useGenerationSession((s) => s.suiteId);
   const allowCodeSearch = useGenerationSession((s) => s.allowCodeSearch);
+  const attachments = useGenerationSession((s) => s.attachments);
   const setRequirements = useGenerationSession((s) => s.setRequirements);
   const setMode = useGenerationSession((s) => s.setMode);
   const setTarget = useGenerationSession((s) => s.setTarget);
   const setAllowCodeSearch = useGenerationSession((s) => s.setAllowCodeSearch);
+  const addRichAttachment = useGenerationSession((s) => s.addRichAttachment);
+  const removeAttachment = useGenerationSession((s) => s.removeAttachment);
   const analyze = useGenerationSession((s) => s.analyze);
   const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
   const aiEngine = usePreferencesStore((s) => s.aiEngine);
   const showCodeSearchToggle =
     aiEngine === "claude-agent-sdk" && !!sourceRoot;
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [ingestErrors, setIngestErrors] = useState<string[]>([]);
+  const filePickerRef = useRef<HTMLInputElement | null>(null);
+
+  const ingestFiles = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return;
+      const errors: string[] = [];
+      for (const f of files) {
+        const result = await ingestFile(f);
+        if (result.ok) {
+          addRichAttachment(result.attachment);
+        } else {
+          errors.push(result.error.message);
+        }
+      }
+      setIngestErrors(errors);
+    },
+    [addRichAttachment],
+  );
+
+  const onPaste = useCallback(
+    (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const items = Array.from(e.clipboardData?.files ?? []) as File[];
+      // The clipboard often carries both a text payload AND a file (e.g.
+      // pasting from Excel). Files take precedence; if any files came along,
+      // suppress the default text insert so the user doesn't get both a
+      // chip AND raw base64 dumped into the textarea.
+      if (items.length === 0) return;
+      e.preventDefault();
+      // Clipboard images arrive with empty filenames — synthesize one so the
+      // chip and dedup-by-path logic have something stable to key on.
+      const named = items.map((f) => {
+        if (f.name) return f;
+        const synthetic = synthesizeClipboardImageName(f.type || "image/png");
+        return new File([f], synthetic, { type: f.type });
+      });
+      void ingestFiles(named);
+    },
+    [ingestFiles],
+  );
+
+  const onDrop = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      setIsDragOver(false);
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      void ingestFiles(files);
+    },
+    [ingestFiles],
+  );
+
+  const onFilePicker = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files ?? []);
+      void ingestFiles(files);
+      // Reset the input so picking the same file twice still fires onChange.
+      e.target.value = "";
+    },
+    [ingestFiles],
+  );
 
   const {
     plans,
@@ -218,13 +288,90 @@ function InputPhase() {
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_280px]">
       <section className="flex min-w-0 flex-col gap-3">
         <Field label="Requirements / feature spec">
-          <textarea
-            value={requirements}
-            onChange={(e) => setRequirements(e.target.value)}
-            placeholder="Paste the Asana task / Jira ticket / spec wiki here. Be specific — the analyzer only knows what you put here plus any source files you attach."
-            rows={10}
-            className="w-full rounded-md border border-border/60 bg-input/40 px-2.5 py-2 font-mono text-[11.5px] leading-relaxed outline-none focus:border-ring focus:ring-2 focus:ring-ring/30"
-          />
+          <div
+            onDragEnter={(e) => {
+              e.preventDefault();
+              setIsDragOver(true);
+            }}
+            onDragOver={(e) => {
+              // Required to make the drop zone accept the drop event.
+              e.preventDefault();
+              if (!isDragOver) setIsDragOver(true);
+            }}
+            onDragLeave={(e) => {
+              // Only fire when leaving the wrapper, not when crossing into a
+              // child element. The relatedTarget check protects against the
+              // textarea bubbling its own dragleave when focus moves.
+              if (
+                !e.currentTarget.contains(e.relatedTarget as Node | null)
+              ) {
+                setIsDragOver(false);
+              }
+            }}
+            onDrop={onDrop}
+            className={cn(
+              "relative rounded-md border bg-input/40 transition-colors",
+              isDragOver
+                ? "border-primary/60 bg-primary/[0.06] ring-1 ring-primary/30"
+                : "border-border/60",
+            )}
+          >
+            <textarea
+              value={requirements}
+              onChange={(e) => setRequirements(e.target.value)}
+              onPaste={onPaste}
+              placeholder="Paste the Asana task / Jira ticket / spec wiki here. Drop files or paste images directly — the analyzer reads them along with the spec."
+              rows={10}
+              className="w-full resize-y bg-transparent px-2.5 py-2 font-mono text-[11.5px] leading-relaxed outline-none focus:ring-2 focus:ring-ring/30"
+            />
+            {isDragOver ? (
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-md bg-primary/[0.08] text-[12px] font-medium text-primary">
+                Drop to attach
+              </div>
+            ) : null}
+          </div>
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            <input
+              ref={filePickerRef}
+              type="file"
+              multiple
+              hidden
+              onChange={onFilePicker}
+              accept="text/*,image/*,.ts,.tsx,.js,.jsx,.json,.md,.yaml,.yml,.toml,.py,.rs,.go,.java,.cs,.c,.cpp,.html,.css,.sh,.sql,.log"
+            />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() => filePickerRef.current?.click()}
+                >
+                  <HugeiconsIcon
+                    icon={Attachment01Icon}
+                    size={11}
+                    strokeWidth={1.75}
+                  />
+                  Attach files
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-[11px]">
+                Or drop them on the spec, or paste images with Ctrl+V.
+              </TooltipContent>
+            </Tooltip>
+            <AttachmentList
+              attachments={attachments}
+              onRemove={removeAttachment}
+            />
+          </div>
+          {ingestErrors.length > 0 ? (
+            <ul className="mt-1.5 flex flex-col gap-0.5 text-[10.5px] text-destructive">
+              {ingestErrors.map((m, i) => (
+                <li key={i} className="font-mono">
+                  {m}
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </Field>
 
         <div className="grid grid-cols-2 gap-3">

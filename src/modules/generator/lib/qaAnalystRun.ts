@@ -20,9 +20,20 @@ const MAX_STEPS = 12;
 
 export type GenerationMode = "happy" | "thorough" | "bug-hunt";
 
+/** Subset of session Attachment surface the analyst engines understand. Kept
+ *  here (not imported from the store) so the lib layer doesn't depend on the
+ *  React store and stays testable in isolation. */
+export type RunAttachment = {
+  path: string;
+  content: string;
+  kind?: "text" | "image" | "binary";
+  mime?: string;
+  sizeBytes?: number;
+};
+
 export type RunInput = {
   requirements: string;
-  attachments: Array<{ path: string; content: string }>;
+  attachments: RunAttachment[];
   existingCaseTitles: Pick<TestCaseRef, "id" | "title">[];
   mode: GenerationMode;
   /** Provider keys hydrated from the OS keychain (chatStore.apiKeys). */
@@ -123,9 +134,7 @@ function buildUserPrompt(input: RunInput): string {
     input.attachments.length === 0
       ? ""
       : "\n\nSource code attached for grounding:\n\n" +
-        input.attachments
-          .map((a) => `--- ${a.path} ---\n${a.content}`)
-          .join("\n\n");
+        input.attachments.map(formatAttachmentBlock).join("\n\n");
 
   return [
     modeLine,
@@ -177,6 +186,25 @@ function parseBatch(text: string): DraftBatchLLM {
     // Be permissive — return an empty batch rather than crashing the UI.
     return { cases: [], bugs: [] };
   }
+}
+
+/** Render one attachment for inclusion in the user prompt. Text attachments
+ *  embed their content directly; images and binaries embed a metadata-only
+ *  placeholder so the model knows they exist (true multimodal passthrough is
+ *  a follow-up that has to switch the engines to the messages API). */
+export function formatAttachmentBlock(a: RunAttachment): string {
+  const kind = a.kind ?? "text";
+  if (kind === "image") {
+    const mime = a.mime ?? "image";
+    const bytes = a.sizeBytes != null ? `, ${a.sizeBytes} bytes` : "";
+    return `--- ${a.path} ---\n[user-attached image: ${mime}${bytes}]`;
+  }
+  if (kind === "binary") {
+    const mime = a.mime ?? "application/octet-stream";
+    const bytes = a.sizeBytes != null ? `, ${a.sizeBytes} bytes` : "";
+    return `--- ${a.path} ---\n[user-attached binary: ${mime}${bytes}]`;
+  }
+  return `--- ${a.path} ---\n${a.content}`;
 }
 
 function stringifyResult(value: unknown): string {

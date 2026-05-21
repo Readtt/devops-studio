@@ -61,11 +61,26 @@ export type PublishLogEntry = {
   error?: string;
 };
 
+export type AttachmentKind = "text" | "image" | "binary";
+
+export type Attachment = {
+  /** Display name. For dropped files this is the original filename; for
+   *  clipboard images we synthesize "pasted-<timestamp>.<ext>". */
+  path: string;
+  /** Text content for kind="text"; base64 data URL for kind="image"; empty
+   *  string for kind="binary" (we don't ship binary blobs through the LLM,
+   *  only the filename is surfaced). */
+  content: string;
+  kind: AttachmentKind;
+  mime?: string;
+  sizeBytes?: number;
+};
+
 export type SessionState = {
   phase: Phase;
   // Input phase
   requirements: string;
-  attachments: Array<{ path: string; content: string }>;
+  attachments: Attachment[];
   planId: number | null;
   suiteId: number | null;
   mode: GenerationMode;
@@ -98,7 +113,11 @@ export type SessionState = {
   setMode: (m: GenerationMode) => void;
   setTarget: (planId: number | null, suiteId: number | null) => void;
   setAllowCodeSearch: (v: boolean) => void;
+  /** Add a text attachment. Convenience wrapper around `addRichAttachment`
+   *  for the existing single-string-content callers. */
   addAttachment: (path: string, content: string) => void;
+  /** Add an attachment of any supported kind. Dedups by `path`. */
+  addRichAttachment: (attachment: Attachment) => void;
   removeAttachment: (path: string) => void;
   analyze: () => Promise<void>;
   /** Cancel an in-flight analyze and return to the input phase. The model
@@ -125,6 +144,7 @@ const initialState: Omit<
   | "setTarget"
   | "setAllowCodeSearch"
   | "addAttachment"
+  | "addRichAttachment"
   | "removeAttachment"
   | "analyze"
   | "cancel"
@@ -163,7 +183,24 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
   addAttachment: (path, content) =>
     set((s) => {
       if (s.attachments.some((a) => a.path === path)) return s;
-      return { attachments: [...s.attachments, { path, content }] };
+      return {
+        attachments: [
+          ...s.attachments,
+          {
+            path,
+            content,
+            kind: "text",
+            sizeBytes: content.length,
+          },
+        ],
+      };
+    }),
+  addRichAttachment: (attachment) =>
+    set((s) => {
+      // Replace on duplicate path so re-pasting a file gets the latest copy
+      // instead of silently being ignored.
+      const without = s.attachments.filter((a) => a.path !== attachment.path);
+      return { attachments: [...without, attachment] };
     }),
   removeAttachment: (path) =>
     set((s) => ({

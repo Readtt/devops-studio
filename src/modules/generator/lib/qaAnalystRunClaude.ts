@@ -12,7 +12,12 @@ import { QA_ANALYST_PROMPT } from "./qaAnalystPrompt";
 import type { ClaudeAuthMode } from "@/modules/settings/store";
 import type { ModelId } from "@/modules/ai/config";
 import type { TestCaseRef } from "@/modules/ado";
-import type { GenerationMode, RunResult } from "./qaAnalystRun";
+import {
+  formatAttachmentBlock,
+  type GenerationMode,
+  type RunAttachment,
+  type RunResult,
+} from "./qaAnalystRun";
 import {
   clampOutputFull,
   clampOutputSummary,
@@ -23,7 +28,7 @@ import {
 
 export type RunClaudeInput = {
   requirements: string;
-  attachments: Array<{ path: string; content: string }>;
+  attachments: RunAttachment[];
   existingCaseTitles: Pick<TestCaseRef, "id" | "title">[];
   mode: GenerationMode;
   modelId: ModelId;
@@ -225,9 +230,7 @@ function buildUserPrompt(input: RunClaudeInput): string {
     input.attachments.length === 0
       ? ""
       : "\n\nAdditional source attachments:\n\n" +
-        input.attachments
-          .map((a) => `--- ${a.path} ---\n${a.content}`)
-          .join("\n\n");
+        input.attachments.map(formatAttachmentBlock).join("\n\n");
 
   return [
     modeLine,
