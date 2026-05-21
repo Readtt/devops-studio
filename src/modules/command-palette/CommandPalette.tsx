@@ -7,9 +7,14 @@ import {
   CommandList,
   CommandSeparator,
 } from "@/components/ui/command";
-import { getBug, getCase } from "@/modules/ado";
+import { Skeleton } from "@/components/ui/skeleton";
+import { getBug, getCase, type Bug, type TestCase } from "@/modules/ado";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { useStaleCases, useTestPlans } from "@/modules/test-plans";
+import {
+  useSearchIndex,
+  type SearchResult,
+} from "@/modules/search/useSearchIndex";
 import {
   AlertCircleIcon,
   Bug01Icon,
@@ -20,9 +25,10 @@ import {
   Search01Icon,
   Settings01Icon,
   TaskDone01Icon,
+  FolderOpenIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type Props = {
   open: boolean;
@@ -39,10 +45,12 @@ type Props = {
 };
 
 /**
- * Cmd/Ctrl+K palette. Three modes:
- *   - default: action list + recent plans
- *   - search "#1234": jump to a case by ID (validates with ado_get_case)
- *   - search free text: cmdk filters items by their `value` substring
+ * Cmd/Ctrl+K palette. Modes:
+ *   - "#1234" / bare digits: look up case + bug by id, render previews with
+ *     titles fetched in the background (debounced).
+ *   - free text: search the in-memory plan/suite/case index built from
+ *     whatever the user has loaded in the explorer.
+ *   - default: action list + recent plans + settings shortcuts.
  */
 export function CommandPalette({
   open,
@@ -58,6 +66,7 @@ export function CommandPalette({
   const { plans, configured, refreshConnection } = useTestPlans();
   const refreshStale = useStaleCases((s) => s.scan);
   const staleCount = useStaleCases((s) => s.cases.length);
+  const { search } = useSearchIndex();
 
   // Keep the plan list warm when the palette is opened.
   useEffect(() => {
@@ -67,10 +76,20 @@ export function CommandPalette({
     }
   }, [open, configured, refreshConnection]);
 
-  // Parse "#1234" or bare digits as an id-jump (case).
-  // Parse "bug #1234" / "bug 1234" as an id-jump (bug).
-  const idMatch = query.match(/^\s*#?(\d{1,9})\s*$/);
-  const bugIdMatch = query.match(/^\s*bug\s*#?(\d{1,9})\s*$/i);
+  // Parse "#1234" or bare digits as an id-jump (case + bug).
+  // Parse "bug #1234" / "bug 1234" as an id-jump (bug-only).
+  const bugOnlyMatch = query.match(/^\s*bug\s*#?(\d{1,9})\s*$/i);
+  const idMatch = !bugOnlyMatch && query.match(/^\s*#?(\d{1,9})\s*$/);
+  const numericId = idMatch ? Number(idMatch[1]) : null;
+  const bugOnlyId = bugOnlyMatch ? Number(bugOnlyMatch[1]) : null;
+
+  const caseLookup = useDebouncedLookup(numericId, getCase);
+  const bugLookup = useDebouncedLookup(numericId ?? bugOnlyId, getBug);
+
+  const searchResults = useMemo(() => {
+    if (numericId !== null || bugOnlyId !== null) return [];
+    return search(query, 30);
+  }, [search, query, numericId, bugOnlyId]);
 
   const run = (fn: () => void | Promise<void>) => {
     onOpenChange(false);
@@ -80,53 +99,95 @@ export function CommandPalette({
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange}>
       <CommandInput
-        placeholder="Type a command, paste #1234, or search a plan…"
+        placeholder="Type #1234, search a case title, or pick a command…"
         value={query}
         onValueChange={setQuery}
       />
       <CommandList>
         <CommandEmpty>No results.</CommandEmpty>
 
-        {bugIdMatch && onOpenBug ? (
-          <CommandGroup heading="Open bug">
-            <CommandItem
-              value={`open-bug-${bugIdMatch[1]}`}
+        {numericId !== null ? (
+          <CommandGroup heading={`Jump to #${numericId}`}>
+            <IdJumpRow
+              icon={Search01Icon}
+              label={`Open test case #${numericId}`}
+              title={caseLookup.data?.title}
+              loading={caseLookup.loading}
+              error={caseLookup.error}
               onSelect={() =>
-                run(async () => {
-                  const id = Number(bugIdMatch[1]);
-                  try {
-                    const b = await getBug(id);
-                    onOpenBug({ bugId: id, title: `Bug #${id} · ${b.title}` });
-                  } catch {
-                    onOpenBug({ bugId: id, title: `Bug #${id}` });
-                  }
-                })
+                run(() =>
+                  onOpenCase({
+                    caseId: numericId,
+                    title: caseLookup.data
+                      ? `#${numericId} · ${caseLookup.data.title}`
+                      : `#${numericId}`,
+                  }),
+                )
               }
-            >
-              <HugeiconsIcon icon={Bug01Icon} size={12} strokeWidth={1.75} />
-              Open bug #{bugIdMatch[1]}
-            </CommandItem>
+            />
+            {onOpenBug ? (
+              <IdJumpRow
+                icon={Bug01Icon}
+                label={`Open bug #${numericId}`}
+                title={bugLookup.data?.title}
+                loading={bugLookup.loading}
+                error={bugLookup.error}
+                onSelect={() =>
+                  run(() =>
+                    onOpenBug({
+                      bugId: numericId,
+                      title: bugLookup.data
+                        ? `Bug #${numericId} · ${bugLookup.data.title}`
+                        : `Bug #${numericId}`,
+                    }),
+                  )
+                }
+              />
+            ) : null}
           </CommandGroup>
-        ) : idMatch ? (
-          <CommandGroup heading="Open case">
-            <CommandItem
-              value={`open-case-${idMatch[1]}`}
+        ) : bugOnlyId !== null && onOpenBug ? (
+          <CommandGroup heading={`Open bug #${bugOnlyId}`}>
+            <IdJumpRow
+              icon={Bug01Icon}
+              label={`Open bug #${bugOnlyId}`}
+              title={bugLookup.data?.title}
+              loading={bugLookup.loading}
+              error={bugLookup.error}
               onSelect={() =>
-                run(async () => {
-                  const id = Number(idMatch[1]);
-                  try {
-                    const c = await getCase(id);
-                    onOpenCase({ caseId: id, title: `#${id} · ${c.title}` });
-                  } catch {
-                    onOpenCase({ caseId: id, title: `#${id}` });
-                  }
-                })
+                run(() =>
+                  onOpenBug({
+                    bugId: bugOnlyId,
+                    title: bugLookup.data
+                      ? `Bug #${bugOnlyId} · ${bugLookup.data.title}`
+                      : `Bug #${bugOnlyId}`,
+                  }),
+                )
               }
-            >
-              <HugeiconsIcon icon={Search01Icon} size={12} strokeWidth={1.75} />
-              Open test case #{idMatch[1]}
-            </CommandItem>
+            />
           </CommandGroup>
+        ) : null}
+
+        {searchResults.length > 0 ? (
+          <>
+            <CommandGroup heading="Matches in loaded plans">
+              {searchResults.map((r) => (
+                <SearchRow
+                  key={`${r.kind}-${r.id}`}
+                  result={r}
+                  onOpenCase={(id, title) =>
+                    run(() => onOpenCase({ caseId: id, title }))
+                  }
+                  onOpenSuite={(planId, suiteId) =>
+                    run(() => onStartGenerator({ planId, suiteId }))
+                  }
+                  onOpenPlan={(planId) =>
+                    run(() => onStartGenerator({ planId }))
+                  }
+                />
+              ))}
+            </CommandGroup>
+            <CommandSeparator />
+          </>
         ) : null}
 
         <CommandGroup heading="Generator">
@@ -230,4 +291,149 @@ export function CommandPalette({
       </CommandList>
     </CommandDialog>
   );
+}
+
+function IdJumpRow({
+  icon,
+  label,
+  title,
+  loading,
+  error,
+  onSelect,
+}: {
+  icon: typeof Search01Icon;
+  label: string;
+  title: string | undefined;
+  loading: boolean;
+  error: string | null;
+  onSelect: () => void;
+}) {
+  return (
+    <CommandItem value={label} onSelect={onSelect}>
+      <HugeiconsIcon icon={icon} size={12} strokeWidth={1.75} />
+      <div className="flex min-w-0 flex-col">
+        <span className="truncate">{label}</span>
+        {loading ? (
+          <Skeleton className="mt-0.5 h-2.5 w-32" />
+        ) : title ? (
+          <span className="truncate text-[10.5px] text-muted-foreground">
+            {title}
+          </span>
+        ) : error ? (
+          <span className="text-[10.5px] text-muted-foreground/60">
+            (couldn't load preview)
+          </span>
+        ) : null}
+      </div>
+    </CommandItem>
+  );
+}
+
+function SearchRow({
+  result,
+  onOpenCase,
+  onOpenSuite,
+  onOpenPlan,
+}: {
+  result: SearchResult;
+  onOpenCase: (id: number, title: string) => void;
+  onOpenSuite: (planId: number, suiteId: number) => void;
+  onOpenPlan: (planId: number) => void;
+}) {
+  if (result.kind === "case") {
+    return (
+      <CommandItem
+        value={`case-${result.id}-${result.title}`}
+        onSelect={() =>
+          onOpenCase(result.id, `#${result.id} · ${result.title}`)
+        }
+      >
+        <HugeiconsIcon icon={Search01Icon} size={12} strokeWidth={1.75} />
+        <div className="flex min-w-0 flex-col">
+          <span className="truncate">{result.title}</span>
+          <span className="truncate text-[10.5px] text-muted-foreground">
+            {result.planName} › {result.suiteName}
+          </span>
+        </div>
+        <span className="ml-auto text-[10px] text-muted-foreground">
+          #{result.id}
+        </span>
+      </CommandItem>
+    );
+  }
+  if (result.kind === "suite") {
+    return (
+      <CommandItem
+        value={`suite-${result.id}-${result.title}`}
+        onSelect={() => onOpenSuite(result.planId, result.id)}
+      >
+        <HugeiconsIcon icon={FolderOpenIcon} size={12} strokeWidth={1.75} />
+        <div className="flex min-w-0 flex-col">
+          <span className="truncate">{result.title}</span>
+          <span className="truncate text-[10.5px] text-muted-foreground">
+            {result.planName} · open in generator
+          </span>
+        </div>
+        <span className="ml-auto text-[10px] text-muted-foreground">
+          #{result.id}
+        </span>
+      </CommandItem>
+    );
+  }
+  return (
+    <CommandItem
+      value={`plan-${result.id}-${result.title}`}
+      onSelect={() => onOpenPlan(result.id)}
+    >
+      <HugeiconsIcon icon={TaskDone01Icon} size={12} strokeWidth={1.75} />
+      <span className="truncate">{result.title}</span>
+      <span className="ml-auto text-[10px] text-muted-foreground">
+        #{result.id}
+      </span>
+    </CommandItem>
+  );
+}
+
+/** Debounced ADO lookup. Refires when the id changes; cancels stale promises
+ *  via a ref-counted token so a slow earlier response can't overwrite a
+ *  fast later one. Used by the palette to surface titles for numeric input. */
+function useDebouncedLookup<T extends TestCase | Bug>(
+  id: number | null,
+  fetcher: (id: number) => Promise<T>,
+): { data: T | null; loading: boolean; error: string | null } {
+  const [state, setState] = useState<{
+    data: T | null;
+    loading: boolean;
+    error: string | null;
+  }>({ data: null, loading: false, error: null });
+  const tokenRef = useRef(0);
+
+  useEffect(() => {
+    if (id === null) {
+      setState({ data: null, loading: false, error: null });
+      return;
+    }
+    const token = ++tokenRef.current;
+    setState((s) => ({ data: s.data, loading: true, error: null }));
+    const timer = window.setTimeout(() => {
+      void fetcher(id)
+        .then((data) => {
+          if (token !== tokenRef.current) return;
+          setState({ data, loading: false, error: null });
+        })
+        .catch((e) => {
+          if (token !== tokenRef.current) return;
+          setState({
+            data: null,
+            loading: false,
+            error: e instanceof Error ? e.message : String(e),
+          });
+        });
+    }, 200);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [id, fetcher]);
+
+  return state;
 }

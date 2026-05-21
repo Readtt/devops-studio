@@ -119,18 +119,6 @@ function findRootSuiteId(suites: SuiteRef[]): number | null {
   return root?.id ?? null;
 }
 
-/** Recursively walk a suite tree and return all the suite ids in it. Used
- *  to decide which suite-load-states the filter eager-load loop should hit. */
-function flattenSuiteIds(nodes: SuiteNode[]): number[] {
-  const out: number[] = [];
-  const walk = (n: SuiteNode) => {
-    out.push(n.suite.id);
-    n.children.forEach(walk);
-  };
-  nodes.forEach(walk);
-  return out;
-}
-
 // --- Panel --------------------------------------------------------------------
 
 type NewSuiteRequest =
@@ -197,24 +185,19 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: P
     return (s: string) => s.toLowerCase().includes(needle);
   }, [needle]);
 
-  // Eager-load when filtering, so a case-title-only match isn't hidden
-  // behind a collapsed plan + suite that the user has to click open.
+  // Eager-load when filtering, so a suite-title-only match isn't hidden
+  // behind a collapsed plan. We deliberately STOP at suites — fanning out
+  // case loads per suite on every keystroke (potentially hundreds of ADO
+  // calls) was the dominant cost at scale. For deep case-title search,
+  // the Ctrl/Cmd+K palette has a proper in-memory index that's instant.
   useEffect(() => {
     if (!needle || plans.length === 0) return;
     for (const p of plans) {
       if (p.name.toLowerCase().includes(needle)) continue;
       void loadSuites(p.id);
-      const sl = bySuite.get(p.id);
-      if (!sl) continue;
-      const tree = buildSuiteTree(sl.suites, p.name);
-      for (const sid of flattenSuiteIds(tree)) {
-        const suite = sl.suites.find((s) => s.id === sid);
-        if (suite && suite.name.toLowerCase().includes(needle)) continue;
-        void loadSuiteCases(p.id, sid);
-      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [needle, plans, loadSuites, loadSuiteCases]);
+  }, [needle, plans, loadSuites]);
 
   const forceExpand = needle.length > 0;
 
