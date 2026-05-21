@@ -81,21 +81,19 @@ jobs:
                 if (index($0, "[" ver "]")) { found=1; next }
               }
               found { print }
-            ' CHANGELOG.md | sed -e :a -e "/^[[:space:]]*$/{$d;N;ba" -e "}")
+            ' CHANGELOG.md)
             if [[ -z "$(echo "$BODY" | tr -d '[:space:]')" ]]; then
               BODY="$DEFAULT"
             fi
           fi
-          # macOS users get a heads-up about Gatekeeper on first launch — the
-          # builds are unsigned (no Apple Developer Program account yet).
-          BODY="${BODY}
-
----
-
-**macOS users:** the .dmg / .app bundles are unsigned. See [docs/install-macos.md](https://github.com/Readtt/devops-studio/blob/main/docs/install-macos.md) for how to bypass Gatekeeper on first launch."
+          # Append a footer pointing macOS users at the Gatekeeper bypass.
+          # printf builds the multiline string so the YAML block scalar
+          # stays single-indent-friendly.
+          MAC_NOTE='**macOS users:** the .dmg / .app bundles are unsigned. See [docs/install-macos.md](https://github.com/Readtt/devops-studio/blob/main/docs/install-macos.md) for how to bypass Gatekeeper on first launch.'
+          BODY=$(printf '%s\n\n---\n\n%s\n' "$BODY" "$MAC_NOTE")
           {
             echo "body<<NOTES_EOF"
-            echo "$BODY"
+            printf '%s\n' "$BODY"
             echo "NOTES_EOF"
           } >> "$GITHUB_OUTPUT"
 
