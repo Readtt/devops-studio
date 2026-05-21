@@ -25,6 +25,7 @@ import {
   AiBrain01Icon,
   AlertCircleIcon,
   ArrowLeft02Icon,
+  Cancel01Icon,
   CheckmarkCircle02Icon,
   CodeIcon,
   ExternalLink,
@@ -381,13 +382,30 @@ function InputPhase() {
             />
           </div>
           {ingestErrors.length > 0 ? (
-            <ul className="mt-1.5 flex flex-col gap-0.5 text-[10.5px] text-destructive">
-              {ingestErrors.map((m, i) => (
-                <li key={i} className="font-mono">
-                  {m}
-                </li>
-              ))}
-            </ul>
+            <div className="mt-1.5 flex items-start gap-1.5 rounded-md border border-destructive/30 bg-destructive/[0.06] px-2 py-1.5">
+              <ul className="flex min-w-0 flex-1 flex-col gap-0.5 text-[10.5px] text-destructive">
+                {ingestErrors.map((m, i) => (
+                  <li key={i} className="font-mono">
+                    {m}
+                  </li>
+                ))}
+              </ul>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => setIngestErrors([])}
+                    aria-label="Dismiss attachment errors"
+                    className="shrink-0 rounded p-0.5 text-destructive/70 hover:bg-destructive/15 hover:text-destructive"
+                  >
+                    <HugeiconsIcon icon={Cancel01Icon} size={10} strokeWidth={2} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-[11px]">
+                  Dismiss
+                </TooltipContent>
+              </Tooltip>
+            </div>
           ) : null}
         </Field>
 
