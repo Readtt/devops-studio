@@ -61,6 +61,29 @@ export function GenerationHistoryPane({
     void refresh();
   }, [refresh]);
 
+  // Live refresh: any in-app draft autosave dispatches
+  // "devops-studio:history-updated"; refetch so the sidebar mirrors the
+  // user's latest edits without a manual click. Debounced to coalesce
+  // bursts (typing through a series of edits in the same tab).
+  useEffect(() => {
+    let timer: number | null = null;
+    const onUpdated = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        void refresh();
+      }, 250);
+    };
+    window.addEventListener("devops-studio:history-updated", onUpdated);
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      window.removeEventListener(
+        "devops-studio:history-updated",
+        onUpdated,
+      );
+    };
+  }, [refresh]);
+
   const filteredRuns = useMemo(() => {
     if (!runs) return null;
     const needle = textFilter.trim().toLowerCase();
@@ -312,7 +335,7 @@ function RunCard({
         <div className="border-t border-border/40 px-2 py-1.5">
           {canRestoreDraft && onOpenDraft ? (
             <div className="mb-2 flex items-center justify-between gap-2 rounded-sm border border-primary/30 bg-primary/[0.04] px-2 py-1">
-              <span className="text-[10.5px] text-muted-foreground">
+              <span className="min-w-0 flex-1 text-[10.5px] text-muted-foreground">
                 Reopen this draft to keep editing where you left off.
               </span>
               <button
@@ -321,7 +344,7 @@ function RunCard({
                   e.stopPropagation();
                   onOpenDraft(run);
                 }}
-                className="inline-flex h-5 items-center gap-1 rounded-sm border border-primary/40 bg-primary/10 px-1.5 text-[10px] font-medium text-primary transition-colors hover:bg-primary/20"
+                className="inline-flex h-5 shrink-0 items-center gap-1 whitespace-nowrap rounded-sm border border-primary/40 bg-primary/10 px-1.5 text-[10px] font-medium text-primary transition-colors hover:bg-primary/20"
               >
                 <HugeiconsIcon
                   icon={ExternalLink}

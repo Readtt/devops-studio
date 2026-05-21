@@ -19,12 +19,17 @@ type Props = {
    *  when the session moves into review and the title should reflect the
    *  draft's first case (instead of staying "Generate cases" forever). */
   onRenameTab: (tabId: number, title: string) => void;
-  /** Lift the session's phase + isRefining flags up so the StatusBarModelPicker
-   *  (outside Provider scope) can lock the model when the active tab is in
-   *  a draft / mid-refine. */
+  /** Lift the session's phase + isRefining + runId up so the
+   *  StatusBarModelPicker (outside Provider scope) can lock the model when
+   *  the active tab is in a draft / mid-refine, and so the tab metadata
+   *  can track the session's runId once it commits to one. */
   onReportSession: (
     tabId: number,
-    next: { phase: SessionState["phase"]; isRefining: boolean },
+    next: {
+      phase: SessionState["phase"];
+      isRefining: boolean;
+      runId: string | null;
+    },
   ) => void;
 };
 

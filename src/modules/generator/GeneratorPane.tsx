@@ -78,6 +78,33 @@ function ellipsizeForTab(s: string, max = 36): string {
   return `${trimmed.slice(0, max - 1)}…`;
 }
 
+/** Derive a tab label from the session's target (plan + suite) so users
+ *  can scan multiple generator tabs at a glance. Generator sessions are
+ *  identified by *what they're generating against*, not by the contents
+ *  of the draft — the first-case-title heuristic kept changing the label
+ *  as the user edited.
+ *
+ *  Format: "<Suite>"  if only the suite is named,
+ *          "<Plan> · <Suite>" if both are named,
+ *          fallback to "#<id>" for ids without resolved names,
+ *          last-resort: trimmed spec excerpt or "Generate cases". */
+function deriveTabLabelFromTarget(input: {
+  planName: string | null;
+  planId: number | null;
+  suiteName: string | null;
+  suiteId: number | null;
+  requirements: string;
+}): string {
+  const plan = input.planName?.trim() || (input.planId ? `#${input.planId}` : "");
+  const suite = input.suiteName?.trim() || (input.suiteId ? `#${input.suiteId}` : "");
+  if (plan && suite) return ellipsizeForTab(`${plan} · ${suite}`, 48);
+  if (suite) return ellipsizeForTab(suite);
+  if (plan) return ellipsizeForTab(plan);
+  const firstLine = input.requirements.trim().split("\n")[0];
+  if (firstLine) return ellipsizeForTab(firstLine);
+  return "Generate cases";
+}
+
 const MODE_LABELS: Record<GenerationMode, string> = {
   happy: "Happy path only",
   thorough: "Happy + edge + negative",
@@ -102,11 +129,17 @@ type Props = {
   /** Rename the owning tab. The pane calls this once the draft has a
    *  reasonable label (first case title once review lands, etc.). */
   onRenameTab?: (tabId: number, title: string) => void;
-  /** Report this session's phase + isRefining up to App.tsx so the status
-   *  bar can lock the model picker when the active tab has a draft. */
+  /** Report this session's phase + isRefining + runId up to App.tsx so
+   *  the status bar can lock the model picker when the active tab has a
+   *  draft, and so the tab metadata stays in sync with the live session
+   *  (which lets "Open in review" dedup against existing tabs). */
   onReportSession?: (
     tabId: number,
-    next: { phase: SessionState["phase"]; isRefining: boolean },
+    next: {
+      phase: SessionState["phase"];
+      isRefining: boolean;
+      runId: string | null;
+    },
   ) => void;
 };
 
@@ -121,9 +154,12 @@ export function GeneratorPane({
   const phase = useGenerationSession((s) => s.phase);
   const setTarget = useGenerationSession((s) => s.setTarget);
   const planId = useGenerationSession((s) => s.planId);
+  const suiteId = useGenerationSession((s) => s.suiteId);
+  const planName = useGenerationSession((s) => s.planName);
+  const suiteName = useGenerationSession((s) => s.suiteName);
   const isRefining = useGenerationSession((s) => s.isRefining);
-  const cases = useGenerationSession((s) => s.cases);
   const requirements = useGenerationSession((s) => s.requirements);
+  const sessionRunId = useGenerationSession((s) => s.runId);
 
   useEffect(() => {
     if (planId === null && initialPlanId) {
@@ -132,30 +168,30 @@ export function GeneratorPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Report phase + isRefining up so the App-level status bar can lock the
-  // model picker when the active tab is mid-draft. Cheap effect; the
-  // reducer in App.tsx no-ops when nothing changed.
+  // Report phase + isRefining + runId up so the App-level status bar can
+  // lock the model picker when the active tab is mid-draft, and so the
+  // tab metadata stays in sync once a fresh session lands its runId.
+  // Cheap effect; the reducer in App.tsx no-ops when nothing changed.
   useEffect(() => {
     if (tabId === undefined || !onReportSession) return;
-    onReportSession(tabId, { phase, isRefining });
-  }, [tabId, onReportSession, phase, isRefining]);
+    onReportSession(tabId, { phase, isRefining, runId: sessionRunId });
+  }, [tabId, onReportSession, phase, isRefining, sessionRunId]);
 
-  // Rename the owning tab once the draft has something concrete to label
-  // it with — first case title preferred, spec excerpt as fallback. Only
-  // refreshed on phase transitions to avoid churning the tab title every
-  // keystroke as the user edits the spec.
+  // Rename the owning tab using the plan/suite identity — that's the
+  // stable label the user actually thinks of the session by, and it
+  // doesn't churn when they tweak case titles in review. Falls back to
+  // a spec-excerpt for sessions that haven't picked a target yet.
   useEffect(() => {
     if (tabId === undefined || !onRenameTab) return;
-    // Title-worthy moments: review (first cases land), done (publishable
-    // identity for the tab list). At the same key transitions, also pick
-    // up rename-after-edit since cases[0].title may have changed.
-    if (phase !== "review" && phase !== "done") return;
-    const first = cases[0]?.title?.trim();
-    if (first) onRenameTab(tabId, ellipsizeForTab(first));
-    else if (requirements.trim()) {
-      onRenameTab(tabId, ellipsizeForTab(requirements.trim().split("\n")[0]));
-    }
-  }, [tabId, onRenameTab, phase, cases, requirements]);
+    const label = deriveTabLabelFromTarget({
+      planName,
+      planId,
+      suiteName,
+      suiteId,
+      requirements,
+    });
+    onRenameTab(tabId, label);
+  }, [tabId, onRenameTab, planName, planId, suiteName, suiteId, requirements]);
 
   return (
     <div className="flex h-full flex-col bg-background">

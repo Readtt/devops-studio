@@ -99,6 +99,11 @@ export type SessionState = {
   attachments: Attachment[];
   planId: number | null;
   suiteId: number | null;
+  /** Display names for the chosen plan + suite, populated by analyze() (and
+   *  restored by loadDraft) so the tab title can render without an extra
+   *  ADO fetch. Falls back to "#<id>" when unknown. */
+  planName: string | null;
+  suiteName: string | null;
   mode: GenerationMode;
   /** Let the Claude Code agent search the user's source directory while
    *  generating. Only meaningful when engine === "claude-agent-sdk" AND a
@@ -269,6 +274,8 @@ const initialState: Omit<
   attachments: [],
   planId: null,
   suiteId: null,
+  planName: null,
+  suiteName: null,
   mode: "thorough",
   allowCodeSearch: true,
   overrideModelId: null,
@@ -291,10 +298,15 @@ const initialState: Omit<
 
 const REFINE_HISTORY_MAX = 12;
 
-/** Debounce window for auto-persisting draft edits. Snappy enough that a
- *  close-the-window after a single edit is safe; long enough that
- *  typing-through-a-textarea doesn't hammer the Rust history store. */
-const DRAFT_AUTOSAVE_MS = 350;
+/** Debounce window for auto-persisting draft edits.
+ *
+ *  Originally 350ms, but EditableText only commits on blur / Enter (not on
+ *  every keystroke), so the "burst of edits" the debounce was designed to
+ *  coalesce never actually happens. A long window also lost writes when
+ *  the user closed the window within the debounce. 50ms now: long enough
+ *  to coalesce duplicate events fired in the same tick, short enough that
+ *  the save reliably lands before a typical close-the-window. */
+const DRAFT_AUTOSAVE_MS = 50;
 
 /** Persist the current session as a "draft" history row. Cheap when called
  *  in tight loops — the actual write is debounced so a burst of edits ends
@@ -321,9 +333,9 @@ function makeSchedulePersistDraft(getter: () => SessionState) {
         id: s.runId,
         timestamp: newTimestamp(),
         planId: s.planId,
-        planName: null,
+        planName: s.planName,
         suiteId: s.suiteId,
-        suiteName: null,
+        suiteName: s.suiteName,
         mode: s.mode,
         specExcerpt: specExcerpt(s.requirements ?? ""),
         cases: s.cases.map((c) => ({
@@ -346,11 +358,24 @@ function makeSchedulePersistDraft(getter: () => SessionState) {
           bugs: s.bugs,
           rawText: s.rawText,
           planId: s.planId,
+          planName: s.planName,
           suiteId: s.suiteId,
+          suiteName: s.suiteName,
           refineRounds: s.refineRounds,
         },
       };
-      void saveRun(run);
+      // Fire-and-forget; the post-save event lets the History pane refresh.
+      void saveRun(run).then(() => {
+        try {
+          window.dispatchEvent(
+            new CustomEvent("devops-studio:history-updated", {
+              detail: { runId: s.runId },
+            }),
+          );
+        } catch {
+          // Non-fatal — synchronous dispatch should never throw.
+        }
+      });
     }, DRAFT_AUTOSAVE_MS);
   };
 }
@@ -371,7 +396,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
 
   setRequirements: (s) => set({ requirements: s }),
   setMode: (m) => set({ mode: m }),
-  setTarget: (planId, suiteId) => set({ planId, suiteId }),
+  // Setting a target wipes the cached names — they'll be re-resolved at
+  // analyze() time (or restored by loadDraft) so the tab title stays in
+  // sync with whichever plan/suite is actually selected.
+  setTarget: (planId, suiteId) =>
+    set({ planId, suiteId, planName: null, suiteName: null }),
   setAllowCodeSearch: (v) => set({ allowCodeSearch: v }),
   setOverrideModelId: (id) => set({ overrideModelId: id }),
   addAttachment: (path, content) =>
@@ -535,6 +564,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         durationMs: result.durationMs,
         stepLabel: "",
         runId,
+        // Seed display names from the resolved target context so the tab
+        // title can render "<Plan> · <Suite>" without an extra ADO fetch.
+        planName: targetContext?.planName ?? null,
+        suiteName: targetContext?.suiteName ?? null,
       });
 
       // Persist a draft snapshot as soon as we reach review so a closed
@@ -1214,6 +1247,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       rawText: payload.rawText ?? "",
       planId: payload.planId ?? run.planId ?? null,
       suiteId: payload.suiteId ?? run.suiteId ?? null,
+      // Restore the cached display names so the reopened tab's title
+      // doesn't briefly say "Generate cases" before re-resolving.
+      planName: payload.planName ?? run.planName ?? null,
+      suiteName: payload.suiteName ?? run.suiteName ?? null,
       runId: run.id,
       refineRounds: rounds,
       refineHistory: refineHistoryFromRounds,

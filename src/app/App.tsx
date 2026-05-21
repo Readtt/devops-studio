@@ -59,19 +59,18 @@ const SIDEBAR_WIDTH_STORAGE_KEY = "devops-studio.sidebar.width";
 const SIDEBAR_VIEW_STORAGE_KEY = "devops-studio.sidebar.view";
 
 /** Derive a short, scannable tab title from the current generator session.
- *  Once the draft has cases the first case title wins; before that we fall
- *  back to a trimmed spec excerpt; before that, the canonical "Generate
- *  cases". Keeping the lookup pure so callers can re-derive on phase
- *  transitions (the rename effect in GeneratorPane drives this). */
+ *  Identifies the session by its target (plan / suite) rather than draft
+ *  content so the label is stable across edits. GeneratorPane mirrors
+ *  this logic in its rename effect.
+ */
 function deriveGeneratorTabTitle(state: SessionState): string {
-  if (state.cases.length > 0) {
-    const t = state.cases[0].title.trim();
-    if (t.length > 0) return ellipsize(t, 48);
-  }
-  if (state.requirements.trim().length > 0) {
-    const firstLine = state.requirements.trim().split("\n")[0];
-    if (firstLine.length > 0) return ellipsize(firstLine, 48);
-  }
+  const plan = state.planName?.trim() || (state.planId ? `#${state.planId}` : "");
+  const suite = state.suiteName?.trim() || (state.suiteId ? `#${state.suiteId}` : "");
+  if (plan && suite) return ellipsize(`${plan} · ${suite}`, 48);
+  if (suite) return ellipsize(suite, 48);
+  if (plan) return ellipsize(plan, 48);
+  const firstLine = state.requirements.trim().split("\n")[0];
+  if (firstLine.length > 0) return ellipsize(firstLine, 48);
   return "Generate cases";
 }
 
@@ -127,6 +126,12 @@ type AppTab =
       title: string;
       initialPlanId: number | null;
       initialSuiteId: number | null;
+      /** History runId this tab is bound to. Set when the tab is opened
+       *  via "Open in review" (or later as the live session reaches review
+       *  and assigns its own runId). Used to dedup re-opens — clicking
+       *  "Open in review" on the same draft twice activates the existing
+       *  tab instead of stacking a duplicate. */
+      runId: string | null;
     }
   | {
       id: number;
@@ -168,13 +173,41 @@ export default function App() {
     Record<number, { phase: SessionState["phase"]; isRefining: boolean }>
   >({});
   const reportGenSession = useCallback(
-    (tabId: number, next: { phase: SessionState["phase"]; isRefining: boolean }) => {
+    (
+      tabId: number,
+      next: {
+        phase: SessionState["phase"];
+        isRefining: boolean;
+        runId: string | null;
+      },
+    ) => {
       setGenSessionPhases((curr) => {
         const prev = curr[tabId];
-        if (prev && prev.phase === next.phase && prev.isRefining === next.isRefining) {
+        if (
+          prev &&
+          prev.phase === next.phase &&
+          prev.isRefining === next.isRefining
+        ) {
           return curr; // no-op churn suppressor — keeps tab-switch perf snappy
         }
-        return { ...curr, [tabId]: next };
+        return {
+          ...curr,
+          [tabId]: { phase: next.phase, isRefining: next.isRefining },
+        };
+      });
+      // Sync the tab's stored runId so "Open in review" dedup works once
+      // the live session has actually committed to a runId (set on first
+      // analyze). No-op when the value hasn't changed.
+      setTabs((curr) => {
+        const idx = curr.findIndex(
+          (t) => t.id === tabId && t.kind === "generator",
+        );
+        if (idx < 0) return curr;
+        const t = curr[idx];
+        if (t.kind !== "generator" || t.runId === next.runId) return curr;
+        const out = curr.slice();
+        out[idx] = { ...t, runId: next.runId };
+        return out;
       });
     },
     [],
@@ -340,9 +373,28 @@ export default function App() {
        *  mounting (used by the history pane's "open draft" action so the
        *  pane lands directly in review instead of flashing input). */
       hydrateFrom?: GenerationSessionStore;
+      /** History runId backing this tab. When present and a generator
+       *  tab is already open against that runId, activate it instead of
+       *  stacking a duplicate. */
+      runId?: string | null;
     }) => {
       const requestedPlanId = input?.planId ?? null;
       const requestedSuiteId = input?.suiteId ?? null;
+      const requestedRunId = input?.runId ?? null;
+
+      // Dedup: if this open is bound to a known runId AND a generator tab
+      // for that runId already exists, switch to it. Prevents the user
+      // from accidentally stacking the same draft over and over.
+      if (requestedRunId) {
+        const existing = tabs.find(
+          (t) => t.kind === "generator" && t.runId === requestedRunId,
+        );
+        if (existing) {
+          setActiveId(existing.id);
+          return existing.id;
+        }
+      }
+
       const id = nextIdRef.current++;
       // Always create a new isolated session store. Multi-tab generation
       // is now a first-class workflow — each +Generate click opens its own
@@ -364,12 +416,13 @@ export default function App() {
           title: deriveGeneratorTabTitle(store.getState()),
           initialPlanId: requestedPlanId,
           initialSuiteId: requestedSuiteId,
+          runId: requestedRunId ?? store.getState().runId ?? null,
         },
       ]);
       setActiveId(id);
       return id;
     },
-    [],
+    [tabs],
   );
 
   const [sidebarView, setSidebarView] = useState<SidebarViewId>(readSidebarView);
@@ -718,6 +771,17 @@ export default function App() {
                         onOpenCase={openTestCaseTab}
                         onOpenBug={openBugTab}
                         onOpenDraft={(run) => {
+                          // Dedup first: if a generator tab is already open
+                          // for this draft, openGeneratorTab activates it
+                          // and we never spin up a second store.
+                          const existing = tabs.find(
+                            (t) =>
+                              t.kind === "generator" && t.runId === run.id,
+                          );
+                          if (existing) {
+                            setActiveId(existing.id);
+                            return;
+                          }
                           // Create a fresh session store for the restored draft
                           // and hydrate it BEFORE opening the tab — landing
                           // directly in review without flashing input.
@@ -728,6 +792,7 @@ export default function App() {
                             planId: run.planId,
                             suiteId: run.suiteId,
                             hydrateFrom: store,
+                            runId: run.id,
                           });
                         }}
                       />
@@ -894,33 +959,80 @@ function StatusBarBranch({
         <button
           type="button"
           onClick={onPick}
-          className="flex h-5 items-center gap-1.5 rounded-md border border-border/60 bg-card px-1.5 transition-colors hover:text-foreground"
+          className="group flex h-5 items-center gap-2 rounded-md border border-border/60 bg-card px-1.5 transition-colors hover:border-border hover:text-foreground"
+          aria-label="Source directory and git branch"
         >
-          <HugeiconsIcon icon={FolderOpenIcon} size={11} strokeWidth={1.75} />
-          <span className="max-w-[180px] truncate">{last || sourceRoot}</span>
+          <span className="flex min-w-0 items-center gap-1">
+            <HugeiconsIcon icon={FolderOpenIcon} size={11} strokeWidth={1.75} />
+            <span className="max-w-[180px] truncate text-[10.5px]">
+              {last || sourceRoot}
+            </span>
+          </span>
           {branchLabel ? (
             <>
-              <span className="text-muted-foreground/40">·</span>
-              <HugeiconsIcon icon={GitBranchIcon} size={11} strokeWidth={1.75} />
-              <span className="max-w-[140px] truncate font-mono text-[10.5px]">
-                {branchLabel}
+              <span aria-hidden className="h-3 w-px bg-border/70" />
+              <span className="flex min-w-0 items-center gap-1">
+                <HugeiconsIcon
+                  icon={GitBranchIcon}
+                  size={11}
+                  strokeWidth={1.75}
+                />
+                <span className="max-w-[160px] truncate font-mono text-[10.5px]">
+                  {branchLabel}
+                </span>
               </span>
             </>
           ) : null}
         </button>
       </TooltipTrigger>
-      <TooltipContent side="top" className="text-[11px]">
-        <div>{tooltipPath}</div>
-        {git.isRepo && git.branch ? (
-          <div className="text-muted-foreground">
-            On branch <span className="font-mono">{git.branch}</span>
-            {git.commit ? ` · ${git.commit}` : ""}
+      <TooltipContent
+        side="top"
+        align="start"
+        sideOffset={6}
+        variant="panel"
+        className="max-w-[420px] px-3 py-2 text-[11px] leading-relaxed"
+      >
+        <div className="flex flex-col gap-1">
+          <div className="flex items-baseline gap-1.5">
+            <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
+              source
+            </span>
+            <span className="min-w-0 break-all font-mono text-[10.5px] text-foreground/90">
+              {tooltipPath}
+            </span>
           </div>
-        ) : git.isRepo ? (
-          <div className="text-muted-foreground">Detached HEAD{git.commit ? ` · ${git.commit}` : ""}</div>
-        ) : (
-          <div className="text-muted-foreground">Not a git repository</div>
-        )}
+          <div className="flex items-baseline gap-1.5">
+            <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
+              git
+            </span>
+            {git.isRepo && git.branch ? (
+              <span className="font-mono text-[10.5px] text-foreground/85">
+                {git.branch}
+                {git.commit ? (
+                  <span className="ml-1 text-muted-foreground/70">
+                    · {git.commit}
+                  </span>
+                ) : null}
+              </span>
+            ) : git.isRepo ? (
+              <span className="font-mono text-[10.5px] text-muted-foreground">
+                detached HEAD
+                {git.commit ? (
+                  <span className="ml-1 text-muted-foreground/70">
+                    · {git.commit}
+                  </span>
+                ) : null}
+              </span>
+            ) : (
+              <span className="text-[10.5px] italic text-muted-foreground">
+                not a git repository
+              </span>
+            )}
+          </div>
+          <p className="mt-0.5 text-[10px] text-muted-foreground/70">
+            Click to change the source directory.
+          </p>
+        </div>
       </TooltipContent>
     </Tooltip>
   );
