@@ -6,7 +6,6 @@ import { IS_LINUX } from "@/lib/platform";
 
 const LAST_CHECK_KEY = "devops-studio:updater:last-check";
 const CHECK_INTERVAL_MS = 30 * 60 * 1000;
-// Updater is disabled in v1; release pipeline TBD.
 
 export interface ManualUpdateInfo {
   version: string;
@@ -26,7 +25,10 @@ export type UpdaterStatus =
   | { kind: "error"; message: string };
 
 async function checkLinuxRelease(): Promise<ManualUpdateInfo | null> {
-  // Disabled until DevOps Studio publishes its own GitHub releases.
+  // Linux AppImages don't auto-update through the Tauri updater the way
+  // .msi / .app bundles do — leave this as a hook for a future manual
+  // "new version available, open the release page" affordance, and treat
+  // the result as no-op for now.
   await getVersion();
   return null;
 }
@@ -57,7 +59,6 @@ export function useUpdater({ autoCheck = true }: HookOptions = {}) {
         setStatus({ kind: "uptodate" });
         return;
       }
-      // Updater plugin is not registered in v1; surface as up-to-date.
       const update = await check().catch(() => null);
       if (update) {
         setStatus({ kind: "available", update });

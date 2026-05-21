@@ -422,6 +422,7 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(secrets::SecretsState::default())
         .manage(claude::ClaudeState::default())
         .manage(ado::client::AdoState::default())
