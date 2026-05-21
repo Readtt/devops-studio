@@ -58,8 +58,6 @@ pub enum ClaudeError {
     SpawnFailed {
         message: String,
     },
-    /// Run was cancelled by `claude_cancel_run`.
-    Cancelled,
 }
 
 impl std::fmt::Display for ClaudeError {
@@ -75,7 +73,6 @@ impl std::fmt::Display for ClaudeError {
                 truncate(stderr_excerpt, 200)
             ),
             Self::SpawnFailed { message } => write!(f, "spawn failed: {message}"),
-            Self::Cancelled => write!(f, "cancelled"),
         }
     }
 }
