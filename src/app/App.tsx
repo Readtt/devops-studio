@@ -26,6 +26,7 @@ import { CodeViewerStack } from "@/modules/code-viewer";
 import { ThemeProvider } from "@/modules/theme";
 import { UpdaterDialog } from "@/modules/updater";
 import { useGenerationSession } from "@/modules/generator/store/useGenerationSession";
+import { useSourceDirGitInfo } from "@/modules/git";
 import { getConnection } from "@/modules/ado";
 import type { Tab } from "@/modules/tabs/lib/useTabs";
 import {
@@ -33,10 +34,11 @@ import {
   Cancel01Icon,
   CloudServerIcon,
   FolderOpenIcon,
+  GitBranchIcon,
   Settings01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PanelImperativeHandle } from "react-resizable-panels";
 
 const SIDEBAR_DEFAULT_WIDTH = 280;
@@ -390,6 +392,14 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Currently-selected case id (derived from active tab), so the test-plans
+  // panel can highlight the row matching what's on screen.
+  const activeCaseId = useMemo(() => {
+    if (activeId === null) return null;
+    const t = tabs.find((tab) => tab.id === activeId);
+    return t && t.kind === "test-case" ? t.caseId : null;
+  }, [activeId, tabs]);
+
   const [adoConfigured, setAdoConfigured] = useState(false);
   useEffect(() => {
     let cancelled = false;
@@ -532,20 +542,35 @@ export default function App() {
                 }}
               >
                 <div className="flex h-full min-h-0 flex-col border-r border-border/60 bg-card">
-                  <div className="min-h-0 flex-1">
-                    {sidebarView === "test-plans" ? (
+                  <div className="min-h-0 flex-1 relative">
+                    {/* All three panels stay mounted so expanded test-plan
+                        suites and loaded case lists survive a tab switch — the
+                        old conditional render reset local state every flip. */}
+                    <div
+                      className="absolute inset-0 flex flex-col"
+                      style={{ display: sidebarView === "test-plans" ? "flex" : "none" }}
+                    >
                       <TestPlansPanel
                         onOpenCase={openTestCaseTab}
                         onStartGenerator={openGeneratorTab}
+                        activeCaseId={activeCaseId}
                       />
-                    ) : sidebarView === "stale-queue" ? (
+                    </div>
+                    <div
+                      className="absolute inset-0 flex flex-col"
+                      style={{ display: sidebarView === "stale-queue" ? "flex" : "none" }}
+                    >
                       <StaleQueuePanel onOpenCase={openTestCaseTab} />
-                    ) : (
+                    </div>
+                    <div
+                      className="absolute inset-0 flex flex-col"
+                      style={{ display: sidebarView === "history" ? "flex" : "none" }}
+                    >
                       <GenerationHistoryPane
                         onOpenCase={openTestCaseTab}
                         onOpenBug={openBugTab}
                       />
-                    )}
+                    </div>
                   </div>
                   <SidebarRail
                     activeView={sidebarView}
@@ -597,32 +622,11 @@ export default function App() {
             </ResizablePanelGroup>
           </main>
 
-          {/* Minimal status bar */}
-          <footer className="flex h-7 shrink-0 items-center justify-between gap-3 border-t border-border/60 bg-card/60 px-3 text-[11px]">
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    onClick={() => void openSettingsWindow("azure-devops")}
-                    className="flex h-5 items-center gap-1.5 rounded-md border border-border/60 bg-card px-1.5 transition-colors hover:text-foreground"
-                  >
-                    <span
-                      className={cn(
-                        "h-1.5 w-1.5 rounded-full",
-                        adoConfigured ? "bg-emerald-500" : "bg-muted-foreground/40",
-                      )}
-                    />
-                    <HugeiconsIcon icon={CloudServerIcon} size={11} strokeWidth={1.75} />
-                    <span>ADO</span>
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" className="text-[11px]">
-                  {adoConfigured
-                    ? "Connected to Azure DevOps. Click to open settings."
-                    : "Not connected. Click to configure."}
-                </TooltipContent>
-              </Tooltip>
+          {/* Status bar — git branch & source dir on the left, ADO + stale
+              indicators pinned to the right. */}
+          <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-border/60 bg-card/60 px-3 text-[11px] text-muted-foreground">
+            <StatusBarBranch sourceRoot={sourceRoot} onPick={() => void pickSourceDir()} />
+            <div className="ml-auto flex items-center gap-2">
               {staleCount > 0 ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -640,6 +644,29 @@ export default function App() {
                   </TooltipContent>
                 </Tooltip>
               ) : null}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => void openSettingsWindow("azure-devops")}
+                    className="flex h-5 items-center gap-1.5 rounded-md border border-border/60 bg-card px-1.5 transition-colors hover:text-foreground"
+                  >
+                    <span
+                      className={cn(
+                        "h-1.5 w-1.5 rounded-full",
+                        adoConfigured ? "bg-emerald-500" : "bg-muted-foreground/40",
+                      )}
+                    />
+                    <HugeiconsIcon icon={CloudServerIcon} size={11} strokeWidth={1.75} />
+                    <span>{adoConfigured ? "ADO connected" : "ADO"}</span>
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-[11px]">
+                  {adoConfigured
+                    ? "Connected to Azure DevOps. Click to open settings."
+                    : "Not connected. Click to configure."}
+                </TooltipContent>
+              </Tooltip>
             </div>
           </footer>
 
@@ -663,5 +690,64 @@ export default function App() {
         </div>
       </TooltipProvider>
     </ThemeProvider>
+  );
+}
+
+/**
+ * Bottom status bar's left segment: source directory + live git branch.
+ * Clicking opens the directory picker (matches the title-bar source-dir
+ * button). Hidden until the user has picked a source dir.
+ */
+function StatusBarBranch({
+  sourceRoot,
+  onPick,
+}: {
+  sourceRoot: string | null;
+  onPick: () => void;
+}) {
+  const git = useSourceDirGitInfo();
+  if (!sourceRoot) return null;
+
+  const last = sourceRoot.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? "";
+  const tooltipPath = sourceRoot;
+  const branchLabel = git.isRepo
+    ? git.branch ?? (git.commit ? `(${git.commit})` : "(detached)")
+    : null;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onPick}
+          className="flex h-5 items-center gap-1.5 rounded-md border border-border/60 bg-card px-1.5 transition-colors hover:text-foreground"
+        >
+          <HugeiconsIcon icon={FolderOpenIcon} size={11} strokeWidth={1.75} />
+          <span className="max-w-[180px] truncate">{last || sourceRoot}</span>
+          {branchLabel ? (
+            <>
+              <span className="text-muted-foreground/40">·</span>
+              <HugeiconsIcon icon={GitBranchIcon} size={11} strokeWidth={1.75} />
+              <span className="max-w-[140px] truncate font-mono text-[10.5px]">
+                {branchLabel}
+              </span>
+            </>
+          ) : null}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="text-[11px]">
+        <div>{tooltipPath}</div>
+        {git.isRepo && git.branch ? (
+          <div className="text-muted-foreground">
+            On branch <span className="font-mono">{git.branch}</span>
+            {git.commit ? ` · ${git.commit}` : ""}
+          </div>
+        ) : git.isRepo ? (
+          <div className="text-muted-foreground">Detached HEAD{git.commit ? ` · ${git.commit}` : ""}</div>
+        ) : (
+          <div className="text-muted-foreground">Not a git repository</div>
+        )}
+      </TooltipContent>
+    </Tooltip>
   );
 }

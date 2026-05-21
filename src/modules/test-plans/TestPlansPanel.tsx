@@ -25,7 +25,7 @@ import {
   TaskDone01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { SuiteRef, TestCaseRef, TestPlanRef } from "@/modules/ado";
@@ -36,13 +36,15 @@ type Props = {
     planId?: number | null;
     suiteId?: number | null;
   }) => void;
+  /** Case id currently shown in the workspace, so its row can be highlighted. */
+  activeCaseId?: number | null;
 };
 
 type ConnInfo = { orgUrl: string; project: string };
 
 const FILTER_DEBOUNCE_MS = 250;
 
-export function TestPlansPanel({ onOpenCase, onStartGenerator }: Props) {
+export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: Props) {
   const {
     initialized,
     configured,
@@ -257,6 +259,7 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator }: Props) {
               loadSuites={loadSuites}
               loadSuiteCases={loadSuiteCases}
               conn={conn}
+              activeCaseId={activeCaseId ?? null}
             />
           ))}
         </ul>
@@ -281,6 +284,7 @@ type PlanRowProps = {
   loadSuites: (planId: number) => Promise<void>;
   loadSuiteCases: (planId: number, suiteId: number) => Promise<void>;
   conn: ConnInfo | null;
+  activeCaseId: number | null;
 };
 
 function PlanRow({
@@ -296,6 +300,7 @@ function PlanRow({
   bySuite,
   loadSuites,
   conn,
+  activeCaseId,
 }: PlanRowProps) {
   const data = bySuite.get(plan.id);
   const planWebUrl = conn
@@ -370,6 +375,7 @@ function PlanRow({
                 onOpenCase={onOpenCase}
                 onStartGenerator={onStartGenerator}
                 conn={conn}
+                activeCaseId={activeCaseId}
               />
             ))}
         </ul>
@@ -401,6 +407,7 @@ type SuiteRowProps = {
   onOpenCase: Props["onOpenCase"];
   onStartGenerator: Props["onStartGenerator"];
   conn: ConnInfo | null;
+  activeCaseId: number | null;
 };
 
 function SuiteRow({
@@ -413,6 +420,7 @@ function SuiteRow({
   onOpenCase,
   onStartGenerator,
   conn,
+  activeCaseId,
 }: SuiteRowProps) {
   const sc = suiteLoad.suiteCases.get(suite.id);
   const loading = sc?.loading ?? false;
@@ -498,6 +506,7 @@ function SuiteRow({
                 planId={planId}
                 suiteId={suite.id}
                 conn={conn}
+                active={activeCaseId === c.id}
               />
             ))}
         </ul>
@@ -515,6 +524,7 @@ type CaseRowProps = {
   planId: number;
   suiteId: number;
   conn: ConnInfo | null;
+  active: boolean;
 };
 
 function CaseRow({
@@ -524,31 +534,46 @@ function CaseRow({
   planId,
   suiteId,
   conn,
+  active,
 }: CaseRowProps) {
   const caseWebUrl = conn
     ? `${conn.orgUrl}/${encodeURIComponent(conn.project)}/_workitems/edit/${tc.id}`
     : null;
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
 
   const open = () => onOpenCase({ caseId: tc.id, title: `#${tc.id} · ${tc.title}` });
+
+  // When this row becomes the active case (e.g. via the command palette or
+  // history pane), scroll it into view so the user can see where they are
+  // in the tree.
+  useEffect(() => {
+    if (active) {
+      buttonRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [active]);
 
   return (
     <li>
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <button
+            ref={buttonRef}
             type="button"
             onClick={open}
+            data-active={active || undefined}
             className={cn(
               "flex w-full items-center gap-1.5 rounded-sm px-1.5 py-1 text-left text-[11px] hover:bg-foreground/[0.05]",
+              active &&
+                "bg-foreground/[0.08] text-foreground shadow-[inset_2px_0_0_var(--primary)] dark:bg-foreground/[0.10]",
             )}
           >
             <HugeiconsIcon
               icon={TaskDone01Icon}
               size={10}
               strokeWidth={1.75}
-              className="shrink-0 text-muted-foreground"
+              className={cn("shrink-0", active ? "text-primary" : "text-muted-foreground")}
             />
-            <span className="font-mono text-[10px] text-muted-foreground">
+            <span className={cn("font-mono text-[10px]", active ? "text-foreground/85" : "text-muted-foreground")}>
               #{tc.id}
             </span>
             <span className="truncate">{tc.title}</span>
