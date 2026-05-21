@@ -1,3 +1,4 @@
+import { BrandIcon } from "@/components/BrandIcon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -108,6 +109,7 @@ export function AiEngineSection() {
           summary="Uses your installed `claude` CLI. Supports Max-subscription OAuth or Anthropic API key."
           active={engine === "claude-agent-sdk"}
           onPick={() => void setAiEngine("claude-agent-sdk")}
+          icon={<BrandIcon name="anthropic" size={14} />}
         />
         <EngineCard
           id="vercel-ai-sdk"
@@ -115,6 +117,7 @@ export function AiEngineSection() {
           summary="Bring your own API key for Anthropic / OpenAI / Google. No CLI needed."
           active={engine === "vercel-ai-sdk"}
           onPick={() => void setAiEngine("vercel-ai-sdk")}
+          icon={<BrandIcon name="vercel" size={14} />}
         />
       </div>
 
@@ -273,25 +276,28 @@ function EngineCard({
   summary,
   active,
   onPick,
+  icon,
 }: {
   id: AiEngine;
   label: string;
   summary: string;
   active: boolean;
   onPick: () => void;
+  icon?: React.ReactNode;
 }) {
   return (
     <button
       type="button"
       onClick={onPick}
       className={cn(
-        "flex flex-col items-start gap-1 rounded-lg border px-3 py-2.5 text-left transition-colors",
+        "flex cursor-pointer flex-col items-start gap-1 rounded-md border px-3 py-2.5 text-left transition-colors",
         active
           ? "border-primary/60 bg-primary/[0.06]"
           : "border-border/60 bg-card/60 hover:bg-foreground/[0.03]",
       )}
     >
       <span className="flex items-center gap-1.5 text-[12px] font-medium">
+        {icon}
         {label}
         {active ? (
           <HugeiconsIcon
