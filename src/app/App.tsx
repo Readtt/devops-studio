@@ -653,8 +653,10 @@ export default function App() {
                   >
                     <span
                       className={cn(
-                        "h-1.5 w-1.5 rounded-full",
-                        adoConfigured ? "bg-emerald-500" : "bg-muted-foreground/40",
+                        "h-1.5 w-1.5 rounded-full transition-colors duration-200",
+                        adoConfigured
+                          ? "bg-primary shadow-[0_0_6px_-1px] shadow-primary/70"
+                          : "bg-muted-foreground/40",
                       )}
                     />
                     <HugeiconsIcon icon={CloudServerIcon} size={11} strokeWidth={1.75} />

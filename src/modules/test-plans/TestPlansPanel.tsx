@@ -566,18 +566,21 @@ function CaseRow({
             onClick={open}
             data-active={active || undefined}
             className={cn(
-              "flex w-full items-center gap-1.5 rounded-sm px-1.5 py-1 text-left text-[11px] hover:bg-foreground/[0.05]",
+              "flex w-full items-center gap-1.5 rounded-sm border-l-2 border-transparent px-1.5 py-1.5 text-left text-[11px] transition-colors duration-150 hover:bg-foreground/[0.05]",
               active &&
-                "bg-foreground/[0.08] text-foreground shadow-[inset_2px_0_0_var(--primary)] dark:bg-foreground/[0.10]",
+                "border-primary bg-primary/10 text-foreground dark:bg-primary/[0.12]",
             )}
           >
             <HugeiconsIcon
               icon={TaskDone01Icon}
               size={10}
               strokeWidth={1.75}
-              className={cn("shrink-0", active ? "text-primary" : "text-muted-foreground")}
+              className={cn(
+                "shrink-0 transition-colors duration-150",
+                active ? "text-primary" : "text-muted-foreground",
+              )}
             />
-            <span className={cn("font-mono text-[10px]", active ? "text-foreground/85" : "text-muted-foreground")}>
+            <span className={cn("font-mono text-[10px]", active ? "text-primary" : "text-muted-foreground")}>
               #{tc.id}
             </span>
             <span className="truncate">{tc.title}</span>

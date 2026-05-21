@@ -532,8 +532,11 @@ function ReviewPhase({
               tabIndex={0}
               data-case-row={i}
               className={cn(
-                "group flex flex-col gap-1.5 rounded-md border bg-card/40 px-3 py-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring/30",
-                c.decision === "keep" ? "border-border/60" : "border-border/20 opacity-55",
+                "group relative flex flex-col gap-1.5 rounded-md border-l-2 border bg-card/40 px-3 py-2 transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-ring/30",
+                "focus-visible:before:absolute focus-visible:before:-left-3 focus-visible:before:top-1/2 focus-visible:before:-translate-y-1/2 focus-visible:before:text-primary focus-visible:before:content-['▸']",
+                c.decision === "keep"
+                  ? "border-l-primary/70 border-border/60"
+                  : "border-l-transparent border-border/20 opacity-60",
               )}
             >
               <div className="flex items-start gap-2">
@@ -544,9 +547,9 @@ function ReviewPhase({
                     setCaseDecision(c.uid, c.decision === "keep" ? "skip" : "keep")
                   }
                   className={cn(
-                    "mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-sm transition-colors",
+                    "mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-sm transition-all duration-150",
                     c.decision === "keep"
-                      ? "bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/25 dark:text-emerald-300"
+                      ? "bg-primary/20 text-primary hover:bg-primary/30"
                       : "bg-foreground/[0.08] text-muted-foreground hover:bg-foreground/[0.12]",
                   )}
                 >
@@ -557,7 +560,14 @@ function ReviewPhase({
                   />
                 </button>
                 <div className="min-w-0 flex-1">
-                  <p className="text-[12px] font-medium leading-snug">{c.title}</p>
+                  <p
+                    className={cn(
+                      "text-[12px] font-medium leading-snug",
+                      c.decision === "skip" && "line-through decoration-foreground/40",
+                    )}
+                  >
+                    {c.title}
+                  </p>
                   {c.rationale ? (
                     <p className="mt-0.5 text-[10.5px] text-muted-foreground">
                       {c.rationale}
