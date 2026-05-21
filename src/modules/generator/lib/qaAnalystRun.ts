@@ -40,6 +40,12 @@ export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
   const userPrompt = buildUserPrompt(input);
   const start = Date.now();
 
+  // SAFETY: the analyst path runs WITHOUT tools — text-in, JSON-out. The
+  // model only sees attachments we pass in `userPrompt`; it can't read or
+  // mutate the user's filesystem through this path. Do NOT add a `tools`
+  // field here without revisiting the read-only contract enforced in the
+  // Claude CLI path (allowedTools: Read/Glob/Grep). If you need tools for a
+  // different flow, build a new entrypoint instead of editing this one.
   const result = await generateText({
     model: lm,
     system: QA_ANALYST_PROMPT,

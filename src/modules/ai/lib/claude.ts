@@ -26,6 +26,11 @@ export type ClaudeQueryInput = {
   maxTurns?: number;
   /** "default" | "bypassPermissions" | "plan" — see the CLI's --permission-mode. */
   permissionMode?: "default" | "bypassPermissions" | "plan";
+  /** Restrict the CLI to a fixed set of tool names. The backend refuses to
+   *  spawn if any tool here isn't in its read-only allowlist, so the generator
+   *  can safely use bypassPermissions for read tools without opening the
+   *  surface to Bash/Write/Edit. */
+  allowedTools?: string[];
   /** Extra env vars merged into the child. Typical use: ANTHROPIC_API_KEY. */
   env?: Record<string, string>;
 };

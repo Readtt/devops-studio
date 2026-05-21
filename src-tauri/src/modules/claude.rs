@@ -125,10 +125,26 @@ pub struct RunQueryInput {
     /// project root), or "plan" (read-only plan mode).
     #[serde(default)]
     pub permission_mode: Option<String>,
+    /// Whitelist of CLI tools the agent is allowed to call. When set, the
+    /// CLI refuses any tool not in this list. We enforce a read-only set in
+    /// safety-critical paths (generator) so even bypassPermissions can't let
+    /// the model run Bash/Write/Edit. Callers pass canonical CLI tool names
+    /// like "Read", "Glob", "Grep".
+    #[serde(default)]
+    pub allowed_tools: Option<Vec<String>>,
     /// Extra environment vars to merge into the child's env. Used to pass
     /// `ANTHROPIC_API_KEY` when the user picks API-key auth mode.
     #[serde(default)]
     pub env: Option<std::collections::HashMap<String, String>>,
+}
+
+/// Tools that can read but cannot mutate filesystem, run shell, or reach the
+/// network. The generator path enforces this allowlist to keep the analyze
+/// agent strictly read-only regardless of permission-mode or model behavior.
+const READ_ONLY_TOOLS: &[&str] = &["Read", "Glob", "Grep"];
+
+fn is_read_only_tool(name: &str) -> bool {
+    READ_ONLY_TOOLS.iter().any(|t| t.eq_ignore_ascii_case(name))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -201,6 +217,26 @@ pub async fn claude_run_query(
     }
     if let Some(mode) = &input.permission_mode {
         cmd.arg("--permission-mode").arg(mode);
+    }
+    if let Some(allowed) = &input.allowed_tools {
+        // Defense in depth: if a caller asks for an allowlist that contains
+        // a known mutating/exec tool, refuse the spawn outright. The CLI's
+        // own filter is the primary gate, but a typo here would silently
+        // open the surface back up.
+        if let Some(bad) = allowed
+            .iter()
+            .find(|t| !is_read_only_tool(t.as_str()))
+        {
+            return Err(ClaudeError::SpawnFailed {
+                message: format!(
+                    "refusing to spawn claude with non-read-only tool in allowlist: {bad}"
+                ),
+            });
+        }
+        // The CLI accepts `--allowed-tools` as a single comma-separated arg
+        // or as repeated flags. Use one comma-separated arg — fewer argv
+        // entries to debug, works across recent CLI versions.
+        cmd.arg("--allowed-tools").arg(allowed.join(","));
     }
     if let Some(cwd) = &input.cwd {
         cmd.current_dir(cwd);

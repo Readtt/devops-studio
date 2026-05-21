@@ -51,12 +51,14 @@ export async function runQaAnalystClaude(
       cwd: input.sourceRoot ?? undefined,
       model: input.modelId,
       maxTurns: 24,
-      // The CLI's Read/Glob/Grep are read-only; Bash is the only mutating
-      // builtin. The user picked this directory; bypass permissions so we
-      // don't pop a UI dialog mid-run for every file read. The CLI still
-      // refuses paths outside the configured cwd, so the blast radius is
-      // capped to the source dir.
+      // The generator is strictly an analyst — it reads code and writes JSON
+      // to stdout, nothing else. We constrain the CLI to its three read-only
+      // tools (Read, Glob, Grep) and combine that with bypassPermissions so
+      // file reads inside the user's source dir don't pop a permission dialog
+      // mid-run. The Rust handler refuses to spawn if this allowlist ever
+      // contains a mutating tool, so a typo can't quietly re-open the surface.
       permissionMode: "bypassPermissions",
+      allowedTools: ["Read", "Glob", "Grep"],
       env: Object.keys(env).length > 0 ? env : undefined,
     },
     (e) => emitStep(e, input.onStep),
