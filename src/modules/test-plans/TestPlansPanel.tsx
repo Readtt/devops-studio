@@ -12,20 +12,25 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { AzureDevOpsLogo } from "@/components/AzureDevOpsLogo";
+import { ProjectSwitcher } from "@/modules/ado/ProjectSwitcher";
 import { cn } from "@/lib/utils";
 import { adoErrorMessage, getConnection, markForReview } from "@/modules/ado";
 import { useTestPlans, type CaseDetailsState, type SuiteLoad } from "./hooks/useTestPlans";
+import { NewSuiteDialog } from "./NewSuiteDialog";
 import {
   ArrowDown01Icon,
   ArrowRight01Icon,
   Bug01Icon,
   ExternalLink,
+  FolderAddIcon,
   FolderIcon,
   Link01Icon,
   PlusSignIcon,
   RefreshIcon,
   Settings01Icon,
   TaskDone01Icon,
+  UnfoldLessIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -102,6 +107,18 @@ function buildSuiteTree(suites: SuiteRef[], planName: string): SuiteNode[] {
   return roots.map(buildNode);
 }
 
+/** Find the root suite for a plan — the one with no parent (or whose parent
+ *  isn't in the returned set). Used when creating a top-level suite so the
+ *  new suite gets attached to the plan's root rather than orphaned. */
+function findRootSuiteId(suites: SuiteRef[]): number | null {
+  if (suites.length === 0) return null;
+  const ids = new Set(suites.map((s) => s.id));
+  const root = suites.find(
+    (s) => s.parentSuiteId == null || !ids.has(s.parentSuiteId),
+  );
+  return root?.id ?? null;
+}
+
 /** Recursively walk a suite tree and return all the suite ids in it. Used
  *  to decide which suite-load-states the filter eager-load loop should hit. */
 function flattenSuiteIds(nodes: SuiteNode[]): number[] {
@@ -115,6 +132,15 @@ function flattenSuiteIds(nodes: SuiteNode[]): number[] {
 }
 
 // --- Panel --------------------------------------------------------------------
+
+type NewSuiteRequest =
+  | null
+  | {
+      planId: number;
+      planName: string;
+      parentSuiteId: number | null;
+      parentSuiteName: string | null;
+    };
 
 export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: Props) {
   const {
@@ -138,6 +164,7 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: P
   const [filterDraft, setFilterDraft] = useState("");
   const [filter, setFilter] = useState(""); // debounced
   const [conn, setConn] = useState<ConnInfo | null>(null);
+  const [newSuiteRequest, setNewSuiteRequest] = useState<NewSuiteRequest>(null);
 
   useEffect(() => {
     if (!initialized) {
@@ -240,6 +267,52 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: P
     [loadCaseDetails],
   );
 
+  // Collapse-all: close every plan, suite, and expanded case row. Also
+  // cancels any in-flight loads for those plans so we don't paint stale
+  // data into a tree the user just hid.
+  const collapseAll = useCallback(() => {
+    for (const pid of expandedPlans) cancelPlanLoads(pid);
+    setExpandedPlans(new Set());
+    setExpandedSuites(new Set());
+    setExpandedCases(new Set());
+  }, [expandedPlans, cancelPlanLoads]);
+
+  const anythingExpanded =
+    expandedPlans.size > 0 || expandedSuites.size > 0 || expandedCases.size > 0;
+
+  const openNewSuiteForPlan = useCallback(
+    (planId: number, planName: string) => {
+      const suites = bySuite.get(planId)?.suites ?? [];
+      const rootId = findRootSuiteId(suites);
+      // If we haven't loaded suites yet, pass `null` and the backend resolves
+      // the root for us. The dialog will refresh suites after creation.
+      setNewSuiteRequest({
+        planId,
+        planName,
+        parentSuiteId: rootId,
+        parentSuiteName: null,
+      });
+    },
+    [bySuite],
+  );
+
+  const openNewSuiteForSuite = useCallback(
+    (
+      planId: number,
+      planName: string,
+      parentSuiteId: number,
+      parentSuiteName: string,
+    ) => {
+      setNewSuiteRequest({
+        planId,
+        planName,
+        parentSuiteId,
+        parentSuiteName,
+      });
+    },
+    [],
+  );
+
   if (!initialized) {
     return <PanelMessage>Loading…</PanelMessage>;
   }
@@ -250,8 +323,8 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: P
           Not connected to Azure DevOps
         </p>
         <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-          Set your organization URL, project, and PAT in Settings to browse
-          plans and cases.
+          Set your organization URL and PAT in Settings to browse plans and
+          cases.
         </p>
         <Button
           size="sm"
@@ -267,6 +340,9 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: P
 
   return (
     <div className="flex h-full flex-col">
+      {/* Project header — title-band that doubles as the project switcher. */}
+      <ProjectHeader projectName={conn?.project ?? ""} />
+
       <div className="flex items-center gap-1.5 border-b border-border/60 px-2 py-1.5">
         <input
           value={filterDraft}
@@ -274,6 +350,27 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: P
           placeholder="Filter plans, suites, cases…"
           className="min-w-0 flex-1 rounded-md border border-border/60 bg-background/70 px-2 py-1 text-[11.5px] outline-none focus:border-primary/50"
         />
+        {anythingExpanded ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                aria-label="Collapse all"
+                onClick={collapseAll}
+              >
+                <HugeiconsIcon
+                  icon={UnfoldLessIcon}
+                  size={12}
+                  strokeWidth={1.75}
+                />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-[11px]">
+              Collapse all expanded plans, suites, and cases
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
@@ -333,6 +430,10 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: P
               onToggleCase={toggleCase}
               onOpenCase={onOpenCase}
               onStartGenerator={onStartGenerator}
+              onNewSuiteForPlan={() => openNewSuiteForPlan(p.id, p.name)}
+              onNewSuiteForSuite={(sid, sname) =>
+                openNewSuiteForSuite(p.id, p.name, sid, sname)
+              }
               bySuite={bySuite}
               caseDetails={caseDetails}
               loadSuites={loadSuites}
@@ -343,6 +444,48 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: P
           ))}
         </ul>
       </div>
+
+      {newSuiteRequest ? (
+        <NewSuiteDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setNewSuiteRequest(null);
+          }}
+          planId={newSuiteRequest.planId}
+          planName={newSuiteRequest.planName}
+          parentSuiteId={newSuiteRequest.parentSuiteId}
+          parentSuiteName={newSuiteRequest.parentSuiteName}
+          onCreated={(sid) => {
+            // Expand the plan + parent suite (if any) + new suite so the
+            // user sees their freshly-created node in context.
+            setExpandedPlans((s) => new Set(s).add(newSuiteRequest.planId));
+            if (newSuiteRequest.parentSuiteId !== null) {
+              setExpandedSuites((s) =>
+                new Set(s).add(newSuiteRequest.parentSuiteId!),
+              );
+            }
+            setExpandedSuites((s) => new Set(s).add(sid));
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+// --- Project header ----------------------------------------------------------
+
+function ProjectHeader({
+  projectName,
+}: {
+  projectName: string;
+}) {
+  // Collapse All lives in the filter toolbar below — keep the project header
+  // focused on identity (logo + switcher) so it doesn't read as a control
+  // bar.
+  return (
+    <div className="flex items-center gap-1.5 border-b border-border/60 px-2 py-1.5">
+      <AzureDevOpsLogo size={11} className="shrink-0" />
+      <ProjectSwitcher currentProject={projectName} />
     </div>
   );
 }
@@ -361,9 +504,11 @@ type PlanRowProps = {
   onToggleCase: (caseId: number) => void;
   onOpenCase: Props["onOpenCase"];
   onStartGenerator: Props["onStartGenerator"];
+  onNewSuiteForPlan: () => void;
+  onNewSuiteForSuite: (parentSuiteId: number, parentSuiteName: string) => void;
   bySuite: Map<number, SuiteLoad>;
   caseDetails: Map<number, CaseDetailsState>;
-  loadSuites: (planId: number) => Promise<void>;
+  loadSuites: (planId: number, opts?: { force?: boolean }) => Promise<void>;
   loadSuiteCases: (planId: number, suiteId: number) => Promise<void>;
   activeCaseId: number | null;
   conn: ConnInfo | null;
@@ -381,6 +526,8 @@ function PlanRow({
   onToggleCase,
   onOpenCase,
   onStartGenerator,
+  onNewSuiteForPlan,
+  onNewSuiteForSuite,
   bySuite,
   caseDetails,
   loadSuites,
@@ -415,10 +562,16 @@ function PlanRow({
             <span className="truncate font-medium">{plan.name}</span>
           </button>
         </ContextMenuTrigger>
-        <ContextMenuContent className="text-[12px]">
-          <ContextMenuItem onSelect={() => void loadSuites(plan.id)}>
+        <ContextMenuContent>
+          <ContextMenuItem
+            onSelect={() => void loadSuites(plan.id, { force: true })}
+          >
             <HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />
             Refresh suites
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={onNewSuiteForPlan}>
+            <HugeiconsIcon icon={FolderAddIcon} size={12} strokeWidth={1.75} />
+            New suite…
           </ContextMenuItem>
           <ContextMenuItem
             onSelect={() => onStartGenerator({ planId: plan.id, suiteId: null })}
@@ -481,6 +634,7 @@ function PlanRow({
                 matches={matches}
                 onOpenCase={onOpenCase}
                 onStartGenerator={onStartGenerator}
+                onNewSuite={onNewSuiteForSuite}
                 conn={conn}
                 activeCaseId={activeCaseId}
               />
@@ -530,6 +684,7 @@ type SuiteRowProps = {
   matches: ((s: string) => boolean) | null;
   onOpenCase: Props["onOpenCase"];
   onStartGenerator: Props["onStartGenerator"];
+  onNewSuite: (parentSuiteId: number, parentSuiteName: string) => void;
   conn: ConnInfo | null;
   activeCaseId: number | null;
 };
@@ -547,6 +702,7 @@ function SuiteRow({
   matches,
   onOpenCase,
   onStartGenerator,
+  onNewSuite,
   conn,
   activeCaseId,
 }: SuiteRowProps) {
@@ -588,14 +744,9 @@ function SuiteRow({
               )}
             />
             <span className="truncate">{suite.name}</span>
-            {hasChildren ? (
-              <span className="ml-auto pl-1 font-mono text-[9.5px] text-muted-foreground/60">
-                {children.length}
-              </span>
-            ) : null}
           </button>
         </ContextMenuTrigger>
-        <ContextMenuContent className="text-[12px]">
+        <ContextMenuContent>
           <ContextMenuItem
             onSelect={() =>
               void useTestPlans.getState().loadSuiteCases(planId, suite.id)
@@ -603,6 +754,10 @@ function SuiteRow({
           >
             <HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />
             Refresh cases
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => onNewSuite(suite.id, suite.name)}>
+            <HugeiconsIcon icon={FolderAddIcon} size={12} strokeWidth={1.75} />
+            New nested suite…
           </ContextMenuItem>
           <ContextMenuItem
             onSelect={() => onStartGenerator({ planId, suiteId: suite.id })}
@@ -650,6 +805,7 @@ function SuiteRow({
                 matches={matches}
                 onOpenCase={onOpenCase}
                 onStartGenerator={onStartGenerator}
+                onNewSuite={onNewSuite}
                 conn={conn}
                 activeCaseId={activeCaseId}
               />
@@ -791,7 +947,7 @@ function CaseRow({
               ) : null}
             </button>
           </ContextMenuTrigger>
-          <ContextMenuContent className="text-[12px]">
+          <ContextMenuContent>
             <ContextMenuItem onSelect={open}>
               <HugeiconsIcon
                 icon={TaskDone01Icon}
