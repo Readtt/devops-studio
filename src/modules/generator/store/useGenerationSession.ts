@@ -86,6 +86,10 @@ export type SessionState = {
   addAttachment: (path: string, content: string) => void;
   removeAttachment: (path: string) => void;
   analyze: () => Promise<void>;
+  /** Cancel an in-flight analyze and return to the input phase. The model
+   *  request itself is not aborted (provider SDKs don't all support it) —
+   *  this just dumps the result instead of moving to review. */
+  cancel: () => void;
   setCaseDecision: (uid: string, decision: "keep" | "skip") => void;
   setBugDecision: (uid: string, decision: "keep" | "skip") => void;
   publish: () => Promise<void>;
@@ -104,6 +108,7 @@ const initialState: Omit<
   | "addAttachment"
   | "removeAttachment"
   | "analyze"
+  | "cancel"
   | "setCaseDecision"
   | "setBugDecision"
   | "publish"
@@ -203,6 +208,9 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
         uid: uid(),
         decision: "keep",
       }));
+      // If the user cancelled while the model was running, don't drop them
+      // into review — the cancel() action already moved us back to input.
+      if (get().phase !== "analyzing") return;
       set({
         phase: "review",
         cases,
@@ -212,11 +220,19 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
         stepLabel: "",
       });
     } catch (e) {
+      if (get().phase !== "analyzing") return;
       set({
         phase: "error",
         error: e instanceof Error ? e.message : String(e),
         stepLabel: "",
       });
+    }
+  },
+
+  cancel: () => {
+    const phase = get().phase;
+    if (phase === "analyzing") {
+      set({ phase: "input", stepLabel: "", error: null });
     }
   },
 

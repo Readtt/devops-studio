@@ -8,36 +8,52 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import {
   type GenerationMode,
   useGenerationSession,
 } from "./store/useGenerationSession";
 import { useTestPlans } from "@/modules/test-plans";
 import { adoErrorMessage } from "@/modules/ado";
+import { useSourceDirGitInfo } from "@/modules/git";
 import {
   AlertCircleIcon,
   ArrowLeft02Icon,
   CheckmarkCircle02Icon,
   ExternalLink,
+  GitBranchIcon,
+  PlayIcon,
   RemoveCircleIcon,
+  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 const MODE_LABELS: Record<GenerationMode, string> = {
   happy: "Happy path only",
-  thorough: "Happy + edge + negative (recommended)",
-  "bug-hunt": "Bug-hunt (suggests Bug work items)",
+  thorough: "Happy + edge + negative",
+  "bug-hunt": "Bug-hunt (suggests bugs)",
 };
 
+const STEPS = [
+  { id: "input", label: "Input" },
+  { id: "analyzing", label: "Analyze" },
+  { id: "review", label: "Review" },
+  { id: "publishing", label: "Publish" },
+  { id: "done", label: "Done" },
+] as const;
+
 type Props = {
-  /** Optional preselected plan/suite from the launching context. */
   initialPlanId?: number | null;
   initialSuiteId?: number | null;
-  /** Open an existing case in a workspace tab (used by duplicate hints). */
   onOpenCase?: (input: { caseId: number; title: string }) => void;
 };
 
@@ -50,7 +66,6 @@ export function GeneratorPane({
   const setTarget = useGenerationSession((s) => s.setTarget);
   const planId = useGenerationSession((s) => s.planId);
 
-  // Hydrate target from launching context once.
   useEffect(() => {
     if (planId === null && initialPlanId) {
       setTarget(initialPlanId, initialSuiteId ?? null);
@@ -59,59 +74,106 @@ export function GeneratorPane({
   }, []);
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto bg-background">
-      <Header />
-      <div className="mx-auto w-full max-w-3xl px-6 py-5">
-        {phase === "input" && <InputPhase />}
-        {phase === "analyzing" && <AnalyzingPhase />}
-        {phase === "review" && <ReviewPhase onOpenCase={onOpenCase} />}
-        {phase === "publishing" && <PublishingPhase />}
-        {phase === "done" && <DonePhase />}
-        {phase === "error" && <ErrorPhase />}
+    <div className="flex h-full flex-col bg-background">
+      <ProgressStrip phase={phase} />
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-4xl px-5 py-4">
+          {phase === "input" && <InputPhase />}
+          {phase === "analyzing" && <AnalyzingPhase />}
+          {phase === "review" && <ReviewPhase onOpenCase={onOpenCase} />}
+          {phase === "publishing" && <PublishingPhase />}
+          {phase === "done" && <DonePhase />}
+          {phase === "error" && <ErrorPhase />}
+        </div>
       </div>
     </div>
   );
 }
 
-function Header() {
-  const phase = useGenerationSession((s) => s.phase);
+// --- Progress strip ---------------------------------------------------------
+
+function ProgressStrip({
+  phase,
+}: {
+  phase: ReturnType<typeof useGenerationSession.getState>["phase"];
+}) {
   const startNew = useGenerationSession((s) => s.startNew);
-  const phaseLabel: Record<typeof phase, string> = {
-    input: "1 · Input",
-    analyzing: "2 · Analyzing",
-    review: "3 · Review",
-    publishing: "4 · Publishing",
-    done: "5 · Done",
-    error: "Error",
-  };
+  const currentIdx = useMemo(() => {
+    if (phase === "error") return 0;
+    return STEPS.findIndex((s) => s.id === phase);
+  }, [phase]);
+
   return (
-    <header className="flex items-center justify-between border-b border-border/60 bg-card/40 px-6 py-3">
-      <div className="flex items-center gap-2">
-        <h1 className="text-[14px] font-semibold tracking-tight">
+    <header className="flex h-10 shrink-0 items-center justify-between gap-4 border-b border-border/60 bg-card/40 px-5">
+      <div className="flex min-w-0 items-center gap-2">
+        <h1 className="text-[12.5px] font-semibold tracking-tight">
           Test Case Generator
         </h1>
-        <span className="rounded-full bg-foreground/[0.06] px-2 py-0.5 text-[10.5px] font-medium text-muted-foreground">
-          {phaseLabel[phase]}
-        </span>
+        <ol className="flex items-center gap-1">
+          {STEPS.map((step, i) => {
+            const completed = i < currentIdx;
+            const active = i === currentIdx;
+            return (
+              <li key={step.id} className="flex items-center gap-1">
+                <span
+                  className={cn(
+                    "flex h-4 w-4 items-center justify-center rounded-full border text-[9px] font-semibold transition-colors",
+                    completed
+                      ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                      : active
+                        ? "border-primary bg-primary/15 text-foreground"
+                        : "border-border/60 bg-card text-muted-foreground/70",
+                  )}
+                >
+                  {completed ? (
+                    <HugeiconsIcon icon={Tick02Icon} size={9} strokeWidth={3} />
+                  ) : (
+                    i + 1
+                  )}
+                </span>
+                <span
+                  className={cn(
+                    "text-[10.5px]",
+                    active
+                      ? "font-medium text-foreground"
+                      : completed
+                        ? "text-foreground/85"
+                        : "text-muted-foreground/70",
+                  )}
+                >
+                  {step.label}
+                </span>
+                {i < STEPS.length - 1 ? (
+                  <span className="mx-0.5 h-px w-3 bg-border/60" />
+                ) : null}
+              </li>
+            );
+          })}
+        </ol>
       </div>
       {phase !== "input" && phase !== "analyzing" ? (
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-7 px-2 text-[11px]"
-          onClick={startNew}
-        >
-          <HugeiconsIcon
-            icon={ArrowLeft02Icon}
-            size={12}
-            strokeWidth={1.75}
-          />
-          New session
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="xs"
+              variant="ghost"
+              onClick={startNew}
+              aria-label="New session"
+            >
+              <HugeiconsIcon icon={ArrowLeft02Icon} size={11} strokeWidth={1.75} />
+              New session
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">
+            Clear and start a fresh generation.
+          </TooltipContent>
+        </Tooltip>
       ) : null}
     </header>
   );
 }
+
+// --- Input phase ------------------------------------------------------------
 
 function InputPhase() {
   const requirements = useGenerationSession((s) => s.requirements);
@@ -133,137 +195,238 @@ function InputPhase() {
     refreshPlans,
     loadSuites,
   } = useTestPlans();
+
   useEffect(() => {
     if (!initialized) void refreshConnection();
     else if (configured && plans.length === 0 && !plansLoading) {
       void refreshPlans();
     }
   }, [initialized, configured, plans.length, plansLoading, refreshConnection, refreshPlans]);
+
   useEffect(() => {
     if (planId !== null) void loadSuites(planId);
   }, [planId, loadSuites]);
 
   const suites = planId !== null ? bySuite.get(planId)?.suites ?? [] : [];
-
   const canAnalyze =
     requirements.trim().length > 0 && planId !== null && suiteId !== null;
+  const planName = plans.find((p) => p.id === planId)?.name ?? null;
+  const suiteName = suites.find((s) => s.id === suiteId)?.name ?? null;
+  const git = useSourceDirGitInfo();
 
   return (
-    <div className="flex flex-col gap-5">
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="gen-reqs">Requirements / feature spec</Label>
-        <textarea
-          id="gen-reqs"
-          value={requirements}
-          onChange={(e) => setRequirements(e.target.value)}
-          placeholder="Paste the Asana task / Jira ticket / spec wiki here. Be specific — the analyzer will only know what you put here (plus any source files you attach)."
-          rows={10}
-          className="rounded-md border border-border/60 bg-background/70 px-3 py-2 font-mono text-[12px] outline-none focus:border-primary/60"
-        />
-      </div>
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_280px]">
+      <section className="flex min-w-0 flex-col gap-3">
+        <Field label="Requirements / feature spec">
+          <textarea
+            value={requirements}
+            onChange={(e) => setRequirements(e.target.value)}
+            placeholder="Paste the Asana task / Jira ticket / spec wiki here. Be specific — the analyzer only knows what you put here plus any source files you attach."
+            rows={10}
+            className="w-full rounded-md border border-border/60 bg-input/40 px-2.5 py-2 font-mono text-[11.5px] leading-relaxed outline-none focus:border-ring focus:ring-2 focus:ring-ring/30"
+          />
+        </Field>
 
-      <div className="grid grid-cols-2 gap-4">
-        <div className="flex flex-col gap-1.5">
-          <Label>Test Plan</Label>
-          <Select
-            value={planId !== null ? String(planId) : ""}
-            onValueChange={(v) => setTarget(Number(v), null)}
-          >
-            <SelectTrigger>
-              <SelectValue
-                placeholder={
-                  !configured
-                    ? "Connect in Settings first"
-                    : plans.length === 0
-                      ? "No plans found"
-                      : "Choose a plan"
-                }
-              />
-            </SelectTrigger>
-            <SelectContent>
-              {plans.map((p) => (
-                <SelectItem key={p.id} value={String(p.id)}>
-                  {p.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label>Suite</Label>
-          <Select
-            value={suiteId !== null ? String(suiteId) : ""}
-            onValueChange={(v) => setTarget(planId, Number(v))}
-            disabled={planId === null}
-          >
-            <SelectTrigger>
-              <SelectValue
-                placeholder={
-                  planId === null
-                    ? "Pick a plan first"
-                    : suites.length === 0
-                      ? "Loading…"
-                      : "Choose a suite"
-                }
-              />
-            </SelectTrigger>
-            <SelectContent>
-              {suites.map((s) => (
-                <SelectItem key={s.id} value={String(s.id)}>
-                  {s.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-1.5">
-        <Label>Generation mode</Label>
-        <RadioGroup
-          value={mode}
-          onValueChange={(v) => setMode(v as GenerationMode)}
-          className="gap-1"
-        >
-          {(["happy", "thorough", "bug-hunt"] as GenerationMode[]).map((m) => (
-            <label
-              key={m}
-              htmlFor={`gen-mode-${m}`}
-              className={cn(
-                "flex cursor-pointer items-center gap-2 rounded-md border px-3 py-1.5 text-[11.5px] transition-colors hover:bg-foreground/[0.03]",
-                mode === m
-                  ? "border-primary/40 bg-primary/[0.04]"
-                  : "border-border/40",
-              )}
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Test plan">
+            <Select
+              value={planId !== null ? String(planId) : ""}
+              onValueChange={(v) => setTarget(Number(v), null)}
             >
-              <RadioGroupItem id={`gen-mode-${m}`} value={m} />
-              {MODE_LABELS[m]}
-            </label>
-          ))}
-        </RadioGroup>
-      </div>
+              <SelectTrigger className="w-full">
+                <SelectValue
+                  placeholder={
+                    !configured
+                      ? "Connect ADO first"
+                      : plansLoading && plans.length === 0
+                        ? "Loading…"
+                        : plans.length === 0
+                          ? "No plans found"
+                          : "Choose a plan"
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {plans.map((p) => (
+                  <SelectItem key={p.id} value={String(p.id)}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="Suite">
+            <Select
+              value={suiteId !== null ? String(suiteId) : ""}
+              onValueChange={(v) => setTarget(planId, Number(v))}
+              disabled={planId === null}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue
+                  placeholder={
+                    planId === null
+                      ? "Pick a plan first"
+                      : suites.length === 0
+                        ? "Loading…"
+                        : "Choose a suite"
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {suites.map((s) => (
+                  <SelectItem key={s.id} value={String(s.id)}>
+                    {s.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+        </div>
 
-      <div className="flex justify-end gap-2 border-t border-border/40 pt-3">
-        <Button onClick={analyze} disabled={!canAnalyze}>
-          Analyze
-        </Button>
-      </div>
+        <Field label="Generation mode">
+          <RadioGroup
+            value={mode}
+            onValueChange={(v) => setMode(v as GenerationMode)}
+            className="flex flex-col gap-1"
+          >
+            {(["happy", "thorough", "bug-hunt"] as GenerationMode[]).map((m) => (
+              <label
+                key={m}
+                className={cn(
+                  "flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 text-[11.5px] transition-colors hover:bg-foreground/[0.03]",
+                  mode === m
+                    ? "border-primary/40 bg-primary/[0.05]"
+                    : "border-border/50",
+                )}
+              >
+                <RadioGroupItem value={m} className="size-3.5" />
+                <span>{MODE_LABELS[m]}</span>
+                {m === "thorough" ? (
+                  <span className="ml-auto rounded-sm bg-foreground/[0.06] px-1.5 py-px text-[9.5px] uppercase tracking-wide text-muted-foreground">
+                    Recommended
+                  </span>
+                ) : null}
+              </label>
+            ))}
+          </RadioGroup>
+        </Field>
+
+        <div className="flex items-center justify-end gap-2 border-t border-border/40 pt-3">
+          <Button onClick={analyze} disabled={!canAnalyze}>
+            <HugeiconsIcon icon={PlayIcon} size={11} strokeWidth={2} />
+            Analyze
+          </Button>
+        </div>
+      </section>
+
+      {/* Preview pane — what the run will actually do. Surfaces the things
+          the user usually forgets to set (branch, source root, model) before
+          firing off a 30-second analysis. */}
+      <aside className="flex flex-col gap-2 lg:sticky lg:top-0 lg:self-start">
+        <h2 className="text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
+          Run preview
+        </h2>
+        <ul className="flex flex-col gap-2 rounded-md border border-border/60 bg-card/40 p-2.5 text-[11px]">
+          <PreviewRow label="Plan" value={planName ?? "—"} />
+          <PreviewRow label="Suite" value={suiteName ?? "—"} />
+          <PreviewRow label="Mode" value={MODE_LABELS[mode]} />
+          <PreviewRow
+            label="Branch"
+            value={
+              git.isRepo && git.branch ? (
+                <span className="inline-flex items-center gap-1">
+                  <HugeiconsIcon
+                    icon={GitBranchIcon}
+                    size={10}
+                    strokeWidth={1.75}
+                  />
+                  <span className="font-mono">{git.branch}</span>
+                </span>
+              ) : (
+                "no source dir"
+              )
+            }
+          />
+        </ul>
+        <p className="text-[10px] leading-relaxed text-muted-foreground/85">
+          The analyzer will read the spec above + any source files you've
+          attached, then propose cases for the chosen suite. Nothing is
+          published until you review.
+        </p>
+      </aside>
     </div>
   );
 }
+
+// --- Analyzing phase --------------------------------------------------------
 
 function AnalyzingPhase() {
   const stepLabel = useGenerationSession((s) => s.stepLabel);
+  const cancel = useGenerationSession((s) => s.cancel);
+  const requirements = useGenerationSession((s) => s.requirements);
+  const mode = useGenerationSession((s) => s.mode);
+
+  // Allow Esc to cancel from any focus.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        cancel();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [cancel]);
+
   return (
-    <div className="flex flex-col items-center justify-center gap-4 py-16 text-center">
-      <Spinner className="size-7 text-primary" />
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between rounded-md border border-border/60 bg-card/40 px-3 py-2.5">
+        <div className="flex items-center gap-2">
+          <Spinner className="size-4 text-primary" />
+          <div>
+            <p className="text-[12px] font-medium">Analyzing requirements…</p>
+            <p className="text-[10.5px] text-muted-foreground">
+              {stepLabel || "Routing to the model."}
+            </p>
+          </div>
+        </div>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button size="sm" variant="outline" onClick={cancel}>
+              Cancel
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Press Esc to cancel.</TooltipContent>
+        </Tooltip>
+      </div>
+
+      <Field label={`Requirements (${MODE_LABELS[mode]})`}>
+        <pre className="whitespace-pre-wrap rounded-md border border-border/40 bg-muted/30 px-3 py-2 font-mono text-[11px] text-foreground/80">
+          {requirements.trim()}
+        </pre>
+      </Field>
+
       <div>
-        <p className="text-[13px] font-medium">Analyzing requirements…</p>
-        <p className="mt-1 text-[11px] text-muted-foreground">{stepLabel}</p>
+        <h2 className="mb-1.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
+          Proposed cases
+        </h2>
+        <ul className="flex flex-col gap-1.5">
+          {[0, 1, 2, 3].map((i) => (
+            <li
+              key={i}
+              className="flex flex-col gap-1.5 rounded-md border border-border/40 bg-card/30 px-3 py-2"
+            >
+              <Skeleton className="h-3 w-2/3" />
+              <Skeleton className="h-3 w-1/2" />
+            </li>
+          ))}
+        </ul>
       </div>
     </div>
   );
 }
+
+// --- Review phase -----------------------------------------------------------
 
 function ReviewPhase({
   onOpenCase,
@@ -287,21 +450,55 @@ function ReviewPhase({
     [bugs],
   );
 
+  // Keyboard nav: j/k step through cases, space toggles keep, p publishes.
+  const focusedRef = useRef(0);
+  useEffect(() => {
+    if (cases.length === 0) return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = (document.activeElement as HTMLElement | null)?.tagName ?? "";
+      if (t === "INPUT" || t === "TEXTAREA") return;
+      if (e.key === "j") {
+        focusedRef.current = Math.min(cases.length - 1, focusedRef.current + 1);
+        document
+          .querySelector<HTMLElement>(`[data-case-row="${focusedRef.current}"]`)
+          ?.focus();
+      } else if (e.key === "k") {
+        focusedRef.current = Math.max(0, focusedRef.current - 1);
+        document
+          .querySelector<HTMLElement>(`[data-case-row="${focusedRef.current}"]`)
+          ?.focus();
+      } else if (e.key === " " && focusedRef.current < cases.length) {
+        const c = cases[focusedRef.current];
+        if (c) {
+          e.preventDefault();
+          setCaseDecision(c.uid, c.decision === "keep" ? "skip" : "keep");
+        }
+      } else if (e.key.toLowerCase() === "p") {
+        if (kept > 0) {
+          e.preventDefault();
+          void publish();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [cases, kept, setCaseDecision, publish]);
+
   if (cases.length === 0 && bugs.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+      <div className="flex flex-col items-center gap-2 rounded-md border border-dashed border-border/60 bg-card/40 px-6 py-10 text-center">
         <HugeiconsIcon
           icon={AlertCircleIcon}
-          size={20}
+          size={18}
           strokeWidth={1.5}
           className="text-muted-foreground"
         />
         <p className="text-[12px] font-medium">No test cases proposed.</p>
-        <p className="max-w-[400px] text-[11px] text-muted-foreground">
+        <p className="max-w-[420px] text-[11px] text-muted-foreground">
           The analyzer didn't return anything. Try adding more detail to the
-          requirements, or attach source files for context.
+          requirements or attach source files for context.
         </p>
-        <Button size="sm" variant="outline" onClick={startNew} className="mt-2">
+        <Button size="sm" variant="outline" onClick={startNew} className="mt-1">
           Back to input
         </Button>
       </div>
@@ -309,14 +506,18 @@ function ReviewPhase({
   }
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between border-b border-border/40 pb-2">
-        <p className="text-[11.5px] text-muted-foreground">
-          {cases.length} case{cases.length === 1 ? "" : "s"} proposed
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-card/40 px-3 py-2">
+        <p className="text-[11px] text-muted-foreground">
+          <span className="font-medium text-foreground">{cases.length}</span>{" "}
+          case{cases.length === 1 ? "" : "s"}
           {bugs.length > 0
             ? `, ${bugs.length} bug suggestion${bugs.length === 1 ? "" : "s"}`
             : ""}
           {durationMs ? ` · ${(durationMs / 1000).toFixed(1)}s` : ""}.
+          <span className="ml-2 text-muted-foreground/70">
+            j/k to nav · space to toggle · p to publish
+          </span>
         </p>
         <Button onClick={() => void publish()} disabled={kept === 0}>
           Publish {kept} case{kept === 1 ? "" : "s"}
@@ -324,162 +525,161 @@ function ReviewPhase({
         </Button>
       </div>
 
-      <ul className="flex flex-col gap-2">
-        {cases.map((c) => (
-          <li
-            key={c.uid}
-            className={cn(
-              "rounded-md border bg-card/40 transition-colors",
-              c.decision === "keep"
-                ? "border-border/60"
-                : "border-border/20 opacity-50",
-            )}
-          >
-            <div className="flex items-start justify-between gap-2 px-3 py-2">
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-[12.5px] font-medium">{c.title}</p>
-                {c.rationale ? (
-                  <p className="mt-0.5 text-[10.5px] text-muted-foreground">
-                    {c.rationale}
-                  </p>
-                ) : null}
-                {c.similarMatches.length > 0 ? (
-                  <div className="mt-1 flex flex-col gap-0.5">
-                    {c.similarMatches.map((m) => (
-                      <div
-                        key={m.caseId}
-                        className="flex items-center gap-1.5 text-[10.5px] text-amber-700 dark:text-amber-300"
-                      >
-                        <span className="rounded-sm bg-amber-500/15 px-1 py-px text-[9.5px] font-medium uppercase tracking-wide">
-                          {(m.score * 100).toFixed(0)}%
-                        </span>
-                        <span className="truncate">
-                          Similar to{" "}
-                          <button
-                            type="button"
-                            onClick={() =>
-                              onOpenCase?.({
-                                caseId: m.caseId,
-                                title: `#${m.caseId} · ${m.title}`,
-                              })
-                            }
-                            className="font-mono underline-offset-2 hover:underline"
-                          >
-                            #{m.caseId}
-                          </button>{" "}
-                          · {m.title}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-              <div className="flex shrink-0 gap-1">
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="h-6 w-6"
-                  aria-label="Skip"
+      <ul className="flex flex-col gap-1.5">
+        {cases.map((c, i) => (
+          <li key={c.uid}>
+            <div
+              tabIndex={0}
+              data-case-row={i}
+              className={cn(
+                "group flex flex-col gap-1.5 rounded-md border bg-card/40 px-3 py-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring/30",
+                c.decision === "keep" ? "border-border/60" : "border-border/20 opacity-55",
+              )}
+            >
+              <div className="flex items-start gap-2">
+                <button
+                  type="button"
+                  aria-label={c.decision === "keep" ? "Skip" : "Keep"}
                   onClick={() =>
-                    setCaseDecision(
-                      c.uid,
-                      c.decision === "keep" ? "skip" : "keep",
-                    )
+                    setCaseDecision(c.uid, c.decision === "keep" ? "skip" : "keep")
                   }
+                  className={cn(
+                    "mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-sm transition-colors",
+                    c.decision === "keep"
+                      ? "bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/25 dark:text-emerald-300"
+                      : "bg-foreground/[0.08] text-muted-foreground hover:bg-foreground/[0.12]",
+                  )}
                 >
                   <HugeiconsIcon
-                    icon={
-                      c.decision === "keep"
-                        ? RemoveCircleIcon
-                        : CheckmarkCircle02Icon
-                    }
-                    size={12}
+                    icon={c.decision === "keep" ? CheckmarkCircle02Icon : RemoveCircleIcon}
+                    size={11}
                     strokeWidth={1.75}
                   />
-                </Button>
+                </button>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[12px] font-medium leading-snug">{c.title}</p>
+                  {c.rationale ? (
+                    <p className="mt-0.5 text-[10.5px] text-muted-foreground">
+                      {c.rationale}
+                    </p>
+                  ) : null}
+                </div>
+                <span className="text-[10px] text-muted-foreground/70">
+                  {c.steps.length} step{c.steps.length === 1 ? "" : "s"}
+                </span>
               </div>
-            </div>
-            <ol className="border-t border-border/30 px-3 py-2 text-[11px]">
-              {c.steps.map((s, i) => (
-                <li
-                  key={i}
-                  className="grid grid-cols-[1fr_1fr] gap-3 py-1 first:pt-0 last:pb-0"
-                >
-                  <div className="text-foreground/85">
-                    <span className="mr-1 font-mono text-muted-foreground">
-                      {i + 1}.
+
+              {c.similarMatches.length > 0 ? (
+                <div className="ml-6 flex flex-col gap-0.5">
+                  {c.similarMatches.map((m) => (
+                    <div
+                      key={m.caseId}
+                      className="flex items-center gap-1.5 text-[10.5px] text-amber-700 dark:text-amber-300"
+                    >
+                      <span className="rounded-sm bg-amber-500/15 px-1 py-px text-[9.5px] font-medium uppercase tracking-wide">
+                        {(m.score * 100).toFixed(0)}%
+                      </span>
+                      <span className="truncate">
+                        Similar to{" "}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onOpenCase?.({
+                              caseId: m.caseId,
+                              title: `#${m.caseId} · ${m.title}`,
+                            })
+                          }
+                          className="font-mono underline-offset-2 hover:underline"
+                        >
+                          #{m.caseId}
+                        </button>{" "}
+                        · {m.title}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              <details className="ml-6">
+                <summary className="cursor-pointer list-none text-[10.5px] text-muted-foreground hover:text-foreground">
+                  Show steps
+                </summary>
+                <ol className="mt-1 flex flex-col gap-0.5 border-l border-border/40 pl-3 text-[11px]">
+                  {c.steps.map((s, idx) => (
+                    <li key={idx} className="grid grid-cols-[1fr_1fr] gap-3 py-0.5">
+                      <div className="text-foreground/85">
+                        <span className="mr-1 font-mono text-muted-foreground">
+                          {idx + 1}.
+                        </span>
+                        {s.action}
+                      </div>
+                      <div className="text-muted-foreground">→ {s.expected}</div>
+                    </li>
+                  ))}
+                </ol>
+              </details>
+
+              {c.tags.length > 0 ? (
+                <div className="ml-6 flex flex-wrap gap-1">
+                  {c.tags.map((t) => (
+                    <span
+                      key={t}
+                      className="rounded-sm bg-foreground/[0.06] px-1.5 py-px text-[9.5px] text-muted-foreground"
+                    >
+                      {t}
                     </span>
-                    {s.action}
-                  </div>
-                  <div className="text-muted-foreground">→ {s.expected}</div>
-                </li>
-              ))}
-            </ol>
-            {c.tags.length > 0 ? (
-              <div className="flex flex-wrap gap-1 border-t border-border/30 px-3 py-1.5">
-                {c.tags.map((t) => (
-                  <span
-                    key={t}
-                    className="rounded-full bg-foreground/[0.06] px-1.5 py-px text-[9.5px] text-muted-foreground"
-                  >
-                    {t}
-                  </span>
-                ))}
-              </div>
-            ) : null}
+                  ))}
+                </div>
+              ) : null}
+            </div>
           </li>
         ))}
       </ul>
 
       {bugs.length > 0 ? (
-        <section>
-          <h2 className="mb-1.5 mt-3 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
+        <section className="mt-1">
+          <h2 className="mb-1.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
             Bug suggestions
           </h2>
-          <ul className="flex flex-col gap-2">
+          <ul className="flex flex-col gap-1.5">
             {bugs.map((b) => (
               <li
                 key={b.uid}
                 className={cn(
                   "rounded-md border bg-card/40 px-3 py-2",
-                  b.decision === "keep"
-                    ? "border-border/60"
-                    : "border-border/20 opacity-50",
+                  b.decision === "keep" ? "border-border/60" : "border-border/20 opacity-55",
                 )}
               >
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="text-[12.5px] font-medium">{b.title}</p>
+                <div className="flex items-start gap-2">
+                  <button
+                    type="button"
+                    aria-label={b.decision === "keep" ? "Skip" : "Keep"}
+                    onClick={() =>
+                      setBugDecision(b.uid, b.decision === "keep" ? "skip" : "keep")
+                    }
+                    className={cn(
+                      "mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-sm transition-colors",
+                      b.decision === "keep"
+                        ? "bg-rose-500/15 text-rose-700 hover:bg-rose-500/25 dark:text-rose-300"
+                        : "bg-foreground/[0.08] text-muted-foreground hover:bg-foreground/[0.12]",
+                    )}
+                  >
+                    <HugeiconsIcon
+                      icon={b.decision === "keep" ? CheckmarkCircle02Icon : RemoveCircleIcon}
+                      size={11}
+                      strokeWidth={1.75}
+                    />
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[12px] font-medium">{b.title}</p>
                     <p className="mt-0.5 text-[10.5px] text-muted-foreground">
                       Severity: {b.severity}
                     </p>
+                    <p className="mt-1 whitespace-pre-wrap text-[11px] text-foreground/85">
+                      {b.reproSteps}
+                    </p>
                   </div>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-6 w-6"
-                    aria-label="Skip"
-                    onClick={() =>
-                      setBugDecision(
-                        b.uid,
-                        b.decision === "keep" ? "skip" : "keep",
-                      )
-                    }
-                  >
-                    <HugeiconsIcon
-                      icon={
-                        b.decision === "keep"
-                          ? RemoveCircleIcon
-                          : CheckmarkCircle02Icon
-                      }
-                      size={12}
-                      strokeWidth={1.75}
-                    />
-                  </Button>
                 </div>
-                <p className="mt-2 whitespace-pre-wrap text-[11px] text-foreground/85">
-                  {b.reproSteps}
-                </p>
               </li>
             ))}
           </ul>
@@ -489,15 +689,17 @@ function ReviewPhase({
   );
 }
 
+// --- Publishing / Done / Error ---------------------------------------------
+
 function PublishingPhase() {
   const log = useGenerationSession((s) => s.publishLog);
   const pending = log.filter((e) => e.status === "pending").length;
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 rounded-md border border-border/60 bg-card/40 px-3 py-2">
         <Spinner className="size-4 text-primary" />
-        <p className="text-[12.5px]">
-          Publishing… {log.length - pending}/{log.length}
+        <p className="text-[12px]">
+          Publishing… <span className="text-muted-foreground">{log.length - pending}/{log.length}</span>
         </p>
       </div>
       <PublishLogList log={log} />
@@ -511,12 +713,19 @@ function DonePhase() {
   const ok = log.filter((e) => e.status === "ok").length;
   const failed = log.filter((e) => e.status === "failed").length;
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <p className="text-[13px] font-medium">
-          Published {ok}{failed > 0 ? ` · ${failed} failed` : ""}.
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between rounded-md border border-border/60 bg-card/40 px-3 py-2">
+        <p className="text-[12px] font-medium">
+          Published <span className="text-emerald-700 dark:text-emerald-300">{ok}</span>
+          {failed > 0 ? (
+            <>
+              {" · "}
+              <span className="text-destructive">{failed} failed</span>
+            </>
+          ) : null}
+          .
         </p>
-        <Button onClick={startNew}>Start another session</Button>
+        <Button onClick={startNew}>Start another</Button>
       </div>
       <PublishLogList log={log} />
     </div>
@@ -533,18 +742,18 @@ function ErrorPhase() {
         ? adoErrorMessage(error)
         : "Unknown error";
   return (
-    <div className="flex flex-col items-center justify-center gap-2 py-12 text-center">
+    <div className="flex flex-col items-center gap-2 rounded-md border border-destructive/40 bg-destructive/[0.06] px-6 py-8 text-center">
       <HugeiconsIcon
         icon={AlertCircleIcon}
-        size={20}
+        size={18}
         strokeWidth={1.5}
         className="text-destructive"
       />
-      <p className="text-[13px] font-medium">Something went wrong.</p>
-      <p className="max-w-[420px] whitespace-pre-wrap text-[11px] text-muted-foreground">
+      <p className="text-[12px] font-medium">Something went wrong.</p>
+      <p className="max-w-[460px] whitespace-pre-wrap text-[11px] text-muted-foreground">
         {message}
       </p>
-      <Button size="sm" variant="outline" onClick={startNew} className="mt-2">
+      <Button size="sm" variant="outline" onClick={startNew}>
         Back to input
       </Button>
     </div>
@@ -557,14 +766,14 @@ function PublishLogList({
   log: ReturnType<typeof useGenerationSession.getState>["publishLog"];
 }) {
   return (
-    <ul className="divide-y divide-border/40 rounded-md border border-border/60 bg-card/40">
+    <ul className="divide-y divide-border/40 overflow-hidden rounded-md border border-border/60 bg-card/40">
       {log.map((e) => (
         <li
           key={e.uid}
-          className="flex items-center gap-2 px-3 py-1.5 text-[11.5px]"
+          className="flex items-center gap-2 px-3 py-1.5 text-[11px]"
         >
           <StatusDot status={e.status} />
-          <span className="rounded-sm bg-foreground/[0.06] px-1.5 py-px text-[9.5px] font-medium uppercase tracking-wide text-muted-foreground">
+          <span className="inline-flex shrink-0 items-center rounded-sm bg-foreground/[0.06] px-1.5 py-px text-[9.5px] font-medium uppercase tracking-wide text-muted-foreground">
             {e.kind}
           </span>
           <span className="min-w-0 flex-1 truncate">{e.title}</span>
@@ -576,7 +785,7 @@ function PublishLogList({
             >
               <HugeiconsIcon
                 icon={ExternalLink}
-                size={11}
+                size={10}
                 strokeWidth={1.75}
               />
               #{e.result.id}
@@ -598,6 +807,37 @@ function StatusDot({ status }: { status: "pending" | "ok" | "failed" }) {
       : status === "failed"
         ? "bg-destructive"
         : "bg-amber-400 animate-pulse";
-  return <span className={cn("h-2 w-2 rounded-full", cls)} />;
+  return <span className={cn("h-2 w-2 shrink-0 rounded-full", cls)} />;
 }
 
+// --- helpers ----------------------------------------------------------------
+
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label className="text-[11px] text-muted-foreground">{label}</Label>
+      {children}
+    </div>
+  );
+}
+
+function PreviewRow({
+  label,
+  value,
+}: {
+  label: string;
+  value: React.ReactNode;
+}) {
+  return (
+    <li className="flex items-center justify-between gap-2">
+      <span className="text-[10.5px] text-muted-foreground">{label}</span>
+      <span className="min-w-0 truncate text-right">{value}</span>
+    </li>
+  );
+}
