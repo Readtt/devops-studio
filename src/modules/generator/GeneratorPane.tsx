@@ -26,6 +26,7 @@ import {
   AlertCircleIcon,
   ArrowLeft02Icon,
   CheckmarkCircle02Icon,
+  CodeIcon,
   ExternalLink,
   GitBranchIcon,
   Key01Icon,
@@ -960,6 +961,9 @@ function ReviewPhase({
                     <p className="mt-1 whitespace-pre-wrap text-[11px] text-foreground/85">
                       {b.reproSteps}
                     </p>
+                    {b.codeRefs && b.codeRefs.length > 0 ? (
+                      <BugCodeRefChips refs={b.codeRefs} />
+                    ) : null}
                   </div>
                 </div>
               </li>
@@ -967,6 +971,55 @@ function ReviewPhase({
           </ul>
         </section>
       ) : null}
+    </div>
+  );
+}
+
+/** Compact row of clickable code references on a bug suggestion. Clicking
+ *  fires the same window event the BugPane uses (see BugPane.tsx) so the
+ *  CodeViewer scrolls to the right line and highlights the range. */
+function BugCodeRefChips({
+  refs,
+}: {
+  refs: ReadonlyArray<{
+    file: string;
+    startLine: number;
+    endLine?: number | null;
+    symbol?: string | null;
+  }>;
+}) {
+  return (
+    <div className="mt-1.5 flex flex-wrap gap-1">
+      {refs.map((r, i) => {
+        const lineLabel =
+          r.endLine && r.endLine !== r.startLine
+            ? `${r.startLine}–${r.endLine}`
+            : `${r.startLine}`;
+        return (
+          <button
+            key={`${r.file}-${i}`}
+            type="button"
+            onClick={() => {
+              window.dispatchEvent(
+                new CustomEvent("devops-studio:open-code-viewer", {
+                  detail: {
+                    path: r.file,
+                    startLine: r.startLine,
+                    endLine: r.endLine ?? undefined,
+                  },
+                }),
+              );
+            }}
+            className="inline-flex items-center gap-1 rounded border border-border/60 bg-card/70 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground hover:border-primary/50 hover:text-foreground"
+            title={r.symbol ?? undefined}
+          >
+            <HugeiconsIcon icon={CodeIcon} size={9} strokeWidth={1.75} />
+            <span className="truncate">
+              {r.file}:{lineLabel}
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }

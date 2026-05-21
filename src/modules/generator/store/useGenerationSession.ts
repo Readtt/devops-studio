@@ -543,7 +543,12 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
           title: b.title,
           reproSteps: b.reproSteps,
           severity: b.severity,
-          codeLinks: [],
+          codeLinks: (b.codeRefs ?? []).map((r) => ({
+            file: r.file,
+            startLine: r.startLine,
+            endLine: r.endLine ?? undefined,
+            commitSha: null,
+          })),
         });
         updateLog(set, b.uid, { status: "ok", result: created });
       } catch (e) {

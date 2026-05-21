@@ -268,9 +268,18 @@ const DRAFT_BATCH_SHAPE = {
   bugs: [
     {
       title: "[Auth] SMS fallback ignores rate-limit",
-      reproSteps: "Step-by-step repro in plain prose.",
+      reproSteps:
+        "1. Enter valid credentials. 2. Trigger SMS code 6 times in 60s. Observed: all 6 codes sent. Expected: throttled after 3.",
       severity: "2 - High",
       linkedDraftCaseIndex: 0,
+      codeRefs: [
+        {
+          file: "src/auth/sms.ts",
+          startLine: 42,
+          endLine: 58,
+          symbol: "sendCode",
+        },
+      ],
     },
   ],
 };

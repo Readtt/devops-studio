@@ -32,12 +32,29 @@ export const DraftCaseLLMSchema = z.object({
   sourceLinks: z.array(DraftSourceLinkSchema).default([]),
 });
 
+/** Code anchor a bug-suggestion model can emit when it grounded the bug in
+ *  actual source. Mirrors the existing CodeLink shape used by cases so the
+ *  publish path can format both through the shared HTML emitter. */
+export const DraftBugCodeRefSchema = z.object({
+  /** Path relative to the user's source directory. */
+  file: z.string().min(1),
+  startLine: z.number().int().nonnegative(),
+  endLine: z.number().int().nonnegative().nullable().optional(),
+  /** Optional human-readable anchor inside the file, e.g. "LoginController.Authenticate". */
+  symbol: z.string().nullable().optional(),
+});
+export type DraftBugCodeRef = z.infer<typeof DraftBugCodeRefSchema>;
+
 export const DraftBugLLMSchema = z.object({
   title: z.string().min(8).max(160),
   reproSteps: z.string().min(1),
   severity: z.enum(["1 - Critical", "2 - High", "3 - Medium", "4 - Low"]),
   /** Index into DraftBatch.cases that this bug attaches to, if any. */
   linkedDraftCaseIndex: z.number().int().nonnegative().nullable().optional(),
+  /** Source anchors the analyst found while investigating. Embedded as a
+   *  parseable HTML comment block on the published bug's reproSteps so the
+   *  client can later render them as clickable code-viewer chips. */
+  codeRefs: z.array(DraftBugCodeRefSchema).default([]),
 });
 
 export const DraftBatchLLMSchema = z.object({

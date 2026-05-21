@@ -32,6 +32,24 @@ BUG SUGGESTIONS (bug-hunt mode only)
 - Never flag a "bug" for "this case has no automated test" or
   "the spec could be clearer".
 - Severity: "1 - Critical" | "2 - High" | "3 - Medium" | "4 - Low".
+- Write reproSteps as numbered, actionable steps a tester can follow.
+  Start with the precondition, then the action, then the observed vs.
+  expected result. No HTML, no markdown, just plain sentences.
+- Always link the bug to its parent test case via \`linkedDraftCaseIndex\`
+  (an index into the cases array you generate). If multiple cases relate,
+  pick the one that most directly exposes the bug.
+
+BUG CODE REFERENCES (\`codeRefs\`)
+- When you found a bug by reading attached source or by using your Read /
+  Glob / Grep tools, you MUST emit \`codeRefs\` for each bug pointing at
+  the exact lines that cause or demonstrate the issue. This is what makes
+  the bug actionable for the engineer who'll fix it.
+- Format per ref: \`{ "file": "src/auth/login.ts", "startLine": 42, "endLine": 58, "symbol": "LoginController.Authenticate" }\`.
+  \`endLine\` and \`symbol\` are optional but include them when you can.
+- Use paths RELATIVE to the user's source directory (the working dir you
+  were given). No absolute paths.
+- If a bug was inferred from the spec alone with no code grounding, leave
+  \`codeRefs\` empty — fabricating file paths is worse than no reference.
 
 DUPLICATION RULE
 You will be given existing case titles. Skip any scenario already covered.
