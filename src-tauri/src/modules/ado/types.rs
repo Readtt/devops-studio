@@ -51,6 +51,11 @@ pub struct TestConnectionResult {
 pub struct ConnectionData {
     #[serde(default)]
     pub authenticated_user: Option<AdoIdentity>,
+    /// Per-tenant UUID returned by every real Azure DevOps server. Used in
+    /// `auth::test_connection` to distinguish a genuine ADO response from a
+    /// CDN/wildcard tenant that 200s with an empty payload.
+    #[serde(default)]
+    pub instance_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

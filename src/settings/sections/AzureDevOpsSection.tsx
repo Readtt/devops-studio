@@ -181,12 +181,11 @@ export function AzureDevOpsSection() {
   }
 
   async function onTest() {
-    if (pat.length > 0) {
-      // Persist the just-typed PAT first, then verify.
-      await onSave();
-    } else {
-      await verify();
-    }
+    // Always push the current form to the backend before probing. Otherwise
+    // editing the org URL without re-typing the PAT leaves the backend's
+    // in-memory connection on the OLD org — and the probe happily reports
+    // "Connected" against whatever the user typed last save.
+    await onSave();
   }
 
   const canSave =

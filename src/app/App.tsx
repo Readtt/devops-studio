@@ -28,11 +28,11 @@ import { UpdaterDialog } from "@/modules/updater";
 import { useGenerationSession } from "@/modules/generator/store/useGenerationSession";
 import { useSourceDirGitInfo } from "@/modules/git";
 import { getConnection } from "@/modules/ado";
+import { AzureDevOpsLogo } from "@/components/AzureDevOpsLogo";
 import type { Tab } from "@/modules/tabs/lib/useTabs";
 import {
   AlertCircleIcon,
   Cancel01Icon,
-  CloudServerIcon,
   FolderOpenIcon,
   GitBranchIcon,
   Settings01Icon,
@@ -592,23 +592,30 @@ export default function App() {
                     </div>
                   ) : (
                     <>
-                      <div className="absolute inset-0">
+                      {/* pointer-events-none on the wrappers so an empty stack
+                          (e.g. BugStack with no bug tabs open) doesn't sit on
+                          top of the workspace and absorb every click. The
+                          visible pane inside each Stack still captures events
+                          because pointer-events: none only suppresses on the
+                          element itself — descendants with default auto are
+                          still hit-testable. */}
+                      <div className="pointer-events-none absolute inset-0">
                         <TestCaseStack tabs={compatTabs} activeId={activeId ?? -1} />
                       </div>
-                      <div className="absolute inset-0">
+                      <div className="pointer-events-none absolute inset-0">
                         <GeneratorStack
                           tabs={compatTabs}
                           activeId={activeId ?? -1}
                           onOpenCase={openTestCaseTab}
                         />
                       </div>
-                      <div className="absolute inset-0">
+                      <div className="pointer-events-none absolute inset-0">
                         <CodeViewerStack
                           tabs={compatTabs}
                           activeId={activeId ?? -1}
                         />
                       </div>
-                      <div className="absolute inset-0">
+                      <div className="pointer-events-none absolute inset-0">
                         <BugStack
                           tabs={compatTabs}
                           activeId={activeId ?? -1}
@@ -659,8 +666,8 @@ export default function App() {
                           : "bg-muted-foreground/40",
                       )}
                     />
-                    <HugeiconsIcon icon={CloudServerIcon} size={11} strokeWidth={1.75} />
-                    <span>{adoConfigured ? "ADO connected" : "ADO"}</span>
+                    <AzureDevOpsLogo size={11} mono={!adoConfigured} />
+                    <span>{adoConfigured ? "Azure DevOps" : "Not connected"}</span>
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="top" className="text-[11px]">

@@ -13,7 +13,11 @@ export function GeneratorStack({ tabs, activeId, onOpenCase }: Props) {
   const visible = gen.id === activeId;
   return (
     <div
-      className="absolute inset-0"
+      className={
+        visible
+          ? "pointer-events-auto absolute inset-0"
+          : "absolute inset-0"
+      }
       style={{ visibility: visible ? "visible" : "hidden" }}
       aria-hidden={!visible}
     >

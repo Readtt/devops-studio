@@ -18,7 +18,11 @@ export function BugStack({ tabs, activeId, sourceRoot }: Props) {
         return (
           <div
             key={t.id}
-            className="absolute inset-0"
+            className={
+              visible
+                ? "pointer-events-auto absolute inset-0"
+                : "absolute inset-0"
+            }
             style={{ visibility: visible ? "visible" : "hidden" }}
             aria-hidden={!visible}
           >
