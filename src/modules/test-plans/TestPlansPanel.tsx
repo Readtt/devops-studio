@@ -6,6 +6,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Tooltip,
   TooltipContent,
@@ -352,8 +353,10 @@ function PlanRow({
       {expanded ? (
         <ul className="ml-3 border-l border-border/40 pl-1.5">
           {data?.loading ? (
-            <li className="px-2 py-1 text-[11px] text-muted-foreground">
-              Loading suites…
+            <li className="flex flex-col gap-1.5 px-2 py-1.5">
+              <Skeleton className="h-3 w-3/4" />
+              <Skeleton className="h-3 w-2/3" />
+              <Skeleton className="h-3 w-1/2" />
             </li>
           ) : null}
           {data?.error ? (
@@ -481,8 +484,9 @@ function SuiteRow({
       {expanded ? (
         <ul className="ml-3 border-l border-border/40 pl-1.5">
           {loading ? (
-            <li className="px-2 py-1 text-[10.5px] text-muted-foreground">
-              Loading cases…
+            <li className="flex flex-col gap-1.5 px-2 py-1.5">
+              <Skeleton className="h-3 w-4/5" />
+              <Skeleton className="h-3 w-3/5" />
             </li>
           ) : null}
           {error ? (
