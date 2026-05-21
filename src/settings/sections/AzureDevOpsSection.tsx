@@ -9,6 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import {
   adoErrorMessage,
@@ -21,6 +22,10 @@ import {
   type ConnectionStatus,
   type ProjectRef,
 } from "@/modules/ado";
+import {
+  CURRENT_BRANCH_SENTINEL,
+  useSourceDirGitInfo,
+} from "@/modules/git";
 import {
   CheckmarkCircle02Icon,
   Tick02Icon,
@@ -47,6 +52,8 @@ export function AzureDevOpsSection() {
   const [patVisible, setPatVisible] = useState(false);
   const [hasStoredPat, setHasStoredPat] = useState(false);
   const [trackingBranch, setTrackingBranch] = useState("main");
+  const [useDynamicBranch, setUseDynamicBranch] = useState(false);
+  const gitInfo = useSourceDirGitInfo();
   const [projects, setProjects] = useState<ProjectRef[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [projectsError, setProjectsError] = useState<AdoError | null>(null);
@@ -79,7 +86,14 @@ export function AzureDevOpsSection() {
     setOrgUrl(s.orgUrl);
     setProject(s.project);
     setHasStoredPat(s.hasPat);
-    setTrackingBranch(s.defaultTrackingBranch || "main");
+    const saved = s.defaultTrackingBranch || "main";
+    if (saved === CURRENT_BRANCH_SENTINEL) {
+      setUseDynamicBranch(true);
+      setTrackingBranch("main");
+    } else {
+      setUseDynamicBranch(false);
+      setTrackingBranch(saved);
+    }
   }
 
   async function verify(): Promise<boolean> {
@@ -149,7 +163,9 @@ export function AzureDevOpsSection() {
         project,
         pat: pat.length > 0 ? pat : undefined,
         defaultPlanId: null,
-        defaultTrackingBranch: trackingBranch || "main",
+        defaultTrackingBranch: useDynamicBranch
+          ? CURRENT_BRANCH_SENTINEL
+          : trackingBranch || "main",
       });
       setPat("");
       const ok = await verify();
@@ -326,12 +342,31 @@ export function AzureDevOpsSection() {
       <div className="flex flex-col gap-2">
         <Label>Defaults</Label>
         <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card/60 px-3 py-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-col">
+              <Label className="text-[11.5px] text-foreground">
+                Use current source-directory branch
+              </Label>
+              <p className="text-[10.5px] text-muted-foreground/80">
+                {gitInfo.isRepo && gitInfo.branch
+                  ? `On branch ${gitInfo.branch}${gitInfo.commit ? ` · ${gitInfo.commit}` : ""}.`
+                  : gitInfo.isRepo
+                    ? "Source directory is in detached HEAD — set a branch below as a fallback."
+                    : "No git repo at the source directory yet — set a fallback below."}
+              </p>
+            </div>
+            <Switch
+              checked={useDynamicBranch}
+              onCheckedChange={setUseDynamicBranch}
+            />
+          </div>
+
           <div className="flex flex-col gap-1">
             <Label
               htmlFor="ado-branch"
               className="text-[11.5px] text-muted-foreground"
             >
-              Tracking branch
+              {useDynamicBranch ? "Fallback branch" : "Tracking branch"}
             </Label>
             <Input
               id="ado-branch"
@@ -340,10 +375,13 @@ export function AzureDevOpsSection() {
               placeholder="main"
               spellCheck={false}
               autoComplete="off"
+              disabled={useDynamicBranch && gitInfo.isRepo && !!gitInfo.branch}
               className="h-8 font-mono text-[12px]"
             />
             <p className="text-[10.5px] text-muted-foreground/80">
-              Staleness scans watch this branch for commits to linked files.
+              {useDynamicBranch
+                ? "Used when the source directory has no resolvable branch (detached HEAD or not a git repo)."
+                : "Staleness scans watch this branch for commits to linked files."}
             </p>
           </div>
         </div>

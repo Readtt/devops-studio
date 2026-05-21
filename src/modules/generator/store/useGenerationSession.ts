@@ -19,7 +19,12 @@ import {
 } from "../lib/qaAnalystRun";
 import { runQaAnalystClaude } from "../lib/qaAnalystRunClaude";
 import { selectEngine } from "@/modules/ai/lib/engine";
+import {
+  isDynamicTrackingBranch,
+  resolveTrackingBranch,
+} from "@/modules/git";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { invoke } from "@tauri-apps/api/core";
 import type {
   DraftSourceLink,
   ReviewedBug,
@@ -249,11 +254,30 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
     set({ phase: "publishing", publishLog: log });
 
     const caseIdByDraftUid = new Map<string, number>();
-    // Pull the default tracking branch once for staleness baselines.
+    // Pull the default tracking branch once for staleness baselines. If the
+    // user configured `$current`, resolve to the live source-dir branch so
+    // each generation is indexed on the branch the user is actually working
+    // on, not whatever was saved at setup time.
     let trackingBranch = "main";
     try {
       const conn = await getConnection();
-      trackingBranch = conn.defaultTrackingBranch || "main";
+      const saved = conn.defaultTrackingBranch ?? "";
+      let sourceDirBranch: string | null = null;
+      if (isDynamicTrackingBranch(saved)) {
+        const sourceRoot = usePreferencesStore.getState().sourceRoot;
+        if (sourceRoot) {
+          try {
+            const info = await invoke<{ branch: string | null }>(
+              "git_repo_info",
+              { path: sourceRoot },
+            );
+            sourceDirBranch = info?.branch ?? null;
+          } catch {
+            // If git_repo_info fails we'll fall through to the "main" fallback.
+          }
+        }
+      }
+      trackingBranch = resolveTrackingBranch(saved, sourceDirBranch);
     } catch {
       // Non-fatal — falls back to "main".
     }

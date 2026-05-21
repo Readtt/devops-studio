@@ -1,6 +1,6 @@
 mod modules;
 
-use modules::{ado, claude, fs, history, net, secrets, staleness, workspace};
+use modules::{ado, claude, fs, git, history, net, secrets, staleness, workspace};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_window_state::StateFlags;
@@ -189,6 +189,8 @@ pub fn run() {
             claude::claude_probe,
             claude::claude_run_query,
             claude::claude_setup_token,
+            // --- Source-dir git introspection ---
+            git::git_repo_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
