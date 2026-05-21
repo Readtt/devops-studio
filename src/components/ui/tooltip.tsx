@@ -32,7 +32,7 @@ function TooltipTrigger({
 
 function TooltipContent({
   className,
-  sideOffset = 4,
+  sideOffset = 6,
   children,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Content>) {
@@ -42,12 +42,18 @@ function TooltipContent({
         data-slot="tooltip-content"
         sideOffset={sideOffset}
         className={cn(
-          "z-50 inline-flex w-fit max-w-xs origin-(--radix-tooltip-content-transform-origin) items-center gap-1.5 rounded-md border border-border/60 bg-popover px-2 py-1 text-[11px] text-popover-foreground shadow-md has-data-[slot=kbd]:pr-1.5 data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1 data-[state=delayed-open]:animate-in data-[state=delayed-open]:fade-in-0 data-[state=delayed-open]:zoom-in-95 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          // Inverted-color pill: solid foreground bg, background-color text.
+          // Distinctive enough that the tooltip reads as "the app speaking"
+          // rather than another shadcn card. Tight tracking + font-mono for
+          // the editor voice. The arrow renders below as a small filled
+          // triangle matching the bg.
+          "z-50 inline-flex w-fit max-w-xs origin-(--radix-tooltip-content-transform-origin) items-center gap-1 rounded-md bg-foreground px-2 py-1 font-sans text-[10.5px] font-medium tracking-tight text-background shadow-lg has-data-[slot=kbd]:pr-1.5 data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1 data-[state=delayed-open]:animate-in data-[state=delayed-open]:fade-in-0 data-[state=delayed-open]:zoom-in-95 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
           className
         )}
         {...props}
       >
         {children}
+        <TooltipPrimitive.Arrow className="fill-foreground" width={9} height={4} />
       </TooltipPrimitive.Content>
     </TooltipPrimitive.Portal>
   )

@@ -33,7 +33,6 @@ import {
   GitBranchIcon,
   PlayIcon,
   RemoveCircleIcon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -44,11 +43,11 @@ const MODE_LABELS: Record<GenerationMode, string> = {
 };
 
 const STEPS = [
-  { id: "input", label: "Input" },
-  { id: "analyzing", label: "Analyze" },
-  { id: "review", label: "Review" },
-  { id: "publishing", label: "Publish" },
-  { id: "done", label: "Done" },
+  { id: "input", label: "input" },
+  { id: "analyzing", label: "analyze" },
+  { id: "review", label: "review" },
+  { id: "publishing", label: "publish" },
+  { id: "done", label: "done" },
 ] as const;
 
 type Props = {
@@ -92,6 +91,12 @@ export function GeneratorPane({
 
 // --- Progress strip ---------------------------------------------------------
 
+/**
+ * Editor-style typed header: `testgen → input · ANALYZE · review · publish · done`
+ * The active step renders in primary mint with inverse-video; completed steps
+ * dim, future steps muted. Way more characterful than the 5-circles wizard
+ * pattern and reclaims vertical space.
+ */
 function ProgressStrip({
   phase,
 }: {
@@ -104,48 +109,33 @@ function ProgressStrip({
   }, [phase]);
 
   return (
-    <header className="flex h-10 shrink-0 items-center justify-between gap-4 border-b border-border/60 bg-card/40 px-5">
-      <div className="flex min-w-0 items-center gap-2">
-        <h1 className="text-[12.5px] font-semibold tracking-tight">
-          Test Case Generator
-        </h1>
-        <ol className="flex items-center gap-1">
+    <header className="flex h-9 shrink-0 items-center justify-between gap-4 border-b border-border/60 bg-card/40 px-5">
+      <div className="flex min-w-0 items-center gap-2 font-mono text-[11px]">
+        <span className="font-semibold tracking-tight text-foreground/85">
+          testgen
+        </span>
+        <span className="text-muted-foreground/60">→</span>
+        <ol className="flex items-center gap-0">
           {STEPS.map((step, i) => {
             const completed = i < currentIdx;
             const active = i === currentIdx;
             return (
-              <li key={step.id} className="flex items-center gap-1">
+              <li key={step.id} className="flex items-center">
+                {i > 0 ? (
+                  <span className="px-1.5 text-muted-foreground/30">·</span>
+                ) : null}
                 <span
                   className={cn(
-                    "flex h-4 w-4 items-center justify-center rounded-full border text-[9px] font-semibold transition-colors",
-                    completed
-                      ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-                      : active
-                        ? "border-primary bg-primary/15 text-foreground"
-                        : "border-border/60 bg-card text-muted-foreground/70",
-                  )}
-                >
-                  {completed ? (
-                    <HugeiconsIcon icon={Tick02Icon} size={9} strokeWidth={3} />
-                  ) : (
-                    i + 1
-                  )}
-                </span>
-                <span
-                  className={cn(
-                    "text-[10.5px]",
+                    "transition-colors duration-150",
                     active
-                      ? "font-medium text-foreground"
+                      ? "rounded-sm bg-primary/15 px-1.5 py-0.5 font-semibold text-primary"
                       : completed
-                        ? "text-foreground/85"
-                        : "text-muted-foreground/70",
+                        ? "text-foreground/55 line-through decoration-foreground/30"
+                        : "text-muted-foreground/45",
                   )}
                 >
                   {step.label}
                 </span>
-                {i < STEPS.length - 1 ? (
-                  <span className="mx-0.5 h-px w-3 bg-border/60" />
-                ) : null}
               </li>
             );
           })}
@@ -486,21 +476,49 @@ function ReviewPhase({
 
   if (cases.length === 0 && bugs.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-2 rounded-md border border-dashed border-border/60 bg-card/40 px-6 py-10 text-center">
-        <HugeiconsIcon
-          icon={AlertCircleIcon}
-          size={18}
-          strokeWidth={1.5}
-          className="text-muted-foreground"
-        />
-        <p className="text-[12px] font-medium">No test cases proposed.</p>
-        <p className="max-w-[420px] text-[11px] text-muted-foreground">
-          The analyzer didn't return anything. Try adding more detail to the
-          requirements or attach source files for context.
-        </p>
-        <Button size="sm" variant="outline" onClick={startNew} className="mt-1">
-          Back to input
-        </Button>
+      <div className="overflow-hidden rounded-md border border-border/60 bg-card/40">
+        <div className="flex items-center gap-1.5 border-b border-border/40 bg-foreground/[0.03] px-3 py-1.5">
+          <span className="h-1.5 w-1.5 rounded-full bg-amber-500/80" />
+          <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+            empty result
+          </span>
+          <span className="ml-auto font-mono text-[10px] text-muted-foreground/60">
+            review/0
+          </span>
+        </div>
+        <div className="flex flex-col gap-3 px-5 py-5">
+          <p className="text-[12.5px] font-medium leading-snug">
+            The analyzer returned nothing for this spec.
+          </p>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            Empty results usually mean one of two things:
+          </p>
+          <ol className="ml-3 flex flex-col gap-1.5 text-[11px] text-foreground/85">
+            <li className="flex gap-2">
+              <span className="font-mono text-muted-foreground/70">01</span>
+              <span>
+                The spec lacks an actor or an outcome — &ldquo;the API does X&rdquo; is
+                often enough; &ldquo;users do A and see B&rdquo; is better.
+              </span>
+            </li>
+            <li className="flex gap-2">
+              <span className="font-mono text-muted-foreground/70">02</span>
+              <span>
+                The model didn&rsquo;t have enough source context. Attach the
+                relevant files so it can see the actual handlers / components.
+              </span>
+            </li>
+          </ol>
+          <div className="mt-2 flex items-center gap-2 border-t border-border/40 pt-3">
+            <Button size="sm" onClick={startNew}>
+              <HugeiconsIcon icon={ArrowLeft02Icon} size={11} strokeWidth={1.75} />
+              Refine spec
+            </Button>
+            <span className="ml-auto font-mono text-[10px] text-muted-foreground/60">
+              ↵ to retry · esc to dismiss
+            </span>
+          </div>
+        </div>
       </div>
     );
   }

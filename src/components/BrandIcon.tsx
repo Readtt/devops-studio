@@ -33,21 +33,36 @@ type Props = {
   name: BrandName;
   size?: number;
   className?: string;
-  /** When true, paint the icon in the brand's official color. Default off
-   *  so icons inherit the surrounding text color and stay legible in dark
-   *  mode. */
+  /** Default true: paint in the brand's official color, but with a
+   *  near-black-detector that falls back to currentColor when the brand
+   *  hex would vanish into the current background (looking at you,
+   *  Anthropic #181818 and Vercel #000000 on dark mode). */
   branded?: boolean;
   title?: string;
 };
+
+/** Bytes-only luminance test on a 6-char hex. Brands ship official marks
+ *  in pure black (Anthropic, Vercel, GitHub) which disappear on dark
+ *  surfaces; this returns true for any color dark enough that we should
+ *  inherit currentColor instead. */
+function isNearBlack(hex: string): boolean {
+  if (hex.length !== 6) return false;
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  // Perceptual-ish luma — Rec. 601 weights are close enough for this gate.
+  return 0.299 * r + 0.587 * g + 0.114 * b < 32;
+}
 
 export function BrandIcon({
   name,
   size = 13,
   className,
-  branded = false,
+  branded = true,
   title,
 }: Props) {
   const icon = ICONS[name];
+  const useCurrent = !branded || isNearBlack(icon.hex);
   return (
     <svg
       role="img"
@@ -55,7 +70,7 @@ export function BrandIcon({
       viewBox="0 0 24 24"
       width={size}
       height={size}
-      fill={branded ? `#${icon.hex}` : "currentColor"}
+      fill={useCurrent ? "currentColor" : `#${icon.hex}`}
       className={cn("shrink-0", className)}
     >
       <path d={icon.path} />
