@@ -1,32 +1,64 @@
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { WindowControls } from "@/components/WindowControls";
+import { AzureDevOpsLogo } from "@/components/AzureDevOpsLogo";
 import { IS_MAC, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
 import type { SettingsTab } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   AiScanIcon,
-  CloudServerIcon,
   InformationCircleIcon,
   Settings01Icon,
   KeyboardIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { JSX, useEffect, useState } from "react";
+import { JSX, ReactNode, useEffect, useState } from "react";
 import { AboutSection } from "./sections/AboutSection";
 import { AzureDevOpsSection } from "./sections/AzureDevOpsSection";
 import { GeneralSection } from "./sections/GeneralSection";
 import { ModelsSection } from "./sections/ModelsSection";
 import { ShortcutsSection } from "./sections/ShortcutsSection";
 
-const TABS: { id: SettingsTab; label: string; icon: typeof Settings01Icon, component: () => JSX.Element }[] =
-  [
-    { id: "general", label: "General", icon: Settings01Icon, component: GeneralSection },
-    { id: "shortcuts", label: "Shortcuts", icon: KeyboardIcon, component: ShortcutsSection },
-    { id: "azure-devops", label: "Azure DevOps", icon: CloudServerIcon, component: AzureDevOpsSection },
-    { id: "models", label: "Models", icon: AiScanIcon, component: ModelsSection },
-    { id: "about", label: "About", icon: InformationCircleIcon, component: AboutSection },
-  ];
+type TabDef = {
+  id: SettingsTab;
+  label: string;
+  /** Rendered before the label inside the tab trigger. */
+  glyph: ReactNode;
+  component: () => JSX.Element;
+};
+
+const TABS: TabDef[] = [
+  {
+    id: "general",
+    label: "General",
+    glyph: <HugeiconsIcon icon={Settings01Icon} size={12} strokeWidth={1.75} />,
+    component: GeneralSection,
+  },
+  {
+    id: "shortcuts",
+    label: "Shortcuts",
+    glyph: <HugeiconsIcon icon={KeyboardIcon} size={12} strokeWidth={1.75} />,
+    component: ShortcutsSection,
+  },
+  {
+    id: "azure-devops",
+    label: "Azure DevOps",
+    glyph: <AzureDevOpsLogo size={12} />,
+    component: AzureDevOpsSection,
+  },
+  {
+    id: "models",
+    label: "Models",
+    glyph: <HugeiconsIcon icon={AiScanIcon} size={12} strokeWidth={1.75} />,
+    component: ModelsSection,
+  },
+  {
+    id: "about",
+    label: "About",
+    glyph: <HugeiconsIcon icon={InformationCircleIcon} size={12} strokeWidth={1.75} />,
+    component: AboutSection,
+  },
+];
 
 const VALID_TABS: SettingsTab[] = [
   "general",
@@ -100,7 +132,7 @@ export function SettingsApp() {
                 value={t.id}
                 className="h-6 gap-1.5 px-2.5 text-[11.5px]"
               >
-                <HugeiconsIcon icon={t.icon} size={12} strokeWidth={1.75} />
+                {t.glyph}
                 <span>{t.label}</span>
               </TabsTrigger>
             ))}

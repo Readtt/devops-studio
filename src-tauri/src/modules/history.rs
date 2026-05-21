@@ -45,6 +45,14 @@ pub struct GenerationRun {
     /// surface them all as drafts.
     #[serde(default)]
     pub status: Option<String>,
+    /// Full draft body — the structured ReviewedCase[] / ReviewedBug[] +
+    /// requirements + mode the session held when the row was saved. Present
+    /// on drafts so the Generator can fully restore review state when the
+    /// user clicks "Open" in the history pane. Absent on legacy / published
+    /// rows that only stored titles. Rust treats the payload as opaque JSON;
+    /// the TS side owns the schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_payload: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,6 +178,7 @@ mod tests {
             bugs: vec![],
             publish_log: vec![],
             status: Some("draft".into()),
+            draft_payload: None,
         };
         let j = serde_json::to_value(&run).unwrap();
         assert_eq!(j["planId"], 7);

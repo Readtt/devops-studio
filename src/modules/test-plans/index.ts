@@ -1,4 +1,5 @@
 export { TestPlansPanel } from "./TestPlansPanel";
+export { NewSuiteDialog } from "./NewSuiteDialog";
 export { StaleQueuePanel } from "./StaleQueuePanel";
 export { TestCasePane } from "./TestCasePane";
 export { TestCaseStack } from "./TestCaseStack";

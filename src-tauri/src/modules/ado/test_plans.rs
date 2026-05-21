@@ -6,12 +6,12 @@
 //!   - `/_apis/testplan/Plans/{p}/Suites/{s}/TestCase` — case refs in a suite
 //!   - `/_apis/wit/workitems/{id}`      — the case as a work item (steps live here)
 
-use super::client::{get_json, get_raw_json, project_api, AdoState};
+use super::client::{get_json, get_raw_json, post_json, project_api, AdoState};
 use super::errors::{AdoError, AdoResult};
 use super::test_cases::work_item_to_case;
 use super::types::{PagedResponse, SuiteRef, TestCase, TestCaseRef, TestPlanRef};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 pub async fn list_plans(state: &AdoState) -> AdoResult<Vec<TestPlanRef>> {
     let (conn, _) = state.snapshot();
@@ -143,6 +143,73 @@ fn json_to_i64(v: &Value) -> Option<i64> {
 
 fn truncate_for_log(s: &str) -> String {
     if s.len() <= 240 { s.to_string() } else { format!("{}…", &s[..240]) }
+}
+
+/// Create a static test suite under `plan_id`. When `parent_suite_id` is
+/// `None`, the new suite is attached to the plan's root suite — that's the
+/// suite whose name matches the plan name and which `buildSuiteTree` hides on
+/// the frontend, so creating without an explicit parent reads as "add a
+/// top-level suite" from the user's perspective.
+pub async fn create_static_suite(
+    state: &AdoState,
+    plan_id: i64,
+    parent_suite_id: Option<i64>,
+    name: &str,
+) -> AdoResult<SuiteRef> {
+    let (conn, _) = state.snapshot();
+    let conn = conn.ok_or(AdoError::NotConfigured)?;
+
+    let parent_id = match parent_suite_id {
+        Some(id) => id,
+        None => resolve_root_suite_id(state, plan_id).await?,
+    };
+
+    let url = project_api(&conn, &format!("testplan/Plans/{plan_id}/suites"));
+    let body = json!({
+        "name": name,
+        "suiteType": "StaticTestSuite",
+        "parentSuite": { "id": parent_id },
+    });
+
+    let raw: Value = post_json(state, &url, &body, "application/json", "create suite").await?;
+    let id = raw
+        .get("id")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AdoError::local("create suite: missing id"))?;
+    let new_name = raw
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(name)
+        .to_string();
+    let suite_type = raw
+        .get("suiteType")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    Ok(SuiteRef {
+        id,
+        name: new_name,
+        suite_type,
+        parent_suite_id: Some(parent_id),
+    })
+}
+
+/// Locate the root suite for a plan — the one with no parent or whose parent
+/// id points outside the returned set. ADO always returns exactly one per
+/// plan; we treat zero/many as a backend-shape error to surface clearly.
+async fn resolve_root_suite_id(state: &AdoState, plan_id: i64) -> AdoResult<i64> {
+    let suites = list_suites(state, plan_id).await?;
+    let ids: std::collections::HashSet<i64> = suites.iter().map(|s| s.id).collect();
+    let mut roots = suites
+        .iter()
+        .filter(|s| match s.parent_suite_id {
+            None => true,
+            Some(p) => !ids.contains(&p),
+        })
+        .map(|s| s.id);
+    let id = roots
+        .next()
+        .ok_or_else(|| AdoError::local("create suite: plan has no root suite"))?;
+    Ok(id)
 }
 
 pub async fn get_case(state: &AdoState, case_id: i64) -> AdoResult<TestCase> {

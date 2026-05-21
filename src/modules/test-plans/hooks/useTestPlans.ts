@@ -55,7 +55,7 @@ type State = {
 
   refreshConnection: () => Promise<void>;
   refreshPlans: () => Promise<void>;
-  loadSuites: (planId: number) => Promise<void>;
+  loadSuites: (planId: number, opts?: { force?: boolean }) => Promise<void>;
   loadSuiteCases: (planId: number, suiteId: number) => Promise<void>;
   /** Fetch full case data (state, priority, linked work items, etc.) on
    *  demand. Idempotent — repeat calls return the cached value. */
@@ -131,12 +131,12 @@ export const useTestPlans = create<State>((set, get) => ({
     }
   },
 
-  loadSuites: async (planId: number) => {
+  loadSuites: async (planId: number, opts?: { force?: boolean }) => {
     // Concurrent-call guard: if a load is already in-flight, just await it
     // (implicitly — return without re-firing). The first caller wins.
     if (inFlightSuites.has(planId)) return;
     const curr = get().bySuite.get(planId) ?? initialSuiteLoad();
-    if (curr.suites.length > 0 && !curr.error) return; // cached + clean
+    if (!opts?.force && curr.suites.length > 0 && !curr.error) return; // cached + clean
 
     const controller = new AbortController();
     suiteAborts.set(planId, controller);

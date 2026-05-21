@@ -12,6 +12,7 @@ import {
   type ProviderId,
 } from "../config";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { setDefaultModel } from "@/modules/settings/store";
 import { BUILTIN_AGENTS } from "../lib/agents";
 import { useAgentsStore } from "./agentsStore";
 import { usePlanStore } from "./planStore";
@@ -318,8 +319,14 @@ export const useChatStore = create<StoreState>((set, get) => ({
 
   selectedModelId: DEFAULT_MODEL_ID,
   setSelectedModelId: (id) => {
+    // Single source of truth: the persisted default-model preference. Status
+    // bar, settings, and the generator's per-run picker all read from the
+    // same place, so writing through here is what keeps them coherent. The
+    // preferences subscription below mirrors back into `selectedModelId`
+    // (and into other windows via the prefs-changed Tauri event).
     set({ selectedModelId: id });
     void pushRecentModel(id);
+    void setDefaultModel(id);
   },
 
   mini: { open: false },
@@ -558,3 +565,18 @@ export function stop(): void {
   if (!id) return;
   void chats.get(id)?.stop();
 }
+
+// Mirror preferences.defaultModelId → chatStore.selectedModelId. This makes
+// the chat store a live read-through of the persisted default: when the
+// settings window writes a new default (or hydration completes), the status
+// bar and generator pick it up without an explicit refresh. Writes from
+// `setSelectedModelId` already go the other direction via setDefaultModel().
+let lastSyncedDefault: ModelId | null = null;
+usePreferencesStore.subscribe((state) => {
+  const next = state.defaultModelId;
+  if (next === lastSyncedDefault) return;
+  lastSyncedDefault = next;
+  if (useChatStore.getState().selectedModelId !== next) {
+    useChatStore.setState({ selectedModelId: next });
+  }
+});

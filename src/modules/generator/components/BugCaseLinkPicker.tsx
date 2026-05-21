@@ -3,6 +3,11 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { ReviewedCase } from "../lib/draftBatchSchema";
 import { useState } from "react";
@@ -31,15 +36,28 @@ export function BugCaseLinkPicker({
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className="inline-flex items-center gap-1 rounded-sm border border-border/60 bg-card/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded-sm border border-border/60 bg-card/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+            >
+              <span className="text-muted-foreground/50">→</span>
+              <span className="max-w-[180px] truncate">{triggerLabel}</span>
+            </button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent
+          side="top"
+          variant="panel"
+          className="max-w-[280px] px-3 py-2 text-[11px] leading-relaxed"
         >
-          <span className="text-muted-foreground/50">→</span>
-          <span className="max-w-[180px] truncate">{triggerLabel}</span>
-        </button>
-      </PopoverTrigger>
+          Each bug attaches to a draft case so the bug can be published as a
+          child of that case. Re-link to attach this bug to a different
+          parent — useful when you skipped the original parent.
+        </TooltipContent>
+      </Tooltip>
       <PopoverContent
         align="start"
         side="bottom"

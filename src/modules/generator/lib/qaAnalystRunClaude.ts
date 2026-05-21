@@ -20,6 +20,7 @@ import {
   type RunResult,
   type TargetContext,
 } from "./qaAnalystRun";
+import { renderRelatedCases, type RelatedCase } from "./relatedCases";
 import {
   clampOutputFull,
   clampOutputSummary,
@@ -32,6 +33,8 @@ export type RunClaudeInput = {
   requirements: string;
   attachments: RunAttachment[];
   existingCaseTitles: Pick<TestCaseRef, "id" | "title">[];
+  /** Cases from sibling suites in the same plan — see qaAnalystRun.ts. */
+  relatedCases?: RelatedCase[];
   /** Plan/suite the generator will publish into — see qaAnalystRun.ts. */
   targetContext?: TargetContext | null;
   mode: GenerationMode;
@@ -45,6 +48,10 @@ export type RunClaudeInput = {
   authMode: ClaudeAuthMode;
   /** Structured per-step activity for the streaming log UI. */
   onActivity?: (entry: ActivityEntry) => void;
+  /** Pre-built user prompt that replaces the auto-generated one. Used by
+   *  refine() so the model sees a "follow-up against this draft" framing
+   *  instead of "start from scratch". */
+  userPromptOverride?: string;
 };
 
 export async function runQaAnalystClaude(
@@ -57,7 +64,7 @@ export async function runQaAnalystClaude(
     if (key) env.ANTHROPIC_API_KEY = key;
   }
 
-  const userPrompt = buildUserPrompt(input);
+  const userPrompt = input.userPromptOverride ?? buildUserPrompt(input);
   const start = Date.now();
   const tracker = new ActivityTracker(start, input.onActivity);
 
@@ -237,6 +244,7 @@ function buildUserPrompt(input: RunClaudeInput): string {
         input.attachments.map(formatAttachmentBlock).join("\n\n");
 
   const targetBlock = renderTargetContext(input.targetContext);
+  const relatedBlock = renderRelatedCases(input.relatedCases ?? []);
 
   return [
     modeLine,
@@ -248,11 +256,15 @@ function buildUserPrompt(input: RunClaudeInput): string {
     input.requirements.trim(),
     "",
     existing,
+    relatedBlock ? "" : null,
+    relatedBlock || null,
     attached,
     "",
     "Return ONLY the DraftBatch JSON — no prose, no code fences. Schema:",
     JSON.stringify(DRAFT_BATCH_SHAPE, null, 2),
-  ].join("\n");
+  ]
+    .filter((line): line is string => line !== null)
+    .join("\n");
 }
 
 const DRAFT_BATCH_SHAPE = {

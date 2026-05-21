@@ -3,10 +3,7 @@ import {
   ArrowDown01Icon,
   ArrowRight01Icon,
   AlertCircleIcon,
-  FileEditIcon,
-  Search01Icon,
-  CodeIcon,
-  AiBrain01Icon,
+  ExternalLink,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { cn } from "@/lib/utils";
@@ -17,10 +14,12 @@ type Props = {
   className?: string;
 };
 
-/** Streaming log of what the analyst agent is doing — tool calls (Read/Glob/Grep
- *  with the file/pattern), thinking steps, and tool errors. Each tool entry
- *  collapses to a one-liner by default and expands to the full output for
- *  inspection. Auto-scrolls to the newest entry while the user hasn't manually
+/** Streaming log of what the analyst agent is doing — modeled after a build
+ *  log or LSP trace. Each row renders the tool call as a syntax-tinted
+ *  function expression (Read("path/to/file.ts")) instead of generic
+ *  icon+label rows. Read entries surface an "open" affordance that loads the
+ *  file into the CodeViewer (via the existing devops-studio:open-code-viewer
+ *  side-channel event). Auto-scrolls to newest entry while the user hasn't
  *  scrolled away. */
 export function AnalyzeActivityLog({ entries, className }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -44,141 +43,360 @@ export function AnalyzeActivityLog({ entries, className }: Props) {
     return (
       <div
         className={cn(
-          "flex items-center gap-2 rounded-md border border-dashed border-border/50 bg-card/20 px-3 py-2 font-mono text-[10.5px] text-muted-foreground/70",
+          "relative overflow-hidden rounded-md border border-border/60 bg-[oklch(0.985_0_0)] dark:bg-[oklch(0.08_0.005_240)]",
           className,
         )}
       >
-        <HugeiconsIcon icon={AiBrain01Icon} className="size-3.5" />
-        <span className="text-muted-foreground/40">$</span>
-        <span>waiting for the model to start…</span>
+        <LogChrome />
+        <div className="flex items-center gap-2 px-3 py-3 font-mono text-[11px]">
+          <span className="inline-block size-1.5 animate-pulse rounded-full bg-primary/80" />
+          <span className="text-muted-foreground/85">stdin</span>
+          <span className="text-muted-foreground/40">»</span>
+          <span className="text-muted-foreground/70">
+            waiting for the model to start…
+          </span>
+        </div>
       </div>
     );
   }
 
   return (
     <div
-      ref={containerRef}
-      onScroll={onScroll}
       className={cn(
-        // Left-rail "log stream" framing: a single accent line down the
-        // left edge anchors the activity timeline visually without adding
-        // a heavier card border that competes with the page's own panel.
-        "relative flex max-h-64 flex-col gap-px overflow-y-auto rounded-md border border-border/60 bg-card/40 p-1.5",
+        "relative overflow-hidden rounded-md border border-border/60 bg-[oklch(0.985_0_0)] shadow-sm dark:bg-[oklch(0.08_0.005_240)]",
         className,
       )}
     >
-      <span
-        aria-hidden
-        className="pointer-events-none absolute inset-y-1.5 left-3.5 w-px bg-border/50"
-      />
-      {entries.map((entry) => (
-        <ActivityRow key={entry.id} entry={entry} />
-      ))}
+      <LogChrome count={entries.length} />
+      <div
+        ref={containerRef}
+        onScroll={onScroll}
+        className="max-h-72 overflow-y-auto"
+      >
+        <ol className="flex flex-col">
+          {entries.map((entry, i) => (
+            <ActivityRow
+              key={entry.id}
+              entry={entry}
+              index={i + 1}
+              isLast={i === entries.length - 1}
+            />
+          ))}
+        </ol>
+      </div>
     </div>
   );
 }
 
-function ActivityRow({ entry }: { entry: ActivityEntry }) {
+/** Faux terminal/editor chrome — three dots, a path-style title, and an
+ *  entry-count badge on the right. Adds enough framing to read as a
+ *  dedicated surface without the heaviness of a full card header. */
+function LogChrome({ count }: { count?: number }) {
+  return (
+    <div className="flex h-6 items-center gap-2 border-b border-border/40 bg-foreground/[0.025] px-3">
+      <div className="flex items-center gap-1">
+        <span className="size-2 rounded-full bg-rose-400/60" />
+        <span className="size-2 rounded-full bg-amber-400/60" />
+        <span className="size-2 rounded-full bg-emerald-400/60" />
+      </div>
+      <span className="ml-1 font-mono text-[10px] tracking-tight text-muted-foreground/80">
+        analyst.log
+      </span>
+      {count !== undefined ? (
+        <span className="ml-auto rounded-sm bg-foreground/[0.06] px-1.5 py-px font-mono text-[9.5px] tabular-nums text-muted-foreground/85">
+          {count} step{count === 1 ? "" : "s"}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function ActivityRow({
+  entry,
+  index,
+  isLast,
+}: {
+  entry: ActivityEntry;
+  index: number;
+  isLast: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const hasExpandable =
     entry.outputFull !== undefined &&
     entry.outputFull.length > (entry.outputSummary?.length ?? 0);
   const isError = entry.kind === "error";
   const isThinking = entry.kind === "thinking";
+  const isPending = entry.durationMs === undefined && !isThinking && !isError;
+  const fileTarget = readFileTarget(entry);
 
   return (
-    <div
+    <li
       className={cn(
-        "rounded px-2 py-1.5 transition-colors",
+        "group relative border-l-2 px-3 py-1 font-mono text-[11px] transition-colors",
         isError
-          ? "bg-destructive/8 text-destructive"
-          : "hover:bg-muted/40",
+          ? "border-l-destructive/70 bg-destructive/[0.05]"
+          : isThinking
+            ? "border-l-transparent hover:bg-foreground/[0.025]"
+            : isLast && isPending
+              ? "border-l-primary/80 bg-primary/[0.04]"
+              : "border-l-border/40 hover:bg-foreground/[0.025]",
       )}
     >
-      <div className="flex items-start gap-1.5">
+      <div className="flex items-baseline gap-2">
+        {/* Line-number gutter, like a code editor. Mono and tabular-nums so
+            it stays aligned regardless of step count. */}
+        <span className="w-7 shrink-0 select-none text-right text-[10px] tabular-nums text-muted-foreground/45">
+          {index.toString().padStart(2, "0")}
+        </span>
+
+        {/* Expand chevron OR a status glyph, sharing the same column. */}
         <button
           type="button"
           onClick={() => hasExpandable && setOpen((o) => !o)}
-          className={cn(
-            "mt-0.5 flex size-3.5 shrink-0 items-center justify-center rounded text-muted-foreground/70",
-            hasExpandable ? "hover:bg-muted/60 hover:text-foreground" : "opacity-30",
-          )}
-          aria-label={open ? "Collapse" : "Expand"}
           disabled={!hasExpandable}
+          aria-label={open ? "Collapse" : "Expand"}
+          className={cn(
+            "inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm text-[10px] transition-colors",
+            isError
+              ? "text-destructive/80"
+              : isThinking
+                ? "text-muted-foreground/45"
+                : "text-muted-foreground/60",
+            hasExpandable && "hover:bg-foreground/[0.06] hover:text-foreground",
+            !hasExpandable && "cursor-default",
+          )}
         >
-          <HugeiconsIcon
-            icon={open ? ArrowDown01Icon : ArrowRight01Icon}
-            className="size-3"
-          />
+          {hasExpandable ? (
+            <HugeiconsIcon
+              icon={open ? ArrowDown01Icon : ArrowRight01Icon}
+              className="size-3"
+            />
+          ) : isError ? (
+            <HugeiconsIcon icon={AlertCircleIcon} className="size-3" />
+          ) : (
+            <span aria-hidden>{statusGlyph(entry, isPending)}</span>
+          )}
         </button>
 
-        <HugeiconsIcon
-          icon={iconFor(entry)}
-          className={cn(
-            "mt-0.5 size-3.5 shrink-0",
-            isError
-              ? "text-destructive"
-              : isThinking
-                ? "text-muted-foreground/60"
-                : "text-primary/80",
-          )}
-        />
-
+        {/* The "code line" — formatted like a function call so the eye can
+            scan tool + argument fast. */}
         <div className="min-w-0 flex-1">
-          <div className="flex items-baseline gap-1.5">
-            <span
-              className={cn(
-                "font-mono text-[11px]",
-                isThinking && "text-muted-foreground",
-              )}
-            >
-              {entry.toolName ?? (isThinking ? "thinking" : "step")}
-            </span>
-            {entry.inputSummary ? (
-              <span className="truncate font-mono text-[11px] text-muted-foreground">
-                {entry.inputSummary}
-              </span>
-            ) : null}
-          </div>
+          {isThinking ? (
+            <p className="italic leading-snug text-muted-foreground/85">
+              <span className="mr-1.5 text-muted-foreground/40">∴</span>
+              {entry.inputSummary || "thinking…"}
+            </p>
+          ) : (
+            <ToolCallLine entry={entry} fileTarget={fileTarget} />
+          )}
 
           {!open && entry.outputSummary ? (
-            <p className="mt-0.5 truncate font-mono text-[10.5px] text-muted-foreground/80">
+            <p className="mt-0.5 truncate text-[10.5px] text-muted-foreground/70">
+              <span className="mr-1 text-muted-foreground/40">↳</span>
               {entry.outputSummary}
             </p>
           ) : null}
 
           {open && entry.outputFull ? (
-            <pre className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap rounded border border-border/40 bg-muted/20 px-2 py-1 font-mono text-[10.5px] text-foreground/80">
+            <pre className="mt-1 max-h-56 overflow-y-auto whitespace-pre-wrap rounded-sm border border-border/40 bg-foreground/[0.04] px-2 py-1.5 text-[10.5px] leading-relaxed text-foreground/85">
               {entry.outputFull}
             </pre>
           ) : null}
 
           {entry.error && !open ? (
-            <p className="mt-0.5 truncate font-mono text-[10.5px] text-destructive/90">
+            <p className="mt-0.5 truncate text-[10.5px] text-destructive/85">
+              <span className="mr-1 text-destructive/55">✗</span>
               {entry.error}
             </p>
           ) : null}
         </div>
 
-        <div className="ml-2 shrink-0 font-mono text-[10px] text-muted-foreground/60 tabular-nums">
-          {formatTimestamp(entry.ts)}
+        {/* Right rail: timestamp + (hover) open-in-app for Read entries. */}
+        <div className="flex shrink-0 items-baseline gap-1.5">
+          {fileTarget ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                openInCodeViewer(fileTarget);
+              }}
+              className={cn(
+                "inline-flex h-5 items-center gap-1 rounded-sm border border-transparent px-1.5 text-[10px] text-muted-foreground transition-colors",
+                "opacity-0 group-hover:opacity-100 focus:opacity-100",
+                "hover:border-primary/40 hover:bg-primary/[0.08] hover:text-primary",
+              )}
+              title={`Open ${fileTarget.path} in the code viewer`}
+            >
+              <HugeiconsIcon icon={ExternalLink} size={9} strokeWidth={1.75} />
+              open
+            </button>
+          ) : null}
+          <span className="text-[10px] tabular-nums text-muted-foreground/55">
+            {formatTimestamp(entry.ts)}
+          </span>
           {entry.durationMs !== undefined ? (
-            <> · {formatDuration(entry.durationMs)}</>
+            <span className="text-[10px] tabular-nums text-muted-foreground/40">
+              {formatDuration(entry.durationMs)}
+            </span>
           ) : null}
         </div>
       </div>
-    </div>
+    </li>
   );
 }
 
-function iconFor(entry: ActivityEntry) {
-  if (entry.kind === "error") return AlertCircleIcon;
-  if (entry.kind === "thinking") return AiBrain01Icon;
-  const name = entry.toolName?.toLowerCase() ?? "";
-  if (name === "read") return FileEditIcon;
-  if (name === "grep") return Search01Icon;
-  if (name === "glob") return CodeIcon;
-  return CodeIcon;
+/** Render the tool call as a one-line "function expression". Read/Glob/Grep
+ *  get specialized formatting so paths and patterns are visually distinct
+ *  from the tool token. Everything else falls back to `name(arg)`. */
+function ToolCallLine({
+  entry,
+  fileTarget,
+}: {
+  entry: ActivityEntry;
+  fileTarget: FileTarget | null;
+}) {
+  const toolName = entry.toolName ?? "step";
+  const lower = toolName.toLowerCase();
+  const arg = entry.inputSummary ?? "";
+
+  // Read("path") — make the path itself clickable when we have a target.
+  if (fileTarget) {
+    return (
+      <p className="leading-snug">
+        <span className="font-semibold text-primary">{toolName}</span>
+        <span className="text-muted-foreground/60">(</span>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            openInCodeViewer(fileTarget);
+          }}
+          className="text-amber-700 underline-offset-2 hover:underline dark:text-amber-300"
+          title="Open in code viewer"
+        >
+          <span className="text-muted-foreground/55">&quot;</span>
+          {fileTarget.path}
+          {fileTarget.startLine ? (
+            <span className="text-emerald-700 dark:text-emerald-300">
+              :{fileTarget.startLine}
+              {fileTarget.endLine && fileTarget.endLine !== fileTarget.startLine
+                ? `-${fileTarget.endLine}`
+                : ""}
+            </span>
+          ) : null}
+          <span className="text-muted-foreground/55">&quot;</span>
+        </button>
+        <span className="text-muted-foreground/60">)</span>
+      </p>
+    );
+  }
+
+  // Grep("pattern", path/) — pattern is the string, path is a hint.
+  if (lower === "grep") {
+    const { pattern, scope } = splitGrepArg(arg);
+    return (
+      <p className="leading-snug">
+        <span className="font-semibold text-primary">{toolName}</span>
+        <span className="text-muted-foreground/60">(</span>
+        <span className="text-amber-700 dark:text-amber-300">
+          <span className="text-muted-foreground/55">/</span>
+          {pattern}
+          <span className="text-muted-foreground/55">/</span>
+        </span>
+        {scope ? (
+          <>
+            <span className="text-muted-foreground/55">, </span>
+            <span className="text-foreground/75">{scope}</span>
+          </>
+        ) : null}
+        <span className="text-muted-foreground/60">)</span>
+      </p>
+    );
+  }
+
+  // Glob("pattern") — pattern reads as a glob token.
+  if (lower === "glob") {
+    return (
+      <p className="leading-snug">
+        <span className="font-semibold text-primary">{toolName}</span>
+        <span className="text-muted-foreground/60">(</span>
+        <span className="text-violet-700 dark:text-violet-300">
+          <span className="text-muted-foreground/55">&quot;</span>
+          {arg}
+          <span className="text-muted-foreground/55">&quot;</span>
+        </span>
+        <span className="text-muted-foreground/60">)</span>
+      </p>
+    );
+  }
+
+  // Generic fallback — tool(arg-as-string).
+  return (
+    <p className="leading-snug">
+      <span className="font-semibold text-primary">{toolName}</span>
+      {arg ? (
+        <>
+          <span className="text-muted-foreground/60">(</span>
+          <span className="text-foreground/80">{arg}</span>
+          <span className="text-muted-foreground/60">)</span>
+        </>
+      ) : null}
+    </p>
+  );
+}
+
+type FileTarget = {
+  path: string;
+  startLine?: number;
+  endLine?: number;
+};
+
+/** Extract a file target from a Read activity entry. Read inputs come through
+ *  as just the file path (see `summarizeToolInput`); we also handle the rare
+ *  `path:start-end` shorthand the model sometimes emits. */
+function readFileTarget(entry: ActivityEntry): FileTarget | null {
+  if (entry.toolName?.toLowerCase() !== "read") return null;
+  const raw = entry.inputSummary?.trim();
+  if (!raw) return null;
+
+  // `path:start-end` → split off the range. Be defensive about Windows
+  // drive letters (`C:\…`) where the first colon is part of the path.
+  const m = raw.match(/^(.+?):(\d+)(?:[-–](\d+))?$/);
+  if (m && !raw.match(/^[a-zA-Z]:[\\/]/)) {
+    return {
+      path: m[1],
+      startLine: Number(m[2]),
+      endLine: m[3] ? Number(m[3]) : undefined,
+    };
+  }
+  return { path: raw };
+}
+
+/** Grep input summaries come through as `pattern (scope)` or `pattern (in
+ *  scope)` from `summarizeToolInput`. Split the two so they can be rendered
+ *  in different colors. */
+function splitGrepArg(arg: string): { pattern: string; scope: string | null } {
+  const m = arg.match(/^(.+?)\s+\((?:in\s+)?(.+?)\)\s*$/);
+  if (m) return { pattern: m[1], scope: m[2] };
+  return { pattern: arg, scope: null };
+}
+
+function openInCodeViewer(target: FileTarget): void {
+  window.dispatchEvent(
+    new CustomEvent("devops-studio:open-code-viewer", {
+      detail: {
+        path: target.path,
+        startLine: target.startLine,
+        endLine: target.endLine,
+      },
+    }),
+  );
+}
+
+function statusGlyph(entry: ActivityEntry, isPending: boolean): string {
+  if (entry.kind === "error") return "✗";
+  if (isPending) return "▸";
+  return "✓";
 }
 
 function formatTimestamp(ms: number): string {

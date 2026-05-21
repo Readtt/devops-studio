@@ -15,6 +15,7 @@ import {
   summarizeToolInput,
   type ActivityEntry,
 } from "./activityLog";
+import { renderRelatedCases, type RelatedCase } from "./relatedCases";
 
 const MAX_STEPS = 12;
 
@@ -53,6 +54,10 @@ export type RunInput = {
   requirements: string;
   attachments: RunAttachment[];
   existingCaseTitles: Pick<TestCaseRef, "id" | "title">[];
+  /** Cases from sibling suites in the same plan, surfaced as supplementary
+   *  context. May contain stale or wrong entries — the prompt explicitly
+   *  flags them as lower-priority than the feature spec. */
+  relatedCases?: RelatedCase[];
   /** Plan/suite the generator will publish into. The runner embeds this in
    *  the user prompt so the model knows where these cases live. */
   targetContext?: TargetContext | null;
@@ -64,6 +69,11 @@ export type RunInput = {
   /** Structured per-step activity for the streaming log UI. Called for each
    *  tool call (with input + result) and for "thinking" steps without tools. */
   onActivity?: (entry: ActivityEntry) => void;
+  /** Pre-built user prompt that replaces the auto-generated one. Used by
+   *  refine() so the model sees a "follow-up against this draft" framing
+   *  instead of "start from scratch". When set, the runner skips its own
+   *  buildUserPrompt and passes this verbatim. */
+  userPromptOverride?: string;
 };
 
 export type RunResult = {
@@ -78,7 +88,7 @@ export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
     lmstudioBaseURL: input.lmstudioBaseURL,
   });
 
-  const userPrompt = buildUserPrompt(input);
+  const userPrompt = input.userPromptOverride ?? buildUserPrompt(input);
   const start = Date.now();
 
   // SAFETY: the analyst path runs WITHOUT tools — text-in, JSON-out. The
@@ -158,6 +168,7 @@ function buildUserPrompt(input: RunInput): string {
         input.attachments.map(formatAttachmentBlock).join("\n\n");
 
   const targetBlock = renderTargetContext(input.targetContext);
+  const relatedBlock = renderRelatedCases(input.relatedCases ?? []);
 
   return [
     modeLine,
@@ -167,12 +178,14 @@ function buildUserPrompt(input: RunInput): string {
     input.requirements.trim(),
     "",
     existing,
+    relatedBlock ? "" : null,
+    relatedBlock || null,
     attached,
     "",
     "Return ONLY the DraftBatch JSON. Schema:",
     JSON.stringify(DRAFT_BATCH_SHAPE, null, 2),
   ]
-    .filter((line) => line !== null)
+    .filter((line): line is string => line !== null)
     .join("\n");
 }
 

@@ -131,30 +131,69 @@ export function TargetContextChip({
           ) : null}
         </div>
       </TooltipTrigger>
-      <TooltipContent side="bottom" className="max-w-[360px] text-[11px]">
-        <p className="font-medium">Sent to the model as TARGET CONTEXT:</p>
-        <ul className="mt-1 flex flex-col gap-0.5 text-[10.5px]">
-          <li>
-            <span className="text-muted-foreground">Plan:</span>{" "}
-            {resolved?.planName ?? `#${planId}`}
-          </li>
-          <li>
-            <span className="text-muted-foreground">Suite:</span>{" "}
-            {segments.join(" › ")}
-          </li>
-          {resolved?.areaPath ? (
-            <li>
-              <span className="text-muted-foreground">Area path:</span>{" "}
-              <span className="font-mono">{resolved.areaPath}</span>
-            </li>
-          ) : null}
-          {resolved?.iterationPath ? (
-            <li>
-              <span className="text-muted-foreground">Iteration:</span>{" "}
-              <span className="font-mono">{resolved.iterationPath}</span>
-            </li>
-          ) : null}
-        </ul>
+      <TooltipContent
+        side="bottom"
+        variant="panel"
+        className="max-w-[360px] text-[11px]"
+      >
+        {/* Terminal-flavored key→value sheet. Drops the editorial "sent to the
+            model as …" preamble — the chip itself is already labelled "target"
+            so the tooltip can just be the data. IDs are rendered next to the
+            display name so reviewers can paste them into ADO if they need to
+            jump out. */}
+        <div className="flex flex-col">
+          <div className="border-b border-border/40 px-2.5 py-1.5 font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
+            target context
+          </div>
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 px-2.5 py-2 text-[10.5px]">
+            <dt className="text-muted-foreground/70">plan</dt>
+            <dd className="flex min-w-0 items-baseline gap-1.5">
+              <span className="truncate text-foreground/90">
+                {resolved?.planName ?? `#${planId}`}
+              </span>
+              <span className="shrink-0 font-mono text-[9.5px] text-muted-foreground/60">
+                #{planId}
+              </span>
+            </dd>
+
+            <dt className="text-muted-foreground/70">suite</dt>
+            <dd className="flex min-w-0 flex-wrap items-baseline gap-x-1 gap-y-0.5">
+              <span className="font-mono text-foreground/85">
+                {segments.join(" › ")}
+              </span>
+              <span className="shrink-0 font-mono text-[9.5px] text-muted-foreground/60">
+                #{suiteId}
+              </span>
+            </dd>
+
+            {resolved?.areaPath ? (
+              <>
+                <dt className="text-muted-foreground/70">area</dt>
+                <dd className="truncate font-mono text-foreground/80">
+                  {resolved.areaPath}
+                </dd>
+              </>
+            ) : null}
+
+            {resolved?.iterationPath ? (
+              <>
+                <dt className="text-muted-foreground/70">iteration</dt>
+                <dd className="truncate font-mono text-foreground/80">
+                  {resolved.iterationPath}
+                </dd>
+              </>
+            ) : null}
+
+            {existingCaseCount != null && existingCaseCount > 0 ? (
+              <>
+                <dt className="text-muted-foreground/70">cases</dt>
+                <dd className="font-mono text-foreground/80">
+                  {existingCaseCount} already in this suite
+                </dd>
+              </>
+            ) : null}
+          </dl>
+        </div>
       </TooltipContent>
     </Tooltip>
   );

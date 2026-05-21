@@ -8,26 +8,22 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import {
   MODELS,
   PROVIDERS,
-  getAutocompleteEligibleModels,
   getModel,
-  getProvider,
   providerNeedsKey,
   type ModelId,
   type ProviderId,
   type ProviderInfo,
 } from "@/modules/ai/config";
 import { clearKey, getAllKeys, setKey } from "@/modules/ai/lib/keyring";
+import { ModelPicker } from "@/modules/ai/components/ModelPicker";
+import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   emitKeysChanged,
-  setAutocompleteEnabled,
-  setAutocompleteModelId,
-  setAutocompleteProvider,
   setDefaultModel,
   setLmstudioBaseURL,
   setLmstudioModelId,
@@ -46,11 +42,12 @@ import {
   ArrowUpRight01Icon,
   Cancel01Icon,
   CheckmarkCircle02Icon,
+  Key01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { ProviderIcon } from "../components/ProviderIcon";
 import { ProviderKeyCard } from "../components/ProviderKeyCard";
 import { SectionHeader } from "../components/SectionHeader";
@@ -225,24 +222,10 @@ export function ModelsSection() {
 
       <AiEngineSection />
 
-      {/* Only Vercel AI SDK uses these defaults; Claude Code's model is
-          managed by the CLI itself (claude /model). */}
-      {engine === "vercel-ai-sdk" ? (
-        <DefaultsBlock
-          defaultModel={defaultModel}
-          configuredIds={configuredIds}
-          keys={keys}
-        />
-      ) : (
-        <div className="flex flex-col gap-2">
-          <Label>Defaults</Label>
-          <div className="rounded-lg border border-dashed border-border/60 bg-card/40 px-3 py-2.5 text-[11px] text-muted-foreground">
-            Claude Code manages model selection itself. Run{" "}
-            <code className="font-mono text-foreground/85">claude /model</code>{" "}
-            in your terminal to change the active model.
-          </div>
-        </div>
-      )}
+      {/* One single default-model selector for the whole app — it adapts to
+          the engine and to which providers are connected, so the picker is
+          the only place the user ever has to think about "which model". */}
+      <DefaultModelBlock defaultModel={defaultModel} engine={engine} />
 
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
@@ -372,237 +355,123 @@ function ProviderMenuItem({
   );
 }
 
-function DefaultsBlock({
+/**
+ * Single source-of-truth model picker. Adapts to the active engine:
+ *   - Vercel AI SDK (BYOK): every model whose provider has a key (or whose
+ *     local server is configured) is pickable.
+ *   - Claude Code: Anthropic models only — the CLI can't drive others.
+ *
+ * The picker hides anything that isn't currently pickable, then surfaces a
+ * "N locked — connect more providers" footer so users still see the choice
+ * is there. Writes through to the persisted `defaultModelId`, which is
+ * mirrored into the chat store so the status bar and generator agree.
+ */
+function DefaultModelBlock({
   defaultModel,
-  configuredIds,
-  keys,
+  engine,
 }: {
   defaultModel: ModelId;
-  configuredIds: Set<ProviderId>;
-  keys: KeysMap;
+  engine: "vercel-ai-sdk" | "claude-agent-sdk";
 }) {
+  const availability = useModelAvailability();
+  const current = getModel(defaultModel);
+  const totalModels = MODELS.length;
+  const lockedCount = totalModels - availability.available.size;
+  const engineHint =
+    engine === "claude-agent-sdk"
+      ? "Claude Code drives Anthropic models only. Pick the one the generator and chat should default to."
+      : "Used by the test-case generator unless you override it for a single run. Only providers you've connected are pickable.";
+
+  // When the active default isn't usable under the current configuration,
+  // surface it inline rather than silently substituting at run time. The
+  // generator's error surface still classifies this, but a settings-time
+  // warning is far less surprising.
+  const defaultUnavailable = !availability.isAvailable(defaultModel);
+  const defaultReason = availability.reason(defaultModel);
+
   return (
-    <div className="flex flex-col gap-3">
-      <Label>Defaults</Label>
+    <div className="flex flex-col gap-2">
+      <Label>Default model</Label>
       <div className="flex flex-col gap-2.5 rounded-lg border border-border/60 bg-card/60 px-3 py-2.5">
-        <FieldRow label="Chat model">
-          <DefaultModelPicker
-            defaultModel={defaultModel}
-            configuredIds={configuredIds}
-          />
-        </FieldRow>
-        <AutocompleteRow keys={keys} configuredIds={configuredIds} />
-      </div>
-    </div>
-  );
-}
-
-function DefaultModelPicker({
-  defaultModel,
-  configuredIds,
-}: {
-  defaultModel: ModelId;
-  configuredIds: Set<ProviderId>;
-}) {
-  const m = getModel(defaultModel);
-  const hasAny = configuredIds.size > 0;
-
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="outline"
-          disabled={!hasAny}
-          className="h-8 flex-1 justify-between gap-2 px-2.5 text-[11.5px]"
-        >
-          <span className="flex items-center gap-2 truncate">
-            <ProviderIcon provider={m.provider} size={13} />
-            <span className="truncate">{m.label}</span>
-            <span className="text-muted-foreground">· {m.hint}</span>
-          </span>
-          <HugeiconsIcon
-            icon={ArrowDown01Icon}
-            size={11}
-            strokeWidth={2}
-            className="opacity-70"
-          />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        align="start"
-        side="bottom"
-        sideOffset={6}
-        collisionPadding={12}
-        className="min-w-70 p-1"
-      >
-        <div className="max-h-72 overflow-y-auto overscroll-contain pr-1">
-          {PROVIDERS.filter((p) => configuredIds.has(p.id)).map((p) => {
-            const models = MODELS.filter((x) => x.provider === p.id);
-            if (models.length === 0) return null;
-            return (
-              <div key={p.id} className="px-1 pt-1.5 first:pt-1">
-                <div className="mb-0.5 flex items-center gap-1.5 px-2 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
-                  <ProviderIcon provider={p.id} size={11} />
-                  <span>{p.label}</span>
-                </div>
-                {models.map((mod) => (
-                  <DropdownMenuItem
-                    key={mod.id}
-                    onSelect={() => void setDefaultModel(mod.id as ModelId)}
-                    className={cn(
-                      "flex items-start gap-2 text-[12px]",
-                      mod.id === defaultModel && "bg-accent/50",
-                    )}
-                  >
-                    <span className="flex flex-1 flex-col">
-                      <span>{mod.label}</span>
-                      <span className="text-[10px] text-muted-foreground">
-                        {mod.description}
-                      </span>
-                    </span>
-                  </DropdownMenuItem>
-                ))}
-              </div>
-            );
-          })}
-        </div>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-function AutocompleteRow({
-  keys,
-  configuredIds,
-}: {
-  keys: KeysMap;
-  configuredIds: Set<ProviderId>;
-}) {
-  const enabled = usePreferencesStore((s) => s.autocompleteEnabled);
-  const provider = usePreferencesStore((s) => s.autocompleteProvider);
-  const modelId = usePreferencesStore((s) => s.autocompleteModelId);
-  const eligible = useMemo(() => getAutocompleteEligibleModels(), []);
-
-  // Fast cloud tiers + any configured local provider (one model id each).
-  const items = useMemo(() => {
-    const local = PROVIDERS.filter(
-      (p) => isLocalProvider(p.id) && configuredIds.has(p.id),
-    ).flatMap((p) => {
-      const m = MODELS.find((x) => x.provider === p.id);
-      return m ? [m] : [];
-    });
-    return [...eligible, ...local];
-  }, [eligible, configuredIds]);
-
-  const currentModel = useMemo(() => {
-    if (isLocalProvider(provider)) {
-      return MODELS.find((m) => m.provider === provider) ?? eligible[0];
-    }
-    return (
-      MODELS.find((m) => m.provider === provider && m.id === modelId) ??
-      MODELS.find((m) => m.id === modelId) ??
-      eligible[0]
-    );
-  }, [eligible, provider, modelId]);
-
-  const setModel = (id: string, providerId: ProviderId) => {
-    void setAutocompleteProvider(providerId);
-    void setAutocompleteModelId(isLocalProvider(providerId) ? "" : id);
-  };
-
-  const grouped = useMemo(() => {
-    const map = new Map<ProviderId, (typeof items)[number][]>();
-    for (const m of items) {
-      const arr = map.get(m.provider) ?? [];
-      arr.push(m);
-      map.set(m.provider, arr);
-    }
-    return map;
-  }, [items]);
-
-  const hasKey = providerNeedsKey(provider) ? !!keys[provider] : true;
-
-  return (
-    <>
-      <FieldRow label="Autocomplete">
-        <div className="flex flex-1 items-center gap-2">
-          <Switch
-            checked={enabled}
-            onCheckedChange={(v) => void setAutocompleteEnabled(v)}
-          />
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="outline"
-                disabled={!enabled}
-                className="h-8 flex-1 justify-between gap-2 px-2.5 text-[11.5px]"
-              >
-                <span className="flex items-center gap-2 truncate">
-                  <ProviderIcon provider={currentModel.provider} size={12} />
-                  <span className="truncate">{currentModel.label}</span>
-                  <span className="text-muted-foreground">
-                    · {currentModel.hint}
-                  </span>
-                </span>
+        <ModelPicker
+          value={defaultModel}
+          onChange={(id) => void setDefaultModel(id)}
+          filter={availability.isAvailable}
+          side="bottom"
+          align="start"
+          emptyMessage={
+            engine === "claude-agent-sdk" ? (
+              <>
+                Claude Code drives Anthropic models only. Authenticate the CLI
+                above, then switch to the BYOK engine if you want OpenAI /
+                Gemini / etc.
+              </>
+            ) : (
+              <>
+                No providers connected yet. Add one below — keys live in your
+                OS keychain.
+              </>
+            )
+          }
+          footer={
+            lockedCount > 0 ? (
+              <div className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
                 <HugeiconsIcon
-                  icon={ArrowDown01Icon}
-                  size={11}
-                  strokeWidth={2}
+                  icon={Key01Icon}
+                  size={10}
+                  strokeWidth={1.75}
                   className="opacity-70"
                 />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="start"
-              collisionPadding={12}
-              className="max-h-72 min-w-70 overflow-y-auto"
+                <span>
+                  {lockedCount} model{lockedCount === 1 ? "" : "s"} hidden —
+                  connect more providers below.
+                </span>
+              </div>
+            ) : undefined
+          }
+          trigger={({ provider }) => (
+            <span
+              className={cn(
+                "flex h-9 w-full items-center justify-between gap-2 rounded-md border bg-card px-3 text-[12px] transition-colors hover:border-primary/60",
+                defaultUnavailable
+                  ? "border-amber-500/40 bg-amber-500/[0.04]"
+                  : "border-border/60",
+              )}
             >
-              {PROVIDERS.map((p) => {
-                const list = grouped.get(p.id);
-                if (!list || list.length === 0) return null;
-                const pConfigured = configuredIds.has(p.id);
-                return (
-                  <div key={p.id} className="px-1 pt-1.5 first:pt-1">
-                    <div className="mb-0.5 flex items-center gap-1.5 px-2 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
-                      <ProviderIcon provider={p.id} size={11} />
-                      <span>{p.label}</span>
-                      {!pConfigured ? (
-                        <span className="ml-auto text-[9.5px] normal-case tracking-normal text-muted-foreground/70">
-                          not connected
-                        </span>
-                      ) : null}
-                    </div>
-                    {list.map((m) => (
-                      <DropdownMenuItem
-                        key={m.id}
-                        disabled={!pConfigured}
-                        onSelect={() => pConfigured && setModel(m.id, p.id)}
-                        className={cn(
-                          "text-[11.5px]",
-                          m.id === modelId && "bg-accent/50",
-                        )}
-                      >
-                        <span className="flex flex-col">
-                          <span>{m.label}</span>
-                          <span className="text-[10px] text-muted-foreground">
-                            {m.description}
-                          </span>
-                        </span>
-                      </DropdownMenuItem>
-                    ))}
-                  </div>
-                );
-              })}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </FieldRow>
-      {enabled && !hasKey ? (
-        <p className="pl-19 text-[10.5px] text-muted-foreground">
-          {getProvider(provider).label} isn't connected — add it below.
+              <span className="flex min-w-0 items-center gap-2">
+                <ProviderIcon provider={provider} size={13} />
+                <span className="truncate font-medium">{current.label}</span>
+                <span className="shrink-0 font-mono text-[10px] text-muted-foreground/85">
+                  · {current.hint.toLowerCase()}
+                </span>
+              </span>
+              <HugeiconsIcon
+                icon={ArrowDown01Icon}
+                size={11}
+                strokeWidth={2}
+                className="opacity-60"
+              />
+            </span>
+          )}
+        />
+        <p className="text-[10.5px] leading-relaxed text-muted-foreground">
+          {engineHint}
         </p>
-      ) : null}
-    </>
+        {defaultUnavailable ? (
+          <p className="flex items-center gap-1.5 text-[10.5px] text-amber-700 dark:text-amber-300">
+            <HugeiconsIcon
+              icon={Key01Icon}
+              size={10}
+              strokeWidth={1.75}
+            />
+            <span>
+              Current default isn't usable under the active engine —{" "}
+              {defaultReason ?? "configure its provider"} or pick another above.
+            </span>
+          </p>
+        ) : null}
+      </div>
+    </div>
   );
 }
 

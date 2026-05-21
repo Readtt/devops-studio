@@ -12,15 +12,19 @@ import {
   type TestCase,
 } from "@/modules/ado";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { parseSourceLinks } from "./lib/sourceLinksParser";
 import { StepsTable } from "./lib/stepsRenderer";
 import {
+  Bug01Icon,
   ExternalLink,
   FileScriptIcon,
+  Link01Icon,
   RefreshIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useWorkItemTitles } from "@/modules/ado/hooks/useWorkItemTitles";
+import type { LinkedWorkItem } from "@/modules/ado";
 
 type Props = {
   caseId: number;
@@ -66,6 +70,14 @@ export function TestCasePane({ caseId }: Props) {
       setLoading(false);
     }
   }
+
+  // Resolve linked work-item titles. Called unconditionally so the hook
+  // count is stable across render branches (loading / error / loaded).
+  const linkedIds = useMemo(
+    () => (tc ? tc.linkedWorkItems.map((lwi) => lwi.id) : []),
+    [tc],
+  );
+  const { titleFor, loadingFor } = useWorkItemTitles(linkedIds);
 
   if (loading && !tc) {
     return (
@@ -169,51 +181,14 @@ export function TestCasePane({ caseId }: Props) {
         {tc.linkedWorkItems.length > 0 ? (
           <Section title={`Linked work items (${tc.linkedWorkItems.length})`}>
             <ul className="flex flex-col gap-1">
-              {tc.linkedWorkItems.map((lwi) => {
-                // "Tested by" / "Tests" link types most often point at bugs
-                // — clicking opens our in-app BugPane via the side channel
-                // rather than leaving the app for the ADO web UI.
-                const isLikelyBug =
-                  lwi.kind === "Tested by" || lwi.kind === "Tests";
-                return (
-                  <li
-                    key={`${lwi.rel}-${lwi.id}`}
-                    className="flex items-center gap-2 rounded-md border border-border/40 bg-card/40 px-2.5 py-1.5 text-[11.5px]"
-                  >
-                    <span className="inline-flex h-4 shrink-0 items-center rounded-sm bg-foreground/[0.06] px-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                      {lwi.kind}
-                    </span>
-                    <span className="font-mono text-[10.5px] text-muted-foreground">
-                      #{lwi.id}
-                    </span>
-                    {isLikelyBug ? (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          window.dispatchEvent(
-                            new CustomEvent("devops-studio:open-bug", {
-                              detail: { bugId: lwi.id },
-                            }),
-                          )
-                        }
-                        className="ml-2 inline-flex shrink-0 items-center text-[10.5px] text-muted-foreground hover:text-primary hover:underline"
-                      >
-                        Open in app
-                      </button>
-                    ) : null}
-                    {lwi.webUrl ? (
-                      <button
-                        type="button"
-                        onClick={() => void openUrl(lwi.webUrl)}
-                        className="ml-auto inline-flex shrink-0 items-center gap-1 text-[10.5px] text-muted-foreground hover:text-foreground"
-                      >
-                        <HugeiconsIcon icon={ExternalLink} size={10} strokeWidth={1.75} />
-                        ADO
-                      </button>
-                    ) : null}
-                  </li>
-                );
-              })}
+              {tc.linkedWorkItems.map((lwi) => (
+                <LinkedItemRow
+                  key={`${lwi.rel}-${lwi.id}`}
+                  lwi={lwi}
+                  title={titleFor(lwi.id)}
+                  isLoading={loadingFor(lwi.id)}
+                />
+              ))}
             </ul>
           </Section>
         ) : null}
@@ -299,6 +274,119 @@ function Section({
       </h2>
       {children}
     </section>
+  );
+}
+
+/**
+ * Single row in the linked-work-items list. Surfaces the work item's title
+ * inline with its id ("#1234 — Login flow accepts empty password") so a
+ * reviewer can scan the relationships without bouncing into ADO. Bug-typed
+ * links (Tested by / Tests) get the rose Bug icon + an in-app Open button
+ * so the user can drill into the BugPane without a context switch.
+ */
+function LinkedItemRow({
+  lwi,
+  title,
+  isLoading,
+}: {
+  lwi: LinkedWorkItem;
+  title: string | null;
+  isLoading: boolean;
+}) {
+  // ADO's link types from a test case → other work items mostly come back
+  // as "Tested by" (the case tests THIS bug/PBI) or "Tests" (the inverse).
+  // We treat both as bug-shaped because that's the dominant pattern in real
+  // suites — a parent feature or a sibling PBI shows up as "Parent"/"Related"
+  // and gets the neutral chain icon.
+  const isLikelyBug = lwi.kind === "Tested by" || lwi.kind === "Tests";
+
+  return (
+    <li
+      className={cn(
+        "group flex items-center gap-2 rounded-md border border-border/40 bg-card/40 px-2.5 py-1.5 text-[11.5px] transition-colors",
+        isLikelyBug
+          ? "hover:border-rose-500/30 hover:bg-rose-500/[0.04]"
+          : "hover:border-primary/30 hover:bg-foreground/[0.04]",
+      )}
+    >
+      {/* Type glyph in a dedicated rail — Bug for bug-shaped links, generic
+          chain icon for parent/child/related. Color carries the meaning so
+          the kind tag doesn't need to compete for attention. */}
+      <span
+        className={cn(
+          "inline-flex size-5 shrink-0 items-center justify-center rounded-sm",
+          isLikelyBug
+            ? "bg-rose-500/10 text-rose-500 dark:text-rose-400"
+            : "bg-foreground/[0.06] text-muted-foreground",
+        )}
+        aria-hidden
+      >
+        <HugeiconsIcon
+          icon={isLikelyBug ? Bug01Icon : Link01Icon}
+          size={11}
+          strokeWidth={1.75}
+        />
+      </span>
+
+      {/* Kind tag + monospace id, packed tight so the title gets the real
+          estate. */}
+      <span className="inline-flex h-4 shrink-0 items-center rounded-sm bg-foreground/[0.06] px-1.5 text-[9.5px] font-medium uppercase tracking-wider text-muted-foreground">
+        {lwi.kind}
+      </span>
+      <span className="shrink-0 font-mono text-[10.5px] tabular-nums text-muted-foreground/85">
+        #{lwi.id}
+      </span>
+
+      {/* Title — primary content. Truncate at row width; the tooltip-via-
+          title attribute lets a reviewer hover for the full string when it
+          gets clipped on narrow panes. */}
+      {title ? (
+        <span
+          className="min-w-0 flex-1 truncate text-foreground/90"
+          title={title}
+        >
+          <span className="mr-1 text-muted-foreground/40">—</span>
+          {title}
+        </span>
+      ) : isLoading ? (
+        <span className="min-w-0 flex-1">
+          <Skeleton className="h-3 w-40" />
+        </span>
+      ) : (
+        <span className="min-w-0 flex-1 truncate text-[10.5px] italic text-muted-foreground/55">
+          (title unavailable)
+        </span>
+      )}
+
+      {/* Trailing actions: bug links open in-app, everything else goes to
+          ADO. The "Open in app" button only appears on hover so the resting
+          row stays tidy when the user isn't trying to act on it. */}
+      {isLikelyBug ? (
+        <button
+          type="button"
+          onClick={() =>
+            window.dispatchEvent(
+              new CustomEvent("devops-studio:open-bug", {
+                detail: { bugId: lwi.id, title: title ?? undefined },
+              }),
+            )
+          }
+          className="inline-flex h-5 shrink-0 items-center gap-1 rounded-sm border border-transparent px-1.5 text-[10.5px] text-muted-foreground opacity-0 transition-opacity hover:border-rose-500/40 hover:bg-rose-500/10 hover:text-rose-500 focus:opacity-100 group-hover:opacity-100 dark:hover:text-rose-400"
+        >
+          Open in app
+        </button>
+      ) : null}
+      {lwi.webUrl ? (
+        <button
+          type="button"
+          onClick={() => void openUrl(lwi.webUrl)}
+          className="inline-flex h-5 shrink-0 items-center gap-1 rounded-sm border border-transparent px-1.5 text-[10.5px] text-muted-foreground transition-colors hover:border-border/60 hover:bg-foreground/[0.06] hover:text-foreground"
+        >
+          <HugeiconsIcon icon={ExternalLink} size={9} strokeWidth={1.75} />
+          ADO
+        </button>
+      ) : null}
+    </li>
   );
 }
 

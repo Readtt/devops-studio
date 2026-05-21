@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::process::Stdio;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 /// Owned by Tauri State so we can track in-flight `claude` runs. We only
@@ -49,7 +49,11 @@ pub struct ProbeResult {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
 pub enum ClaudeError {
     /// `claude` isn't on PATH or `claude --version` failed.
     NotInstalled,
@@ -247,8 +251,14 @@ pub async fn claude_run_query(
         }
     }
 
-    cmd.arg(&input.prompt)
-        .stdin(Stdio::null())
+    // Stream the prompt over stdin instead of passing it as an argv. Windows
+    // CreateProcess has a ~32 KiB lpCommandLine limit; the refine path builds
+    // prompts that embed the full draft batch + spec + attachments, which
+    // overflows that limit and surfaces as "The filename or extension is too
+    // long. (os error 206)". `claude --print` without a positional prompt
+    // arg reads the prompt from stdin instead, sidestepping the limit
+    // entirely.
+    cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -256,6 +266,20 @@ pub async fn claude_run_query(
     let mut child = cmd
         .spawn()
         .map_err(|e| ClaudeError::SpawnFailed { message: e.to_string() })?;
+
+    // Write the prompt and close stdin so the CLI knows we're done feeding
+    // input. Drop the handle right after so the child sees EOF.
+    if let Some(mut stdin) = child.stdin.take() {
+        let prompt_bytes = input.prompt.as_bytes().to_vec();
+        if let Err(e) = stdin.write_all(&prompt_bytes).await {
+            return Err(ClaudeError::SpawnFailed {
+                message: format!("failed to write prompt to claude stdin: {e}"),
+            });
+        }
+        // Explicit shutdown — `drop(stdin)` would also close the pipe, but
+        // `shutdown` flushes deterministically.
+        let _ = stdin.shutdown().await;
+    }
 
     let stdout = child.stdout.take().ok_or_else(|| ClaudeError::SpawnFailed {
         message: "failed to capture stdout".into(),

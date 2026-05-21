@@ -2,25 +2,17 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { AzureDevOpsLogo } from "@/components/AzureDevOpsLogo";
 import { cn } from "@/lib/utils";
 import {
   adoErrorMessage,
   getConnection,
-  listProjects,
   setConnection,
   testConnection,
   toAdoError,
   type AdoError,
   type ConnectionStatus,
-  type ProjectRef,
 } from "@/modules/ado";
 import {
   CURRENT_BRANCH_SENTINEL,
@@ -54,9 +46,6 @@ export function AzureDevOpsSection() {
   const [trackingBranch, setTrackingBranch] = useState("main");
   const [useDynamicBranch, setUseDynamicBranch] = useState(false);
   const gitInfo = useSourceDirGitInfo();
-  const [projects, setProjects] = useState<ProjectRef[]>([]);
-  const [projectsLoading, setProjectsLoading] = useState(false);
-  const [projectsError, setProjectsError] = useState<AdoError | null>(null);
   const [status, setStatus] = useState<StatusBadge>({ kind: "unverified" });
   const [saving, setSaving] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -105,7 +94,6 @@ export function AzureDevOpsSection() {
           kind: "verified",
           identityName: r.identityName ?? "",
         });
-        await refreshProjects();
         return true;
       }
       mapErrorToStatus(r.error ?? { kind: "local", message: "Unknown error" });
@@ -135,31 +123,13 @@ export function AzureDevOpsSection() {
     }
   }
 
-  async function refreshProjects() {
-    setProjectsLoading(true);
-    setProjectsError(null);
-    try {
-      const list = await listProjects();
-      setProjects(list);
-      // First-connect default: if the user has no project picked yet, snap to
-      // the first one alphabetically so the UI doesn't sit in a half-configured
-      // state. We don't override an existing choice.
-      if (!project && list.length > 0) {
-        setProject(list[0].name);
-      }
-    } catch (e) {
-      setProjects([]);
-      setProjectsError(toAdoError(e));
-    } finally {
-      setProjectsLoading(false);
-    }
-  }
-
   async function onSave() {
     setSaving(true);
     try {
       await setConnection({
         orgUrl,
+        // Keep whatever project was set — the explorer header is the
+        // canonical place to switch projects now.
         project,
         pat: pat.length > 0 ? pat : undefined,
         defaultPlanId: null,
@@ -190,18 +160,19 @@ export function AzureDevOpsSection() {
 
   const canSave =
     orgUrl.trim().length > 0 &&
-    project.trim().length > 0 &&
     (hasStoredPat || pat.trim().length > 0);
 
   return (
     <div className="flex flex-col gap-6">
       <SectionHeader
         title="Azure DevOps"
-        description="Connect to your Azure DevOps organization to read Test Plans and publish generated cases."
+        icon={<AzureDevOpsLogo size={16} />}
+        description="Connect to your Azure DevOps organization to read Test Plans and publish generated cases. Switch projects from the explorer header."
       />
 
       <StatusBadgeRow
         status={status}
+        project={project}
         onTest={onTest}
         canTest={canSave && !saving && status.kind !== "verifying"}
       />
@@ -228,51 +199,6 @@ export function AzureDevOpsSection() {
               to <code className="font-mono">dev.azure.com</code> (cross-host redirects strip the
               PAT).
             </p>
-          </div>
-          <div className="flex flex-col gap-1">
-            <Label
-              htmlFor="ado-project"
-              className="text-[11.5px] text-muted-foreground"
-            >
-              Project
-            </Label>
-            <Select
-              value={project}
-              onValueChange={setProject}
-              disabled={projects.length === 0 && status.kind !== "verified"}
-            >
-              <SelectTrigger id="ado-project" className="h-8 w-full text-[12px]">
-                <SelectValue
-                  placeholder={
-                    projectsLoading
-                      ? "Loading projects…"
-                      : status.kind === "verified"
-                        ? projects.length === 0
-                          ? "No projects accessible"
-                          : "Choose a project"
-                        : "Connect first to populate"
-                  }
-                />
-              </SelectTrigger>
-              <SelectContent>
-                {projects.map((p) => (
-                  <SelectItem key={p.id} value={p.name}>
-                    {p.name}
-                  </SelectItem>
-                ))}
-                {/* If we have a previously-saved value that isn't in the list
-                    (e.g. PAT can't list-projects but can still hit it), keep
-                    it selectable so the user doesn't lose it on a refresh. */}
-                {project && !projects.some((p) => p.name === project) ? (
-                  <SelectItem value={project}>{project}</SelectItem>
-                ) : null}
-              </SelectContent>
-            </Select>
-            {projectsError ? (
-              <p className="text-[10.5px] text-destructive">
-                Couldn't list projects: {adoErrorMessage(projectsError)}
-              </p>
-            ) : null}
           </div>
         </div>
       </div>
@@ -404,10 +330,12 @@ export function AzureDevOpsSection() {
 
 function StatusBadgeRow({
   status,
+  project,
   onTest,
   canTest,
 }: {
   status: StatusBadge;
+  project: string;
   onTest: () => void;
   canTest: boolean;
 }) {
@@ -428,9 +356,13 @@ function StatusBadgeRow({
   };
   const meta = map[status.kind];
   let detail: string | null = null;
-  if (status.kind === "verified")
-    detail = status.identityName ? `as ${status.identityName}` : null;
-  else if (status.kind === "bad-pat") detail = status.reason;
+  if (status.kind === "verified") {
+    const who = status.identityName ? `${status.identityName}` : null;
+    const where = project ? `project ${project}` : null;
+    if (who && where) detail = `${who} · ${where}`;
+    else if (who) detail = who;
+    else if (where) detail = where;
+  } else if (status.kind === "bad-pat") detail = status.reason;
   else if (status.kind === "network") detail = status.message;
   else if (status.kind === "error") detail = status.message;
   else if (status.kind === "sso-required")

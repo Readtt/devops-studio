@@ -29,18 +29,15 @@ export type ModelPickerFilter = (modelId: ModelId) => boolean;
 type Props = {
   value: ModelId;
   onChange: (id: ModelId) => void;
-  /** Optional restriction (e.g. "anthropic-only" for the Claude engine
-   *  selector in settings). When provided, models that fail the predicate
-   *  are hidden entirely instead of disabled. */
+  /** Restrict the list to models the predicate returns true for. Use this for
+   *  availability gating (only providers with keys / configured locals). */
   filter?: ModelPickerFilter;
-  /** Disable the trigger and prevent opening the popover. Use when a run
-   *  is mid-flight so the user can't swap models in-place. */
+  /** Disable the trigger and prevent opening the popover. */
   disabled?: boolean;
   /** Tooltip-quality reason text shown to disabled triggers via title. */
   disabledReason?: string;
-  /** Render slot for the trigger button. Receives the resolved model label
-   *  so callers can decide how compact to render it (e.g. a status-bar
-   *  pill vs. a wide generator-page button). */
+  /** Render slot for the trigger button. Receives the resolved model label so
+   *  callers can decide how compact to render it. */
   trigger: (state: {
     label: string;
     provider: (typeof PROVIDERS)[number]["id"];
@@ -49,6 +46,11 @@ type Props = {
   /** Popover alignment — defaults to "end" (right-anchored for status-bar use). */
   align?: "start" | "center" | "end";
   side?: "top" | "bottom" | "left" | "right";
+  /** Optional footer rendered below the model list — useful for "N locked"
+   *  hints with a deep-link to settings. */
+  footer?: React.ReactNode;
+  /** Override the empty-state message (when the filter hides everything). */
+  emptyMessage?: React.ReactNode;
 };
 
 export function ModelPicker({
@@ -60,6 +62,8 @@ export function ModelPicker({
   trigger,
   align = "end",
   side = "top",
+  footer,
+  emptyMessage,
 }: Props) {
   const [open, setOpen] = useState(false);
   const recents = usePreferencesStore((s) => s.recentModelIds);
@@ -71,9 +75,7 @@ export function ModelPicker({
   }, [filter]);
 
   const grouped = useMemo(() => {
-    // Build provider → models map preserving the registry order so the
-    // popover lists providers in a consistent, intentional sequence.
-    const byProvider = new Map<string, typeof MODELS[number][]>();
+    const byProvider = new Map<string, (typeof MODELS)[number][]>();
     for (const m of visibleModels) {
       const arr = byProvider.get(m.provider) ?? [];
       arr.push(m);
@@ -99,6 +101,8 @@ export function ModelPicker({
     void pushRecentModel(id);
   };
 
+  const isEmpty = visibleModels.length === 0;
+
   return (
     <Popover open={open} onOpenChange={(next) => !disabled && setOpen(next)}>
       <PopoverTrigger asChild disabled={disabled}>
@@ -122,18 +126,47 @@ export function ModelPicker({
         align={align}
         side={side}
         sideOffset={6}
-        className="w-[320px] p-0"
+        collisionPadding={12}
+        avoidCollisions
+        // Cap the popover at whatever room Radix calculated above/below the
+        // trigger so it never overruns the settings window's visible area —
+        // the inner CommandList scrolls instead of getting clipped by the
+        // webview's bottom edge.
+        className="z-50 w-[340px] rounded-lg p-0 shadow-lg ring-1 ring-foreground/5"
+        style={{
+          maxHeight: "min(440px, var(--radix-popover-content-available-height, 440px))",
+        }}
       >
-        <Command>
+        <Command className="rounded-lg">
           <CommandInput placeholder="Search models…" className="text-[12px]" />
-          <CommandList className="max-h-[360px]">
-            <CommandEmpty>No models match.</CommandEmpty>
+          <CommandList
+            className="overscroll-contain"
+            style={{
+              maxHeight:
+                "min(360px, calc(var(--radix-popover-content-available-height, 360px) - 80px))",
+            }}
+          >
+            {isEmpty ? (
+              <div className="px-3 py-6 text-center">
+                <p className="text-[11.5px] text-foreground/85">
+                  {emptyMessage ?? "No matching models."}
+                </p>
+              </div>
+            ) : (
+              <CommandEmpty>No models match.</CommandEmpty>
+            )}
             {recentVisible.length > 0 ? (
               <>
                 <CommandGroup heading="Recent">
                   {recentVisible.map((m) => (
                     <ModelRow
                       key={`recent-${m.id}`}
+                      // cmdk uses `value` as the row identity for both search
+                      // and selection state — if two rows share a value (the
+                      // same model showing in "Recent" AND its provider group),
+                      // hovering one highlights both. Section-prefix the value
+                      // so each row is its own identity.
+                      section="recent"
                       model={m}
                       selected={m.id === value}
                       favorite={favorites.includes(m.id)}
@@ -150,6 +183,7 @@ export function ModelPicker({
                   {favoriteVisible.map((m) => (
                     <ModelRow
                       key={`fav-${m.id}`}
+                      section="favorite"
                       model={m}
                       selected={m.id === value}
                       favorite
@@ -165,6 +199,7 @@ export function ModelPicker({
                 {g.models.map((m) => (
                   <ModelRow
                     key={m.id}
+                    section={`provider:${g.provider.id}`}
                     model={m}
                     selected={m.id === value}
                     favorite={favorites.includes(m.id)}
@@ -174,6 +209,11 @@ export function ModelPicker({
               </CommandGroup>
             ))}
           </CommandList>
+          {footer ? (
+            <div className="border-t border-border/50 bg-card/40 px-2 py-1.5">
+              {footer}
+            </div>
+          ) : null}
         </Command>
       </PopoverContent>
     </Popover>
@@ -181,11 +221,16 @@ export function ModelPicker({
 }
 
 function ModelRow({
+  section,
   model,
   selected,
   favorite,
   onPick,
 }: {
+  /** Stable per-group token used to disambiguate the cmdk `value`. Rows from
+   *  the same model in different groups (Recent vs Anthropic) get distinct
+   *  values so hover state never leaks between them. */
+  section: string;
   model: (typeof MODELS)[number];
   selected: boolean;
   favorite: boolean;
@@ -193,9 +238,11 @@ function ModelRow({
 }) {
   return (
     <CommandItem
-      // The CommandList filters by `value` text — concat the bits we want
-      // matchable so typing "sonnet" or "anthropic" both surface the model.
-      value={`${model.label} ${model.id} ${model.provider} ${model.hint} ${model.description}`}
+      // Section-prefixed value: cmdk filtering still matches the embedded
+      // label/id/provider/hint/description text because the prefix is just a
+      // discriminator, not the searchable surface — typing "sonnet" still
+      // surfaces both Recent and Provider rows independently.
+      value={`${section}::${model.label} ${model.id} ${model.provider} ${model.hint} ${model.description}`}
       onSelect={onPick}
       className={cn(
         "flex items-start gap-2 py-1.5",
@@ -223,7 +270,6 @@ function ModelRow({
       <button
         type="button"
         onClick={(e) => {
-          // Don't trigger row selection when toggling favorite.
           e.stopPropagation();
           void toggleFavoriteModel(model.id);
         }}

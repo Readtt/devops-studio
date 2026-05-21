@@ -15,6 +15,8 @@ import {
 import {
   Bug01Icon,
   Cancel01Icon,
+  ExternalLink,
+  FileEditIcon,
   RefreshIcon,
   TaskDone01Icon,
 } from "@hugeicons/core-free-icons";
@@ -25,6 +27,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 type Props = {
   onOpenCase: (input: { caseId: number; title: string }) => void;
   onOpenBug?: (input: { bugId: number; title: string }) => void;
+  /** Open a saved draft back into the Generator's review phase. Only fired
+   *  for rows that carry a restorable payload (i.e. modern drafts). */
+  onOpenDraft?: (run: GenerationRun) => void;
 };
 
 /**
@@ -32,7 +37,11 @@ type Props = {
  * counts and a quick-glance "some published, some failed" badge. Clicking
  * a published case/bug row jumps to it in the main pane.
  */
-export function GenerationHistoryPane({ onOpenCase, onOpenBug }: Props) {
+export function GenerationHistoryPane({
+  onOpenCase,
+  onOpenBug,
+  onOpenDraft,
+}: Props) {
   const [runs, setRuns] = useState<GenerationRun[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<"all" | RunStatus>("all");
@@ -199,6 +208,7 @@ export function GenerationHistoryPane({ onOpenCase, onOpenBug }: Props) {
               run={r}
               onOpenCase={onOpenCase}
               onOpenBug={onOpenBug}
+              onOpenDraft={onOpenDraft}
               onDelete={() => void onDelete(r.id)}
             />
           ))}
@@ -212,17 +222,21 @@ function RunCard({
   run,
   onOpenCase,
   onOpenBug,
+  onOpenDraft,
   onDelete,
 }: {
   run: GenerationRun;
   onOpenCase: Props["onOpenCase"];
   onOpenBug?: Props["onOpenBug"];
+  onOpenDraft?: Props["onOpenDraft"];
   onDelete: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const okCount = run.publishLog.filter((l) => l.status === "ok").length;
   const failCount = run.publishLog.filter((l) => l.status === "failed").length;
   const hasFailures = failCount > 0;
+  const isDraft = (run.status ?? "published") === "draft";
+  const canRestoreDraft = isDraft && !!run.draftPayload?.cases;
 
   return (
     <li className="rounded-md border border-border/40 bg-card/40">
@@ -256,20 +270,73 @@ function RunCard({
             {okCount} published
           </p>
         </div>
-        <button
-          type="button"
-          aria-label="Delete this run"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-          className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
-        >
-          <HugeiconsIcon icon={Cancel01Icon} size={10} strokeWidth={2} />
-        </button>
+        <div className="flex shrink-0 items-center gap-1">
+          {canRestoreDraft && onOpenDraft ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Open this draft in review"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenDraft(run);
+                  }}
+                  className="grid size-5 place-items-center rounded text-muted-foreground hover:bg-primary/15 hover:text-primary"
+                >
+                  <HugeiconsIcon
+                    icon={FileEditIcon}
+                    size={10}
+                    strokeWidth={1.75}
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-[11px]">
+                Open in review
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
+          <button
+            type="button"
+            aria-label="Delete this run"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            className="grid size-5 place-items-center rounded text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
+          >
+            <HugeiconsIcon icon={Cancel01Icon} size={10} strokeWidth={2} />
+          </button>
+        </div>
       </button>
       {expanded ? (
         <div className="border-t border-border/40 px-2 py-1.5">
+          {canRestoreDraft && onOpenDraft ? (
+            <div className="mb-2 flex items-center justify-between gap-2 rounded-sm border border-primary/30 bg-primary/[0.04] px-2 py-1">
+              <span className="text-[10.5px] text-muted-foreground">
+                Reopen this draft to keep editing where you left off.
+              </span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenDraft(run);
+                }}
+                className="inline-flex h-5 items-center gap-1 rounded-sm border border-primary/40 bg-primary/10 px-1.5 text-[10px] font-medium text-primary transition-colors hover:bg-primary/20"
+              >
+                <HugeiconsIcon
+                  icon={ExternalLink}
+                  size={9}
+                  strokeWidth={1.75}
+                />
+                Open in review
+              </button>
+            </div>
+          ) : isDraft && !canRestoreDraft ? (
+            <p className="mb-2 rounded-sm border border-amber-500/30 bg-amber-500/[0.06] px-2 py-1 text-[10px] text-amber-700 dark:text-amber-300">
+              This draft was saved before drafts could be reopened. New drafts
+              will restore in full.
+            </p>
+          ) : null}
           {run.specExcerpt ? (
             <p className="mb-2 line-clamp-3 text-[10.5px] italic text-muted-foreground">
               {run.specExcerpt}

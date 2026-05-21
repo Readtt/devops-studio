@@ -20,9 +20,12 @@ import {
   Bug01Icon,
   ExternalLink,
   FileScriptIcon,
+  Link01Icon,
   RefreshIcon,
+  TaskDone01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import type { LinkedWorkItem } from "@/modules/ado";
 
 type Props = {
   bugId: number;
@@ -258,46 +261,14 @@ export function BugPane({ bugId, sourceRoot }: Props) {
         {bug.linkedWorkItems.length > 0 ? (
           <Section title={`Linked work items (${bug.linkedWorkItems.length})`}>
             <ul className="flex flex-col gap-1">
-              {bug.linkedWorkItems.map((lwi) => {
-                const title = titleFor(lwi.id);
-                const isLoading = loadingFor(lwi.id);
-                return (
-                  <li
-                    key={`${lwi.rel}-${lwi.id}`}
-                    className="flex items-center gap-2 rounded-md border border-border/40 bg-card/40 px-2.5 py-1.5 text-[11.5px]"
-                  >
-                    <span className="inline-flex h-4 shrink-0 items-center rounded-sm bg-foreground/[0.06] px-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                      {lwi.kind}
-                    </span>
-                    <span className="font-mono text-[10.5px] text-muted-foreground">
-                      #{lwi.id}
-                    </span>
-                    {title ? (
-                      <span className="min-w-0 flex-1 truncate">{title}</span>
-                    ) : isLoading ? (
-                      <Skeleton className="h-3 w-32" />
-                    ) : (
-                      <span className="flex-1 text-[10.5px] italic text-muted-foreground/60">
-                        (title unavailable)
-                      </span>
-                    )}
-                    {lwi.webUrl ? (
-                      <button
-                        type="button"
-                        onClick={() => void openUrl(lwi.webUrl)}
-                        className="ml-auto inline-flex shrink-0 items-center gap-1 text-[10.5px] text-muted-foreground hover:text-foreground"
-                      >
-                        <HugeiconsIcon
-                          icon={ExternalLink}
-                          size={10}
-                          strokeWidth={1.75}
-                        />
-                        ADO
-                      </button>
-                    ) : null}
-                  </li>
-                );
-              })}
+              {bug.linkedWorkItems.map((lwi) => (
+                <LinkedItemRow
+                  key={`${lwi.rel}-${lwi.id}`}
+                  lwi={lwi}
+                  title={titleFor(lwi.id)}
+                  isLoading={loadingFor(lwi.id)}
+                />
+              ))}
             </ul>
           </Section>
         ) : null}
@@ -314,6 +285,99 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       </h2>
       {children}
     </section>
+  );
+}
+
+/**
+ * Linked work-item row, viewed from a bug. From a bug's perspective the most
+ * common case-shaped link types ADO emits are "Tested by" / "Tests" — those
+ * point at test cases, so we dispatch open-test-case to land in the app's
+ * TestCasePane. Everything else (Parent/Child/Related/etc.) falls back to
+ * opening in the ADO web UI.
+ */
+function LinkedItemRow({
+  lwi,
+  title,
+  isLoading,
+}: {
+  lwi: LinkedWorkItem;
+  title: string | null;
+  isLoading: boolean;
+}) {
+  const isLikelyCase = lwi.kind === "Tested by" || lwi.kind === "Tests";
+  return (
+    <li
+      className={cn(
+        "group flex items-center gap-2 rounded-md border border-border/40 bg-card/40 px-2.5 py-1.5 text-[11.5px] transition-colors",
+        isLikelyCase
+          ? "hover:border-primary/30 hover:bg-primary/[0.04]"
+          : "hover:border-border/70 hover:bg-foreground/[0.04]",
+      )}
+    >
+      <span
+        className={cn(
+          "inline-flex size-5 shrink-0 items-center justify-center rounded-sm",
+          isLikelyCase
+            ? "bg-primary/10 text-primary"
+            : "bg-foreground/[0.06] text-muted-foreground",
+        )}
+        aria-hidden
+      >
+        <HugeiconsIcon
+          icon={isLikelyCase ? TaskDone01Icon : Link01Icon}
+          size={11}
+          strokeWidth={1.75}
+        />
+      </span>
+      <span className="inline-flex h-4 shrink-0 items-center rounded-sm bg-foreground/[0.06] px-1.5 text-[9.5px] font-medium uppercase tracking-wider text-muted-foreground">
+        {lwi.kind}
+      </span>
+      <span className="shrink-0 font-mono text-[10.5px] tabular-nums text-muted-foreground/85">
+        #{lwi.id}
+      </span>
+      {title ? (
+        <span
+          className="min-w-0 flex-1 truncate text-foreground/90"
+          title={title}
+        >
+          <span className="mr-1 text-muted-foreground/40">—</span>
+          {title}
+        </span>
+      ) : isLoading ? (
+        <span className="min-w-0 flex-1">
+          <Skeleton className="h-3 w-40" />
+        </span>
+      ) : (
+        <span className="min-w-0 flex-1 truncate text-[10.5px] italic text-muted-foreground/55">
+          (title unavailable)
+        </span>
+      )}
+      {isLikelyCase ? (
+        <button
+          type="button"
+          onClick={() =>
+            window.dispatchEvent(
+              new CustomEvent("devops-studio:open-test-case", {
+                detail: { caseId: lwi.id, title: title ?? undefined },
+              }),
+            )
+          }
+          className="inline-flex h-5 shrink-0 items-center gap-1 rounded-sm border border-transparent px-1.5 text-[10.5px] text-muted-foreground opacity-0 transition-opacity hover:border-primary/40 hover:bg-primary/10 hover:text-primary focus:opacity-100 group-hover:opacity-100"
+        >
+          Open in app
+        </button>
+      ) : null}
+      {lwi.webUrl ? (
+        <button
+          type="button"
+          onClick={() => void openUrl(lwi.webUrl)}
+          className="inline-flex h-5 shrink-0 items-center gap-1 rounded-sm border border-transparent px-1.5 text-[10.5px] text-muted-foreground transition-colors hover:border-border/60 hover:bg-foreground/[0.06] hover:text-foreground"
+        >
+          <HugeiconsIcon icon={ExternalLink} size={9} strokeWidth={1.75} />
+          ADO
+        </button>
+      ) : null}
+    </li>
   );
 }
 
