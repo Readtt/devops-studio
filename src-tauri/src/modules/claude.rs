@@ -22,6 +22,24 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
+/// Suppress the Windows console window that flashes when a subprocess is
+/// spawned from a GUI app. Without this every `claude --version`, every
+/// `claude_run_query`, every `claude auth status` call pops a cmd.exe window
+/// for a split second — and the generator alone fires several of those per
+/// session. No-op on non-Windows.
+#[inline]
+fn hide_console(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
+}
+
 /// Owned by Tauri State so we can track in-flight `claude` runs. We only
 /// stash run_ids; cancellation lands in a follow-up that wires an
 /// `AbortHandle` per run.
@@ -193,11 +211,13 @@ pub async fn claude_probe() -> Result<ProbeResult, ClaudeError> {
         .map_err(|_| ClaudeError::NotInstalled)?
         .to_string_lossy()
         .into_owned();
-    let out = Command::new(&path)
-        .arg("--version")
+    let mut cmd = Command::new(&path);
+    cmd.arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_console(&mut cmd);
+    let out = cmd
         .output()
         .await
         .map_err(|e| ClaudeError::SpawnFailed { message: e.to_string() })?;
@@ -296,6 +316,7 @@ pub async fn claude_run_query(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    hide_console(&mut cmd);
 
     let mut child = cmd
         .spawn()
@@ -478,12 +499,14 @@ pub async fn claude_setup_token(
     state: tauri::State<'_, ClaudeState>,
 ) -> Result<String, ClaudeError> {
     let path = which::which("claude").map_err(|_| ClaudeError::NotInstalled)?;
-    let mut child = Command::new(&path)
-        .args(["auth", "login"])
+    let mut cmd = Command::new(&path);
+    cmd.args(["auth", "login"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    hide_console(&mut cmd);
+    let mut child = cmd
         .spawn()
         .map_err(|e| ClaudeError::SpawnFailed { message: e.to_string() })?;
 
@@ -587,11 +610,13 @@ pub struct AuthStatus {
 #[tauri::command]
 pub async fn claude_check_auth(_app: AppHandle) -> Result<AuthStatus, ClaudeError> {
     let path = which::which("claude").map_err(|_| ClaudeError::NotInstalled)?;
-    let out = Command::new(&path)
-        .args(["auth", "status"])
+    let mut cmd = Command::new(&path);
+    cmd.args(["auth", "status"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_console(&mut cmd);
+    let out = cmd
         .output()
         .await
         .map_err(|e| ClaudeError::SpawnFailed { message: e.to_string() })?;
@@ -644,13 +669,13 @@ pub async fn claude_cancel_setup_token(
 
     #[cfg(windows)]
     {
-        let _ = Command::new("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
+        let mut cmd = Command::new("taskkill");
+        cmd.args(["/F", "/PID", &pid.to_string()])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .await;
+            .stderr(Stdio::null());
+        hide_console(&mut cmd);
+        let _ = cmd.output().await;
     }
     #[cfg(unix)]
     {

@@ -8,6 +8,24 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+/// Suppress the Windows console window that would otherwise flash on every
+/// spawn. The status-bar branch poller calls this every 30 s — without the
+/// flag a fresh cmd.exe appears and disappears on each tick, which looks
+/// (and is) broken to the user. No-op on other platforms.
+#[inline]
+fn hide_console(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitRepoInfo {
@@ -83,12 +101,14 @@ fn current_commit(path: &Path) -> Option<String> {
 }
 
 fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
-        .args(args)
+    let mut cmd = Command::new("git");
+    cmd.args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_console(&mut cmd);
+    let out = cmd
         .output()
         .map_err(|e| format!("spawn git: {e}"))?;
     if !out.status.success() {

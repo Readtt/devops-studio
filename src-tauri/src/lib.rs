@@ -77,9 +77,15 @@ async fn open_external_editor(
     if !template.contains("{file}") {
         args.push(file_native.clone());
     }
-    std::process::Command::new(&program)
-        .args(&args)
-        .spawn()
+    let mut cmd = std::process::Command::new(&program);
+    cmd.args(&args);
+    #[cfg(windows)]
+    {
+        // Without this, GUI editors launched from Tauri flash a cmd.exe
+        // window for a split second. 0x0800_0000 = CREATE_NO_WINDOW.
+        cmd.creation_flags(0x0800_0000);
+    }
+    cmd.spawn()
         .map_err(|e| format!("failed to launch '{}': {e}", program))?;
     Ok(())
 }
@@ -106,6 +112,7 @@ async fn reveal_in_file_manager(file_path: String) -> Result<(), String> {
         let arg = format!("/select,{}", normalized);
         std::process::Command::new("explorer.exe")
             .raw_arg(&arg)
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
             .spawn()
             .map_err(|e| format!("explorer.exe failed: {e}"))?;
         return Ok(());
