@@ -29,6 +29,183 @@ fn parse_launch_dir() -> Option<String> {
     None
 }
 
+/// Spawn an external text editor with the file path (and optional line range).
+///
+/// The user provides a command template like `code --goto {file}:{line}` or
+/// `subl {file}:{line}`. Placeholders supported:
+///   `{file}`     → absolute file path (preserved as one arg even on spaces)
+///   `{line}`     → start line number, or "1" when none
+///   `{endLine}`  → end line number, or "{line}" when no range
+///
+/// Splitting honors shell-style quotes so the user can pass arguments with
+/// spaces (`"C:\Program Files\editor\app.exe" --goto {file}:{line}`).
+#[tauri::command]
+async fn open_external_editor(
+    command_template: String,
+    file_path: String,
+    start_line: Option<u32>,
+    end_line: Option<u32>,
+) -> Result<(), String> {
+    let template = command_template.trim();
+    if template.is_empty() {
+        return Err("external editor command is not configured".into());
+    }
+    let tokens = shell_split(template).map_err(|e| format!("invalid editor command: {e}"))?;
+    if tokens.is_empty() {
+        return Err("external editor command is empty after parsing".into());
+    }
+    let line = start_line.unwrap_or(1).to_string();
+    let end = end_line.unwrap_or_else(|| start_line.unwrap_or(1)).to_string();
+    let mut iter = tokens.into_iter();
+    let program = iter.next().expect("len > 0");
+    let mut args: Vec<String> = Vec::new();
+    for raw in iter {
+        let substituted = raw
+            .replace("{file}", &file_path)
+            .replace("{line}", &line)
+            .replace("{endLine}", &end);
+        args.push(substituted);
+    }
+    // If the template never referenced {file}, default-append it. The user's
+    // shorthand "code" or "subl" should still open the file.
+    if !template.contains("{file}") {
+        args.push(file_path.clone());
+    }
+    std::process::Command::new(&program)
+        .args(&args)
+        .spawn()
+        .map_err(|e| format!("failed to launch '{}': {e}", program))?;
+    Ok(())
+}
+
+/// Open the OS file manager focused on the given file (Explorer / Finder /
+/// xdg). Distinct from `open_external_editor` because this isn't a text
+/// editor invocation — it reveals the file in its containing folder.
+#[tauri::command]
+async fn reveal_in_file_manager(file_path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer.exe")
+            .arg(format!("/select,{}", file_path))
+            .spawn()
+            .map_err(|e| format!("explorer.exe failed: {e}"))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&file_path)
+            .spawn()
+            .map_err(|e| format!("open -R failed: {e}"))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // No portable "reveal" — fall back to opening the containing dir.
+        let parent = std::path::Path::new(&file_path)
+            .parent()
+            .ok_or_else(|| format!("no parent directory for {file_path}"))?;
+        std::process::Command::new("xdg-open")
+            .arg(parent)
+            .spawn()
+            .map_err(|e| format!("xdg-open failed: {e}"))?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("unsupported platform".into())
+}
+
+/// Shell-style argument splitter. Honors single/double quotes so a path
+/// with spaces can be quoted in the template. Backslash escapes the next
+/// char outside quotes; inside double quotes, backslash escapes only
+/// `"` and `\`. Returns an error on an unterminated quote.
+fn shell_split(input: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    let mut buf = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_single {
+            if c == '\'' {
+                in_single = false;
+            } else {
+                buf.push(c);
+            }
+            continue;
+        }
+        if in_double {
+            if c == '"' {
+                in_double = false;
+            } else if c == '\\' {
+                if let Some(&next) = chars.peek() {
+                    if next == '"' || next == '\\' {
+                        buf.push(chars.next().unwrap());
+                        continue;
+                    }
+                }
+                buf.push('\\');
+            } else {
+                buf.push(c);
+            }
+            continue;
+        }
+        match c {
+            ' ' | '\t' => {
+                if !buf.is_empty() {
+                    out.push(std::mem::take(&mut buf));
+                }
+            }
+            '\'' => in_single = true,
+            '"' => in_double = true,
+            '\\' => {
+                if let Some(&next) = chars.peek() {
+                    if next == ' ' || next == '\t' || next == '"' || next == '\'' || next == '\\' {
+                        buf.push(chars.next().unwrap());
+                        continue;
+                    }
+                }
+                buf.push('\\');
+            }
+            _ => buf.push(c),
+        }
+    }
+    if in_single || in_double {
+        return Err("unterminated quote".into());
+    }
+    if !buf.is_empty() {
+        out.push(buf);
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod shell_split_tests {
+    use super::shell_split;
+
+    #[test]
+    fn splits_simple_args() {
+        assert_eq!(
+            shell_split("code --goto {file}:{line}").unwrap(),
+            vec!["code", "--goto", "{file}:{line}"]
+        );
+    }
+
+    #[test]
+    fn keeps_quoted_path_with_spaces() {
+        assert_eq!(
+            shell_split(r#""C:\Program Files\App\app.exe" --goto {file}:{line}"#).unwrap(),
+            vec![r"C:\Program Files\App\app.exe", "--goto", "{file}:{line}"]
+        );
+    }
+
+    #[test]
+    fn unterminated_quote_errors() {
+        assert!(shell_split(r#"code "unterminated"#).is_err());
+    }
+}
+
 #[tauri::command]
 async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Result<(), String> {
     let url_path = match tab.as_deref() {
@@ -147,6 +324,8 @@ pub fn run() {
             workspace::workspace_current_dir,
             get_launch_dir,
             open_settings_window,
+            open_external_editor,
+            reveal_in_file_manager,
             secrets::secrets_get,
             secrets::secrets_set,
             secrets::secrets_delete,

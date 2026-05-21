@@ -24,15 +24,29 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { EditorThemeId } from "@/modules/settings/store";
-import { ExternalLink, RefreshIcon } from "@hugeicons/core-free-icons";
+import {
+  CodeIcon,
+  ExternalLink,
+  FolderOpenIcon,
+  RefreshIcon,
+  Settings01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 type Props = {
@@ -212,22 +226,11 @@ export function CodeViewerPane({ path, startLine, endLine }: Props) {
               Re-read this file from disk
             </TooltipContent>
           </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 px-2 text-[11px]"
-                onClick={() => void openUrl(`file://${path}`)}
-              >
-                <HugeiconsIcon icon={ExternalLink} size={12} strokeWidth={1.75} />
-                Reveal
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="text-[11px]">
-              Open the file in your OS file manager
-            </TooltipContent>
-          </Tooltip>
+          <OpenWithMenu
+            path={path}
+            startLine={startLine}
+            endLine={endLine}
+          />
         </div>
       </header>
       <div className="min-h-0 flex-1 overflow-hidden">
@@ -274,6 +277,126 @@ export function CodeViewerPane({ path, startLine, endLine }: Props) {
       </div>
     </div>
   );
+}
+
+/** Dropdown for opening the current file outside DevOps Studio.
+ *
+ *  Three actions:
+ *    • Open in [configured editor]  — only shown when the user has set
+ *      `externalEditorCommand` in General settings. Passes the file path
+ *      and line range to the editor so it lands the user on the right
+ *      block (most editors support `--goto file:line`).
+ *    • Reveal in file manager      — opens Explorer / Finder / xdg
+ *      with the file selected.
+ *    • Open with OS default        — same behavior as the old Reveal
+ *      button (file:// URL via tauri-plugin-opener).
+ *
+ *  When no external editor is configured, the trigger shows a hint that
+ *  routes the user to settings — explains WHY the option is missing
+ *  instead of just hiding it. */
+function OpenWithMenu({
+  path,
+  startLine,
+  endLine,
+}: {
+  path: string;
+  startLine?: number;
+  endLine?: number;
+}) {
+  const externalEditorCommand = usePreferencesStore(
+    (s) => s.externalEditorCommand,
+  );
+  const hasEditor = externalEditorCommand.trim().length > 0;
+
+  const openExternally = async () => {
+    try {
+      await invoke("open_external_editor", {
+        commandTemplate: externalEditorCommand,
+        filePath: path,
+        startLine: startLine ?? null,
+        endLine: endLine ?? null,
+      });
+    } catch (e) {
+      console.error("[code-viewer] external editor launch failed:", e);
+    }
+  };
+
+  const revealInFileManager = async () => {
+    try {
+      await invoke("reveal_in_file_manager", { filePath: path });
+    } catch (e) {
+      console.error("[code-viewer] reveal failed:", e);
+    }
+  };
+
+  return (
+    <DropdownMenu>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 gap-1.5 px-2 text-[11px]"
+              aria-label="Open with…"
+            >
+              <HugeiconsIcon
+                icon={ExternalLink}
+                size={12}
+                strokeWidth={1.75}
+              />
+              Open with…
+            </Button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="text-[11px]">
+          Pick how to open this file outside DevOps Studio
+        </TooltipContent>
+      </Tooltip>
+      <DropdownMenuContent align="end" className="w-[260px]">
+        {hasEditor ? (
+          <DropdownMenuItem onClick={() => void openExternally()}>
+            <HugeiconsIcon icon={CodeIcon} size={12} strokeWidth={1.75} />
+            <div className="flex min-w-0 flex-1 flex-col">
+              <span className="text-[12px]">Open in external editor</span>
+              <span className="truncate font-mono text-[10px] text-muted-foreground">
+                {ellipsizeCommand(externalEditorCommand)}
+              </span>
+            </div>
+          </DropdownMenuItem>
+        ) : (
+          <DropdownMenuItem onClick={() => void openSettingsWindow("general")}>
+            <HugeiconsIcon
+              icon={Settings01Icon}
+              size={12}
+              strokeWidth={1.75}
+            />
+            <div className="flex min-w-0 flex-1 flex-col">
+              <span className="text-[12px]">Configure external editor…</span>
+              <span className="text-[10px] text-muted-foreground">
+                Pick VS Code, Sublime, vim, etc. in General settings.
+              </span>
+            </div>
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={() => void revealInFileManager()}>
+          <HugeiconsIcon icon={FolderOpenIcon} size={12} strokeWidth={1.75} />
+          Reveal in file manager
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => void openUrl(`file://${path}`)}>
+          <HugeiconsIcon icon={ExternalLink} size={12} strokeWidth={1.75} />
+          Open with OS default
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function ellipsizeCommand(s: string, max = 40): string {
+  const trimmed = s.trim();
+  if (trimmed.length <= max) return trimmed;
+  return `${trimmed.slice(0, max - 1)}…`;
 }
 
 // --- Language detection -----------------------------------------------------

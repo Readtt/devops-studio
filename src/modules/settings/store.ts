@@ -122,6 +122,11 @@ export type Preferences = {
   editorHighlightActiveLine: boolean;
   /** Width of a tab character in spaces. */
   editorTabSize: number;
+  /** Command template used by "Open in external editor" on code-viewer
+   *  tabs and bug code-link rows. Placeholders: `{file}`, `{line}`,
+   *  `{endLine}`. Empty string disables the action (Reveal still works).
+   *  Examples: `"code --goto {file}:{line}"`, `"subl {file}:{line}"`. */
+  externalEditorCommand: string;
 };
 
 const STORE_PATH = "devops-studio-settings.json";
@@ -164,6 +169,7 @@ const KEY_EDITOR_LINE_NUMBERS = "editorLineNumbers";
 const KEY_EDITOR_WORD_WRAP = "editorWordWrap";
 const KEY_EDITOR_HIGHLIGHT_ACTIVE_LINE = "editorHighlightActiveLine";
 const KEY_EDITOR_TAB_SIZE = "editorTabSize";
+const KEY_EXTERNAL_EDITOR_COMMAND = "externalEditorCommand";
 
 export const EDITOR_FONT_SIZE_DEFAULT = 12.5;
 export const EDITOR_FONT_SIZE_MIN = 10;
@@ -225,6 +231,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   editorWordWrap: false,
   editorHighlightActiveLine: true,
   editorTabSize: 2,
+  externalEditorCommand: "",
 };
 
 const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
@@ -341,6 +348,9 @@ export async function loadPreferences(): Promise<Preferences> {
       DEFAULT_PREFERENCES.editorHighlightActiveLine,
     editorTabSize:
       get<number>(KEY_EDITOR_TAB_SIZE) ?? DEFAULT_PREFERENCES.editorTabSize,
+    externalEditorCommand:
+      get<string>(KEY_EXTERNAL_EDITOR_COMMAND) ??
+      DEFAULT_PREFERENCES.externalEditorCommand,
   };
 }
 
@@ -498,6 +508,10 @@ export async function setEditorHighlightActiveLine(
 ): Promise<void> {
   await writePref(KEY_EDITOR_HIGHLIGHT_ACTIVE_LINE, value);
 }
+export async function setExternalEditorCommand(value: string): Promise<void> {
+  await writePref(KEY_EXTERNAL_EDITOR_COMMAND, value.trim());
+}
+
 export async function setEditorTabSize(value: number): Promise<void> {
   const clamped = EDITOR_TAB_SIZES.includes(value as (typeof EDITOR_TAB_SIZES)[number])
     ? value
@@ -582,6 +596,7 @@ export async function onPreferencesChange(
     [KEY_EDITOR_WORD_WRAP]: "editorWordWrap",
     [KEY_EDITOR_HIGHLIGHT_ACTIVE_LINE]: "editorHighlightActiveLine",
     [KEY_EDITOR_TAB_SIZE]: "editorTabSize",
+    [KEY_EXTERNAL_EDITOR_COMMAND]: "externalEditorCommand",
   };
   // Same-process writes still fire onChange immediately; cross-window writes
   // arrive via the Tauri event emitted by writePref().

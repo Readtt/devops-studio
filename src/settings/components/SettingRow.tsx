@@ -3,7 +3,10 @@ import type { ReactNode } from "react";
 
 type Props = {
   title: ReactNode;
-  description?: string;
+  /** Free-form description rendered under the title. Plain text is the
+   *  common case, but ReactNode is supported so callers can mix in inline
+   *  `<code>` placeholders or links. */
+  description?: ReactNode;
   children: React.ReactNode;
   className?: string;
 };

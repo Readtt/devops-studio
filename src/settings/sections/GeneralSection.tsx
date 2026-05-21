@@ -24,8 +24,10 @@ import {
   setEditorTabSize,
   setEditorTheme,
   setEditorWordWrap,
+  setExternalEditorCommand,
   setRestoreWindowState,
 } from "@/modules/settings/store";
+import { Input } from "@/components/ui/input";
 import { useTheme } from "@/modules/theme";
 import { ComputerIcon, Moon02Icon, Sun03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -56,6 +58,9 @@ export function GeneralSection() {
     (s) => s.editorHighlightActiveLine,
   );
   const editorTabSize = usePreferencesStore((s) => s.editorTabSize);
+  const externalEditorCommand = usePreferencesStore(
+    (s) => s.externalEditorCommand,
+  );
 
   // Reconcile autostart pref with the actual OS state on mount — the user may
   // have toggled it from System Settings.
@@ -231,9 +236,89 @@ export function GeneralSection() {
           </SettingRow>
         </div>
       </div>
+
+      {/* External editor — gives the code viewer's Reveal action a real
+          "open in my editor" affordance with line-jump support. */}
+      <div className="flex flex-col gap-2">
+        <Label>External editor</Label>
+        <div className="flex flex-col gap-2">
+          <SettingRow
+            title="Editor command"
+            description={
+              <>
+                Command DevOps Studio runs when you pick &ldquo;Open
+                externally&rdquo; on a code-viewer tab. Placeholders:{" "}
+                <code className="rounded-sm bg-foreground/[0.06] px-1 font-mono text-[10.5px]">
+                  {"{file}"}
+                </code>
+                ,{" "}
+                <code className="rounded-sm bg-foreground/[0.06] px-1 font-mono text-[10.5px]">
+                  {"{line}"}
+                </code>
+                ,{" "}
+                <code className="rounded-sm bg-foreground/[0.06] px-1 font-mono text-[10.5px]">
+                  {"{endLine}"}
+                </code>
+                . Leave empty to hide the action. Quotes work for paths
+                with spaces.
+              </>
+            }
+          >
+            <Input
+              value={externalEditorCommand}
+              placeholder='e.g. code --goto {file}:{line}'
+              onChange={(e) =>
+                void setExternalEditorCommand(e.currentTarget.value)
+              }
+              className="w-[320px] font-mono text-[11.5px]"
+            />
+          </SettingRow>
+          <div className="flex flex-wrap items-center gap-1 px-3 pb-1 text-[10.5px] text-muted-foreground">
+            <span className="mr-1 uppercase tracking-wider text-muted-foreground/70">
+              presets:
+            </span>
+            {EXTERNAL_EDITOR_PRESETS.map((p) => (
+              <button
+                key={p.label}
+                type="button"
+                onClick={() => void setExternalEditorCommand(p.template)}
+                className={cn(
+                  "inline-flex h-5 items-center gap-1 rounded-sm border border-border/50 bg-card px-1.5 font-mono text-[10px] text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/[0.08] hover:text-primary",
+                  externalEditorCommand === p.template &&
+                    "border-primary/40 bg-primary/[0.06] text-primary",
+                )}
+              >
+                {p.label}
+              </button>
+            ))}
+            {externalEditorCommand ? (
+              <button
+                type="button"
+                onClick={() => void setExternalEditorCommand("")}
+                className="ml-1 inline-flex h-5 items-center rounded-sm border border-border/50 bg-card px-1.5 font-mono text-[10px] text-muted-foreground transition-colors hover:border-destructive/40 hover:bg-destructive/[0.06] hover:text-destructive"
+              >
+                clear
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
+
+/** Built-in command-line templates for popular editors. Picking one
+ *  populates the field; the user can still customize after. */
+const EXTERNAL_EDITOR_PRESETS: ReadonlyArray<{ label: string; template: string }> = [
+  { label: "VS Code", template: "code --goto {file}:{line}" },
+  { label: "Cursor", template: "cursor --goto {file}:{line}" },
+  { label: "Sublime", template: "subl {file}:{line}" },
+  { label: "Zed", template: "zed {file}:{line}" },
+  { label: "Vim", template: "vim +{line} {file}" },
+  { label: "Neovim", template: "nvim +{line} {file}" },
+  { label: "Emacs", template: "emacs +{line} {file}" },
+  { label: "IntelliJ", template: "idea --line {line} {file}" },
+];
 
 function Label({ children }: { children: React.ReactNode }) {
   return (
