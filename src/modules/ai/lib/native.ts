@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import { currentWorkspaceEnv } from "@/modules/workspace";
+
+// Workspace switching (WSL/local) was removed with the workspace module in
+// Phase 1B. The Rust commands still accept a `workspace` arg for back-compat,
+// so we always pass a "local" sentinel — the only mode we now support.
+const currentWorkspaceEnv = () => ({ kind: "local" as const });
 
 export type ReadResult =
   | { kind: "text"; content: string; size: number }

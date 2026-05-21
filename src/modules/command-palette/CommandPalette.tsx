@@ -7,11 +7,13 @@ import {
   CommandList,
   CommandSeparator,
 } from "@/components/ui/command";
-import { getCase } from "@/modules/ado";
+import { getBug, getCase } from "@/modules/ado";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { useStaleCases, useTestPlans } from "@/modules/test-plans";
 import {
   AlertCircleIcon,
+  Bug01Icon,
+  Clock01Icon,
   CloudServerIcon,
   PlusSignIcon,
   RefreshIcon,
@@ -32,6 +34,8 @@ type Props = {
   }) => void;
   onOpenStaleQueue: () => void;
   onOpenTestPlansSidebar: () => void;
+  onOpenHistory?: () => void;
+  onOpenBug?: (input: { bugId: number; title: string }) => void;
 };
 
 /**
@@ -47,6 +51,8 @@ export function CommandPalette({
   onStartGenerator,
   onOpenStaleQueue,
   onOpenTestPlansSidebar,
+  onOpenHistory,
+  onOpenBug,
 }: Props) {
   const [query, setQuery] = useState("");
   const { plans, configured, refreshConnection } = useTestPlans();
@@ -61,8 +67,10 @@ export function CommandPalette({
     }
   }, [open, configured, refreshConnection]);
 
-  // Parse "#1234" or bare digits as an id-jump.
+  // Parse "#1234" or bare digits as an id-jump (case).
+  // Parse "bug #1234" / "bug 1234" as an id-jump (bug).
   const idMatch = query.match(/^\s*#?(\d{1,9})\s*$/);
+  const bugIdMatch = query.match(/^\s*bug\s*#?(\d{1,9})\s*$/i);
 
   const run = (fn: () => void | Promise<void>) => {
     onOpenChange(false);
@@ -79,7 +87,27 @@ export function CommandPalette({
       <CommandList>
         <CommandEmpty>No results.</CommandEmpty>
 
-        {idMatch ? (
+        {bugIdMatch && onOpenBug ? (
+          <CommandGroup heading="Open bug">
+            <CommandItem
+              value={`open-bug-${bugIdMatch[1]}`}
+              onSelect={() =>
+                run(async () => {
+                  const id = Number(bugIdMatch[1]);
+                  try {
+                    const b = await getBug(id);
+                    onOpenBug({ bugId: id, title: `Bug #${id} · ${b.title}` });
+                  } catch {
+                    onOpenBug({ bugId: id, title: `Bug #${id}` });
+                  }
+                })
+              }
+            >
+              <HugeiconsIcon icon={Bug01Icon} size={12} strokeWidth={1.75} />
+              Open bug #{bugIdMatch[1]}
+            </CommandItem>
+          </CommandGroup>
+        ) : idMatch ? (
           <CommandGroup heading="Open case">
             <CommandItem
               value={`open-case-${idMatch[1]}`}
@@ -142,6 +170,15 @@ export function CommandPalette({
               </span>
             ) : null}
           </CommandItem>
+          {onOpenHistory ? (
+            <CommandItem
+              value="open-history"
+              onSelect={() => run(onOpenHistory)}
+            >
+              <HugeiconsIcon icon={Clock01Icon} size={12} strokeWidth={1.75} />
+              Open Generation history
+            </CommandItem>
+          ) : null}
         </CommandGroup>
 
         {plans.length > 0 ? (

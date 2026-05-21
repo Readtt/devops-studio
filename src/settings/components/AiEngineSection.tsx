@@ -1,0 +1,299 @@
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
+import {
+  claudeErrorMessage,
+  probeClaude,
+  setupClaudeToken,
+  type ClaudeProbe,
+} from "@/modules/ai/lib/claude";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+import {
+  setAiEngine,
+  setClaudeAuthMode,
+  type AiEngine,
+  type ClaudeAuthMode,
+} from "@/modules/settings/store";
+import {
+  CheckmarkCircle02Icon,
+  RefreshIcon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { useCallback, useEffect, useState } from "react";
+
+/**
+ * Engine + auth picker. Shown at the top of the Models settings page.
+ *
+ * Two engines, both backed by the user's Claude Pro/Max sub or BYOK keys:
+ *   - "claude-agent-sdk" — drives the installed `claude` CLI for full
+ *     agent-loop behavior (Read/Glob/Grep/Bash tools, subagents, MCP).
+ *   - "vercel-ai-sdk"    — Vercel AI SDK (works without `claude` installed),
+ *     uses any provider key in the keyring (Anthropic / OpenAI / Google).
+ */
+export function AiEngineSection() {
+  const engine = usePreferencesStore((s) => s.aiEngine);
+  const authMode = usePreferencesStore((s) => s.claudeAuthMode);
+
+  const [probe, setProbe] = useState<ClaudeProbe | null | undefined>(undefined);
+  const [probeError, setProbeError] = useState<string | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [setupRunning, setSetupRunning] = useState(false);
+  const [setupOutput, setSetupOutput] = useState<string | null>(null);
+
+  const runProbe = useCallback(async () => {
+    setProbing(true);
+    setProbeError(null);
+    try {
+      const r = await probeClaude();
+      setProbe(r);
+    } catch (e) {
+      setProbe(null);
+      setProbeError(claudeErrorMessage(e));
+    } finally {
+      setProbing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void runProbe();
+  }, [runProbe]);
+
+  const onConnectMax = useCallback(async () => {
+    setSetupRunning(true);
+    setSetupOutput(null);
+    try {
+      const output = await setupClaudeToken();
+      setSetupOutput(output.trim());
+      // Re-probe — version may have changed if the user installed/updated.
+      await runProbe();
+    } catch (e) {
+      setSetupOutput(claudeErrorMessage(e));
+    } finally {
+      setSetupRunning(false);
+    }
+  }, [runProbe]);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div>
+        <h3 className="text-[13px] font-semibold">AI engine</h3>
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          Which engine the Generator routes through. Both can grind through
+          your source code for test-case generation; Claude Code adds the
+          full Anthropic agent loop (Read / Glob / Grep / Bash) when you've
+          got the CLI installed.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <EngineCard
+          id="claude-agent-sdk"
+          label="Claude Code"
+          summary="Uses your installed `claude` CLI. Supports Max-subscription OAuth or Anthropic API key."
+          active={engine === "claude-agent-sdk"}
+          onPick={() => void setAiEngine("claude-agent-sdk")}
+        />
+        <EngineCard
+          id="vercel-ai-sdk"
+          label="Vercel AI SDK (BYOK)"
+          summary="Bring your own API key for Anthropic / OpenAI / Google. No CLI needed."
+          active={engine === "vercel-ai-sdk"}
+          onPick={() => void setAiEngine("vercel-ai-sdk")}
+        />
+      </div>
+
+      {engine === "claude-agent-sdk" ? (
+        <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card/60 px-3 py-3">
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-[11.5px] text-muted-foreground">
+              Claude Code CLI
+            </Label>
+            <div className="flex flex-wrap items-center gap-2 text-[11.5px]">
+              {probe === undefined || probing ? (
+                <span className="text-muted-foreground">Detecting…</span>
+              ) : probe ? (
+                <Badge
+                  variant="outline"
+                  className="h-5 gap-1 border-emerald-500/40 bg-emerald-500/10 px-2 text-[10.5px] font-normal text-emerald-700 dark:text-emerald-300"
+                >
+                  <HugeiconsIcon
+                    icon={CheckmarkCircle02Icon}
+                    size={10}
+                    strokeWidth={2}
+                  />
+                  Found v{probe.version}
+                </Badge>
+              ) : (
+                <Badge
+                  variant="outline"
+                  className="h-5 gap-1 border-amber-500/40 bg-amber-500/10 px-2 text-[10.5px] font-normal text-amber-700 dark:text-amber-300"
+                >
+                  Not found
+                </Badge>
+              )}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 gap-1 px-2 text-[10.5px]"
+                onClick={() => void runProbe()}
+                disabled={probing}
+              >
+                <HugeiconsIcon
+                  icon={RefreshIcon}
+                  size={11}
+                  strokeWidth={1.75}
+                  className={probing ? "animate-spin" : ""}
+                />
+                Detect again
+              </Button>
+              {probe ? (
+                <span className="ml-auto truncate font-mono text-[10px] text-muted-foreground/80">
+                  {probe.path}
+                </span>
+              ) : null}
+            </div>
+            {probeError ? (
+              <p className="text-[10.5px] text-destructive">{probeError}</p>
+            ) : null}
+            {!probe && !probing ? (
+              <p className="text-[10.5px] text-muted-foreground/85">
+                Install Claude Code from{" "}
+                <code className="font-mono">claude.ai/code</code>, then click
+                Detect again.
+              </p>
+            ) : null}
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-[11.5px] text-muted-foreground">
+              Authentication
+            </Label>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <AuthCard
+                id="max-oauth"
+                label="Claude Max / Pro subscription"
+                summary="Sign in once via Anthropic's device-code flow. The CLI stores the token."
+                active={authMode === "max-oauth"}
+                onPick={() => void setClaudeAuthMode("max-oauth")}
+              />
+              <AuthCard
+                id="api-key"
+                label="Anthropic API key"
+                summary="Set via the provider card below. Passed to the CLI as ANTHROPIC_API_KEY."
+                active={authMode === "api-key"}
+                onPick={() => void setClaudeAuthMode("api-key")}
+              />
+            </div>
+            {authMode === "max-oauth" ? (
+              <div className="mt-2 flex flex-col gap-1.5">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 self-start px-2 text-[11px]"
+                  disabled={!probe || setupRunning}
+                  onClick={() => void onConnectMax()}
+                >
+                  {setupRunning ? "Waiting for browser…" : "Connect Claude Max"}
+                </Button>
+                <p className="text-[10.5px] text-muted-foreground/85">
+                  Runs <code className="font-mono">claude setup-token</code> —
+                  follow the printed URL in your browser to authorize.
+                </p>
+                {setupOutput ? (
+                  <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded-md border border-border/60 bg-muted/30 px-2 py-1.5 text-[10px] text-muted-foreground">
+                    {setupOutput}
+                  </pre>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function EngineCard({
+  id: _id,
+  label,
+  summary,
+  active,
+  onPick,
+}: {
+  id: AiEngine;
+  label: string;
+  summary: string;
+  active: boolean;
+  onPick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onPick}
+      className={cn(
+        "flex flex-col items-start gap-1 rounded-lg border px-3 py-2.5 text-left transition-colors",
+        active
+          ? "border-primary/60 bg-primary/[0.06]"
+          : "border-border/60 bg-card/60 hover:bg-foreground/[0.03]",
+      )}
+    >
+      <span className="flex items-center gap-1.5 text-[12px] font-medium">
+        {label}
+        {active ? (
+          <HugeiconsIcon
+            icon={CheckmarkCircle02Icon}
+            size={11}
+            strokeWidth={2}
+            className="text-primary"
+          />
+        ) : null}
+      </span>
+      <span className="text-[10.5px] leading-relaxed text-muted-foreground">
+        {summary}
+      </span>
+    </button>
+  );
+}
+
+function AuthCard({
+  id: _id,
+  label,
+  summary,
+  active,
+  onPick,
+}: {
+  id: ClaudeAuthMode;
+  label: string;
+  summary: string;
+  active: boolean;
+  onPick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onPick}
+      className={cn(
+        "flex flex-col items-start gap-1 rounded-md border px-2.5 py-2 text-left transition-colors",
+        active
+          ? "border-primary/60 bg-primary/[0.05]"
+          : "border-border/60 bg-card/40 hover:bg-foreground/[0.03]",
+      )}
+    >
+      <span className="flex items-center gap-1.5 text-[11.5px] font-medium">
+        {label}
+        {active ? (
+          <HugeiconsIcon
+            icon={CheckmarkCircle02Icon}
+            size={10}
+            strokeWidth={2}
+            className="text-primary"
+          />
+        ) : null}
+      </span>
+      <span className="text-[10px] leading-relaxed text-muted-foreground">
+        {summary}
+      </span>
+    </button>
+  );
+}

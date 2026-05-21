@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 import {
   AlertCircleIcon,
-  FolderTreeIcon,
+  Clock01Icon,
   TaskDone01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -25,14 +25,14 @@ type Props = {
 
 export function SidebarRail({ activeView, onSelectView, staleCount }: Props) {
   const items: RailItem[] = [
-    { id: "explorer", label: "Files", icon: FolderTreeIcon },
-    { id: "test-plans", label: "Test Plans", icon: TaskDone01Icon },
+    { id: "test-plans", label: "Plans", icon: TaskDone01Icon },
     {
       id: "stale-queue",
       label: "Stale",
       icon: AlertCircleIcon,
       badge: staleCount,
     },
+    { id: "history", label: "History", icon: Clock01Icon },
   ];
 
   return (

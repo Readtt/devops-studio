@@ -110,6 +110,78 @@ pub struct TestCase {
     pub steps: Vec<TestStep>,
     pub tags: Vec<String>,
     pub url: String,
+    // --- Developer-facing metadata (Phase 4) ----------------------------------
+    #[serde(default)]
+    pub assigned_to: Option<String>,
+    /// "1" (highest) to "4" — ADO stores Priority as an integer in this field.
+    #[serde(default)]
+    pub priority: Option<u8>,
+    #[serde(default)]
+    pub created_by: Option<String>,
+    /// ISO-8601 string straight from ADO.
+    #[serde(default)]
+    pub created_date: Option<String>,
+    #[serde(default)]
+    pub changed_by: Option<String>,
+    #[serde(default)]
+    pub changed_date: Option<String>,
+    /// Parent / Child / Related / Tested-By links pulled from the work item's
+    /// `relations` array. Titles are not fetched here — the UI shows the id
+    /// and rel kind, with a click-through to ADO web.
+    #[serde(default)]
+    pub linked_work_items: Vec<LinkedWorkItem>,
+}
+
+/// A single relation entry on a work item.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedWorkItem {
+    pub id: i64,
+    /// Friendly display name we map onto the raw ADO `rel` string —
+    /// "Parent" / "Child" / "Related" / "Tested By" / "Tests" / "Other".
+    pub kind: String,
+    /// Raw `rel` value from ADO so the UI can disambiguate edge cases.
+    pub rel: String,
+    /// `{org}/{project}/_workitems/edit/{id}` — built locally; ADO's `url`
+    /// field on the relation is the REST URL, not the web one.
+    pub web_url: String,
+}
+
+/// Fully-projected Bug for the BugPane. Mirrors TestCase but carries Bug
+/// fields (severity, repro steps, code-links block). The Bug code-links
+/// parser is on the TS side — we return repro_steps_html verbatim and let
+/// the UI extract the structured block.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Bug {
+    pub id: i64,
+    pub title: String,
+    pub state: String,
+    /// "1 - Critical" | "2 - High" | "3 - Medium" | "4 - Low" (or empty).
+    #[serde(default)]
+    pub severity: Option<String>,
+    /// "1" .. "4" — same scale as TestCase.priority.
+    #[serde(default)]
+    pub priority: Option<u8>,
+    pub area_path: Option<String>,
+    pub iteration_path: Option<String>,
+    /// Raw HTML for repro steps. Includes the devops-studio:code-links block
+    /// the TS side parses out into structured anchors.
+    pub repro_steps_html: String,
+    pub tags: Vec<String>,
+    pub url: String,
+    #[serde(default)]
+    pub assigned_to: Option<String>,
+    #[serde(default)]
+    pub created_by: Option<String>,
+    #[serde(default)]
+    pub created_date: Option<String>,
+    #[serde(default)]
+    pub changed_by: Option<String>,
+    #[serde(default)]
+    pub changed_date: Option<String>,
+    #[serde(default)]
+    pub linked_work_items: Vec<LinkedWorkItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,6 +219,50 @@ pub struct DraftBug {
     pub repro_steps: String,
     /// "1-Critical" | "2-High" | "3-Medium" | "4-Low"
     pub severity: String,
+    /// Source-code references attached to the bug. Serialized into the bug's
+    /// description as a `<!-- devops-studio:code-links -->` block so we can
+    /// round-trip them out of ADO later.
+    #[serde(default)]
+    pub code_links: Vec<CodeLink>,
+    /// If set, the created bug is linked as a Child of this test case
+    /// (rel = `System.LinkTypes.Hierarchy-Reverse`). Use this when bug
+    /// generation is driven by a specific case; leave None for standalone bugs.
+    #[serde(default)]
+    pub parent_case_id: Option<i64>,
+}
+
+/// Source-code anchor on a bug or test case. Paths are stored relative to the
+/// user's chosen source directory so they survive moving the working copy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeLink {
+    pub file: String,
+    pub start_line: u32,
+    /// Inclusive end line. Omit for a single-line anchor (start == end).
+    #[serde(default)]
+    pub end_line: Option<u32>,
+    /// Optional Git commit SHA the anchor was captured against, so we can
+    /// detect drift when the file changes later.
+    #[serde(default)]
+    pub commit_sha: Option<String>,
+}
+
+/// ADO project metadata returned by `_apis/projects`. Used to populate the
+/// project dropdown in Settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectRef {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// "wellFormed" | "createPending" | "deleting" — only "wellFormed" is
+    /// safe to query against, but we surface the rest so the UI can disable.
+    #[serde(default)]
+    pub state: Option<String>,
+    /// "private" | "public" — interesting mostly for org-wide reporting.
+    #[serde(default)]
+    pub visibility: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

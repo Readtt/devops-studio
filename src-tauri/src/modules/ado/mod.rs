@@ -11,6 +11,7 @@ pub mod auth;
 pub mod bugs;
 pub mod client;
 pub mod errors;
+pub mod projects;
 pub mod repos;
 pub mod tags;
 pub mod test_cases;
@@ -24,8 +25,9 @@ use tauri_plugin_store::StoreExt;
 use client::{keyring_service, pat_account, normalize_org_url, AdoState};
 use errors::AdoError;
 use types::{
-    CommitInfo, Connection, ConnectionStatus, CreatedWorkItem, DraftBug, DraftCase, FileContent,
-    RepoRef, SuiteRef, TestCase, TestCaseRef, TestConnectionResult, TestPlanRef,
+    Bug, CommitInfo, Connection, ConnectionStatus, CreatedWorkItem, DraftBug, DraftCase,
+    FileContent, ProjectRef, RepoRef, SuiteRef, TestCase, TestCaseRef, TestConnectionResult,
+    TestPlanRef,
 };
 
 const STORE_PATH: &str = "devops-studio-settings.json";
@@ -260,6 +262,46 @@ pub async fn ado_create_bug_and_link(
     let bug = bugs::create_bug(&state, &input.draft).await?;
     bugs::link_tested_by(&state, input.case_id, &bug.url).await?;
     Ok(bug)
+}
+
+/// Standalone bug creation. No required `TestedBy` link to a test case — the
+/// draft carries its own `parent_case_id` if the caller wants a parent/child
+/// relation, and `code_links` if it wants source anchors in the description.
+#[tauri::command]
+pub async fn ado_create_bug(
+    state: State<'_, AdoState>,
+    draft: DraftBug,
+) -> Result<CreatedWorkItem, AdoError> {
+    bugs::create_bug(&state, &draft).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkBugToCaseInput {
+    pub bug_id: i64,
+    pub case_id: i64,
+}
+
+/// Link an existing bug to a test case as its Parent in the work-item tree.
+/// Used by the Bug pane's "Set parent case" action.
+#[tauri::command]
+pub async fn ado_link_bug_to_case(
+    state: State<'_, AdoState>,
+    input: LinkBugToCaseInput,
+) -> Result<(), AdoError> {
+    bugs::link_bug_to_case_as_child(&state, input.bug_id, input.case_id).await
+}
+
+#[tauri::command]
+pub async fn ado_get_bug(state: State<'_, AdoState>, bug_id: i64) -> Result<Bug, AdoError> {
+    bugs::get_bug(&state, bug_id).await
+}
+
+#[tauri::command]
+pub async fn ado_list_projects(
+    state: State<'_, AdoState>,
+) -> Result<Vec<ProjectRef>, AdoError> {
+    projects::list_projects(&state).await
 }
 
 #[derive(Deserialize)]

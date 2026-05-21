@@ -54,7 +54,7 @@ pub async fn get_case(state: &AdoState, case_id: i64) -> AdoResult<TestCase> {
         &format!("wit/workitems/{case_id}?$expand=relations"),
     );
     let raw: serde_json::Value = get_json(state, &url, "test case").await?;
-    work_item_to_case(raw)
+    work_item_to_case(raw, &conn.org_url, &conn.project)
 }
 
 // --- ADO response shapes (private) ---

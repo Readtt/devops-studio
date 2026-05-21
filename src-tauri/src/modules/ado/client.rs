@@ -81,17 +81,59 @@ pub fn auth_header(pat: &str) -> String {
     format!("Basic {}", B64.encode(format!(":{pat}")))
 }
 
-/// Normalize org URL: ensure it has an http(s) scheme and no trailing slash.
-/// Accepts pasted forms like `dev.azure.com/myorg`, `myorg.visualstudio.com`,
-/// `https://dev.azure.com/myorg/`. The user pasting without a scheme is the
-/// #1 cause of reqwest "builder error" on connect.
+/// Normalize org URL into the canonical `https://dev.azure.com/{org}` form.
+///
+/// Accepts whatever the user pastes — bare slug, legacy `*.visualstudio.com`,
+/// or modern `dev.azure.com/{org}` (with or without scheme, with or without
+/// trailing path). Always rewrites to `dev.azure.com` because legacy hosts
+/// 30x to it and `reqwest` strips the `Authorization` header on cross-host
+/// redirects — anonymous follow-ups get HTML sign-in pages, which the client
+/// (correctly, in isolation) reads as `SsoRequired`.
 pub fn normalize_org_url(s: &str) -> String {
-    let trimmed = s.trim().trim_end_matches('/');
+    let trimmed = s.trim().trim_matches('/');
     if trimmed.is_empty() {
         return String::new();
     }
-    let lc = trimmed.to_ascii_lowercase();
-    if lc.starts_with("http://") || lc.starts_with("https://") {
+
+    // Strip scheme (if any) so we can inspect the host uniformly.
+    let lower_full = trimmed.to_ascii_lowercase();
+    let (had_scheme, no_scheme_lower) = if let Some(rest) = lower_full.strip_prefix("https://") {
+        (true, rest)
+    } else if let Some(rest) = lower_full.strip_prefix("http://") {
+        (true, rest)
+    } else {
+        (false, lower_full.as_str())
+    };
+
+    // Modern: dev.azure.com/{org}[/...]
+    if let Some(rest) = no_scheme_lower.strip_prefix("dev.azure.com/") {
+        let org = rest.split('/').next().unwrap_or("").trim();
+        if !org.is_empty() {
+            return format!("https://dev.azure.com/{org}");
+        }
+    }
+
+    // Legacy: {org}.visualstudio.com[/...]
+    if let Some(host) = no_scheme_lower.split('/').next() {
+        if let Some(org) = host.strip_suffix(".visualstudio.com") {
+            if !org.is_empty() {
+                return format!("https://dev.azure.com/{org}");
+            }
+        }
+    }
+
+    // Bare slug (user typed nothing scheme-like) — must be a valid org name:
+    // alphanumeric, hyphens, underscores only. No ports, paths, or dots.
+    if !had_scheme
+        && no_scheme_lower
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return format!("https://dev.azure.com/{no_scheme_lower}");
+    }
+
+    // Anything else (custom on-prem TFS, localhost, etc.): preserve as given.
+    if had_scheme {
         return trimmed.to_string();
     }
     format!("https://{trimmed}")
@@ -102,20 +144,36 @@ mod url_tests {
     use super::*;
 
     #[test]
-    fn adds_https_when_scheme_missing() {
-        assert_eq!(normalize_org_url("dev.azure.com/myorg"), "https://dev.azure.com/myorg");
-        assert_eq!(normalize_org_url("myorg.visualstudio.com"), "https://myorg.visualstudio.com");
-    }
-
-    #[test]
-    fn keeps_existing_scheme() {
+    fn canonicalizes_modern_url() {
         assert_eq!(normalize_org_url("https://dev.azure.com/myorg"), "https://dev.azure.com/myorg");
-        assert_eq!(normalize_org_url("http://localhost:8080"), "http://localhost:8080");
+        assert_eq!(normalize_org_url("https://dev.azure.com/myorg/"), "https://dev.azure.com/myorg");
+        assert_eq!(normalize_org_url("dev.azure.com/myorg"), "https://dev.azure.com/myorg");
     }
 
     #[test]
-    fn strips_trailing_slash() {
-        assert_eq!(normalize_org_url("https://dev.azure.com/myorg/"), "https://dev.azure.com/myorg");
+    fn rewrites_legacy_visualstudio_to_dev_azure() {
+        assert_eq!(normalize_org_url("https://macroagility.visualstudio.com"), "https://dev.azure.com/macroagility");
+        assert_eq!(normalize_org_url("https://macroagility.visualstudio.com/"), "https://dev.azure.com/macroagility");
+        assert_eq!(normalize_org_url("macroagility.visualstudio.com"), "https://dev.azure.com/macroagility");
+        assert_eq!(normalize_org_url("MacroAgility.VisualStudio.com"), "https://dev.azure.com/macroagility");
+    }
+
+    #[test]
+    fn accepts_bare_org_slug() {
+        assert_eq!(normalize_org_url("macroagility"), "https://dev.azure.com/macroagility");
+        assert_eq!(normalize_org_url("  myorg  "), "https://dev.azure.com/myorg");
+    }
+
+    #[test]
+    fn strips_trailing_path_segments() {
+        assert_eq!(normalize_org_url("https://dev.azure.com/myorg/SomeProject"), "https://dev.azure.com/myorg");
+        assert_eq!(normalize_org_url("https://macroagility.visualstudio.com/SomeProject"), "https://dev.azure.com/macroagility");
+    }
+
+    #[test]
+    fn passes_through_unknown_hosts() {
+        assert_eq!(normalize_org_url("http://localhost:8080"), "http://localhost:8080");
+        assert_eq!(normalize_org_url("https://tfs.internal/tfs/DefaultCollection"), "https://tfs.internal/tfs/DefaultCollection");
     }
 
     #[test]

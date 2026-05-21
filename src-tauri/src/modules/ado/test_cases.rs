@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 
 use super::client::{patch_json_patch, post_json, project_api, AdoState};
 use super::errors::{AdoError, AdoResult};
-use super::types::{CreatedWorkItem, DraftCase, TestCase, TestStep};
+use super::types::{CreatedWorkItem, DraftCase, LinkedWorkItem, TestCase, TestStep};
 
 /// Build the Microsoft.VSTS.TCM.Steps XML for a set of steps.
 pub fn build_steps_xml(steps: &[TestStep]) -> String {
@@ -312,7 +312,10 @@ fn build_web_url_for_workitem(org_url: &str, project: &str, id: i64) -> String {
 }
 
 /// Convert a `wit/workitems/{id}?$expand=relations` response into a TestCase.
-pub fn work_item_to_case(raw: Value) -> AdoResult<TestCase> {
+/// `conn_org` + `conn_project` are needed only to build the per-relation
+/// web URLs — pass empty strings if the caller doesn't yet have a connection
+/// (the URLs come out empty but everything else still works).
+pub fn work_item_to_case(raw: Value, conn_org: &str, conn_project: &str) -> AdoResult<TestCase> {
     let id = raw
         .get("id")
         .and_then(|v| v.as_i64())
@@ -366,6 +369,33 @@ pub fn work_item_to_case(raw: Value) -> AdoResult<TestCase> {
         })
         .unwrap_or_default();
 
+    // --- Developer metadata --------------------------------------------------
+    let assigned_to = display_name_field(fields.get("System.AssignedTo"));
+    let priority = fields
+        .get("Microsoft.VSTS.Common.Priority")
+        .and_then(|v| v.as_i64())
+        .and_then(|n| u8::try_from(n).ok());
+    let created_by = display_name_field(fields.get("System.CreatedBy"));
+    let created_date = fields
+        .get("System.CreatedDate")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let changed_by = display_name_field(fields.get("System.ChangedBy"));
+    let changed_date = fields
+        .get("System.ChangedDate")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let linked_work_items = raw
+        .get("relations")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|r| relation_to_linked(r, conn_org, conn_project))
+                .collect()
+        })
+        .unwrap_or_default();
+
     Ok(TestCase {
         id,
         title,
@@ -376,7 +406,83 @@ pub fn work_item_to_case(raw: Value) -> AdoResult<TestCase> {
         steps,
         tags,
         url,
+        assigned_to,
+        priority,
+        created_by,
+        created_date,
+        changed_by,
+        changed_date,
+        linked_work_items,
     })
+}
+
+/// ADO `Identity` fields look like `{"displayName": "Alice", "uniqueName": "alice@x"}`.
+/// Pull the human-readable name with sensible fallbacks.
+pub(super) fn display_name_field(v: Option<&Value>) -> Option<String> {
+    let obj = v?.as_object()?;
+    obj.get("displayName")
+        .and_then(|v| v.as_str())
+        .or_else(|| obj.get("uniqueName").and_then(|v| v.as_str()))
+        .map(String::from)
+}
+
+/// Convert a single entry in the work item's `relations` array into a
+/// `LinkedWorkItem`. Skips hyperlinks (`Hyperlink` rel) and attachments since
+/// those aren't work-item-to-work-item relations.
+pub(super) fn relation_to_linked(
+    raw: &Value,
+    conn_org: &str,
+    conn_project: &str,
+) -> Option<LinkedWorkItem> {
+    let rel = raw.get("rel").and_then(|v| v.as_str())?;
+    // Only keep work-item links; skip hyperlinks/attachments.
+    if !rel.starts_with("System.LinkTypes.")
+        && !rel.starts_with("Microsoft.VSTS.Common.TestedBy")
+        && !rel.starts_with("Microsoft.VSTS.Common.Affects")
+        && !rel.starts_with("Microsoft.VSTS.Common.Tests")
+    {
+        return None;
+    }
+    let url = raw.get("url").and_then(|v| v.as_str()).unwrap_or("");
+    // The REST URL ends with `/{id}` — extract the trailing integer.
+    let id = url
+        .rsplit('/')
+        .next()
+        .and_then(|s| s.parse::<i64>().ok())?;
+    let kind = friendly_rel_name(rel).to_string();
+    let web_url = if !conn_org.is_empty() && !conn_project.is_empty() {
+        format!(
+            "{}/{}/_workitems/edit/{}",
+            conn_org.trim_end_matches('/'),
+            conn_project,
+            id
+        )
+    } else {
+        String::new()
+    };
+    Some(LinkedWorkItem {
+        id,
+        kind,
+        rel: rel.to_string(),
+        web_url,
+    })
+}
+
+pub(super) fn friendly_rel_name(rel: &str) -> &'static str {
+    match rel {
+        "System.LinkTypes.Hierarchy-Forward" => "Child",
+        "System.LinkTypes.Hierarchy-Reverse" => "Parent",
+        "System.LinkTypes.Related" => "Related",
+        "System.LinkTypes.Duplicate-Forward" => "Duplicate of",
+        "System.LinkTypes.Duplicate-Reverse" => "Duplicated by",
+        "System.LinkTypes.Dependency-Forward" => "Successor",
+        "System.LinkTypes.Dependency-Reverse" => "Predecessor",
+        "Microsoft.VSTS.Common.TestedBy-Forward" => "Tested by",
+        "Microsoft.VSTS.Common.TestedBy-Reverse" => "Tests",
+        "Microsoft.VSTS.Common.Affects-Forward" => "Affects",
+        "Microsoft.VSTS.Common.Affects-Reverse" => "Affected by",
+        _ => "Other",
+    }
 }
 
 #[cfg(test)]

@@ -96,15 +96,13 @@ export function TestCasePane({ caseId }: Props) {
   return (
     <div className="flex h-full flex-col overflow-y-auto">
       <header className="border-b border-border/60 bg-card/40 px-6 py-4">
-        <div className="flex items-baseline justify-between gap-3">
-          <div className="flex min-w-0 items-baseline gap-2">
-            <span className="font-mono text-[12px] text-muted-foreground">
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="min-w-0 truncate text-[16px] font-semibold tracking-tight">
+            <span className="mr-1.5 font-mono text-[12.5px] font-normal text-muted-foreground">
               #{tc.id}
             </span>
-            <h1 className="truncate text-[16px] font-semibold tracking-tight">
-              {tc.title}
-            </h1>
-          </div>
+            {tc.title}
+          </h1>
           <div className="flex shrink-0 gap-1">
             <Button
               size="sm"
@@ -128,32 +126,15 @@ export function TestCasePane({ caseId }: Props) {
                 className="h-7 px-2 text-[11px]"
                 onClick={() => void openUrl(adoWebUrl)}
               >
-                <HugeiconsIcon
-                  icon={ExternalLink}
-                  size={12}
-                  strokeWidth={1.75}
-                />
+                <HugeiconsIcon icon={ExternalLink} size={12} strokeWidth={1.75} />
                 Open in ADO
               </Button>
             ) : null}
           </div>
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-muted-foreground">
-          <span>
-            State: <span className="text-foreground/85">{tc.state}</span>
-          </span>
-          {tc.areaPath ? (
-            <span>
-              Area: <span className="font-mono text-foreground/85">{tc.areaPath}</span>
-            </span>
-          ) : null}
-          {tc.iterationPath ? (
-            <span>
-              Iteration:{" "}
-              <span className="font-mono text-foreground/85">{tc.iterationPath}</span>
-            </span>
-          ) : null}
-        </div>
+        <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+          {buildMetadataInline(tc)}
+        </p>
         {tc.tags.length > 0 ? (
           <div className="mt-2 flex flex-wrap gap-1">
             {tc.tags.map((t) => (
@@ -184,6 +165,58 @@ export function TestCasePane({ caseId }: Props) {
         <Section title="Steps">
           <StepsTable steps={tc.steps} />
         </Section>
+
+        {tc.linkedWorkItems.length > 0 ? (
+          <Section title={`Linked work items (${tc.linkedWorkItems.length})`}>
+            <ul className="flex flex-col gap-1">
+              {tc.linkedWorkItems.map((lwi) => {
+                // "Tested by" / "Tests" link types most often point at bugs
+                // — clicking opens our in-app BugPane via the side channel
+                // rather than leaving the app for the ADO web UI.
+                const isLikelyBug =
+                  lwi.kind === "Tested by" || lwi.kind === "Tests";
+                return (
+                  <li
+                    key={`${lwi.rel}-${lwi.id}`}
+                    className="flex items-center gap-2 rounded-md border border-border/40 bg-card/40 px-2.5 py-1.5 text-[11.5px]"
+                  >
+                    <span className="inline-flex h-4 shrink-0 items-center rounded-sm bg-foreground/[0.06] px-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                      {lwi.kind}
+                    </span>
+                    <span className="font-mono text-[10.5px] text-muted-foreground">
+                      #{lwi.id}
+                    </span>
+                    {isLikelyBug ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          window.dispatchEvent(
+                            new CustomEvent("devops-studio:open-bug", {
+                              detail: { bugId: lwi.id },
+                            }),
+                          )
+                        }
+                        className="ml-2 inline-flex shrink-0 items-center text-[10.5px] text-muted-foreground hover:text-primary hover:underline"
+                      >
+                        Open in app
+                      </button>
+                    ) : null}
+                    {lwi.webUrl ? (
+                      <button
+                        type="button"
+                        onClick={() => void openUrl(lwi.webUrl)}
+                        className="ml-auto inline-flex shrink-0 items-center gap-1 text-[10.5px] text-muted-foreground hover:text-foreground"
+                      >
+                        <HugeiconsIcon icon={ExternalLink} size={10} strokeWidth={1.75} />
+                        ADO
+                      </button>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+          </Section>
+        ) : null}
 
         <Section title={`Linked source (${links.length})`}>
           {links.length === 0 ? (
@@ -275,6 +308,66 @@ function buildWorkItemWebUrl(
 ): string | null {
   if (!conn || !conn.orgUrl || !conn.project) return null;
   return `${conn.orgUrl.replace(/\/$/, "")}/${encodeURIComponent(conn.project)}/_workitems/edit/${caseId}`;
+}
+
+/**
+ * Single-line metadata strip: `State · Priority · Area · Iteration · Assigned · Changed`.
+ * Fields with no value are omitted entirely (no `Area: —` clutter).
+ * Inline ` · ` separators keep horizontal spacing predictable across screen
+ * sizes; the old flex-wrap chip strip was visually noisy and produced large
+ * gaps between the label and value.
+ */
+function buildMetadataInline(tc: TestCase): React.ReactNode {
+  const segments: { label: string; value: React.ReactNode }[] = [];
+  segments.push({ label: "State", value: tc.state });
+  if (tc.priority != null) segments.push({ label: "Priority", value: String(tc.priority) });
+  if (tc.areaPath) {
+    segments.push({
+      label: "Area",
+      value: <span className="font-mono">{tc.areaPath}</span>,
+    });
+  }
+  if (tc.iterationPath) {
+    segments.push({
+      label: "Iteration",
+      value: <span className="font-mono">{tc.iterationPath}</span>,
+    });
+  }
+  if (tc.assignedTo) segments.push({ label: "Assigned", value: tc.assignedTo });
+  if (tc.changedBy && tc.changedDate) {
+    segments.push({
+      label: "Updated",
+      value: `${formatDate(tc.changedDate)} by ${tc.changedBy}`,
+    });
+  } else if (tc.changedDate) {
+    segments.push({ label: "Updated", value: formatDate(tc.changedDate) });
+  }
+  return (
+    <>
+      {segments.map((s, i) => (
+        <span key={s.label}>
+          {i > 0 ? <span className="px-1.5 text-muted-foreground/50">·</span> : null}
+          <span>
+            {s.label}: <span className="text-foreground/85">{s.value}</span>
+          </span>
+        </span>
+      ))}
+    </>
+  );
+}
+
+function formatDate(iso: string): string {
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
+  } catch {
+    return iso;
+  }
 }
 
 /** Description rendered to the user shouldn't include the source-links block — links get their own section. */

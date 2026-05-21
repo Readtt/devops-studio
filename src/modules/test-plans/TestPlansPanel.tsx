@@ -1,18 +1,33 @@
 import { Button } from "@/components/ui/button";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { adoErrorMessage } from "@/modules/ado";
+import { adoErrorMessage, getConnection, markForReview } from "@/modules/ado";
 import { useTestPlans, type SuiteLoad } from "./hooks/useTestPlans";
 import {
   ArrowDown01Icon,
   ArrowRight01Icon,
+  ExternalLink,
+  Link01Icon,
   PlusSignIcon,
   RefreshIcon,
   Settings01Icon,
   TaskDone01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { SuiteRef, TestCaseRef, TestPlanRef } from "@/modules/ado";
 
 type Props = {
@@ -22,6 +37,10 @@ type Props = {
     suiteId?: number | null;
   }) => void;
 };
+
+type ConnInfo = { orgUrl: string; project: string };
+
+const FILTER_DEBOUNCE_MS = 250;
 
 export function TestPlansPanel({ onOpenCase, onStartGenerator }: Props) {
   const {
@@ -35,10 +54,13 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator }: Props) {
     refreshPlans,
     loadSuites,
     loadSuiteCases,
+    cancelPlanLoads,
   } = useTestPlans();
   const [expandedPlans, setExpandedPlans] = useState<Set<number>>(new Set());
   const [expandedSuites, setExpandedSuites] = useState<Set<number>>(new Set());
-  const [filter, setFilter] = useState("");
+  const [filterDraft, setFilterDraft] = useState("");
+  const [filter, setFilter] = useState(""); // debounced
+  const [conn, setConn] = useState<ConnInfo | null>(null);
 
   useEffect(() => {
     if (!initialized) {
@@ -46,11 +68,94 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator }: Props) {
     }
   }, [initialized, refreshConnection]);
 
+  // Once configured, grab the org/project so we can build "Open in ADO" URLs
+  // without re-fetching on every menu open.
+  useEffect(() => {
+    if (!configured) {
+      setConn(null);
+      return;
+    }
+    void getConnection()
+      .then((c) =>
+        setConn({ orgUrl: c.orgUrl.replace(/\/$/, ""), project: c.project }),
+      )
+      .catch(() => setConn(null));
+  }, [configured]);
+
+  // Debounce the filter input — typing fast no longer triggers per-keystroke
+  // matcher rebuilds + eager-load cascades.
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      setFilter(filterDraft);
+    }, FILTER_DEBOUNCE_MS);
+    return () => window.clearTimeout(id);
+  }, [filterDraft]);
+
+  const needle = useMemo(() => filter.trim().toLowerCase(), [filter]);
   const matches = useMemo(() => {
-    if (!filter.trim()) return null;
-    const needle = filter.trim().toLowerCase();
+    if (!needle) return null;
     return (s: string) => s.toLowerCase().includes(needle);
-  }, [filter]);
+  }, [needle]);
+
+  // Eager-load: when there's an active needle, expand every plan in the tree
+  // and trigger loadSuites/loadSuiteCases so a case-title-only match isn't
+  // hidden behind a collapsed plan that the user has to click open.
+  useEffect(() => {
+    if (!needle || plans.length === 0) return;
+    for (const p of plans) {
+      // Plan name already matches — don't force its subtree open; the user
+      // can drill down themselves.
+      if (p.name.toLowerCase().includes(needle)) continue;
+      void loadSuites(p.id);
+      const sl = bySuite.get(p.id);
+      if (!sl) continue;
+      for (const s of sl.suites) {
+        if (s.name.toLowerCase().includes(needle)) continue;
+        void loadSuiteCases(p.id, s.id);
+      }
+    }
+    // bySuite is intentionally NOT in the dep list — we don't want to refire
+    // every time bySuite mutates (which is on every load completion). The
+    // needle change is what should drive eager-load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needle, plans, loadSuites, loadSuiteCases]);
+
+  // When the filter is active, show subtrees regardless of expandedPlans /
+  // expandedSuites so the user can see *what* matched.
+  const forceExpand = needle.length > 0;
+
+  const togglePlan = useCallback(
+    (id: number) => {
+      setExpandedPlans((curr) => {
+        const next = new Set(curr);
+        if (next.has(id)) {
+          next.delete(id);
+          cancelPlanLoads(id);
+        } else {
+          next.add(id);
+          void loadSuites(id);
+        }
+        return next;
+      });
+    },
+    [cancelPlanLoads, loadSuites],
+  );
+
+  const toggleSuite = useCallback(
+    (planId: number, suiteId: number) => {
+      setExpandedSuites((curr) => {
+        const next = new Set(curr);
+        if (next.has(suiteId)) {
+          next.delete(suiteId);
+        } else {
+          next.add(suiteId);
+          void loadSuiteCases(planId, suiteId);
+        }
+        return next;
+      });
+    },
+    [loadSuiteCases],
+  );
 
   if (!initialized) {
     return <PanelMessage>Loading…</PanelMessage>;
@@ -81,33 +186,47 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator }: Props) {
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-1.5 border-b border-border/60 px-2 py-1.5">
         <input
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
+          value={filterDraft}
+          onChange={(e) => setFilterDraft(e.target.value)}
           placeholder="Filter plans, suites, cases…"
           className="min-w-0 flex-1 rounded-md border border-border/60 bg-background/70 px-2 py-1 text-[11.5px] outline-none focus:border-primary/50"
         />
-        <Button
-          size="icon"
-          variant="ghost"
-          className="h-6 w-6"
-          aria-label="Refresh"
-          onClick={() => void refreshPlans()}
-        >
-          <HugeiconsIcon
-            icon={RefreshIcon}
-            size={12}
-            strokeWidth={1.75}
-            className={plansLoading ? "animate-spin" : ""}
-          />
-        </Button>
-        <Button
-          size="sm"
-          className="h-6 px-1.5 text-[10.5px]"
-          onClick={() => onStartGenerator()}
-        >
-          <HugeiconsIcon icon={PlusSignIcon} size={11} strokeWidth={1.75} />
-          Generate
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-6 w-6"
+              aria-label="Refresh plans"
+              onClick={() => void refreshPlans()}
+            >
+              <HugeiconsIcon
+                icon={RefreshIcon}
+                size={12}
+                strokeWidth={1.75}
+                className={plansLoading ? "animate-spin" : ""}
+              />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="text-[11px]">
+            Refetch the plan list from Azure DevOps
+          </TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="sm"
+              className="h-6 px-1.5 text-[10.5px]"
+              onClick={() => onStartGenerator()}
+            >
+              <HugeiconsIcon icon={PlusSignIcon} size={11} strokeWidth={1.75} />
+              Generate
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="text-[11px]">
+            Open the Generator to draft test cases from a spec
+          </TooltipContent>
+        </Tooltip>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -126,61 +245,42 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator }: Props) {
             <PlanRow
               key={p.id}
               plan={p}
-              expanded={expandedPlans.has(p.id)}
+              expanded={forceExpand || expandedPlans.has(p.id)}
               onToggle={() => togglePlan(p.id)}
               matches={matches}
               expandedSuites={expandedSuites}
+              forceExpand={forceExpand}
               onToggleSuite={(sid) => toggleSuite(p.id, sid)}
               onOpenCase={onOpenCase}
+              onStartGenerator={onStartGenerator}
               bySuite={bySuite}
               loadSuites={loadSuites}
               loadSuiteCases={loadSuiteCases}
+              conn={conn}
             />
           ))}
         </ul>
       </div>
     </div>
   );
-
-  function togglePlan(id: number) {
-    setExpandedPlans((curr) => {
-      const next = new Set(curr);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-        void loadSuites(id);
-      }
-      return next;
-    });
-  }
-
-  function toggleSuite(planId: number, suiteId: number) {
-    setExpandedSuites((curr) => {
-      const next = new Set(curr);
-      if (next.has(suiteId)) {
-        next.delete(suiteId);
-      } else {
-        next.add(suiteId);
-        void loadSuiteCases(planId, suiteId);
-      }
-      return next;
-    });
-  }
 }
+
+// --- Plan row ---------------------------------------------------------------
 
 type PlanRowProps = {
   plan: TestPlanRef;
   expanded: boolean;
   onToggle: () => void;
-  /** Title-substring filter; applied to suite/case rows. Plan rows always show. */
   matches: ((s: string) => boolean) | null;
   expandedSuites: Set<number>;
+  forceExpand: boolean;
   onToggleSuite: (suiteId: number) => void;
   onOpenCase: Props["onOpenCase"];
+  onStartGenerator: Props["onStartGenerator"];
   bySuite: Map<number, SuiteLoad>;
   loadSuites: (planId: number) => Promise<void>;
   loadSuiteCases: (planId: number, suiteId: number) => Promise<void>;
+  conn: ConnInfo | null;
 };
 
 function PlanRow({
@@ -189,25 +289,61 @@ function PlanRow({
   onToggle,
   matches,
   expandedSuites,
+  forceExpand,
   onToggleSuite,
   onOpenCase,
+  onStartGenerator,
   bySuite,
+  loadSuites,
+  conn,
 }: PlanRowProps) {
   const data = bySuite.get(plan.id);
+  const planWebUrl = conn
+    ? `${conn.orgUrl}/${encodeURIComponent(conn.project)}/_testPlans/define?planId=${plan.id}`
+    : null;
+
   return (
     <li>
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex w-full items-center gap-1 rounded-sm px-1.5 py-1 text-left text-[12px] hover:bg-foreground/[0.04]"
-      >
-        <HugeiconsIcon
-          icon={expanded ? ArrowDown01Icon : ArrowRight01Icon}
-          size={11}
-          strokeWidth={1.75}
-        />
-        <span className="truncate font-medium">{plan.name}</span>
-      </button>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <button
+            type="button"
+            onClick={onToggle}
+            className="flex w-full items-center gap-1 rounded-sm px-1.5 py-1 text-left text-[12px] hover:bg-foreground/[0.04]"
+          >
+            <HugeiconsIcon
+              icon={expanded ? ArrowDown01Icon : ArrowRight01Icon}
+              size={11}
+              strokeWidth={1.75}
+            />
+            <span className="truncate font-medium">{plan.name}</span>
+          </button>
+        </ContextMenuTrigger>
+        <ContextMenuContent className="text-[12px]">
+          <ContextMenuItem onSelect={() => void loadSuites(plan.id)}>
+            <HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />
+            Refresh suites
+          </ContextMenuItem>
+          <ContextMenuItem
+            onSelect={() => onStartGenerator({ planId: plan.id, suiteId: null })}
+          >
+            <HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={1.75} />
+            Generate cases for plan
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            disabled={!planWebUrl}
+            onSelect={() => planWebUrl && void openUrl(planWebUrl)}
+          >
+            <HugeiconsIcon
+              icon={ExternalLink}
+              size={12}
+              strokeWidth={1.75}
+            />
+            Open in Azure DevOps
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
       {expanded ? (
         <ul className="ml-3 border-l border-border/40 pl-1.5">
           {data?.loading ? (
@@ -217,22 +353,23 @@ function PlanRow({
           ) : null}
           {data?.error ? (
             <li className="px-2 py-1 text-[11px] text-destructive">
-              Failed to load suites
+              {adoErrorMessage(data.error)}
             </li>
           ) : null}
           {data?.suites
-            .filter((s) => !matches || matches(s.name))
+            .filter((s) => !matches || matches(s.name) || hasMatchingCase(data, s.id, matches))
             .map((s) => (
               <SuiteRow
                 key={s.id}
                 planId={plan.id}
                 suite={s}
-                expanded={expandedSuites.has(s.id)}
+                expanded={forceExpand || expandedSuites.has(s.id)}
                 onToggle={() => onToggleSuite(s.id)}
-                cases={data.cases.get(s.id)}
-                loading={data.loadingCases.has(s.id)}
+                suiteLoad={data}
                 matches={matches}
                 onOpenCase={onOpenCase}
+                onStartGenerator={onStartGenerator}
+                conn={conn}
               />
             ))}
         </ul>
@@ -241,45 +378,108 @@ function PlanRow({
   );
 }
 
+function hasMatchingCase(
+  load: SuiteLoad,
+  suiteId: number,
+  matches: ((s: string) => boolean) | null,
+): boolean {
+  if (!matches) return true;
+  const cases = load.suiteCases.get(suiteId)?.cases;
+  if (!cases) return true; // not yet loaded — show optimistically
+  return cases.some((c) => matches(c.title));
+}
+
+// --- Suite row --------------------------------------------------------------
+
 type SuiteRowProps = {
   planId: number;
   suite: SuiteRef;
   expanded: boolean;
   onToggle: () => void;
-  cases: TestCaseRef[] | undefined;
-  loading: boolean;
+  suiteLoad: SuiteLoad;
   matches: ((s: string) => boolean) | null;
   onOpenCase: Props["onOpenCase"];
+  onStartGenerator: Props["onStartGenerator"];
+  conn: ConnInfo | null;
 };
 
 function SuiteRow({
+  planId,
   suite,
   expanded,
   onToggle,
-  cases,
-  loading,
+  suiteLoad,
   matches,
   onOpenCase,
+  onStartGenerator,
+  conn,
 }: SuiteRowProps) {
+  const sc = suiteLoad.suiteCases.get(suite.id);
+  const loading = sc?.loading ?? false;
+  const cases = sc?.cases ?? null;
+  const error = sc?.error ?? null;
+  const suiteWebUrl = conn
+    ? `${conn.orgUrl}/${encodeURIComponent(
+        conn.project,
+      )}/_testPlans/define?planId=${planId}&suiteId=${suite.id}`
+    : null;
+
   return (
     <li>
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex w-full items-center gap-1 rounded-sm px-1.5 py-1 text-left text-[11.5px] hover:bg-foreground/[0.04]"
-      >
-        <HugeiconsIcon
-          icon={expanded ? ArrowDown01Icon : ArrowRight01Icon}
-          size={10}
-          strokeWidth={1.75}
-        />
-        <span className="truncate">{suite.name}</span>
-      </button>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <button
+            type="button"
+            onClick={onToggle}
+            className="flex w-full items-center gap-1 rounded-sm px-1.5 py-1 text-left text-[11.5px] hover:bg-foreground/[0.04]"
+          >
+            <HugeiconsIcon
+              icon={expanded ? ArrowDown01Icon : ArrowRight01Icon}
+              size={10}
+              strokeWidth={1.75}
+            />
+            <span className="truncate">{suite.name}</span>
+          </button>
+        </ContextMenuTrigger>
+        <ContextMenuContent className="text-[12px]">
+          <ContextMenuItem
+            onSelect={() => void useTestPlans.getState().loadSuiteCases(planId, suite.id)}
+          >
+            <HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />
+            Refresh cases
+          </ContextMenuItem>
+          <ContextMenuItem
+            onSelect={() =>
+              onStartGenerator({ planId, suiteId: suite.id })
+            }
+          >
+            <HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={1.75} />
+            Generate cases for suite
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            disabled={!suiteWebUrl}
+            onSelect={() => suiteWebUrl && void openUrl(suiteWebUrl)}
+          >
+            <HugeiconsIcon
+              icon={ExternalLink}
+              size={12}
+              strokeWidth={1.75}
+            />
+            Open in Azure DevOps
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
       {expanded ? (
         <ul className="ml-3 border-l border-border/40 pl-1.5">
           {loading ? (
             <li className="px-2 py-1 text-[10.5px] text-muted-foreground">
               Loading cases…
+            </li>
+          ) : null}
+          {error ? (
+            <li className="px-2 py-1 text-[10.5px] text-destructive">
+              {adoErrorMessage(error)}
             </li>
           ) : null}
           {!loading && cases?.length === 0 ? (
@@ -290,34 +490,117 @@ function SuiteRow({
           {cases
             ?.filter((c) => !matches || matches(c.title))
             .map((c) => (
-              <li key={c.id}>
-                <button
-                  type="button"
-                  onClick={() =>
-                    onOpenCase({
-                      caseId: c.id,
-                      title: `#${c.id} · ${c.title}`,
-                    })
-                  }
-                  className={cn(
-                    "flex w-full items-center gap-1.5 rounded-sm px-1.5 py-1 text-left text-[11px] hover:bg-foreground/[0.05]",
-                  )}
-                >
-                  <HugeiconsIcon
-                    icon={TaskDone01Icon}
-                    size={10}
-                    strokeWidth={1.75}
-                    className="shrink-0 text-muted-foreground"
-                  />
-                  <span className="font-mono text-[10px] text-muted-foreground">
-                    #{c.id}
-                  </span>
-                  <span className="truncate">{c.title}</span>
-                </button>
-              </li>
+              <CaseRow
+                key={c.id}
+                tc={c}
+                onOpenCase={onOpenCase}
+                onStartGenerator={onStartGenerator}
+                planId={planId}
+                suiteId={suite.id}
+                conn={conn}
+              />
             ))}
         </ul>
       ) : null}
+    </li>
+  );
+}
+
+// --- Case row ---------------------------------------------------------------
+
+type CaseRowProps = {
+  tc: TestCaseRef;
+  onOpenCase: Props["onOpenCase"];
+  onStartGenerator: Props["onStartGenerator"];
+  planId: number;
+  suiteId: number;
+  conn: ConnInfo | null;
+};
+
+function CaseRow({
+  tc,
+  onOpenCase,
+  onStartGenerator,
+  planId,
+  suiteId,
+  conn,
+}: CaseRowProps) {
+  const caseWebUrl = conn
+    ? `${conn.orgUrl}/${encodeURIComponent(conn.project)}/_workitems/edit/${tc.id}`
+    : null;
+
+  const open = () => onOpenCase({ caseId: tc.id, title: `#${tc.id} · ${tc.title}` });
+
+  return (
+    <li>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <button
+            type="button"
+            onClick={open}
+            className={cn(
+              "flex w-full items-center gap-1.5 rounded-sm px-1.5 py-1 text-left text-[11px] hover:bg-foreground/[0.05]",
+            )}
+          >
+            <HugeiconsIcon
+              icon={TaskDone01Icon}
+              size={10}
+              strokeWidth={1.75}
+              className="shrink-0 text-muted-foreground"
+            />
+            <span className="font-mono text-[10px] text-muted-foreground">
+              #{tc.id}
+            </span>
+            <span className="truncate">{tc.title}</span>
+          </button>
+        </ContextMenuTrigger>
+        <ContextMenuContent className="text-[12px]">
+          <ContextMenuItem onSelect={open}>
+            <HugeiconsIcon
+              icon={TaskDone01Icon}
+              size={12}
+              strokeWidth={1.75}
+            />
+            Open
+          </ContextMenuItem>
+          <ContextMenuItem
+            disabled={!caseWebUrl}
+            onSelect={() => caseWebUrl && void openUrl(caseWebUrl)}
+          >
+            <HugeiconsIcon
+              icon={ExternalLink}
+              size={12}
+              strokeWidth={1.75}
+            />
+            Open in Azure DevOps
+          </ContextMenuItem>
+          <ContextMenuItem
+            disabled={!caseWebUrl}
+            onSelect={() => {
+              if (!caseWebUrl) return;
+              void navigator.clipboard.writeText(caseWebUrl);
+            }}
+          >
+            <HugeiconsIcon icon={Link01Icon} size={12} strokeWidth={1.75} />
+            Copy link
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            onSelect={() => {
+              void markForReview(tc.id, "User requested review");
+            }}
+          >
+            <HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />
+            Mark for review
+          </ContextMenuItem>
+          <ContextMenuItem
+            onSelect={() => onStartGenerator({ planId, suiteId })}
+          >
+            <HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={1.75} />
+            Generate sibling cases
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
     </li>
   );
 }

@@ -8,14 +8,12 @@ import {
   CloudServerIcon,
   InformationCircleIcon,
   Settings01Icon,
-  UserMultiple02Icon,
   KeyboardIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { JSX, useEffect, useState } from "react";
 import { AboutSection } from "./sections/AboutSection";
-import { AgentsSection } from "./sections/AgentsSection";
 import { AzureDevOpsSection } from "./sections/AzureDevOpsSection";
 import { GeneralSection } from "./sections/GeneralSection";
 import { ModelsSection } from "./sections/ModelsSection";
@@ -27,7 +25,6 @@ const TABS: { id: SettingsTab; label: string; icon: typeof Settings01Icon, compo
     { id: "shortcuts", label: "Shortcuts", icon: KeyboardIcon, component: ShortcutsSection },
     { id: "azure-devops", label: "Azure DevOps", icon: CloudServerIcon, component: AzureDevOpsSection },
     { id: "models", label: "Models", icon: AiScanIcon, component: ModelsSection },
-    { id: "agents", label: "Agents", icon: UserMultiple02Icon, component: AgentsSection },
     { id: "about", label: "About", icon: InformationCircleIcon, component: AboutSection },
   ];
 
@@ -36,7 +33,6 @@ const VALID_TABS: SettingsTab[] = [
   "shortcuts",
   "azure-devops",
   "models",
-  "agents",
   "about",
 ];
 
@@ -62,6 +58,11 @@ export function SettingsApp() {
   useEffect(() => {
     const apply = (detail: string) => {
       if (detail === "ai" || detail === "connections") {
+        setActive("models");
+        return;
+      }
+      // Legacy "agents" requests land on Models — the Agents tab is gone.
+      if (detail === "agents") {
         setActive("models");
         return;
       }

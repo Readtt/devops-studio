@@ -35,6 +35,7 @@ tauri-plugin-log = "2"
 tauri-plugin-os = "2"
 tauri-plugin-store = "2"
 tauri-plugin-process = "2"
+tauri-plugin-dialog = "2"
 reqwest = { version = "0.12", default-features = false, features = [
 	"rustls-tls",
 	"stream",
@@ -43,7 +44,13 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 bytes = "1"
 futures-util = "0.3"
-tokio = { version = "1", default-features = false, features = ["rt"] }
+tokio = { version = "1", default-features = false, features = [
+	"rt",
+	"process",
+	"io-util",
+	"macros",
+] }
+which = "6"
 tempfile = "3"
 base64 = "0.22"
 rusqlite = { version = "0.32", features = ["bundled"] }

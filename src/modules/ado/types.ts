@@ -66,6 +66,17 @@ export const TestStepSchema = z.object({
 });
 export type TestStep = z.infer<typeof TestStepSchema>;
 
+export const LinkedWorkItemSchema = z.object({
+  id: z.number().int(),
+  /** Friendly label: "Parent" / "Child" / "Related" / "Tested by" / "Tests" / "Other". */
+  kind: z.string(),
+  /** Raw ADO `rel` (e.g. "System.LinkTypes.Hierarchy-Reverse"). */
+  rel: z.string(),
+  /** Built locally as `{org}/{project}/_workitems/edit/{id}`. */
+  webUrl: z.string(),
+});
+export type LinkedWorkItem = z.infer<typeof LinkedWorkItemSchema>;
+
 export const TestCaseSchema = z.object({
   id: z.number().int(),
   title: z.string(),
@@ -76,6 +87,14 @@ export const TestCaseSchema = z.object({
   steps: z.array(TestStepSchema),
   tags: z.array(z.string()),
   url: z.string(),
+  // Phase 4: developer-facing metadata
+  assignedTo: z.string().nullable().optional(),
+  priority: z.number().int().min(1).max(4).nullable().optional(),
+  createdBy: z.string().nullable().optional(),
+  createdDate: z.string().nullable().optional(),
+  changedBy: z.string().nullable().optional(),
+  changedDate: z.string().nullable().optional(),
+  linkedWorkItems: z.array(LinkedWorkItemSchema).default([]),
 });
 export type TestCase = z.infer<typeof TestCaseSchema>;
 
@@ -92,12 +111,54 @@ export const DraftCaseSchema = z.object({
 });
 export type DraftCase = z.infer<typeof DraftCaseSchema>;
 
+export const CodeLinkSchema = z.object({
+  /** Path relative to the user's chosen source directory. */
+  file: z.string().min(1),
+  startLine: z.number().int().nonnegative(),
+  endLine: z.number().int().nonnegative().nullable().optional(),
+  commitSha: z.string().nullable().optional(),
+});
+export type CodeLink = z.infer<typeof CodeLinkSchema>;
+
 export const DraftBugSchema = z.object({
   title: z.string().min(1),
   reproSteps: z.string(),
   severity: z.enum(["1 - Critical", "2 - High", "3 - Medium", "4 - Low"]),
+  codeLinks: z.array(CodeLinkSchema).default([]),
+  /** If set, the bug is linked as a Child of this test case on creation. */
+  parentCaseId: z.number().int().nullable().optional(),
 });
 export type DraftBug = z.infer<typeof DraftBugSchema>;
+
+export const BugSchema = z.object({
+  id: z.number().int(),
+  title: z.string(),
+  state: z.string(),
+  severity: z.string().nullable().optional(),
+  priority: z.number().int().min(1).max(4).nullable().optional(),
+  areaPath: z.string().nullable().optional(),
+  iterationPath: z.string().nullable().optional(),
+  reproStepsHtml: z.string(),
+  tags: z.array(z.string()),
+  url: z.string(),
+  assignedTo: z.string().nullable().optional(),
+  createdBy: z.string().nullable().optional(),
+  createdDate: z.string().nullable().optional(),
+  changedBy: z.string().nullable().optional(),
+  changedDate: z.string().nullable().optional(),
+  linkedWorkItems: z.array(LinkedWorkItemSchema).default([]),
+});
+export type Bug = z.infer<typeof BugSchema>;
+
+export const ProjectRefSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string().nullable().optional(),
+  /** "wellFormed" | "createPending" | "deleting" — see Rust projects.rs. */
+  state: z.string().nullable().optional(),
+  visibility: z.string().nullable().optional(),
+});
+export type ProjectRef = z.infer<typeof ProjectRefSchema>;
 
 export const CreatedWorkItemSchema = z.object({
   id: z.number().int(),

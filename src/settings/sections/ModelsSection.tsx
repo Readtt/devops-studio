@@ -39,6 +39,7 @@ import {
   setOpenaiCompatibleContextLimit,
   setOpenaiCompatibleModelId,
 } from "@/modules/settings/store";
+import { AiEngineSection } from "../components/AiEngineSection";
 import {
   Add01Icon,
   ArrowDown01Icon,
@@ -220,6 +221,8 @@ export function ModelsSection() {
         title="Models"
         description="Connect the providers you use. Keys live in your OS keychain and are used only by DevOps Studio."
       />
+
+      <AiEngineSection />
 
       <DefaultsBlock
         defaultModel={defaultModel}

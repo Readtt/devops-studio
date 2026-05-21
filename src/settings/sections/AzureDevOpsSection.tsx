@@ -13,13 +13,13 @@ import { cn } from "@/lib/utils";
 import {
   adoErrorMessage,
   getConnection,
-  listPlans,
+  listProjects,
   setConnection,
   testConnection,
   toAdoError,
   type AdoError,
   type ConnectionStatus,
-  type TestPlanRef,
+  type ProjectRef,
 } from "@/modules/ado";
 import {
   CheckmarkCircle02Icon,
@@ -46,9 +46,10 @@ export function AzureDevOpsSection() {
   const [pat, setPat] = useState("");
   const [patVisible, setPatVisible] = useState(false);
   const [hasStoredPat, setHasStoredPat] = useState(false);
-  const [defaultPlanId, setDefaultPlanId] = useState<number | null>(null);
   const [trackingBranch, setTrackingBranch] = useState("main");
-  const [plans, setPlans] = useState<TestPlanRef[]>([]);
+  const [projects, setProjects] = useState<ProjectRef[]>([]);
+  const [projectsLoading, setProjectsLoading] = useState(false);
+  const [projectsError, setProjectsError] = useState<AdoError | null>(null);
   const [status, setStatus] = useState<StatusBadge>({ kind: "unverified" });
   const [saving, setSaving] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -78,7 +79,6 @@ export function AzureDevOpsSection() {
     setOrgUrl(s.orgUrl);
     setProject(s.project);
     setHasStoredPat(s.hasPat);
-    setDefaultPlanId(s.defaultPlanId ?? null);
     setTrackingBranch(s.defaultTrackingBranch || "main");
   }
 
@@ -89,9 +89,9 @@ export function AzureDevOpsSection() {
       if (r.ok) {
         setStatus({
           kind: "verified",
-          identityName: r.identityName ?? "Unknown user",
+          identityName: r.identityName ?? "",
         });
-        await refreshPlans();
+        await refreshProjects();
         return true;
       }
       mapErrorToStatus(r.error ?? { kind: "local", message: "Unknown error" });
@@ -121,12 +121,23 @@ export function AzureDevOpsSection() {
     }
   }
 
-  async function refreshPlans() {
+  async function refreshProjects() {
+    setProjectsLoading(true);
+    setProjectsError(null);
     try {
-      const list = await listPlans();
-      setPlans(list);
-    } catch {
-      setPlans([]);
+      const list = await listProjects();
+      setProjects(list);
+      // First-connect default: if the user has no project picked yet, snap to
+      // the first one alphabetically so the UI doesn't sit in a half-configured
+      // state. We don't override an existing choice.
+      if (!project && list.length > 0) {
+        setProject(list[0].name);
+      }
+    } catch (e) {
+      setProjects([]);
+      setProjectsError(toAdoError(e));
+    } finally {
+      setProjectsLoading(false);
     }
   }
 
@@ -137,7 +148,7 @@ export function AzureDevOpsSection() {
         orgUrl,
         project,
         pat: pat.length > 0 ? pat : undefined,
-        defaultPlanId,
+        defaultPlanId: null,
         defaultTrackingBranch: trackingBranch || "main",
       });
       setPat("");
@@ -185,7 +196,7 @@ export function AzureDevOpsSection() {
             </Label>
             <Input
               id="ado-org"
-              placeholder="https://dev.azure.com/your-org"
+              placeholder="macroagility  —  or  https://dev.azure.com/macroagility"
               value={orgUrl}
               onChange={(e) => setOrgUrl(e.target.value)}
               spellCheck={false}
@@ -193,8 +204,10 @@ export function AzureDevOpsSection() {
               className="h-8 text-[12px]"
             />
             <p className="text-[10.5px] text-muted-foreground/80">
-              Also accepts <code className="font-mono">{`{org}.visualstudio.com`}</code>. Missing
-              scheme gets <code className="font-mono">https://</code> prepended.
+              Paste the full URL or just the org slug. Legacy{" "}
+              <code className="font-mono">{`{org}.visualstudio.com`}</code> URLs are auto-converted
+              to <code className="font-mono">dev.azure.com</code> (cross-host redirects strip the
+              PAT).
             </p>
           </div>
           <div className="flex flex-col gap-1">
@@ -204,15 +217,43 @@ export function AzureDevOpsSection() {
             >
               Project
             </Label>
-            <Input
-              id="ado-project"
-              placeholder="MyProduct"
+            <Select
               value={project}
-              onChange={(e) => setProject(e.target.value)}
-              spellCheck={false}
-              autoComplete="off"
-              className="h-8 text-[12px]"
-            />
+              onValueChange={setProject}
+              disabled={projects.length === 0 && status.kind !== "verified"}
+            >
+              <SelectTrigger id="ado-project" className="h-8 w-full text-[12px]">
+                <SelectValue
+                  placeholder={
+                    projectsLoading
+                      ? "Loading projects…"
+                      : status.kind === "verified"
+                        ? projects.length === 0
+                          ? "No projects accessible"
+                          : "Choose a project"
+                        : "Connect first to populate"
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {projects.map((p) => (
+                  <SelectItem key={p.id} value={p.name}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+                {/* If we have a previously-saved value that isn't in the list
+                    (e.g. PAT can't list-projects but can still hit it), keep
+                    it selectable so the user doesn't lose it on a refresh. */}
+                {project && !projects.some((p) => p.name === project) ? (
+                  <SelectItem value={project}>{project}</SelectItem>
+                ) : null}
+              </SelectContent>
+            </Select>
+            {projectsError ? (
+              <p className="text-[10.5px] text-destructive">
+                Couldn't list projects: {adoErrorMessage(projectsError)}
+              </p>
+            ) : null}
           </div>
         </div>
       </div>
@@ -287,39 +328,6 @@ export function AzureDevOpsSection() {
         <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card/60 px-3 py-3">
           <div className="flex flex-col gap-1">
             <Label
-              htmlFor="ado-plan"
-              className="text-[11.5px] text-muted-foreground"
-            >
-              Default Test Plan
-            </Label>
-            <Select
-              value={defaultPlanId !== null ? String(defaultPlanId) : ""}
-              onValueChange={(v) =>
-                setDefaultPlanId(v === "" ? null : Number(v))
-              }
-            >
-              <SelectTrigger id="ado-plan" className="h-8 w-full text-[12px]">
-                <SelectValue
-                  placeholder={
-                    status.kind === "verified"
-                      ? plans.length === 0
-                        ? "No plans found"
-                        : "Choose a plan"
-                      : "Connect first to populate"
-                  }
-                />
-              </SelectTrigger>
-              <SelectContent>
-                {plans.map((p) => (
-                  <SelectItem key={p.id} value={String(p.id)}>
-                    {p.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex flex-col gap-1">
-            <Label
               htmlFor="ado-branch"
               className="text-[11.5px] text-muted-foreground"
             >
@@ -381,7 +389,8 @@ function StatusBadgeRow({ status }: { status: StatusBadge }) {
   };
   const meta = map[status.kind];
   let detail: string | null = null;
-  if (status.kind === "verified") detail = `as ${status.identityName}`;
+  if (status.kind === "verified")
+    detail = status.identityName ? `as ${status.identityName}` : null;
   else if (status.kind === "bad-pat") detail = status.reason;
   else if (status.kind === "network") detail = status.message;
   else if (status.kind === "error") detail = status.message;

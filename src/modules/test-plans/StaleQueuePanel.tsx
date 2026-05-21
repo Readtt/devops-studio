@@ -1,4 +1,9 @@
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useStaleCases } from "./hooks/useStaleCases";
 import { acknowledgeCase, adoErrorMessage } from "@/modules/ado";
 import { AlertCircleIcon, RefreshIcon } from "@hugeicons/core-free-icons";
@@ -47,20 +52,27 @@ export function StaleQueuePanel({ onOpenCase }: Props) {
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-border/60 px-2 py-1.5">
         <span className="text-[11.5px] font-medium">Stale cases</span>
-        <Button
-          size="icon"
-          variant="ghost"
-          className="h-6 w-6"
-          onClick={() => void scan()}
-          aria-label="Refresh staleness"
-        >
-          <HugeiconsIcon
-            icon={RefreshIcon}
-            size={12}
-            strokeWidth={1.75}
-            className={loading ? "animate-spin" : ""}
-          />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-6 w-6"
+              onClick={() => void scan()}
+              aria-label="Refresh staleness"
+            >
+              <HugeiconsIcon
+                icon={RefreshIcon}
+                size={12}
+                strokeWidth={1.75}
+                className={loading ? "animate-spin" : ""}
+              />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="text-[11px]">
+            Rescan for cases whose linked source has changed
+          </TooltipContent>
+        </Tooltip>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {error ? (

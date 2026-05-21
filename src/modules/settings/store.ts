@@ -14,6 +14,10 @@ import { LazyStore } from "@tauri-apps/plugin-store";
 
 export type ThemePref = "system" | "light" | "dark";
 
+/** Which AI engine the Generator routes through. See `ai/lib/engine.ts`. */
+export type AiEngine = "vercel-ai-sdk" | "claude-agent-sdk";
+export type ClaudeAuthMode = "max-oauth" | "api-key";
+
 export const EDITOR_THEMES = [
   "atomone",
   "aura",
@@ -71,6 +75,13 @@ export type Preferences = {
   lastWslDistro: string | null;
   zoomLevel: number;
   shortcuts: Record<ShortcutId, KeyBinding[]>;
+  /** Phase 5: which engine to use for AI generation. */
+  aiEngine: AiEngine;
+  /** Phase 5: how to authenticate to Anthropic when `aiEngine === "claude-agent-sdk"`. */
+  claudeAuthMode: ClaudeAuthMode;
+  /** Absolute path to the user's source directory. Code-link rows in the Bug
+   *  pane resolve relative paths against this when opening the code viewer. */
+  sourceRoot: string | null;
 };
 
 const STORE_PATH = "devops-studio-settings.json";
@@ -105,6 +116,9 @@ const KEY_TERMINAL_SCROLLBACK = "terminalScrollback";
 const KEY_LAST_WSL_DISTRO = "lastWslDistro";
 const KEY_ZOOM_LEVEL = "zoomLevel";
 const KEY_SHORTCUTS = "shortcuts";
+const KEY_AI_ENGINE = "aiEngine";
+const KEY_CLAUDE_AUTH_MODE = "claudeAuthMode";
+const KEY_SOURCE_ROOT = "sourceRoot";
 
 export const TERMINAL_FONT_SIZE_DEFAULT = 14;
 export const TERMINAL_FONT_SIZE_MIN = 8;
@@ -152,6 +166,9 @@ export const DEFAULT_PREFERENCES: Preferences = {
   lastWslDistro: null,
   zoomLevel: 1.0,
   shortcuts: {} as Record<ShortcutId, KeyBinding[]>,
+  aiEngine: "vercel-ai-sdk",
+  claudeAuthMode: "api-key",
+  sourceRoot: null,
 };
 
 const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
@@ -250,7 +267,25 @@ export async function loadPreferences(): Promise<Preferences> {
     shortcuts:
       get<Record<ShortcutId, KeyBinding[]>>(KEY_SHORTCUTS) ??
       DEFAULT_PREFERENCES.shortcuts,
+    aiEngine: get<AiEngine>(KEY_AI_ENGINE) ?? DEFAULT_PREFERENCES.aiEngine,
+    claudeAuthMode:
+      get<ClaudeAuthMode>(KEY_CLAUDE_AUTH_MODE) ??
+      DEFAULT_PREFERENCES.claudeAuthMode,
+    sourceRoot:
+      get<string | null>(KEY_SOURCE_ROOT) ?? DEFAULT_PREFERENCES.sourceRoot,
   };
+}
+
+export async function setAiEngine(value: AiEngine): Promise<void> {
+  await writePref(KEY_AI_ENGINE, value);
+}
+
+export async function setClaudeAuthMode(value: ClaudeAuthMode): Promise<void> {
+  await writePref(KEY_CLAUDE_AUTH_MODE, value);
+}
+
+export async function setSourceRoot(value: string | null): Promise<void> {
+  await writePref(KEY_SOURCE_ROOT, value);
 }
 
 export async function setTheme(value: ThemePref): Promise<void> {
@@ -440,6 +475,9 @@ export async function onPreferencesChange(
     [KEY_LAST_WSL_DISTRO]: "lastWslDistro",
     [KEY_ZOOM_LEVEL]: "zoomLevel",
     [KEY_SHORTCUTS]: "shortcuts",
+    [KEY_AI_ENGINE]: "aiEngine",
+    [KEY_CLAUDE_AUTH_MODE]: "claudeAuthMode",
+    [KEY_SOURCE_ROOT]: "sourceRoot",
   };
   // Same-process writes still fire onChange immediately; cross-window writes
   // arrive via the Tauri event emitted by writePref().

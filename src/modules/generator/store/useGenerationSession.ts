@@ -17,6 +17,9 @@ import {
   type RunResult,
   runQaAnalyst,
 } from "../lib/qaAnalystRun";
+import { runQaAnalystClaude } from "../lib/qaAnalystRunClaude";
+import { selectEngine } from "@/modules/ai/lib/engine";
+import { usePreferencesStore } from "@/modules/settings/preferences";
 import type {
   DraftSourceLink,
   ReviewedBug,
@@ -25,6 +28,13 @@ import type {
 import { findSimilarCases } from "../lib/similarity";
 import { renderBlock } from "@/modules/test-plans/lib/sourceLinksParser";
 import type { SourceLink } from "@/modules/ado";
+import {
+  newRunId,
+  newTimestamp,
+  saveRun,
+  specExcerpt,
+  type GenerationRun,
+} from "../lib/history";
 
 export type GenerationMode = Mode;
 
@@ -149,18 +159,34 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
     const chat = useChatStore.getState();
     const keys = chat.apiKeys;
     const modelId = chat.selectedModelId;
+    const prefs = usePreferencesStore.getState();
+    const engineSel = selectEngine(modelId);
 
     try {
       set({ stepLabel: "Calling model…" });
-      const result: RunResult = await runQaAnalyst({
-        requirements,
-        attachments,
-        existingCaseTitles,
-        mode,
-        keys,
-        modelId,
-        onStep: (label) => set({ stepLabel: label }),
-      });
+      let result: RunResult;
+      if (engineSel.engine === "claude-agent-sdk" && engineSel.active) {
+        result = await runQaAnalystClaude({
+          requirements,
+          attachments,
+          existingCaseTitles,
+          mode,
+          modelId,
+          sourceRoot: prefs.sourceRoot,
+          authMode: engineSel.authMode ?? "api-key",
+          onStep: (label) => set({ stepLabel: label }),
+        });
+      } else {
+        result = await runQaAnalyst({
+          requirements,
+          attachments,
+          existingCaseTitles,
+          mode,
+          keys,
+          modelId,
+          onStep: (label) => set({ stepLabel: label }),
+        });
+      }
       const cases: ReviewedCase[] = result.batch.cases.map((c) => ({
         ...c,
         uid: uid(),
@@ -303,6 +329,7 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
           title: b.title,
           reproSteps: b.reproSteps,
           severity: b.severity,
+          codeLinks: [],
         });
         updateLog(set, b.uid, { status: "ok", result: created });
       } catch (e) {
@@ -311,6 +338,49 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
     }
 
     set({ phase: "done" });
+
+    // Persist a snapshot of the run so the user can revisit it from the
+    // Generation history sidebar tab. Best-effort: failures here don't fail
+    // the publish flow.
+    try {
+      const s = get();
+      const run: GenerationRun = {
+        id: newRunId(),
+        timestamp: newTimestamp(),
+        planId: s.planId,
+        // Names aren't tracked in the session yet — the history pane shows
+        // ids and falls back to the plan/suite lookup if it has them cached.
+        planName: null,
+        suiteId: s.suiteId,
+        suiteName: null,
+        mode: s.mode,
+        specExcerpt: specExcerpt(s.requirements ?? ""),
+        cases: keptCases.map((c) => ({
+          title: c.title,
+          adoId: caseIdByDraftUid.get(c.uid) ?? null,
+          webUrl:
+            s.publishLog.find((l) => l.uid === c.uid)?.result?.webUrl ?? null,
+        })),
+        bugs: keptBugs.map((b) => ({
+          title: b.title,
+          severity: b.severity,
+          adoId:
+            s.publishLog.find((l) => l.uid === b.uid)?.result?.id ?? null,
+          webUrl:
+            s.publishLog.find((l) => l.uid === b.uid)?.result?.webUrl ?? null,
+        })),
+        publishLog: s.publishLog.map((l) => ({
+          uid: l.uid,
+          kind: l.kind,
+          title: l.title,
+          status: l.status === "pending" ? "skipped" : l.status,
+          error: l.error ?? null,
+        })),
+      };
+      void saveRun(run);
+    } catch {
+      // Persisting is non-essential — the run still completed.
+    }
   },
 
   reset: () => set({ ...initialState }),

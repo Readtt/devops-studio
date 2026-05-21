@@ -1,6 +1,6 @@
 mod modules;
 
-use modules::{ado, fs, git, net, pty, secrets, shell, staleness, workspace};
+use modules::{ado, claude, fs, history, net, secrets, staleness, workspace};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_window_state::StateFlags;
@@ -53,9 +53,11 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
         .max_inner_size(720.0, 520.0)
         .resizable(false)
         .visible(false)
-        // Keep settings above the main app window so it doesn't get hidden
-        // when the user clicks back into the editor or terminal (#33).
-        .always_on_top(true);
+        // No always_on_top: with editor/terminal gone, the historical reason
+        // for pinning settings above everything (#33) no longer applies, and
+        // pinning it above unrelated OS windows is more disruptive than
+        // useful.
+        .always_on_top(false);
 
     // Tie lifecycle to the main window so settings minimizes/closes with it.
     if let Some(main) = app.get_webview_window("main") {
@@ -100,6 +102,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -107,9 +110,8 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
-        .manage(pty::PtyState::default())
-        .manage(shell::ShellState::default())
         .manage(secrets::SecretsState::default())
+        .manage(claude::ClaudeState::default())
         .manage(ado::client::AdoState::default())
         .manage(staleness::StalenessState::default())
         .setup(|app| {
@@ -131,52 +133,16 @@ pub fn run() {
         })
         .manage(LaunchDir(Mutex::new(parse_launch_dir())))
         .invoke_handler(tauri::generate_handler![
-            pty::pty_open,
-            pty::pty_write,
-            pty::pty_resize,
-            pty::pty_close,
             fs::tree::list_subdirs,
             fs::tree::fs_read_dir,
             fs::file::fs_read_file,
             fs::file::fs_write_file,
             fs::file::fs_stat,
             fs::file::fs_canonicalize,
-            fs::mutate::fs_create_file,
-            fs::mutate::fs_create_dir,
-            fs::mutate::fs_rename,
-            fs::mutate::fs_delete,
             fs::search::fs_search,
             fs::search::fs_list_files,
             fs::grep::fs_grep,
             fs::grep::fs_glob,
-            git::commands::git_resolve_repo,
-            git::commands::git_panel_snapshot,
-            git::commands::git_status,
-            git::commands::git_diff,
-            git::commands::git_diff_content,
-            git::commands::git_stage,
-            git::commands::git_unstage,
-            git::commands::git_discard,
-            git::commands::git_commit,
-            git::commands::git_fetch,
-            git::commands::git_pull_ff_only,
-            git::commands::git_push,
-            git::commands::git_log,
-            git::commands::git_show_commit,
-            git::commands::git_commit_files,
-            git::commands::git_commit_file_diff,
-            git::commands::git_remote_url,
-            shell::shell_run_command,
-            shell::shell_session_open,
-            shell::shell_session_run,
-            shell::shell_session_close,
-            shell::shell_bg_spawn,
-            shell::shell_bg_logs,
-            shell::shell_bg_kill,
-            shell::shell_bg_list,
-            workspace::wsl_list_distros,
-            workspace::wsl_default_distro,
-            workspace::wsl_home,
             workspace::workspace_authorize,
             workspace::workspace_current_dir,
             get_launch_dir,
@@ -193,12 +159,16 @@ pub fn run() {
             ado::ado_get_connection,
             ado::ado_test_connection,
             ado::ado_clear_pat,
+            ado::ado_list_projects,
             ado::ado_list_plans,
             ado::ado_list_suites,
             ado::ado_list_suite_cases,
             ado::ado_get_case,
             ado::ado_create_case_in_suite,
             ado::ado_create_bug_and_link,
+            ado::ado_create_bug,
+            ado::ado_get_bug,
+            ado::ado_link_bug_to_case,
             ado::ado_update_case_description,
             ado::ado_add_tag,
             ado::ado_remove_tag,
@@ -210,6 +180,15 @@ pub fn run() {
             staleness::ado_acknowledge_case,
             staleness::ado_mark_for_review,
             staleness::ado_index_case_links,
+            // --- Generation history ---
+            history::history_save_run,
+            history::history_list_runs,
+            history::history_get_run,
+            history::history_delete_run,
+            // --- Claude Code CLI driver ---
+            claude::claude_probe,
+            claude::claude_run_query,
+            claude::claude_setup_token,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

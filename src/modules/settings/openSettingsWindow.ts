@@ -5,7 +5,6 @@ export type SettingsTab =
   | "shortcuts"
   | "azure-devops"
   | "models"
-  | "agents"
   | "about";
 
 export async function openSettingsWindow(tab?: SettingsTab): Promise<void> {

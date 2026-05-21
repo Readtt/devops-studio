@@ -10,10 +10,12 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import {
+  BugSchema,
   ConnectionStatusSchema,
   CommitInfoSchema,
   CreatedWorkItemSchema,
   FileContentSchema,
+  ProjectRefSchema,
   RepoRefSchema,
   StaleCaseInfoSchema,
   SuiteRefSchema,
@@ -22,12 +24,14 @@ import {
   TestConnectionResultSchema,
   TestPlanRefSchema,
   type AdoError,
+  type Bug,
   type CommitInfo,
   type ConnectionStatus,
   type CreatedWorkItem,
   type DraftBug,
   type DraftCase,
   type FileContent,
+  type ProjectRef,
   type RepoRef,
   type StaleCaseInfo,
   type SuiteRef,
@@ -99,6 +103,13 @@ export async function clearPat(): Promise<void> {
   await invoke("ado_clear_pat");
 }
 
+// --- Projects (used by the Project dropdown in Settings) ---
+
+export async function listProjects(): Promise<ProjectRef[]> {
+  const raw = await invoke("ado_list_projects");
+  return ProjectRefSchema.array().parse(raw);
+}
+
 // --- Test Plans reads ---
 
 export async function listPlans(): Promise<TestPlanRef[]> {
@@ -145,6 +156,30 @@ export async function createBugAndLink(
     input: { caseId, draft },
   });
   return CreatedWorkItemSchema.parse(raw);
+}
+
+/**
+ * Standalone bug creation. No required link to a test case — pass
+ * `draft.parentCaseId` to nest the bug under a case in the work-item tree,
+ * or leave undefined for a free-standing bug.
+ */
+export async function createBug(draft: DraftBug): Promise<CreatedWorkItem> {
+  const raw = await invoke("ado_create_bug", { draft });
+  return CreatedWorkItemSchema.parse(raw);
+}
+
+/** Link an existing bug to a case as its Parent in the work-item tree. */
+export async function linkBugToCase(
+  bugId: number,
+  caseId: number,
+): Promise<void> {
+  await invoke("ado_link_bug_to_case", { input: { bugId, caseId } });
+}
+
+/** Fetch a Bug work item by id for the BugPane. */
+export async function getBug(bugId: number): Promise<Bug> {
+  const raw = await invoke("ado_get_bug", { bugId });
+  return BugSchema.parse(raw);
 }
 
 export async function updateCaseDescription(

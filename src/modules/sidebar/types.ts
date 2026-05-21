@@ -1,1 +1,1 @@
-export type SidebarViewId = "explorer" | "test-plans" | "stale-queue";
+export type SidebarViewId = "test-plans" | "stale-queue" | "history";
