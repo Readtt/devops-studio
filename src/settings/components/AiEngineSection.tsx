@@ -4,6 +4,7 @@ import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import {
   claudeErrorMessage,
+  extractAuthUrl,
   probeClaude,
   setupClaudeToken,
   type ClaudeProbe,
@@ -17,10 +18,12 @@ import {
 } from "@/modules/settings/store";
 import {
   CheckmarkCircle02Icon,
+  ExternalLink,
   RefreshIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
  * Engine + auth picker. Shown at the top of the Models settings page.
@@ -39,7 +42,10 @@ export function AiEngineSection() {
   const [probeError, setProbeError] = useState<string | null>(null);
   const [probing, setProbing] = useState(false);
   const [setupRunning, setSetupRunning] = useState(false);
-  const [setupOutput, setSetupOutput] = useState<string | null>(null);
+  const [setupLines, setSetupLines] = useState<string[]>([]);
+  const [setupAuthUrl, setSetupAuthUrl] = useState<string | null>(null);
+  const [setupError, setSetupError] = useState<string | null>(null);
+  const setupOutputRef = useRef<HTMLPreElement | null>(null);
 
   const runProbe = useCallback(async () => {
     setProbing(true);
@@ -61,14 +67,23 @@ export function AiEngineSection() {
 
   const onConnectMax = useCallback(async () => {
     setSetupRunning(true);
-    setSetupOutput(null);
+    setSetupLines([]);
+    setSetupAuthUrl(null);
+    setSetupError(null);
     try {
-      const output = await setupClaudeToken();
-      setSetupOutput(output.trim());
-      // Re-probe — version may have changed if the user installed/updated.
+      await setupClaudeToken((evt) => {
+        setSetupLines((prev) => [...prev, evt.line]);
+        const url = extractAuthUrl(evt.line);
+        if (url) setSetupAuthUrl((curr) => curr ?? url);
+        // Stick the log to the bottom.
+        queueMicrotask(() => {
+          const el = setupOutputRef.current;
+          if (el) el.scrollTop = el.scrollHeight;
+        });
+      });
       await runProbe();
     } catch (e) {
-      setSetupOutput(claudeErrorMessage(e));
+      setSetupError(claudeErrorMessage(e));
     } finally {
       setSetupRunning(false);
     }
@@ -187,23 +202,61 @@ export function AiEngineSection() {
             </div>
             {authMode === "max-oauth" ? (
               <div className="mt-2 flex flex-col gap-1.5">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7 self-start px-2 text-[11px]"
-                  disabled={!probe || setupRunning}
-                  onClick={() => void onConnectMax()}
-                >
-                  {setupRunning ? "Waiting for browser…" : "Connect Claude Max"}
-                </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 self-start px-2 text-[11px]"
+                    disabled={!probe || setupRunning}
+                    onClick={() => void onConnectMax()}
+                  >
+                    {setupRunning ? "Waiting for browser…" : "Connect Claude Max"}
+                  </Button>
+                  {setupAuthUrl ? (
+                    <Button
+                      size="sm"
+                      className="h-7 self-start gap-1 px-2 text-[11px]"
+                      onClick={() => void openUrl(setupAuthUrl)}
+                    >
+                      <HugeiconsIcon
+                        icon={ExternalLink}
+                        size={11}
+                        strokeWidth={1.75}
+                      />
+                      Open in browser
+                    </Button>
+                  ) : null}
+                  {setupRunning ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 gap-1 px-2 text-[11px]"
+                      onClick={() => void runProbe()}
+                    >
+                      <HugeiconsIcon
+                        icon={RefreshIcon}
+                        size={11}
+                        strokeWidth={1.75}
+                      />
+                      I've authorized — recheck
+                    </Button>
+                  ) : null}
+                </div>
                 <p className="text-[10.5px] text-muted-foreground/85">
-                  Runs <code className="font-mono">claude setup-token</code> —
-                  follow the printed URL in your browser to authorize.
+                  Runs <code className="font-mono">claude setup-token</code>. The
+                  CLI prints a URL — click <em>Open in browser</em>, authorize,
+                  and this panel will update when the CLI confirms the token.
                 </p>
-                {setupOutput ? (
-                  <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded-md border border-border/60 bg-muted/30 px-2 py-1.5 text-[10px] text-muted-foreground">
-                    {setupOutput}
+                {setupLines.length > 0 ? (
+                  <pre
+                    ref={setupOutputRef}
+                    className="max-h-32 overflow-auto whitespace-pre-wrap rounded-md border border-border/60 bg-muted/30 px-2 py-1.5 font-mono text-[10px] text-muted-foreground"
+                  >
+                    {setupLines.join("\n")}
                   </pre>
+                ) : null}
+                {setupError ? (
+                  <p className="text-[10.5px] text-destructive">{setupError}</p>
                 ) : null}
               </div>
             ) : null}

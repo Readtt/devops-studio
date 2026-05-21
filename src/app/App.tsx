@@ -25,6 +25,7 @@ import { GeneratorStack, GenerationHistoryPane } from "@/modules/generator";
 import { CodeViewerStack } from "@/modules/code-viewer";
 import { ThemeProvider } from "@/modules/theme";
 import { UpdaterDialog } from "@/modules/updater";
+import { useGenerationSession } from "@/modules/generator/store/useGenerationSession";
 import { getConnection } from "@/modules/ado";
 import type { Tab } from "@/modules/tabs/lib/useTabs";
 import {
@@ -227,11 +228,15 @@ export default function App() {
 
   const openGeneratorTab = useCallback(
     (input?: { planId?: number | null; suiteId?: number | null }) => {
+      const requestedPlanId = input?.planId ?? null;
+      const requestedSuiteId = input?.suiteId ?? null;
       let target: number | null = null;
+      let reused = false;
       setTabs((curr) => {
         const existing = curr.find((t) => t.kind === "generator");
         if (existing) {
           target = existing.id;
+          reused = true;
           return curr;
         }
         const id = nextIdRef.current++;
@@ -242,11 +247,32 @@ export default function App() {
             id,
             kind: "generator",
             title: "Generate cases",
-            initialPlanId: input?.planId ?? null,
-            initialSuiteId: input?.suiteId ?? null,
+            initialPlanId: requestedPlanId,
+            initialSuiteId: requestedSuiteId,
           },
         ];
       });
+
+      // If we're reusing an existing tab and the caller asked to target a
+      // different plan/suite, push it into the session directly — the
+      // GeneratorPane's hydrate-from-props useEffect only fires on mount,
+      // so it'd otherwise sit on the originally-targeted plan.
+      if (reused && (requestedPlanId !== null || requestedSuiteId !== null)) {
+        const session = useGenerationSession.getState();
+        const planChanged = requestedPlanId !== null && requestedPlanId !== session.planId;
+        const suiteChanged = requestedSuiteId !== null && requestedSuiteId !== session.suiteId;
+        if (planChanged || suiteChanged) {
+          // Reset back to the input phase so the new target is editable —
+          // bringing someone into a half-published session against a
+          // different plan would be confusing.
+          if (session.phase !== "input") session.startNew();
+          session.setTarget(
+            requestedPlanId ?? session.planId,
+            requestedSuiteId ?? session.suiteId,
+          );
+        }
+      }
+
       if (target !== null) setActiveId(target);
       return target as number | null;
     },

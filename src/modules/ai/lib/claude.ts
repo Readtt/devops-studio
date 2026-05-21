@@ -54,8 +54,36 @@ export async function probeClaude(): Promise<ClaudeProbe | null> {
   }
 }
 
-export async function setupClaudeToken(): Promise<string> {
-  return invoke<string>("claude_setup_token");
+export type ClaudeSetupTokenLine = {
+  stream: "stdout" | "stderr";
+  line: string;
+};
+
+/** Run `claude setup-token` and stream every output line through `onLine` as
+ *  it arrives. Resolves with the full stdout when the CLI exits, or rejects
+ *  with a ClaudeError. The listener is detached on settle. */
+export async function setupClaudeToken(
+  onLine?: (line: ClaudeSetupTokenLine) => void,
+): Promise<string> {
+  let unlisten: UnlistenFn | null = null;
+  if (onLine) {
+    unlisten = await listen<ClaudeSetupTokenLine>(
+      "claude:setup-token:line",
+      (e) => onLine(e.payload),
+    );
+  }
+  try {
+    return await invoke<string>("claude_setup_token");
+  } finally {
+    if (unlisten) unlisten();
+  }
+}
+
+/** Extract the first `https://...` URL from a line of CLI output, if any.
+ *  Useful for promoting the device-code URL into a clickable link. */
+export function extractAuthUrl(line: string): string | null {
+  const match = line.match(/https:\/\/[^\s'"<>)]+/);
+  return match ? match[0] : null;
 }
 
 /** Run a one-shot query. If `onEvent` is provided, every NDJSON event the

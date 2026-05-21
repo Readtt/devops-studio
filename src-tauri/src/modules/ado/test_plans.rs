@@ -6,11 +6,12 @@
 //!   - `/_apis/testplan/Plans/{p}/Suites/{s}/TestCase` — case refs in a suite
 //!   - `/_apis/wit/workitems/{id}`      — the case as a work item (steps live here)
 
-use super::client::{get_json, project_api, AdoState};
+use super::client::{get_json, get_raw_json, project_api, AdoState};
 use super::errors::{AdoError, AdoResult};
 use super::test_cases::work_item_to_case;
 use super::types::{PagedResponse, SuiteRef, TestCase, TestCaseRef, TestPlanRef};
 use serde::Deserialize;
+use serde_json::Value;
 
 pub async fn list_plans(state: &AdoState) -> AdoResult<Vec<TestPlanRef>> {
     let (conn, _) = state.snapshot();
@@ -38,12 +39,104 @@ pub async fn list_suite_cases(
 ) -> AdoResult<Vec<TestCaseRef>> {
     let (conn, _) = state.snapshot();
     let conn = conn.ok_or(AdoError::NotConfigured)?;
+    // `expand=workItem` is required on some orgs for the new testplan endpoint
+    // to populate the nested workItem object — without it the rows can come
+    // back with `workItem: null` and the whole suite reads as empty.
     let url = project_api(
         &conn,
-        &format!("testplan/Plans/{plan_id}/Suites/{suite_id}/TestCase"),
+        &format!("testplan/Plans/{plan_id}/Suites/{suite_id}/TestCase?expand=workItem"),
     );
-    let resp: PagedResponse<RawSuiteCase> = get_json(state, &url, "suite cases").await?;
-    Ok(resp.value.into_iter().filter_map(RawSuiteCase::into_ref).collect())
+    let raw: Value = get_raw_json(state, &url, "suite cases").await?;
+    let rows = raw
+        .get("value")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut out = Vec::with_capacity(rows.len());
+    let mut dropped = 0_usize;
+    for row in rows {
+        if let Some(case) = parse_suite_case_row(&row) {
+            out.push(case);
+        } else {
+            dropped += 1;
+            log::warn!(
+                "ado_list_suite_cases: dropped a row from plan {plan_id} / suite {suite_id} \
+                 with unrecognized shape: {}",
+                truncate_for_log(&row.to_string())
+            );
+        }
+    }
+    if dropped > 0 {
+        log::warn!(
+            "ado_list_suite_cases: returned {} rows; {} skipped due to unparsable shape",
+            out.len(),
+            dropped
+        );
+    }
+    Ok(out)
+}
+
+/// Pull `{ id, title, state }` out of a TestCase row.
+///
+/// ADO returns at least three shapes for the same endpoint depending on org
+/// configuration and API revision:
+///   1. `{ workItem: { id, name, workItemFields: [...] } }`
+///   2. `{ workItem: { id, name }, pointAssignments: [...] }`
+///   3. `{ testCase: { id, name }, workItem: null }`     (legacy)
+///
+/// We probe each, prefer the most specific, and fall back to top-level
+/// `id`/`name` so a stripped response still surfaces something.
+fn parse_suite_case_row(row: &Value) -> Option<TestCaseRef> {
+    // Try workItem first
+    let (id, name, fields) = if let Some(wi) = row.get("workItem").and_then(|v| v.as_object()) {
+        let id = wi.get("id").and_then(json_to_i64);
+        let name = wi
+            .get("name")
+            .or_else(|| wi.get("title"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let fields = wi.get("workItemFields").and_then(|v| v.as_array()).cloned();
+        (id, name, fields)
+    } else if let Some(tc) = row.get("testCase").and_then(|v| v.as_object()) {
+        let id = tc.get("id").and_then(json_to_i64);
+        let name = tc
+            .get("name")
+            .or_else(|| tc.get("title"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        (id, name, None)
+    } else {
+        let id = row.get("id").and_then(json_to_i64);
+        let name = row
+            .get("name")
+            .or_else(|| row.get("title"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        (id, name, None)
+    };
+
+    let id = id?;
+    let title = name.unwrap_or_default();
+    let state = fields.as_ref().and_then(|arr| {
+        arr.iter().find_map(|v| {
+            v.as_object()
+                .and_then(|o| o.get("System.State"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+    });
+    Some(TestCaseRef { id, title, state })
+}
+
+/// Numbers come back from ADO as integers or strings depending on size.
+/// Accept both.
+fn json_to_i64(v: &Value) -> Option<i64> {
+    v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+}
+
+fn truncate_for_log(s: &str) -> String {
+    if s.len() <= 240 { s.to_string() } else { format!("{}…", &s[..240]) }
 }
 
 pub async fn get_case(state: &AdoState, case_id: i64) -> AdoResult<TestCase> {
@@ -112,39 +205,3 @@ impl RawSuite {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RawSuiteCase {
-    #[serde(default)]
-    work_item: Option<RawSuiteCaseWorkItem>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RawSuiteCaseWorkItem {
-    id: i64,
-    name: Option<String>,
-    #[serde(default)]
-    work_item_fields: Option<Vec<serde_json::Value>>,
-}
-
-impl RawSuiteCase {
-    fn into_ref(self) -> Option<TestCaseRef> {
-        let wi = self.work_item?;
-        // The testplan suite endpoint returns the case title under `name`;
-        // older API versions surface a fields array. Either is fine.
-        let state = wi.work_item_fields.as_ref().and_then(|arr| {
-            arr.iter().find_map(|v| {
-                v.as_object()
-                    .and_then(|o| o.get("System.State"))
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-            })
-        });
-        Some(TestCaseRef {
-            id: wi.id,
-            title: wi.name.unwrap_or_default(),
-            state,
-        })
-    }
-}

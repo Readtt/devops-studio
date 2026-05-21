@@ -307,25 +307,77 @@ pub async fn claude_run_query(
 
 /// Start the CLI's OAuth login flow. We don't capture the user's token here
 /// — the CLI handles its own credential storage. We just spawn `claude
-/// setup-token`, point the user at the device-code URL it prints, and exit
-/// when it does.
+/// setup-token`, stream every stdout/stderr line as a Tauri event so the UI
+/// can render the device-code URL the moment it's printed, and resolve when
+/// the CLI exits.
+///
+/// Event channel: `claude:setup-token:line`
+/// Payload: `{ stream: "stdout" | "stderr", line: string }`
 #[tauri::command]
-pub async fn claude_setup_token() -> Result<String, ClaudeError> {
+pub async fn claude_setup_token(app: AppHandle) -> Result<String, ClaudeError> {
     let path = which::which("claude").map_err(|_| ClaudeError::NotInstalled)?;
-    let out = Command::new(&path)
+    let mut child = Command::new(&path)
         .arg("setup-token")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| ClaudeError::SpawnFailed { message: e.to_string() })?;
+
+    let stdout = child.stdout.take().ok_or_else(|| ClaudeError::SpawnFailed {
+        message: "failed to capture stdout".into(),
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| ClaudeError::SpawnFailed {
+        message: "failed to capture stderr".into(),
+    })?;
+
+    const EVENT: &str = "claude:setup-token:line";
+
+    let app_out = app.clone();
+    let stdout_task = tokio::spawn(async move {
+        let mut buf = String::new();
+        let mut reader = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            buf.push_str(&line);
+            buf.push('\n');
+            let _ = app_out.emit(
+                EVENT,
+                serde_json::json!({ "stream": "stdout", "line": line }),
+            );
+        }
+        buf
+    });
+
+    let app_err = app.clone();
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = String::new();
+        let mut reader = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            buf.push_str(&line);
+            buf.push('\n');
+            let _ = app_err.emit(
+                EVENT,
+                serde_json::json!({ "stream": "stderr", "line": line }),
+            );
+        }
+        buf
+    });
+
+    let status = child
+        .wait()
         .await
         .map_err(|e| ClaudeError::SpawnFailed { message: e.to_string() })?;
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    if !out.status.success() {
+
+    let stdout_out = stdout_task.await.unwrap_or_default();
+    let stderr_out = stderr_task.await.unwrap_or_default();
+
+    if !status.success() {
         return Err(ClaudeError::NonZeroExit {
-            code: out.status.code(),
-            stderr_excerpt: String::from_utf8_lossy(&out.stderr).into_owned(),
+            code: status.code(),
+            stderr_excerpt: stderr_out,
         });
     }
-    Ok(stdout)
+
+    Ok(stdout_out)
 }
