@@ -14,11 +14,13 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { adoErrorMessage, getConnection, markForReview } from "@/modules/ado";
-import { useTestPlans, type SuiteLoad } from "./hooks/useTestPlans";
+import { useTestPlans, type CaseDetailsState, type SuiteLoad } from "./hooks/useTestPlans";
 import {
   ArrowDown01Icon,
   ArrowRight01Icon,
+  Bug01Icon,
   ExternalLink,
+  FolderIcon,
   Link01Icon,
   PlusSignIcon,
   RefreshIcon,
@@ -45,6 +47,75 @@ type ConnInfo = { orgUrl: string; project: string };
 
 const FILTER_DEBOUNCE_MS = 250;
 
+// --- Suite tree --------------------------------------------------------------
+
+type SuiteNode = {
+  suite: SuiteRef;
+  children: SuiteNode[];
+};
+
+/**
+ * Group suites into a tree by `parent_suite_id`. ADO always returns a single
+ * root suite per plan whose name matches the plan name; we hide that node
+ * and render its children at the top level so the tree reads:
+ *
+ *     AsanaCRM
+ *       Contacts
+ *       Opportunities
+ *       Accounts
+ *       Leads
+ *
+ * instead of duplicating "AsanaCRM" as the first suite under "AsanaCRM".
+ *
+ * If we can't identify a single matching root (e.g. orphaned suites or a
+ * plan with multiple roots), we fall back to rendering every parent-less
+ * suite at the top — better to show something than to hide everything.
+ */
+function buildSuiteTree(suites: SuiteRef[], planName: string): SuiteNode[] {
+  if (suites.length === 0) return [];
+
+  const ids = new Set(suites.map((s) => s.id));
+  const byParent = new Map<number | null, SuiteRef[]>();
+  for (const s of suites) {
+    // Treat a parent that points outside our snapshot as a root — same effect
+    // as having no parent at all.
+    const parentKey =
+      s.parentSuiteId != null && ids.has(s.parentSuiteId)
+        ? s.parentSuiteId
+        : null;
+    const list = byParent.get(parentKey) ?? [];
+    list.push(s);
+    byParent.set(parentKey, list);
+  }
+  const roots = byParent.get(null) ?? [];
+
+  const buildNode = (s: SuiteRef): SuiteNode => ({
+    suite: s,
+    children: (byParent.get(s.id) ?? []).map(buildNode),
+  });
+
+  // Most common case: one root, named after the plan. Skip it and surface
+  // its children as the top-level nodes.
+  if (roots.length === 1 && roots[0].name === planName) {
+    return (byParent.get(roots[0].id) ?? []).map(buildNode);
+  }
+  return roots.map(buildNode);
+}
+
+/** Recursively walk a suite tree and return all the suite ids in it. Used
+ *  to decide which suite-load-states the filter eager-load loop should hit. */
+function flattenSuiteIds(nodes: SuiteNode[]): number[] {
+  const out: number[] = [];
+  const walk = (n: SuiteNode) => {
+    out.push(n.suite.id);
+    n.children.forEach(walk);
+  };
+  nodes.forEach(walk);
+  return out;
+}
+
+// --- Panel --------------------------------------------------------------------
+
 export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: Props) {
   const {
     initialized,
@@ -53,14 +124,17 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: P
     plansLoading,
     plansError,
     bySuite,
+    caseDetails,
     refreshConnection,
     refreshPlans,
     loadSuites,
     loadSuiteCases,
+    loadCaseDetails,
     cancelPlanLoads,
   } = useTestPlans();
   const [expandedPlans, setExpandedPlans] = useState<Set<number>>(new Set());
   const [expandedSuites, setExpandedSuites] = useState<Set<number>>(new Set());
+  const [expandedCases, setExpandedCases] = useState<Set<number>>(new Set());
   const [filterDraft, setFilterDraft] = useState("");
   const [filter, setFilter] = useState(""); // debounced
   const [conn, setConn] = useState<ConnInfo | null>(null);
@@ -71,8 +145,6 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: P
     }
   }, [initialized, refreshConnection]);
 
-  // Once configured, grab the org/project so we can build "Open in ADO" URLs
-  // without re-fetching on every menu open.
   useEffect(() => {
     if (!configured) {
       setConn(null);
@@ -85,8 +157,6 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: P
       .catch(() => setConn(null));
   }, [configured]);
 
-  // Debounce the filter input — typing fast no longer triggers per-keystroke
-  // matcher rebuilds + eager-load cascades.
   useEffect(() => {
     const id = window.setTimeout(() => {
       setFilter(filterDraft);
@@ -100,31 +170,25 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: P
     return (s: string) => s.toLowerCase().includes(needle);
   }, [needle]);
 
-  // Eager-load: when there's an active needle, expand every plan in the tree
-  // and trigger loadSuites/loadSuiteCases so a case-title-only match isn't
-  // hidden behind a collapsed plan that the user has to click open.
+  // Eager-load when filtering, so a case-title-only match isn't hidden
+  // behind a collapsed plan + suite that the user has to click open.
   useEffect(() => {
     if (!needle || plans.length === 0) return;
     for (const p of plans) {
-      // Plan name already matches — don't force its subtree open; the user
-      // can drill down themselves.
       if (p.name.toLowerCase().includes(needle)) continue;
       void loadSuites(p.id);
       const sl = bySuite.get(p.id);
       if (!sl) continue;
-      for (const s of sl.suites) {
-        if (s.name.toLowerCase().includes(needle)) continue;
-        void loadSuiteCases(p.id, s.id);
+      const tree = buildSuiteTree(sl.suites, p.name);
+      for (const sid of flattenSuiteIds(tree)) {
+        const suite = sl.suites.find((s) => s.id === sid);
+        if (suite && suite.name.toLowerCase().includes(needle)) continue;
+        void loadSuiteCases(p.id, sid);
       }
     }
-    // bySuite is intentionally NOT in the dep list — we don't want to refire
-    // every time bySuite mutates (which is on every load completion). The
-    // needle change is what should drive eager-load.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [needle, plans, loadSuites, loadSuiteCases]);
 
-  // When the filter is active, show subtrees regardless of expandedPlans /
-  // expandedSuites so the user can see *what* matched.
   const forceExpand = needle.length > 0;
 
   const togglePlan = useCallback(
@@ -158,6 +222,22 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: P
       });
     },
     [loadSuiteCases],
+  );
+
+  const toggleCase = useCallback(
+    (caseId: number) => {
+      setExpandedCases((curr) => {
+        const next = new Set(curr);
+        if (next.has(caseId)) {
+          next.delete(caseId);
+        } else {
+          next.add(caseId);
+          void loadCaseDetails(caseId);
+        }
+        return next;
+      });
+    },
+    [loadCaseDetails],
   );
 
   if (!initialized) {
@@ -197,9 +277,8 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: P
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
-              size="icon"
+              size="icon-xs"
               variant="ghost"
-              className="h-6 w-6"
               aria-label="Refresh plans"
               onClick={() => void refreshPlans()}
             >
@@ -211,22 +290,18 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: P
               />
             </Button>
           </TooltipTrigger>
-          <TooltipContent side="bottom" className="text-[11px]">
+          <TooltipContent side="bottom">
             Refetch the plan list from Azure DevOps
           </TooltipContent>
         </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button
-              size="sm"
-              className="h-6 px-1.5 text-[10.5px]"
-              onClick={() => onStartGenerator()}
-            >
+            <Button size="xs" onClick={() => onStartGenerator()}>
               <HugeiconsIcon icon={PlusSignIcon} size={11} strokeWidth={1.75} />
               Generate
             </Button>
           </TooltipTrigger>
-          <TooltipContent side="bottom" className="text-[11px]">
+          <TooltipContent side="bottom">
             Open the Generator to draft test cases from a spec
           </TooltipContent>
         </Tooltip>
@@ -252,15 +327,18 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: P
               onToggle={() => togglePlan(p.id)}
               matches={matches}
               expandedSuites={expandedSuites}
+              expandedCases={expandedCases}
               forceExpand={forceExpand}
               onToggleSuite={(sid) => toggleSuite(p.id, sid)}
+              onToggleCase={toggleCase}
               onOpenCase={onOpenCase}
               onStartGenerator={onStartGenerator}
               bySuite={bySuite}
+              caseDetails={caseDetails}
               loadSuites={loadSuites}
               loadSuiteCases={loadSuiteCases}
-              conn={conn}
               activeCaseId={activeCaseId ?? null}
+              conn={conn}
             />
           ))}
         </ul>
@@ -277,15 +355,18 @@ type PlanRowProps = {
   onToggle: () => void;
   matches: ((s: string) => boolean) | null;
   expandedSuites: Set<number>;
+  expandedCases: Set<number>;
   forceExpand: boolean;
   onToggleSuite: (suiteId: number) => void;
+  onToggleCase: (caseId: number) => void;
   onOpenCase: Props["onOpenCase"];
   onStartGenerator: Props["onStartGenerator"];
   bySuite: Map<number, SuiteLoad>;
+  caseDetails: Map<number, CaseDetailsState>;
   loadSuites: (planId: number) => Promise<void>;
   loadSuiteCases: (planId: number, suiteId: number) => Promise<void>;
-  conn: ConnInfo | null;
   activeCaseId: number | null;
+  conn: ConnInfo | null;
 };
 
 function PlanRow({
@@ -294,19 +375,27 @@ function PlanRow({
   onToggle,
   matches,
   expandedSuites,
+  expandedCases,
   forceExpand,
   onToggleSuite,
+  onToggleCase,
   onOpenCase,
   onStartGenerator,
   bySuite,
+  caseDetails,
   loadSuites,
-  conn,
   activeCaseId,
+  conn,
 }: PlanRowProps) {
   const data = bySuite.get(plan.id);
   const planWebUrl = conn
     ? `${conn.orgUrl}/${encodeURIComponent(conn.project)}/_testPlans/define?planId=${plan.id}`
     : null;
+
+  const tree = useMemo(
+    () => (data ? buildSuiteTree(data.suites, plan.name) : []),
+    [data, plan.name],
+  );
 
   return (
     <li>
@@ -315,12 +404,13 @@ function PlanRow({
           <button
             type="button"
             onClick={onToggle}
-            className="flex w-full items-center gap-1 rounded-sm px-1.5 py-1 text-left text-[12px] hover:bg-foreground/[0.04]"
+            className="flex w-full items-center gap-1 rounded-sm px-1.5 py-1 text-left text-[12px] transition-colors duration-150 hover:bg-foreground/[0.04]"
           >
             <HugeiconsIcon
               icon={expanded ? ArrowDown01Icon : ArrowRight01Icon}
               size={11}
               strokeWidth={1.75}
+              className="shrink-0 text-muted-foreground"
             />
             <span className="truncate font-medium">{plan.name}</span>
           </button>
@@ -364,16 +454,30 @@ function PlanRow({
               {adoErrorMessage(data.error)}
             </li>
           ) : null}
-          {data?.suites
-            .filter((s) => !matches || matches(s.name) || hasMatchingCase(data, s.id, matches))
-            .map((s) => (
+          {!data?.loading && tree.length === 0 ? (
+            <li className="px-2 py-1 text-[10.5px] text-muted-foreground">
+              No suites in this plan.
+            </li>
+          ) : null}
+          {tree
+            .filter((node) =>
+              !matches ||
+              matches(node.suite.name) ||
+              treeHasMatchingCase(node, data!, matches) ||
+              treeHasMatchingSuite(node, matches),
+            )
+            .map((node) => (
               <SuiteRow
-                key={s.id}
+                key={node.suite.id}
                 planId={plan.id}
-                suite={s}
-                expanded={forceExpand || expandedSuites.has(s.id)}
-                onToggle={() => onToggleSuite(s.id)}
-                suiteLoad={data}
+                node={node}
+                expandedSuites={expandedSuites}
+                expandedCases={expandedCases}
+                forceExpand={forceExpand}
+                onToggleSuite={onToggleSuite}
+                onToggleCase={onToggleCase}
+                suiteLoad={data!}
+                caseDetails={caseDetails}
                 matches={matches}
                 onOpenCase={onOpenCase}
                 onStartGenerator={onStartGenerator}
@@ -387,25 +491,42 @@ function PlanRow({
   );
 }
 
-function hasMatchingCase(
+/** Does any case under this suite (or its descendants) match the filter? */
+function treeHasMatchingCase(
+  node: SuiteNode,
   load: SuiteLoad,
-  suiteId: number,
   matches: ((s: string) => boolean) | null,
 ): boolean {
   if (!matches) return true;
-  const cases = load.suiteCases.get(suiteId)?.cases;
-  if (!cases) return true; // not yet loaded — show optimistically
-  return cases.some((c) => matches(c.title));
+  const own = load.suiteCases.get(node.suite.id)?.cases;
+  // Not yet loaded — keep the node visible so the eager-load can fire.
+  if (own === undefined || own === null) return true;
+  if (own.some((c) => matches(c.title))) return true;
+  return node.children.some((child) => treeHasMatchingCase(child, load, matches));
+}
+
+/** Does this suite or any descendant suite name match the filter? */
+function treeHasMatchingSuite(
+  node: SuiteNode,
+  matches: ((s: string) => boolean) | null,
+): boolean {
+  if (!matches) return true;
+  if (matches(node.suite.name)) return true;
+  return node.children.some((c) => treeHasMatchingSuite(c, matches));
 }
 
 // --- Suite row --------------------------------------------------------------
 
 type SuiteRowProps = {
   planId: number;
-  suite: SuiteRef;
-  expanded: boolean;
-  onToggle: () => void;
+  node: SuiteNode;
+  expandedSuites: Set<number>;
+  expandedCases: Set<number>;
+  forceExpand: boolean;
+  onToggleSuite: (suiteId: number) => void;
+  onToggleCase: (caseId: number) => void;
   suiteLoad: SuiteLoad;
+  caseDetails: Map<number, CaseDetailsState>;
   matches: ((s: string) => boolean) | null;
   onOpenCase: Props["onOpenCase"];
   onStartGenerator: Props["onStartGenerator"];
@@ -415,20 +536,27 @@ type SuiteRowProps = {
 
 function SuiteRow({
   planId,
-  suite,
-  expanded,
-  onToggle,
+  node,
+  expandedSuites,
+  expandedCases,
+  forceExpand,
+  onToggleSuite,
+  onToggleCase,
   suiteLoad,
+  caseDetails,
   matches,
   onOpenCase,
   onStartGenerator,
   conn,
   activeCaseId,
 }: SuiteRowProps) {
+  const { suite, children } = node;
+  const expanded = forceExpand || expandedSuites.has(suite.id);
   const sc = suiteLoad.suiteCases.get(suite.id);
   const loading = sc?.loading ?? false;
   const cases = sc?.cases ?? null;
   const error = sc?.error ?? null;
+  const hasChildren = children.length > 0;
   const suiteWebUrl = conn
     ? `${conn.orgUrl}/${encodeURIComponent(
         conn.project,
@@ -441,28 +569,43 @@ function SuiteRow({
         <ContextMenuTrigger asChild>
           <button
             type="button"
-            onClick={onToggle}
-            className="flex w-full items-center gap-1 rounded-sm px-1.5 py-1 text-left text-[11.5px] hover:bg-foreground/[0.04]"
+            onClick={() => onToggleSuite(suite.id)}
+            className="flex w-full items-center gap-1 rounded-sm px-1.5 py-1 text-left text-[11.5px] transition-colors duration-150 hover:bg-foreground/[0.04]"
           >
             <HugeiconsIcon
               icon={expanded ? ArrowDown01Icon : ArrowRight01Icon}
               size={10}
               strokeWidth={1.75}
+              className="shrink-0 text-muted-foreground"
+            />
+            <HugeiconsIcon
+              icon={FolderIcon}
+              size={10}
+              strokeWidth={1.75}
+              className={cn(
+                "shrink-0",
+                hasChildren ? "text-foreground/70" : "text-muted-foreground/70",
+              )}
             />
             <span className="truncate">{suite.name}</span>
+            {hasChildren ? (
+              <span className="ml-auto pl-1 font-mono text-[9.5px] text-muted-foreground/60">
+                {children.length}
+              </span>
+            ) : null}
           </button>
         </ContextMenuTrigger>
         <ContextMenuContent className="text-[12px]">
           <ContextMenuItem
-            onSelect={() => void useTestPlans.getState().loadSuiteCases(planId, suite.id)}
+            onSelect={() =>
+              void useTestPlans.getState().loadSuiteCases(planId, suite.id)
+            }
           >
             <HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />
             Refresh cases
           </ContextMenuItem>
           <ContextMenuItem
-            onSelect={() =>
-              onStartGenerator({ planId, suiteId: suite.id })
-            }
+            onSelect={() => onStartGenerator({ planId, suiteId: suite.id })}
           >
             <HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={1.75} />
             Generate cases for suite
@@ -483,6 +626,34 @@ function SuiteRow({
       </ContextMenu>
       {expanded ? (
         <ul className="ml-3 border-l border-border/40 pl-1.5">
+          {/* Child suites first, then direct cases — matches the ADO web UI. */}
+          {children
+            .filter(
+              (child) =>
+                !matches ||
+                matches(child.suite.name) ||
+                treeHasMatchingCase(child, suiteLoad, matches) ||
+                treeHasMatchingSuite(child, matches),
+            )
+            .map((child) => (
+              <SuiteRow
+                key={child.suite.id}
+                planId={planId}
+                node={child}
+                expandedSuites={expandedSuites}
+                expandedCases={expandedCases}
+                forceExpand={forceExpand}
+                onToggleSuite={onToggleSuite}
+                onToggleCase={onToggleCase}
+                suiteLoad={suiteLoad}
+                caseDetails={caseDetails}
+                matches={matches}
+                onOpenCase={onOpenCase}
+                onStartGenerator={onStartGenerator}
+                conn={conn}
+                activeCaseId={activeCaseId}
+              />
+            ))}
           {loading ? (
             <li className="flex flex-col gap-1.5 px-2 py-1.5">
               <Skeleton className="h-3 w-4/5" />
@@ -494,7 +665,7 @@ function SuiteRow({
               {adoErrorMessage(error)}
             </li>
           ) : null}
-          {!loading && cases?.length === 0 ? (
+          {!loading && cases?.length === 0 && !hasChildren ? (
             <li className="px-2 py-1 text-[10.5px] text-muted-foreground">
               No cases in this suite
             </li>
@@ -511,6 +682,9 @@ function SuiteRow({
                 suiteId={suite.id}
                 conn={conn}
                 active={activeCaseId === c.id}
+                expanded={expandedCases.has(c.id)}
+                onToggleExpand={() => onToggleCase(c.id)}
+                details={caseDetails.get(c.id)}
               />
             ))}
         </ul>
@@ -529,6 +703,9 @@ type CaseRowProps = {
   suiteId: number;
   conn: ConnInfo | null;
   active: boolean;
+  expanded: boolean;
+  onToggleExpand: () => void;
+  details?: CaseDetailsState;
 };
 
 function CaseRow({
@@ -539,6 +716,9 @@ function CaseRow({
   suiteId,
   conn,
   active,
+  expanded,
+  onToggleExpand,
+  details,
 }: CaseRowProps) {
   const caseWebUrl = conn
     ? `${conn.orgUrl}/${encodeURIComponent(conn.project)}/_workitems/edit/${tc.id}`
@@ -547,9 +727,6 @@ function CaseRow({
 
   const open = () => onOpenCase({ caseId: tc.id, title: `#${tc.id} · ${tc.title}` });
 
-  // When this row becomes the active case (e.g. via the command palette or
-  // history pane), scroll it into view so the user can see where they are
-  // in the tree.
   useEffect(() => {
     if (active) {
       buttonRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -558,83 +735,286 @@ function CaseRow({
 
   return (
     <li>
-      <ContextMenu>
-        <ContextMenuTrigger asChild>
-          <button
-            ref={buttonRef}
-            type="button"
-            onClick={open}
-            data-active={active || undefined}
-            className={cn(
-              "flex w-full items-center gap-1.5 rounded-sm border-l-2 border-transparent px-1.5 py-1.5 text-left text-[11px] transition-colors duration-150 hover:bg-foreground/[0.05]",
-              active &&
-                "border-primary bg-primary/10 text-foreground dark:bg-primary/[0.12]",
-            )}
-          >
-            <HugeiconsIcon
-              icon={TaskDone01Icon}
-              size={10}
-              strokeWidth={1.75}
+      <div
+        className={cn(
+          "flex items-center gap-0.5 rounded-sm border-l-2 border-transparent pl-0 pr-1 transition-colors duration-150 hover:bg-foreground/[0.05]",
+          active &&
+            "border-primary bg-primary/10 text-foreground dark:bg-primary/[0.12]",
+        )}
+      >
+        <button
+          type="button"
+          aria-label={expanded ? "Collapse details" : "Show details"}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleExpand();
+          }}
+          className="inline-flex size-4 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
+        >
+          <HugeiconsIcon
+            icon={expanded ? ArrowDown01Icon : ArrowRight01Icon}
+            size={9}
+            strokeWidth={1.75}
+          />
+        </button>
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <button
+              ref={buttonRef}
+              type="button"
+              onClick={open}
+              data-active={active || undefined}
               className={cn(
-                "shrink-0 transition-colors duration-150",
-                active ? "text-primary" : "text-muted-foreground",
+                "flex min-w-0 flex-1 items-center gap-1.5 rounded-sm py-1.5 pl-0.5 pr-1 text-left text-[11px]",
               )}
-            />
-            <span className={cn("font-mono text-[10px]", active ? "text-primary" : "text-muted-foreground")}>
-              #{tc.id}
-            </span>
-            <span className="truncate">{tc.title}</span>
-          </button>
-        </ContextMenuTrigger>
-        <ContextMenuContent className="text-[12px]">
-          <ContextMenuItem onSelect={open}>
-            <HugeiconsIcon
-              icon={TaskDone01Icon}
-              size={12}
-              strokeWidth={1.75}
-            />
-            Open
-          </ContextMenuItem>
-          <ContextMenuItem
-            disabled={!caseWebUrl}
-            onSelect={() => caseWebUrl && void openUrl(caseWebUrl)}
-          >
-            <HugeiconsIcon
-              icon={ExternalLink}
-              size={12}
-              strokeWidth={1.75}
-            />
-            Open in Azure DevOps
-          </ContextMenuItem>
-          <ContextMenuItem
-            disabled={!caseWebUrl}
-            onSelect={() => {
-              if (!caseWebUrl) return;
-              void navigator.clipboard.writeText(caseWebUrl);
-            }}
-          >
-            <HugeiconsIcon icon={Link01Icon} size={12} strokeWidth={1.75} />
-            Copy link
-          </ContextMenuItem>
-          <ContextMenuSeparator />
-          <ContextMenuItem
-            onSelect={() => {
-              void markForReview(tc.id, "User requested review");
-            }}
-          >
-            <HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />
-            Mark for review
-          </ContextMenuItem>
-          <ContextMenuItem
-            onSelect={() => onStartGenerator({ planId, suiteId })}
-          >
-            <HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={1.75} />
-            Generate sibling cases
-          </ContextMenuItem>
-        </ContextMenuContent>
-      </ContextMenu>
+            >
+              <HugeiconsIcon
+                icon={TaskDone01Icon}
+                size={10}
+                strokeWidth={1.75}
+                className={cn(
+                  "shrink-0 transition-colors duration-150",
+                  active ? "text-primary" : "text-muted-foreground",
+                )}
+              />
+              <span
+                className={cn(
+                  "font-mono text-[10px]",
+                  active ? "text-primary" : "text-muted-foreground",
+                )}
+              >
+                #{tc.id}
+              </span>
+              <span className="truncate">{tc.title}</span>
+              {tc.state ? (
+                <StateBadge state={tc.state} />
+              ) : null}
+            </button>
+          </ContextMenuTrigger>
+          <ContextMenuContent className="text-[12px]">
+            <ContextMenuItem onSelect={open}>
+              <HugeiconsIcon
+                icon={TaskDone01Icon}
+                size={12}
+                strokeWidth={1.75}
+              />
+              Open
+            </ContextMenuItem>
+            <ContextMenuItem
+              disabled={!caseWebUrl}
+              onSelect={() => caseWebUrl && void openUrl(caseWebUrl)}
+            >
+              <HugeiconsIcon
+                icon={ExternalLink}
+                size={12}
+                strokeWidth={1.75}
+              />
+              Open in Azure DevOps
+            </ContextMenuItem>
+            <ContextMenuItem
+              disabled={!caseWebUrl}
+              onSelect={() => {
+                if (!caseWebUrl) return;
+                void navigator.clipboard.writeText(caseWebUrl);
+              }}
+            >
+              <HugeiconsIcon icon={Link01Icon} size={12} strokeWidth={1.75} />
+              Copy link
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              onSelect={() => {
+                void markForReview(tc.id, "User requested review");
+              }}
+            >
+              <HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />
+              Mark for review
+            </ContextMenuItem>
+            <ContextMenuItem
+              onSelect={() => onStartGenerator({ planId, suiteId })}
+            >
+              <HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={1.75} />
+              Generate sibling cases
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
+      </div>
+      {expanded ? (
+        <CaseDetails details={details} caseWebUrl={caseWebUrl} />
+      ) : null}
     </li>
   );
+}
+
+/**
+ * Inline expand for a case row. Lazy-loads full case data (state, priority,
+ * assignee, linked work items) so the user can peek without opening a tab.
+ */
+function CaseDetails({
+  details,
+  caseWebUrl,
+}: {
+  details?: CaseDetailsState;
+  caseWebUrl: string | null;
+}) {
+  if (!details || details.loading) {
+    return (
+      <div className="ml-6 mt-0.5 mb-1 flex flex-col gap-1 border-l border-border/40 pl-2.5">
+        <Skeleton className="h-3 w-3/4" />
+        <Skeleton className="h-3 w-1/2" />
+        <Skeleton className="h-3 w-2/3" />
+      </div>
+    );
+  }
+  if (details.error) {
+    return (
+      <div className="ml-6 mt-0.5 mb-1 border-l border-destructive/40 pl-2.5 text-[10.5px] text-destructive">
+        {adoErrorMessage(details.error)}
+      </div>
+    );
+  }
+  const tc = details.data;
+  if (!tc) return null;
+
+  const meta: { label: string; value: string }[] = [];
+  if (tc.priority != null) meta.push({ label: "P", value: String(tc.priority) });
+  if (tc.assignedTo) meta.push({ label: "@", value: tc.assignedTo });
+  if (tc.changedDate) {
+    meta.push({ label: "Δ", value: formatDate(tc.changedDate) });
+  }
+
+  return (
+    <div className="ml-6 mt-0.5 mb-1 flex flex-col gap-1.5 border-l border-border/40 pl-2.5">
+      <div className="flex flex-wrap items-center gap-1.5 text-[10.5px] text-muted-foreground">
+        {meta.map((m) => (
+          <span
+            key={m.label}
+            className="inline-flex items-center gap-1 rounded-sm bg-foreground/[0.05] px-1 py-px"
+          >
+            <span className="text-muted-foreground/70">{m.label}</span>
+            <span className="text-foreground/85">{m.value}</span>
+          </span>
+        ))}
+        {tc.steps?.length ? (
+          <span className="inline-flex items-center gap-1 rounded-sm bg-foreground/[0.05] px-1 py-px">
+            <span className="text-muted-foreground/70">steps</span>
+            <span className="text-foreground/85">{tc.steps.length}</span>
+          </span>
+        ) : null}
+      </div>
+
+      {tc.linkedWorkItems.length > 0 ? (
+        <ul className="flex flex-col gap-0.5">
+          {tc.linkedWorkItems.slice(0, 6).map((lwi) => {
+            const isLikelyBug = lwi.kind === "Tested by" || lwi.kind === "Tests";
+            return (
+              <li
+                key={`${lwi.rel}-${lwi.id}`}
+                className="flex items-center gap-1.5 text-[10.5px]"
+              >
+                <HugeiconsIcon
+                  icon={isLikelyBug ? Bug01Icon : Link01Icon}
+                  size={9}
+                  strokeWidth={1.75}
+                  className={cn(
+                    "shrink-0",
+                    isLikelyBug ? "text-rose-500/80" : "text-muted-foreground/70",
+                  )}
+                />
+                <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
+                  {lwi.kind}
+                </span>
+                <span className="font-mono text-[9.5px] text-muted-foreground">
+                  #{lwi.id}
+                </span>
+                {isLikelyBug ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      window.dispatchEvent(
+                        new CustomEvent("devops-studio:open-bug", {
+                          detail: { bugId: lwi.id },
+                        }),
+                      )
+                    }
+                    className="truncate text-foreground/85 hover:text-primary hover:underline"
+                  >
+                    open in app
+                  </button>
+                ) : lwi.webUrl ? (
+                  <button
+                    type="button"
+                    onClick={() => void openUrl(lwi.webUrl)}
+                    className="truncate text-foreground/70 hover:text-foreground"
+                  >
+                    open in ADO
+                  </button>
+                ) : null}
+              </li>
+            );
+          })}
+          {tc.linkedWorkItems.length > 6 ? (
+            <li className="text-[9.5px] text-muted-foreground/70">
+              + {tc.linkedWorkItems.length - 6} more — open case to view all
+            </li>
+          ) : null}
+        </ul>
+      ) : (
+        <p className="text-[10px] italic text-muted-foreground/60">
+          No linked work items.
+        </p>
+      )}
+
+      {caseWebUrl ? (
+        <button
+          type="button"
+          onClick={() => void openUrl(caseWebUrl)}
+          className="inline-flex w-fit items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
+        >
+          <HugeiconsIcon icon={ExternalLink} size={9} strokeWidth={1.75} />
+          open in azure devops
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function StateBadge({ state }: { state: string }) {
+  const tone = state.toLowerCase();
+  const cls =
+    tone === "design" || tone === "draft"
+      ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+      : tone === "ready" || tone === "active"
+        ? "bg-primary/15 text-primary"
+        : tone === "closed" || tone === "completed"
+          ? "bg-foreground/[0.08] text-muted-foreground line-through decoration-muted-foreground/60"
+          : "bg-foreground/[0.06] text-muted-foreground";
+  return (
+    <span
+      className={cn(
+        "ml-auto shrink-0 rounded-sm px-1 py-px font-mono text-[9px] uppercase tracking-wider",
+        cls,
+      )}
+    >
+      {state}
+    </span>
+  );
+}
+
+function formatDate(iso: string): string {
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    const now = new Date();
+    const diffMs = now.getTime() - d.getTime();
+    const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    if (days < 1) return "today";
+    if (days < 7) return `${days}d ago`;
+    if (days < 30) return `${Math.floor(days / 7)}w ago`;
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" });
+  } catch {
+    return iso;
+  }
 }
 
 function PanelMessage({ children }: { children: React.ReactNode }) {

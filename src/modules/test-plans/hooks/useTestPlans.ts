@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import {
+  getCase,
   getConnection,
   listPlans,
   listSuiteCases,
@@ -7,6 +8,7 @@ import {
   toAdoError,
   type AdoError,
   type SuiteRef,
+  type TestCase,
   type TestCaseRef,
   type TestPlanRef,
 } from "@/modules/ado";
@@ -34,6 +36,14 @@ export type SuiteLoad = {
   loadingCases: Set<number>;
 };
 
+/** Per-case detail load state, populated lazily when the user expands a
+ *  case row in the explorer to peek at linked work items. */
+export type CaseDetailsState = {
+  data: TestCase | null;
+  loading: boolean;
+  error: AdoError | null;
+};
+
 type State = {
   initialized: boolean;
   configured: boolean;
@@ -41,11 +51,15 @@ type State = {
   plansLoading: boolean;
   plansError: AdoError | null;
   bySuite: Map<number, SuiteLoad>;
+  caseDetails: Map<number, CaseDetailsState>;
 
   refreshConnection: () => Promise<void>;
   refreshPlans: () => Promise<void>;
   loadSuites: (planId: number) => Promise<void>;
   loadSuiteCases: (planId: number, suiteId: number) => Promise<void>;
+  /** Fetch full case data (state, priority, linked work items, etc.) on
+   *  demand. Idempotent — repeat calls return the cached value. */
+  loadCaseDetails: (caseId: number) => Promise<void>;
   /** Cancel any in-flight suite or case loads for this plan and forget the
    *  fact that we were loading. Called when the user collapses a plan. */
   cancelPlanLoads: (planId: number) => void;
@@ -68,6 +82,7 @@ const suiteAborts = new Map<number, AbortController>();
 const caseAborts = new Map<string, AbortController>();
 const inFlightSuites = new Set<number>();
 const inFlightCases = new Set<string>();
+const inFlightCaseDetails = new Set<number>();
 
 function caseKey(planId: number, suiteId: number): string {
   return `${planId}:${suiteId}`;
@@ -92,6 +107,7 @@ export const useTestPlans = create<State>((set, get) => ({
   plansLoading: false,
   plansError: null,
   bySuite: new Map(),
+  caseDetails: new Map(),
 
   refreshConnection: async () => {
     try {
@@ -215,6 +231,41 @@ export const useTestPlans = create<State>((set, get) => ({
     }
   },
 
+  loadCaseDetails: async (caseId: number) => {
+    if (inFlightCaseDetails.has(caseId)) return;
+    const existing = get().caseDetails.get(caseId);
+    if (existing?.data && !existing.error) return; // cached, clean
+
+    inFlightCaseDetails.add(caseId);
+    set((s) => {
+      const next = new Map(s.caseDetails);
+      next.set(caseId, { data: existing?.data ?? null, loading: true, error: null });
+      return { caseDetails: next };
+    });
+
+    try {
+      const data = await getCase(caseId);
+      set((s) => {
+        const next = new Map(s.caseDetails);
+        next.set(caseId, { data, loading: false, error: null });
+        return { caseDetails: next };
+      });
+    } catch (e) {
+      set((s) => {
+        const next = new Map(s.caseDetails);
+        const prev = next.get(caseId);
+        next.set(caseId, {
+          data: prev?.data ?? null,
+          loading: false,
+          error: toAdoError(e),
+        });
+        return { caseDetails: next };
+      });
+    } finally {
+      inFlightCaseDetails.delete(caseId);
+    }
+  },
+
   cancelPlanLoads: (planId: number) => {
     suiteAborts.get(planId)?.abort();
     suiteAborts.delete(planId);
@@ -235,6 +286,7 @@ export const useTestPlans = create<State>((set, get) => ({
     caseAborts.clear();
     inFlightSuites.clear();
     inFlightCases.clear();
+    inFlightCaseDetails.clear();
     set({
       initialized: false,
       configured: false,
@@ -242,6 +294,7 @@ export const useTestPlans = create<State>((set, get) => ({
       plansLoading: false,
       plansError: null,
       bySuite: new Map(),
+      caseDetails: new Map(),
     });
   },
 }));
