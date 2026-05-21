@@ -171,7 +171,7 @@ export function CodeViewerPane({ path, startLine, endLine }: Props) {
   );
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div className="cv-pane flex h-full flex-col overflow-hidden">
       <header className="flex h-9 shrink-0 items-center gap-2 border-b border-border/60 bg-card/40 px-3">
         <span className="min-w-0 truncate font-mono text-[11.5px]">{path}</span>
         {startLine ? (
@@ -387,35 +387,16 @@ function rangeLineDecos(
   return out;
 }
 
-// The pulse animation amps the highlight up for ~1.5s after the user jumps
-// to a code link so the target block is impossible to miss in a long file.
-// We keyframe via opacity-scaled background tints (not box-shadow) because
-// CodeMirror line decorations don't reliably nest a child to animate.
-const rangeHighlightTheme = EditorView.baseTheme({
-  ".cm-linked-line": {
-    backgroundColor: "rgba(99, 102, 241, 0.12)",
-    transition: "background-color 600ms ease-out",
-  },
-  "&dark .cm-linked-line": {
-    backgroundColor: "rgba(129, 140, 248, 0.18)",
-  },
-  ".cm-linked-line-pulse": {
-    animation: "cm-linked-line-pulse 1.4s ease-out 1",
-  },
-  "@keyframes cm-linked-line-pulse": {
-    "0%": { backgroundColor: "rgba(99, 102, 241, 0.45)" },
-    "40%": { backgroundColor: "rgba(99, 102, 241, 0.30)" },
-    "100%": { backgroundColor: "rgba(99, 102, 241, 0.12)" },
-  },
-  "&dark .cm-linked-line-pulse": {
-    animation: "cm-linked-line-pulse-dark 1.4s ease-out 1",
-  },
-  "@keyframes cm-linked-line-pulse-dark": {
-    "0%": { backgroundColor: "rgba(129, 140, 248, 0.55)" },
-    "40%": { backgroundColor: "rgba(129, 140, 248, 0.35)" },
-    "100%": { backgroundColor: "rgba(129, 140, 248, 0.18)" },
-  },
-});
+/* The visual styling for `.cm-linked-line` and `.cm-linked-line-pulse` lives
+ * in globals.css (under `.cv-pane`), not here. CodeMirror's baseTheme
+ * injects rules into its CSS scope but `@keyframes` inside that scope
+ * don't fire reliably — keeping the animation in plain CSS bypasses that
+ * gotcha and lets dark-mode pairing flow through the `.dark` selector.
+ *
+ * The decoration field still injects the class names; this empty extension
+ * stays in the array to preserve the call-site shape so older diffs still
+ * apply cleanly during reviews. */
+const rangeHighlightTheme = EditorView.baseTheme({});
 
 function clampLine(n: number, total: number): number {
   return Math.max(1, Math.min(n, total));

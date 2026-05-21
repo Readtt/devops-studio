@@ -249,6 +249,96 @@ html[data-chrome="borderless"] #settings-root {
   display: none !important;
 }
 
+/*
+ * Re-enable scrollbars inside the CodeViewer pane specifically.
+ *
+ * The blanket kill above hides scrollbars across every embedded CodeMirror
+ * (terminal, chat, etc.) because they each have their own chrome to scroll.
+ * The CodeViewer is the one place a user explicitly opens a long source
+ * file and benefits from a real, draggable scrollbar — without one they
+ * have to keyboard-navigate to find lines outside the viewport.
+ *
+ * Specificity-tuned overrides: each rule beats the .cm-editor /
+ * .cm-scroller defaults above by being more specific (the `.cv-pane`
+ * prefix). Width/height are visible but slim so they don't dominate the
+ * editor body.
+ */
+.cv-pane .cm-scroller {
+  scrollbar-width: thin !important;
+  scrollbar-color: var(--border) transparent !important;
+  -ms-overflow-style: auto !important;
+}
+.cv-pane .cm-scroller::-webkit-scrollbar {
+  width: 10px !important;
+  height: 10px !important;
+  display: block !important;
+}
+.cv-pane .cm-scroller::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+.cv-pane .cm-scroller::-webkit-scrollbar-thumb {
+  background-color: color-mix(in oklch, var(--border) 70%, transparent) !important;
+  border-radius: 6px !important;
+  border: 2px solid transparent !important;
+  background-clip: content-box !important;
+}
+.cv-pane .cm-scroller::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in oklch, var(--border) 100%, transparent) !important;
+}
+.cv-pane .cm-scroller::-webkit-scrollbar-corner {
+  background: transparent !important;
+}
+
+/*
+ * CodeViewer linked-range highlight + pulse.
+ *
+ * Lives here (not in EditorView.baseTheme) because @keyframes inside a
+ * CodeMirror baseTheme don't reliably reach the editor's CSS scope —
+ * the rule gets injected but the animation never plays. Defining the
+ * keyframes globally + targeting `.cm-linked-line` directly keeps the
+ * decoration logic in TypeScript while letting CSS do the animation.
+ */
+.cv-pane .cm-line.cm-linked-line {
+  background-color: rgba(99, 102, 241, 0.12);
+}
+.dark .cv-pane .cm-line.cm-linked-line {
+  background-color: rgba(129, 140, 248, 0.18);
+}
+.cv-pane .cm-line.cm-linked-line-pulse {
+  animation: cv-pulse-light 1.4s ease-out 1;
+}
+.dark .cv-pane .cm-line.cm-linked-line-pulse {
+  animation: cv-pulse-dark 1.4s ease-out 1;
+}
+@keyframes cv-pulse-light {
+  0% {
+    background-color: rgba(99, 102, 241, 0.55);
+    box-shadow: inset 3px 0 0 0 rgba(99, 102, 241, 0.9);
+  }
+  40% {
+    background-color: rgba(99, 102, 241, 0.32);
+    box-shadow: inset 3px 0 0 0 rgba(99, 102, 241, 0.55);
+  }
+  100% {
+    background-color: rgba(99, 102, 241, 0.12);
+    box-shadow: inset 3px 0 0 0 transparent;
+  }
+}
+@keyframes cv-pulse-dark {
+  0% {
+    background-color: rgba(129, 140, 248, 0.6);
+    box-shadow: inset 3px 0 0 0 rgba(129, 140, 248, 0.95);
+  }
+  40% {
+    background-color: rgba(129, 140, 248, 0.4);
+    box-shadow: inset 3px 0 0 0 rgba(129, 140, 248, 0.7);
+  }
+  100% {
+    background-color: rgba(129, 140, 248, 0.18);
+    box-shadow: inset 3px 0 0 0 transparent;
+  }
+}
+
 
 .no-scrollbar {
   scrollbar-width: none !important;
