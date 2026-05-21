@@ -93,6 +93,19 @@ export async function cancelSetupClaudeToken(): Promise<void> {
   return invoke<void>("claude_cancel_setup_token");
 }
 
+export type AuthStatus = {
+  authenticated: boolean;
+  /** Raw stdout/stderr from `claude auth status`, surfaced for diagnostics. */
+  raw: string;
+};
+
+/** Run `claude auth status` to verify whether the CLI has stored credentials.
+ *  Use this — not probeClaude — to decide if the user is connected. probe
+ *  just checks that the binary exists. */
+export async function checkClaudeAuth(): Promise<AuthStatus> {
+  return invoke<AuthStatus>("claude_check_auth");
+}
+
 /** Run a one-shot query. If `onEvent` is provided, every NDJSON event the
  *  CLI emits is forwarded to it; the listener is detached on settle. */
 export async function runClaudeQuery(

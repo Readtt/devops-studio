@@ -190,6 +190,7 @@ pub fn run() {
             claude::claude_run_query,
             claude::claude_setup_token,
             claude::claude_cancel_setup_token,
+            claude::claude_check_auth,
             // --- Source-dir git introspection ---
             git::git_repo_info,
         ])

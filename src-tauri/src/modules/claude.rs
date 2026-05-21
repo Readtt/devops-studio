@@ -311,10 +311,16 @@ pub async fn claude_run_query(
 }
 
 /// Start the CLI's OAuth login flow. We don't capture the user's token here
-/// — the CLI handles its own credential storage. We just spawn `claude
-/// setup-token`, stream every stdout/stderr line as a Tauri event so the UI
-/// can render the device-code URL the moment it's printed, and resolve when
-/// the CLI exits.
+/// — the CLI handles its own credential storage. We just spawn `claude auth
+/// login`, stream every stdout/stderr line as a Tauri event so the UI can
+/// render the device-code URL the moment it's printed, and resolve when the
+/// CLI exits.
+///
+/// `claude auth login` is the modern command per Anthropic's CHANGELOG —
+/// the legacy `claude setup-token` does the same thing but is being phased
+/// out. The login command also gracefully handles the case where the
+/// browser callback can't reach localhost (devcontainers, WSL, restrictive
+/// firewalls) by prompting for a paste-in code on stdin.
 ///
 /// Event channel: `claude:setup-token:line`
 /// Payload: `{ stream: "stdout" | "stderr", line: string }`
@@ -325,7 +331,7 @@ pub async fn claude_setup_token(
 ) -> Result<String, ClaudeError> {
     let path = which::which("claude").map_err(|_| ClaudeError::NotInstalled)?;
     let mut child = Command::new(&path)
-        .arg("setup-token")
+        .args(["auth", "login"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -408,6 +414,69 @@ pub async fn claude_setup_token(
     }
 
     Ok(stdout_out)
+}
+
+/// Result of `claude auth status` — whether the CLI is logged in, and
+/// (best-effort) which identity / auth mode is in use.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthStatus {
+    pub authenticated: bool,
+    /// Raw stdout from `claude auth status`, surfaced for diagnostics in the
+    /// settings panel when something is off.
+    pub raw: String,
+}
+
+/// Verify whether the CLI has stored credentials. Runs `claude auth status`
+/// and treats any output containing "logged in" / "authenticated" / "active
+/// session" as success. Non-zero exit or "not logged in" output reports
+/// authenticated: false.
+///
+/// Distinct from `claude_probe`, which only checks that the binary is on
+/// PATH and prints a version. After the "I've authorized — recheck" path
+/// in settings, we want to know whether the OAuth actually persisted, not
+/// just whether the CLI is installed.
+#[tauri::command]
+pub async fn claude_check_auth(_app: AppHandle) -> Result<AuthStatus, ClaudeError> {
+    let path = which::which("claude").map_err(|_| ClaudeError::NotInstalled)?;
+    let out = Command::new(&path)
+        .args(["auth", "status"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| ClaudeError::SpawnFailed { message: e.to_string() })?;
+
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let combined = if stderr.trim().is_empty() {
+        stdout.clone()
+    } else {
+        format!("{stdout}\n{stderr}")
+    };
+    let lower = combined.to_lowercase();
+
+    // The CLI prints things like "Logged in as foo@bar (Pro)" / "Authenticated
+    // with Anthropic" on success; "Not logged in" / "no active session" on
+    // failure. Be liberal on positive markers so we don't fail when Anthropic
+    // tweaks the wording. The exit code is the strongest signal — but only
+    // some builds set it correctly, so combine both.
+    let positive = ["logged in", "authenticated", "active session", "you are signed in"];
+    let negative = ["not logged in", "no active session", "please run", "not authenticated"];
+    let any_positive = positive.iter().any(|p| lower.contains(p));
+    let any_negative = negative.iter().any(|n| lower.contains(n));
+
+    let authenticated = if any_negative {
+        false
+    } else if any_positive {
+        true
+    } else {
+        // Fall back to exit code if the wording matches neither.
+        out.status.success()
+    };
+
+    Ok(AuthStatus { authenticated, raw: combined })
 }
 
 /// Send a kill signal to the in-flight `claude setup-token` process. Used by

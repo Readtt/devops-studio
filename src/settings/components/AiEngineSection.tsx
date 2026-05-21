@@ -5,10 +5,12 @@ import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import {
   cancelSetupClaudeToken,
+  checkClaudeAuth,
   claudeErrorMessage,
   extractAuthUrl,
   probeClaude,
   setupClaudeToken,
+  type AuthStatus,
   type ClaudeProbe,
 } from "@/modules/ai/lib/claude";
 import { usePreferencesStore } from "@/modules/settings/preferences";
@@ -43,6 +45,7 @@ export function AiEngineSection() {
   const [probe, setProbe] = useState<ClaudeProbe | null | undefined>(undefined);
   const [probeError, setProbeError] = useState<string | null>(null);
   const [probing, setProbing] = useState(false);
+  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [setupRunning, setSetupRunning] = useState(false);
   const [setupLines, setSetupLines] = useState<string[]>([]);
   const [setupAuthUrl, setSetupAuthUrl] = useState<string | null>(null);
@@ -55,8 +58,23 @@ export function AiEngineSection() {
     try {
       const r = await probeClaude();
       setProbe(r);
+      // Probe only tells us the binary is installed. Run auth status next so
+      // the badge reflects "Authenticated" vs "Found but not logged in" — the
+      // previous behavior showed "Found vX" for any installed CLI regardless
+      // of whether the user had actually completed login.
+      if (r) {
+        try {
+          const status = await checkClaudeAuth();
+          setAuthStatus(status);
+        } catch {
+          setAuthStatus(null);
+        }
+      } else {
+        setAuthStatus(null);
+      }
     } catch (e) {
       setProbe(null);
+      setAuthStatus(null);
       setProbeError(claudeErrorMessage(e));
     } finally {
       setProbing(false);
@@ -131,17 +149,24 @@ export function AiEngineSection() {
             <div className="flex flex-wrap items-center gap-2 text-[11.5px]">
               {probe === undefined || probing ? (
                 <span className="text-muted-foreground">Detecting…</span>
-              ) : probe ? (
+              ) : probe && authStatus?.authenticated ? (
                 <Badge
                   variant="outline"
-                  className="h-5 gap-1 border-emerald-500/40 bg-emerald-500/10 px-2 text-[10.5px] font-normal text-emerald-700 dark:text-emerald-300"
+                  className="h-5 gap-1 border-primary/50 bg-primary/10 px-2 text-[10.5px] font-normal text-primary"
                 >
                   <HugeiconsIcon
                     icon={CheckmarkCircle02Icon}
                     size={10}
                     strokeWidth={2}
                   />
-                  Found v{probe.version}
+                  Authenticated · v{probe.version}
+                </Badge>
+              ) : probe ? (
+                <Badge
+                  variant="outline"
+                  className="h-5 gap-1 border-amber-500/40 bg-amber-500/10 px-2 text-[10.5px] font-normal text-amber-700 dark:text-amber-300"
+                >
+                  Installed · not logged in
                 </Badge>
               ) : (
                 <Badge
@@ -236,11 +261,12 @@ export function AiEngineSection() {
                       variant="ghost"
                       className="h-7 gap-1 px-2 text-[11px]"
                       onClick={async () => {
-                        // Kill the stuck setup-token child (some CLI builds
-                        // wait on stdin after the browser callback), then
-                        // re-probe. Once the child is dead, setSetupRunning
-                        // flips to false via the awaited setupClaudeToken
-                        // promise resolving in onConnectMax.
+                        // Kill the stuck `claude auth login` child (callback
+                        // may not have reached localhost in devcontainers /
+                        // WSL / firewalled setups), then run `claude auth
+                        // status` to see whether the credentials actually
+                        // landed. Probing --version isn't enough — the binary
+                        // always exists; auth status is the source of truth.
                         await cancelSetupClaudeToken();
                         await runProbe();
                       }}
