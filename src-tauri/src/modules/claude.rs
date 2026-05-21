@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::process::Stdio;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 /// Owned by Tauri State so we can track in-flight `claude` runs. We only
@@ -63,6 +63,16 @@ pub enum ClaudeError {
         code: Option<i32>,
         stderr_excerpt: String,
     },
+    /// CLI exited 0 but the stream-json `result` event reported `is_error:
+    /// true` — typically a 4xx/5xx from the API (auth failure, rate limit,
+    /// invalid model). The `message` is the result event's human-readable
+    /// `result` field; `http_status` is its `api_error_status` when present.
+    /// Surfacing this distinctly stops us from parsing the error message as
+    /// if it were the model's JSON output.
+    ApiError {
+        message: String,
+        http_status: Option<i64>,
+    },
     /// Couldn't spawn — usually permissions or a bad cwd.
     SpawnFailed {
         message: String,
@@ -81,6 +91,10 @@ impl std::fmt::Display for ClaudeError {
                 code,
                 truncate(stderr_excerpt, 200)
             ),
+            Self::ApiError { message, http_status } => match http_status {
+                Some(s) => write!(f, "claude API error ({s}): {}", truncate(message, 200)),
+                None => write!(f, "claude API error: {}", truncate(message, 200)),
+            },
             Self::SpawnFailed { message } => write!(f, "spawn failed: {message}"),
         }
     }
@@ -129,13 +143,25 @@ pub struct RunQueryInput {
     /// project root), or "plan" (read-only plan mode).
     #[serde(default)]
     pub permission_mode: Option<String>,
-    /// Whitelist of CLI tools the agent is allowed to call. When set, the
-    /// CLI refuses any tool not in this list. We enforce a read-only set in
-    /// safety-critical paths (generator) so even bypassPermissions can't let
-    /// the model run Bash/Write/Edit. Callers pass canonical CLI tool names
-    /// like "Read", "Glob", "Grep".
+    /// Restrict the agent to a fixed set of built-in tools. Maps to the CLI's
+    /// `--tools` flag, which actually constrains the available tool surface
+    /// (unlike `--allowedTools`, which only pre-approves permission prompts —
+    /// with `bypassPermissions` set, `--allowedTools` lets the model still
+    /// call Bash/Write/Edit unprompted). The Rust handler refuses to spawn if
+    /// any entry isn't in `READ_ONLY_TOOLS`, so a typo can't quietly re-open
+    /// the surface. Callers pass canonical CLI tool names like "Read",
+    /// "Glob", "Grep".
     #[serde(default)]
     pub allowed_tools: Option<Vec<String>>,
+    /// Run in `--bare` mode — skip hook discovery, plugin sync, LSP, auto
+    /// memory, and CLAUDE.md loading. Anthropic docs recommend this for
+    /// scripted/SDK calls; without it, a stale or failing hook in the user's
+    /// `~/.claude` or in the cwd's `.claude/settings.json` aborts the run
+    /// with a bare non-zero exit and no parent-visible stderr (the hook's
+    /// error lands in a `hook_response` stream-json event instead). Requires
+    /// API-key auth — OAuth/keychain reads are skipped in bare mode.
+    #[serde(default)]
+    pub bare: Option<bool>,
     /// Extra environment vars to merge into the child's env. Used to pass
     /// `ANTHROPIC_API_KEY` when the user picks API-key auth mode.
     #[serde(default)]
@@ -209,7 +235,14 @@ pub async fn claude_run_query(
     cmd.arg("--print")
         .arg("--output-format")
         .arg("stream-json")
-        .arg("--verbose"); // required to get streaming intermediate events
+        .arg("--verbose"); // required by the CLI when output-format is stream-json
+    // Bare mode skips hook/plugin/MCP/CLAUDE.md auto-discovery — recommended
+    // by Anthropic for scripted callers. Without it, a failing SessionStart
+    // hook in the user's `~/.claude` makes the CLI exit non-zero with no
+    // parent-visible stderr (the hook's error lands in a stream-json event).
+    if input.bare.unwrap_or(false) {
+        cmd.arg("--bare");
+    }
     if let Some(sys) = &input.system_prompt {
         cmd.arg("--append-system-prompt").arg(sys);
     }
@@ -223,24 +256,25 @@ pub async fn claude_run_query(
         cmd.arg("--permission-mode").arg(mode);
     }
     if let Some(allowed) = &input.allowed_tools {
-        // Defense in depth: if a caller asks for an allowlist that contains
-        // a known mutating/exec tool, refuse the spawn outright. The CLI's
-        // own filter is the primary gate, but a typo here would silently
-        // open the surface back up.
+        // Defense in depth: if a caller asks for a tool set that contains a
+        // known mutating/exec tool, refuse the spawn outright.
         if let Some(bad) = allowed
             .iter()
             .find(|t| !is_read_only_tool(t.as_str()))
         {
             return Err(ClaudeError::SpawnFailed {
                 message: format!(
-                    "refusing to spawn claude with non-read-only tool in allowlist: {bad}"
+                    "refusing to spawn claude with non-read-only tool in restriction set: {bad}"
                 ),
             });
         }
-        // The CLI accepts `--allowed-tools` as a single comma-separated arg
-        // or as repeated flags. Use one comma-separated arg — fewer argv
-        // entries to debug, works across recent CLI versions.
-        cmd.arg("--allowed-tools").arg(allowed.join(","));
+        // Use `--tools` (the actual restriction flag) instead of
+        // `--allowedTools` (which only pre-approves permission prompts). With
+        // `--permission-mode bypassPermissions`, `--allowedTools` does NOT
+        // prevent the model from calling Bash/Write/Edit — only `--tools`
+        // removes them from the available set. Pass as one comma-separated
+        // arg, which the CLI accepts.
+        cmd.arg("--tools").arg(allowed.join(","));
     }
     if let Some(cwd) = &input.cwd {
         cmd.current_dir(cwd);
@@ -267,26 +301,35 @@ pub async fn claude_run_query(
         .spawn()
         .map_err(|e| ClaudeError::SpawnFailed { message: e.to_string() })?;
 
-    // Write the prompt and close stdin so the CLI knows we're done feeding
-    // input. Drop the handle right after so the child sees EOF.
-    if let Some(mut stdin) = child.stdin.take() {
-        let prompt_bytes = input.prompt.as_bytes().to_vec();
-        if let Err(e) = stdin.write_all(&prompt_bytes).await {
-            return Err(ClaudeError::SpawnFailed {
-                message: format!("failed to write prompt to claude stdin: {e}"),
-            });
-        }
-        // Explicit shutdown — `drop(stdin)` would also close the pipe, but
-        // `shutdown` flushes deterministically.
-        let _ = stdin.shutdown().await;
-    }
-
+    // Take the output handles BEFORE writing stdin so we can drain them in
+    // parallel. Large refine prompts (full draft batch + attachments + spec)
+    // are bigger than the OS pipe buffer; if the child writes diagnostics to
+    // stdout/stderr while we're still pushing stdin and nobody's draining the
+    // other side, the pipes deadlock and the run aborts mid-prompt — which
+    // surfaced to the user as a bare "Claude exited with code 1" because the
+    // CLI was killed before it could log anything.
+    let stdin_handle = child.stdin.take();
     let stdout = child.stdout.take().ok_or_else(|| ClaudeError::SpawnFailed {
         message: "failed to capture stdout".into(),
     })?;
     let stderr = child.stderr.take().ok_or_else(|| ClaudeError::SpawnFailed {
         message: "failed to capture stderr".into(),
     })?;
+
+    // Write the prompt on a background task so the main flow can drain stdout
+    // and stderr concurrently. Errors here are recorded but non-fatal — the
+    // child will exit with a non-zero status that we report from its own
+    // stderr, which carries the real diagnostic.
+    let prompt_bytes = input.prompt.as_bytes().to_vec();
+    let stdin_task = tokio::spawn(async move {
+        if let Some(mut stdin) = stdin_handle {
+            // BrokenPipe is the common failure mode when the child rejects the
+            // prompt early (bad model, bad flag) — swallow it so we surface
+            // the child's own stderr message instead of a parent-side wrapper.
+            let _ = stdin.write_all(&prompt_bytes).await;
+            let _ = stdin.shutdown().await;
+        }
+    });
 
     // Register this run so we can list in-flight queries. Cancel is a
     // follow-up; for now kill_on_drop handles cleanup when the future is
@@ -304,6 +347,12 @@ pub async fn claude_run_query(
     let event_for_stdout = event_name.clone();
     let stdout_task = tokio::spawn(async move {
         let mut final_text = String::new();
+        // Whether the terminal `result` event reported a failure. We capture
+        // is_error / api_error_status here so an API failure (e.g. 401 from a
+        // bad key) doesn't get returned as a "successful" text payload that
+        // the caller then tries to parse as the model's JSON output.
+        let mut result_is_error = false;
+        let mut result_http_status: Option<i64> = None;
         let mut reader = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = reader.next_line().await {
             let trimmed = line.trim();
@@ -322,26 +371,45 @@ pub async fn claude_run_query(
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
+                    if value.get("is_error").and_then(|v| v.as_bool()) == Some(true) {
+                        result_is_error = true;
+                    }
+                    if let Some(s) = value.get("api_error_status").and_then(|v| v.as_i64()) {
+                        result_http_status = Some(s);
+                    }
                 }
                 // Emit the parsed object so the UI can render anything it
                 // wants (tool calls, partial text, usage stats).
                 let _ = app_for_stdout.emit(&event_for_stdout, value);
             }
         }
-        final_text
+        (final_text, result_is_error, result_http_status)
     });
 
     // Stderr is captured for diagnostics but not streamed event-by-event.
+    // Read as raw bytes (not UTF-8 lines) so a stray non-UTF-8 byte from the
+    // CLI's console output doesn't abort the read mid-stream and leave the
+    // user staring at a bare "Claude exited with code 1:" with no message.
+    // We bound the capture at ~8 KiB and convert lossily at the end.
     let stderr_task = tokio::spawn(async move {
-        let mut reader = BufReader::new(stderr).lines();
-        let mut buf = String::new();
-        while let Ok(Some(line)) = reader.next_line().await {
-            if buf.len() < 2_048 {
-                buf.push_str(&line);
-                buf.push('\n');
+        let mut buf: Vec<u8> = Vec::with_capacity(2_048);
+        let mut reader = stderr;
+        let mut chunk = [0u8; 1_024];
+        loop {
+            match reader.read(&mut chunk).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    if buf.len() < 8_192 {
+                        let take = n.min(8_192 - buf.len());
+                        buf.extend_from_slice(&chunk[..take]);
+                    }
+                    // Keep draining past the cap so the child's pipe doesn't
+                    // block on a full buffer once stderr exceeds 8 KiB.
+                }
+                Err(_) => break,
             }
         }
-        buf
+        String::from_utf8_lossy(&buf).into_owned()
     });
 
     let status = child
@@ -354,13 +422,33 @@ pub async fn claude_run_query(
         g.retain(|h| h.run_id != input.run_id);
     }
 
-    let final_text = stdout_task.await.unwrap_or_default();
+    let (final_text, result_is_error, result_http_status) = stdout_task
+        .await
+        .unwrap_or_else(|_| (String::new(), false, None));
     let stderr_excerpt = stderr_task.await.unwrap_or_default();
+    // The stdin writer may still be flushing when the child exits early; await
+    // it so the task doesn't leak and any partial-write error is observed.
+    let _ = stdin_task.await;
 
     if !status.success() {
         return Err(ClaudeError::NonZeroExit {
             code: status.code(),
             stderr_excerpt,
+        });
+    }
+
+    // CLI exited 0 but the `result` event reported a failure (auth, rate
+    // limit, server error). The `result` field contains the human-readable
+    // explanation, not the model's JSON output — surface it as a distinct
+    // error so the caller can show it instead of trying to parse it.
+    if result_is_error {
+        return Err(ClaudeError::ApiError {
+            message: if final_text.is_empty() {
+                "Claude reported is_error=true with no message.".into()
+            } else {
+                final_text
+            },
+            http_status: result_http_status,
         });
     }
 

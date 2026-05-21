@@ -1391,6 +1391,7 @@ async function buildTargetContext(
 const CLAUDE_ERROR_KINDS = new Set([
   "not-installed",
   "non-zero-exit",
+  "api-error",
   "spawn-failed",
   "cancelled",
 ]);

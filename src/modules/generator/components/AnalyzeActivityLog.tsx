@@ -63,7 +63,7 @@ export function AnalyzeActivityLog({ entries, className }: Props) {
   return (
     <div
       className={cn(
-        "relative overflow-hidden rounded-md border border-border/60 bg-[oklch(0.985_0_0)] shadow-sm dark:bg-[oklch(0.08_0.005_240)]",
+        "relative w-full min-w-0 overflow-hidden rounded-md border border-border/60 bg-[oklch(0.985_0_0)] shadow-sm dark:bg-[oklch(0.08_0.005_240)]",
         className,
       )}
     >
@@ -71,9 +71,9 @@ export function AnalyzeActivityLog({ entries, className }: Props) {
       <div
         ref={containerRef}
         onScroll={onScroll}
-        className="max-h-72 overflow-y-auto"
+        className="max-h-72 w-full min-w-0 overflow-y-auto"
       >
-        <ol className="flex flex-col">
+        <ol className="flex w-full min-w-0 flex-col">
           {entries.map((entry, i) => (
             <ActivityRow
               key={entry.id}
@@ -132,7 +132,7 @@ function ActivityRow({
   return (
     <li
       className={cn(
-        "group relative border-l-2 px-3 py-1 font-mono text-[11px] transition-colors",
+        "group relative w-full min-w-0 border-l-2 px-3 py-1 font-mono text-[11px] transition-colors",
         isError
           ? "border-l-destructive/70 bg-destructive/[0.05]"
           : isThinking
@@ -142,7 +142,7 @@ function ActivityRow({
               : "border-l-border/40 hover:bg-foreground/[0.025]",
       )}
     >
-      <div className="flex items-baseline gap-2">
+      <div className="flex w-full min-w-0 items-baseline gap-2">
         {/* Line-number gutter, like a code editor. Mono and tabular-nums so
             it stays aligned regardless of step count. */}
         <span className="w-7 shrink-0 select-none text-right text-[10px] tabular-nums text-muted-foreground/45">
@@ -191,20 +191,20 @@ function ActivityRow({
           )}
 
           {!open && entry.outputSummary ? (
-            <p className="mt-0.5 truncate text-[10.5px] text-muted-foreground/70">
+            <p className="mt-0.5 w-full min-w-0 truncate text-[10.5px] text-muted-foreground/70">
               <span className="mr-1 text-muted-foreground/40">↳</span>
               {entry.outputSummary}
             </p>
           ) : null}
 
           {open && entry.outputFull ? (
-            <pre className="mt-1 max-h-56 overflow-y-auto whitespace-pre-wrap rounded-sm border border-border/40 bg-foreground/[0.04] px-2 py-1.5 text-[10.5px] leading-relaxed text-foreground/85">
+            <pre className="mt-1 max-h-56 w-full min-w-0 overflow-y-auto whitespace-pre-wrap break-words rounded-sm border border-border/40 bg-foreground/[0.04] px-2 py-1.5 text-[10.5px] leading-relaxed text-foreground/85">
               {entry.outputFull}
             </pre>
           ) : null}
 
           {entry.error && !open ? (
-            <p className="mt-0.5 truncate text-[10.5px] text-destructive/85">
+            <p className="mt-0.5 w-full min-w-0 truncate text-[10.5px] text-destructive/85">
               <span className="mr-1 text-destructive/55">✗</span>
               {entry.error}
             </p>
@@ -262,7 +262,7 @@ function ToolCallLine({
   // Read("path") — make the path itself clickable when we have a target.
   if (fileTarget) {
     return (
-      <p className="leading-snug">
+      <p className="min-w-0 break-all leading-snug">
         <span className="font-semibold text-primary">{toolName}</span>
         <span className="text-muted-foreground/60">(</span>
         <button
@@ -271,7 +271,7 @@ function ToolCallLine({
             e.stopPropagation();
             openInCodeViewer(fileTarget);
           }}
-          className="text-amber-700 underline-offset-2 hover:underline dark:text-amber-300"
+          className="break-all text-left text-amber-700 underline-offset-2 hover:underline dark:text-amber-300"
           title="Open in code viewer"
         >
           <span className="text-muted-foreground/55">&quot;</span>
@@ -295,7 +295,7 @@ function ToolCallLine({
   if (lower === "grep") {
     const { pattern, scope } = splitGrepArg(arg);
     return (
-      <p className="leading-snug">
+      <p className="min-w-0 break-all leading-snug">
         <span className="font-semibold text-primary">{toolName}</span>
         <span className="text-muted-foreground/60">(</span>
         <span className="text-amber-700 dark:text-amber-300">
@@ -317,7 +317,7 @@ function ToolCallLine({
   // Glob("pattern") — pattern reads as a glob token.
   if (lower === "glob") {
     return (
-      <p className="leading-snug">
+      <p className="min-w-0 break-all leading-snug">
         <span className="font-semibold text-primary">{toolName}</span>
         <span className="text-muted-foreground/60">(</span>
         <span className="text-violet-700 dark:text-violet-300">
@@ -332,7 +332,7 @@ function ToolCallLine({
 
   // Generic fallback — tool(arg-as-string).
   return (
-    <p className="leading-snug">
+    <p className="min-w-0 break-words leading-snug">
       <span className="font-semibold text-primary">{toolName}</span>
       {arg ? (
         <>

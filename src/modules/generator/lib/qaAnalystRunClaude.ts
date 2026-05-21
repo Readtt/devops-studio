@@ -77,11 +77,24 @@ export async function runQaAnalystClaude(
       model: input.modelId,
       maxTurns: 24,
       // The generator is strictly an analyst — it reads code and writes JSON
-      // to stdout, nothing else. We constrain the CLI to its three read-only
-      // tools (Read, Glob, Grep) and combine that with bypassPermissions so
-      // file reads inside the user's source dir don't pop a permission dialog
-      // mid-run. The Rust handler refuses to spawn if this allowlist ever
-      // contains a mutating tool, so a typo can't quietly re-open the surface.
+      // to stdout, nothing else. `--tools` (the actual built-in restriction
+      // flag) limits the agent to the three read-only tools; the old code
+      // used `--allowedTools`, which only pre-approves permission prompts and
+      // is bypassed by `bypassPermissions` — meaning the model could still
+      // call Bash/Write/Edit unprompted. `bypassPermissions` then lets file
+      // reads inside the user's source dir proceed without a permission
+      // dialog mid-run. The Rust handler refuses to spawn if this set ever
+      // contains a mutating tool, so a typo can't quietly re-open the
+      // surface.
+      //
+      // We deliberately do NOT pass `--bare` here even though Anthropic's
+      // headless docs recommend it for scripted calls: bare mode strips the
+      // built-in tool set down to Bash / Edit / PowerShell / Read, which
+      // removes Glob and Grep — the two tools the analyst needs to ground
+      // cases in actual code paths. Hook-induced failures from the user's
+      // `~/.claude` are still possible, but at least the streaming activity
+      // log now surfaces the failing `hook_response` event so the user can
+      // diagnose instead of staring at a bare "code 1".
       permissionMode: "bypassPermissions",
       allowedTools: ["Read", "Glob", "Grep"],
       env: Object.keys(env).length > 0 ? env : undefined,
@@ -150,6 +163,72 @@ class ActivityTracker {
           this.closeToolResult(block);
         }
       }
+      return;
+    }
+    if (event.type === "system") {
+      this.consumeSystem(event);
+      return;
+    }
+    // The stream-json result event carries a top-level `is_error` flag (e.g.
+    // 401 auth failures) — surface that into the activity log so the user
+    // sees the actual diagnostic instead of an empty refine outcome.
+    if (event.type === "result" && event.is_error === true) {
+      const detail =
+        typeof event.result === "string" ? event.result : "Run failed.";
+      this.emit({
+        id: newActivityId(),
+        ts: Date.now() - this.start,
+        kind: "error",
+        toolName: "result",
+        inputSummary: detail,
+        error: detail,
+      });
+      return;
+    }
+  }
+
+  /** System events carry the things that used to fail silently: failing
+   *  SessionStart hooks (whose stderr never reaches our pipe), retried API
+   *  calls, and the init payload. We log the failure-worthy ones so the user
+   *  has a paper trail when a refine "just exits". */
+  private consumeSystem(event: ClaudeEvent): void {
+    if (!this.emit) return;
+    const subtype = typeof event.subtype === "string" ? event.subtype : "";
+    if (subtype === "hook_response") {
+      const exit = typeof event.exit_code === "number" ? event.exit_code : 0;
+      const outcome =
+        typeof event.outcome === "string" ? event.outcome : "";
+      const hookName =
+        typeof event.hook_name === "string" ? event.hook_name : "hook";
+      if (exit !== 0 || outcome === "failure") {
+        const stderr = typeof event.stderr === "string" ? event.stderr : "";
+        const stdout = typeof event.stdout === "string" ? event.stdout : "";
+        const message =
+          stderr.trim() || stdout.trim() || `hook exited ${exit}`;
+        this.emit({
+          id: newActivityId(),
+          ts: Date.now() - this.start,
+          kind: "error",
+          toolName: `hook:${hookName}`,
+          inputSummary: message.slice(0, 200),
+          error: message,
+        });
+      }
+      return;
+    }
+    if (subtype === "api_retry") {
+      const attempt =
+        typeof event.attempt === "number" ? event.attempt : "?";
+      const maxRetries =
+        typeof event.max_retries === "number" ? event.max_retries : "?";
+      const category =
+        typeof event.error === "string" ? event.error : "retry";
+      this.emit({
+        id: newActivityId(),
+        ts: Date.now() - this.start,
+        kind: "thinking",
+        inputSummary: `api retry ${attempt}/${maxRetries} — ${category}`,
+      });
       return;
     }
   }

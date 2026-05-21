@@ -512,20 +512,25 @@ function RefineRoundsDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
+      {/* Constrain grid items to the container so expanding "thinking & tool
+          calls" — which can contain long file paths and JSON output — never
+          pushes the dialog wider than its `max-w`. CSS grid items default to
+          `min-width: auto`, which lets a single non-breaking token blow out
+          the dialog; `[&>*]:min-w-0` opts every child back into shrinking. */}
+      <DialogContent className="sm:max-w-2xl overflow-hidden [&>*]:min-w-0">
+        <DialogHeader className="min-w-0">
           <DialogTitle>Refine thinking history</DialogTitle>
           <DialogDescription>
             Every follow-up sent on this draft, in order. The activity log
             shows the tool calls and thinking the model emitted on each round.
           </DialogDescription>
         </DialogHeader>
-        <ScrollArea className="max-h-[70vh] min-h-0 pr-2">
-          <ol className="flex flex-col gap-3">
+        <ScrollArea className="max-h-[70vh] min-h-0 w-full min-w-0 pr-2">
+          <ol className="flex w-full min-w-0 flex-col gap-3">
             {rounds.map((r, i) => (
               <li
                 key={`${r.timestamp}-${i}`}
-                className="rounded-md border border-border/60 bg-card/40 p-3"
+                className="min-w-0 overflow-hidden rounded-md border border-border/60 bg-card/40 p-3"
               >
                 <header className="flex items-center justify-between gap-2 pb-2">
                   <div className="flex items-center gap-2">
@@ -556,7 +561,7 @@ function RefineRoundsDialog({
                   </p>
                 ) : null}
                 {r.activityLog.length > 0 ? (
-                  <details className="mt-2 group/log">
+                  <details className="mt-2 group/log min-w-0">
                     <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground">
                       <span className="font-mono text-muted-foreground/70 group-open/log:rotate-90 transition-transform">
                         ›
@@ -566,8 +571,11 @@ function RefineRoundsDialog({
                         ({r.activityLog.length})
                       </span>
                     </summary>
-                    <div className="mt-1.5">
-                      <AnalyzeActivityLog entries={r.activityLog} />
+                    <div className="mt-1.5 w-full min-w-0 overflow-hidden">
+                      <AnalyzeActivityLog
+                        entries={r.activityLog}
+                        className="w-full"
+                      />
                     </div>
                   </details>
                 ) : (

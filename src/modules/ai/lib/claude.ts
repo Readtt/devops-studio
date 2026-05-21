@@ -12,6 +12,7 @@ export type ClaudeProbe = {
 export type ClaudeError =
   | { kind: "not-installed" }
   | { kind: "non-zero-exit"; code: number | null; stderrExcerpt: string }
+  | { kind: "api-error"; message: string; httpStatus: number | null }
   | { kind: "spawn-failed"; message: string }
   | { kind: "cancelled" };
 
@@ -26,11 +27,18 @@ export type ClaudeQueryInput = {
   maxTurns?: number;
   /** "default" | "bypassPermissions" | "plan" — see the CLI's --permission-mode. */
   permissionMode?: "default" | "bypassPermissions" | "plan";
-  /** Restrict the CLI to a fixed set of tool names. The backend refuses to
-   *  spawn if any tool here isn't in its read-only allowlist, so the generator
-   *  can safely use bypassPermissions for read tools without opening the
-   *  surface to Bash/Write/Edit. */
+  /** Restrict the CLI to a fixed set of built-in tools. Maps to the CLI's
+   *  `--tools` flag (which actually constrains the available tool surface),
+   *  not `--allowedTools` (which only pre-approves permission prompts and is
+   *  bypassed by `permissionMode: "bypassPermissions"`). The Rust backend
+   *  refuses to spawn if any tool here isn't in its read-only set. */
   allowedTools?: string[];
+  /** Run in `--bare` mode — skip hooks, plugin sync, LSP, auto memory, and
+   *  CLAUDE.md auto-discovery. Anthropic's headless docs recommend this for
+   *  scripted/SDK callers; otherwise a failing SessionStart hook in the
+   *  user's `~/.claude` aborts the run with a silent non-zero exit. Requires
+   *  API-key auth — OAuth/keychain reads are skipped in bare mode. */
+  bare?: boolean;
   /** Extra env vars merged into the child. Typical use: ANTHROPIC_API_KEY. */
   env?: Record<string, string>;
 };
@@ -148,11 +156,47 @@ export function claudeErrorMessage(err: unknown): string {
   switch (e.kind) {
     case "not-installed":
       return "Claude Code CLI not found on PATH. Install it from claude.ai/code, then click Detect again.";
-    case "non-zero-exit":
-      return `Claude exited with code ${e.code ?? "?"}: ${e.stderrExcerpt.trim().split("\n").pop() ?? ""}`;
+    case "non-zero-exit": {
+      const code = e.code ?? "?";
+      const detail = summarizeStderr(e.stderrExcerpt);
+      return detail
+        ? `Claude exited with code ${code}: ${detail}`
+        : `Claude exited with code ${code} (no stderr output captured — likely a failing SessionStart hook in ~/.claude or the source directory. Check the activity log for hook errors).`;
+    }
+    case "api-error": {
+      const status = e.httpStatus != null ? ` (HTTP ${e.httpStatus})` : "";
+      return `Claude API error${status}: ${e.message}`;
+    }
     case "spawn-failed":
       return `Could not spawn claude: ${e.message}`;
     case "cancelled":
       return "Run cancelled.";
   }
+}
+
+/** Distill the CLI's stderr into a single human-readable sentence. The old
+ *  formatter grabbed only the last non-empty line, which lost the actual
+ *  error message when the CLI followed it with a blank line or an ANSI reset.
+ *  We strip ANSI escapes, drop empty / whitespace-only lines, and keep the
+ *  first meaningful line — that's almost always the "Error: …" the user
+ *  needs to see. If the buffer is still useful past that, we append the next
+ *  line for context. */
+function summarizeStderr(raw: string): string {
+  if (!raw) return "";
+  // Strip CSI ANSI escapes (\x1b[…m and similar) that some CLI builds emit on
+  // Windows even when stdout isn't a TTY. Falls back to original on a regex
+  // engine that doesn't accept the control-char class.
+  const stripped = raw
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/\r/g, "");
+  const lines = stripped
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  if (lines.length === 0) return "";
+  const first = lines[0];
+  const second = lines[1];
+  const joined = second ? `${first} — ${second}` : first;
+  return joined.length > 280 ? `${joined.slice(0, 280)}…` : joined;
 }
