@@ -1,4 +1,58 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { ReviewedBug, ReviewedCase } from "./draftBatchSchema";
+import type { ActivityEntry } from "./activityLog";
+import type { GenerationMode } from "./qaAnalystRun";
+
+/**
+ * One refine round captured for later inspection. The user asked us to keep
+ * the entire thinking process — instruction + activity log + how the batch
+ * changed — so they can read back why a draft is in its current shape.
+ */
+export type RefineRound = {
+  /** ISO timestamp of when the round started. */
+  timestamp: string;
+  /** What the user typed (verbatim). */
+  instruction: string;
+  /** Streaming activity entries (tool calls, thinking, results) the engine
+   *  emitted while running this round. Stored as-is so the UI can re-render
+   *  them the same way the live log does. */
+  activityLog: ActivityEntry[];
+  /** Snapshot counts so a row in the "refine history" list can summarize
+   *  the round at a glance: "3 → 5 cases, 1 → 2 bugs". Source of truth is
+   *  still the cases/bugs payload on the run itself. */
+  beforeCases: number;
+  afterCases: number;
+  beforeBugs: number;
+  afterBugs: number;
+  /** "ok" when the refine landed, "empty" when the model returned nothing
+   *  structured, "failed" when an error was caught. */
+  outcome: "ok" | "empty" | "failed";
+  /** Surface the error text on failures so the user can still inspect
+   *  what went wrong without re-running. Null on success/empty. */
+  error?: string | null;
+};
+
+/**
+ * Full draft snapshot embedded on a "draft" history row so the Generator can
+ * fully restore the review phase when the user reopens it. Persisted as an
+ * opaque JSON blob on the Rust side — the schema is TS-owned and forward-
+ * compatible (every field is optional so older drafts still load cleanly).
+ */
+export type DraftPayload = {
+  requirements?: string;
+  mode?: GenerationMode;
+  cases?: ReviewedCase[];
+  bugs?: ReviewedBug[];
+  rawText?: string;
+  planId?: number | null;
+  planName?: string | null;
+  suiteId?: number | null;
+  suiteName?: string | null;
+  /** Optional ordered list of refine rounds, oldest-first. Restored into
+   *  the live session on loadDraft so the user picks up the conversation
+   *  with the full thinking-process log intact. */
+  refineRounds?: RefineRound[];
+};
 
 export type CaseSummary = {
   title: string;
@@ -44,6 +98,9 @@ export type GenerationRun = {
    *  before this field landed migrate to "published" on read since the only
    *  way they were saved was via the publish path. */
   status?: RunStatus;
+  /** Full draft body — present on drafts so the Generator can restore review
+   *  state. Absent on legacy / published rows. See {@link DraftPayload}. */
+  draftPayload?: DraftPayload | null;
 };
 
 export async function saveRun(run: GenerationRun): Promise<void> {

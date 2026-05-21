@@ -12,6 +12,8 @@ import { CommandPalette } from "@/modules/command-palette";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { SidebarRail, type SidebarViewId } from "@/modules/sidebar";
+import { useGlobalShortcuts } from "@/modules/shortcuts";
+import { setSourceRoot, setTheme } from "@/modules/settings/store";
 import {
   BugStack,
   StaleQueuePanel,
@@ -19,13 +21,17 @@ import {
   TestPlansPanel,
   useStaleCases,
 } from "@/modules/test-plans";
-import { setSourceRoot } from "@/modules/settings/store";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { GeneratorStack, GenerationHistoryPane } from "@/modules/generator";
 import { CodeViewerStack } from "@/modules/code-viewer";
+import { resolveSourcePath } from "@/modules/code-viewer/resolveSourcePath";
 import { ThemeProvider } from "@/modules/theme";
 import { UpdaterDialog } from "@/modules/updater";
-import { useGenerationSession } from "@/modules/generator/store/useGenerationSession";
+import {
+  createGenerationSessionStore,
+  type GenerationSessionStore,
+  type SessionState,
+} from "@/modules/generator/store/useGenerationSession";
 import { useSourceDirGitInfo } from "@/modules/git";
 import { getConnection } from "@/modules/ado";
 import { AzureDevOpsLogo } from "@/components/AzureDevOpsLogo";
@@ -33,7 +39,7 @@ import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { getModel } from "@/modules/ai/config";
-import { OnboardingDialog } from "@/modules/onboarding";
+import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
 import type { Tab } from "@/modules/tabs/lib/useTabs";
 import {
   AlertCircleIcon,
@@ -51,6 +57,28 @@ const SIDEBAR_MIN_WIDTH = 220;
 const SIDEBAR_MAX_WIDTH = 480;
 const SIDEBAR_WIDTH_STORAGE_KEY = "devops-studio.sidebar.width";
 const SIDEBAR_VIEW_STORAGE_KEY = "devops-studio.sidebar.view";
+
+/** Derive a short, scannable tab title from the current generator session.
+ *  Once the draft has cases the first case title wins; before that we fall
+ *  back to a trimmed spec excerpt; before that, the canonical "Generate
+ *  cases". Keeping the lookup pure so callers can re-derive on phase
+ *  transitions (the rename effect in GeneratorPane drives this). */
+function deriveGeneratorTabTitle(state: SessionState): string {
+  if (state.cases.length > 0) {
+    const t = state.cases[0].title.trim();
+    if (t.length > 0) return ellipsize(t, 48);
+  }
+  if (state.requirements.trim().length > 0) {
+    const firstLine = state.requirements.trim().split("\n")[0];
+    if (firstLine.length > 0) return ellipsize(firstLine, 48);
+  }
+  return "Generate cases";
+}
+
+function ellipsize(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return `${s.slice(0, max - 1)}…`;
+}
 
 /** Trim a long absolute path to "…/parent/dir" so it fits in the header. */
 function compactPath(path: string): string {
@@ -125,6 +153,44 @@ export default function App() {
   const [activeId, setActiveId] = useState<number | null>(null);
   const nextIdRef = useRef(1);
 
+  // Per-generator-tab Zustand stores. Each generator tab owns its own
+  // session state — no more singleton-store trampling when the user has
+  // two drafts in flight. The map is a ref because React state would cause
+  // the GeneratorStack to thrash on every tab open/close even though the
+  // store identities are stable.
+  const genStoresRef = useRef<Map<number, GenerationSessionStore>>(new Map());
+
+  // Mirror of each generator tab's current phase + isRefining, so the
+  // status-bar model picker (outside Provider scope) can lock when the
+  // *active* tab is in a draft state. GeneratorPane reports its phase up
+  // via an effect; App.tsx aggregates by tabId.
+  const [genSessionPhases, setGenSessionPhases] = useState<
+    Record<number, { phase: SessionState["phase"]; isRefining: boolean }>
+  >({});
+  const reportGenSession = useCallback(
+    (tabId: number, next: { phase: SessionState["phase"]; isRefining: boolean }) => {
+      setGenSessionPhases((curr) => {
+        const prev = curr[tabId];
+        if (prev && prev.phase === next.phase && prev.isRefining === next.isRefining) {
+          return curr; // no-op churn suppressor — keeps tab-switch perf snappy
+        }
+        return { ...curr, [tabId]: next };
+      });
+    },
+    [],
+  );
+
+  const renameGeneratorTab = useCallback((tabId: number, title: string) => {
+    setTabs((curr) => {
+      const idx = curr.findIndex((t) => t.id === tabId && t.kind === "generator");
+      if (idx < 0) return curr;
+      if (curr[idx].title === title) return curr;
+      const next = curr.slice();
+      next[idx] = { ...next[idx], title };
+      return next;
+    });
+  }, []);
+
   const closeTab = useCallback((id: number) => {
     setTabs((curr) => {
       const idx = curr.findIndex((t) => t.id === id);
@@ -136,6 +202,17 @@ export default function App() {
         const replacement = next[Math.max(0, idx - 1)];
         return replacement.id;
       });
+      return next;
+    });
+    // Tear down any per-tab generator state so a closed tab doesn't keep
+    // listening to refine results or hold its drafts in memory forever.
+    if (genStoresRef.current.has(id)) {
+      genStoresRef.current.delete(id);
+    }
+    setGenSessionPhases((curr) => {
+      if (!(id in curr)) return curr;
+      const next = { ...curr };
+      delete next[id];
       return next;
     });
   }, []);
@@ -194,6 +271,12 @@ export default function App() {
 
   const openCodeViewerTab = useCallback(
     (input: { path: string; startLine?: number; endLine?: number; title?: string }) => {
+      // Bug code refs and analyst Read entries arrive as relative paths
+      // (e.g. "src/auth/sms.ts"). The Rust fs_read_file handler treats
+      // whatever it gets literally, so resolving against the user's
+      // sourceRoot here is the single point that fixes every dispatcher.
+      const liveSourceRoot = usePreferencesStore.getState().sourceRoot;
+      const absPath = resolveSourcePath(liveSourceRoot, input.path) ?? input.path;
       const titleFor = (p: string) => {
         const base = p.replace(/\\/g, "/").split("/").pop() || p;
         return input.startLine
@@ -201,46 +284,15 @@ export default function App() {
           : base;
       };
       let target: number | null = null;
+      let reused = false;
       setTabs((curr) => {
         const existing = curr.find(
           (t) =>
             t.kind === "code-viewer" &&
-            t.path === input.path &&
+            t.path === absPath &&
             t.startLine === input.startLine &&
             t.endLine === input.endLine,
         );
-        if (existing) {
-          target = existing.id;
-          return curr;
-        }
-        const id = nextIdRef.current++;
-        target = id;
-        return [
-          ...curr,
-          {
-            id,
-            kind: "code-viewer",
-            title: input.title ?? titleFor(input.path),
-            path: input.path,
-            startLine: input.startLine,
-            endLine: input.endLine,
-          },
-        ];
-      });
-      if (target !== null) setActiveId(target);
-      return target as number | null;
-    },
-    [],
-  );
-
-  const openGeneratorTab = useCallback(
-    (input?: { planId?: number | null; suiteId?: number | null }) => {
-      const requestedPlanId = input?.planId ?? null;
-      const requestedSuiteId = input?.suiteId ?? null;
-      let target: number | null = null;
-      let reused = false;
-      setTabs((curr) => {
-        const existing = curr.find((t) => t.kind === "generator");
         if (existing) {
           target = existing.id;
           reused = true;
@@ -252,36 +304,70 @@ export default function App() {
           ...curr,
           {
             id,
-            kind: "generator",
-            title: "Generate cases",
-            initialPlanId: requestedPlanId,
-            initialSuiteId: requestedSuiteId,
+            kind: "code-viewer",
+            title: input.title ?? titleFor(absPath),
+            path: absPath,
+            startLine: input.startLine,
+            endLine: input.endLine,
           },
         ];
       });
+      if (target !== null) setActiveId(target);
+      // When the tab is reused, props don't change so React's effect won't
+      // re-run the scroll + pulse. Nudge the pane via a window event so
+      // re-clicking the same chip still lands the user on the right line.
+      if (reused) {
+        window.dispatchEvent(
+          new CustomEvent("devops-studio:re-pulse-code-range", {
+            detail: {
+              path: absPath,
+              startLine: input.startLine,
+              endLine: input.endLine,
+            },
+          }),
+        );
+      }
+      return target as number | null;
+    },
+    [],
+  );
 
-      // If we're reusing an existing tab and the caller asked to target a
-      // different plan/suite, push it into the session directly — the
-      // GeneratorPane's hydrate-from-props useEffect only fires on mount,
-      // so it'd otherwise sit on the originally-targeted plan.
-      if (reused && (requestedPlanId !== null || requestedSuiteId !== null)) {
-        const session = useGenerationSession.getState();
-        const planChanged = requestedPlanId !== null && requestedPlanId !== session.planId;
-        const suiteChanged = requestedSuiteId !== null && requestedSuiteId !== session.suiteId;
-        if (planChanged || suiteChanged) {
-          // Reset back to the input phase so the new target is editable —
-          // bringing someone into a half-published session against a
-          // different plan would be confusing.
-          if (session.phase !== "input") session.startNew();
-          session.setTarget(
-            requestedPlanId ?? session.planId,
-            requestedSuiteId ?? session.suiteId,
-          );
+  const openGeneratorTab = useCallback(
+    (input?: {
+      planId?: number | null;
+      suiteId?: number | null;
+      /** Optional: hydrate the new tab's session from this store BEFORE
+       *  mounting (used by the history pane's "open draft" action so the
+       *  pane lands directly in review instead of flashing input). */
+      hydrateFrom?: GenerationSessionStore;
+    }) => {
+      const requestedPlanId = input?.planId ?? null;
+      const requestedSuiteId = input?.suiteId ?? null;
+      const id = nextIdRef.current++;
+      // Always create a new isolated session store. Multi-tab generation
+      // is now a first-class workflow — each +Generate click opens its own
+      // independent draft.
+      const store = input?.hydrateFrom ?? createGenerationSessionStore();
+      genStoresRef.current.set(id, store);
+      // Seed the target if the caller provided one. Skip on hydrateFrom
+      // (the loaded draft already carries plan/suite).
+      if (!input?.hydrateFrom) {
+        if (requestedPlanId !== null) {
+          store.getState().setTarget(requestedPlanId, requestedSuiteId);
         }
       }
-
-      if (target !== null) setActiveId(target);
-      return target as number | null;
+      setTabs((curr) => [
+        ...curr,
+        {
+          id,
+          kind: "generator",
+          title: deriveGeneratorTabTitle(store.getState()),
+          initialPlanId: requestedPlanId,
+          initialSuiteId: requestedSuiteId,
+        },
+      ]);
+      setActiveId(id);
+      return id;
     },
     [],
   );
@@ -363,6 +449,24 @@ export default function App() {
     return () => window.removeEventListener("devops-studio:open-bug", onOpen);
   }, [openBugTab]);
 
+  // Side channel: open a TestCasePane by id. Symmetric counterpart of
+  // devops-studio:open-bug — fired from BugPane's linked-work-items list
+  // so the user can drill from a bug into its test cases without leaving
+  // the app.
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const ce = e as CustomEvent<{ caseId: number; title?: string }>;
+      if (!ce.detail?.caseId) return;
+      openTestCaseTab({
+        caseId: ce.detail.caseId,
+        title: ce.detail.title ?? `#${ce.detail.caseId}`,
+      });
+    };
+    window.addEventListener("devops-studio:open-test-case", onOpen);
+    return () =>
+      window.removeEventListener("devops-studio:open-test-case", onOpen);
+  }, [openTestCaseTab]);
+
   // Source-directory picker. Persists to preferences so the BugPane's code-link
   // rows can resolve relative paths the next time the user opens the app.
   const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
@@ -383,19 +487,47 @@ export default function App() {
   }, [sourceRoot]);
 
   const [paletteOpen, setPaletteOpen] = useState(false);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const k = e.key.toLowerCase();
-      if ((e.metaKey || e.ctrlKey) && k === "k") {
-        const tag = (document.activeElement as HTMLElement | null)?.tagName ?? "";
-        if (tag === "INPUT" || tag === "TEXTAREA") return;
-        e.preventDefault();
-        setPaletteOpen((v) => !v);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  // Global keyboard shortcuts. Wired through useGlobalShortcuts so the
+  // Settings → Shortcuts page can customize bindings — declaring them
+  // there but not handling them here would let users "rebind" keys that
+  // never fired. The isDisabled guard suppresses our shortcuts inside text
+  // inputs so they don't shadow typing.
+  useGlobalShortcuts(
+    {
+      "palette.open": () => setPaletteOpen((v) => !v),
+      "settings.open": () => void openSettingsWindow(),
+      "sidebar.toggle": () => {
+        const ref = sidebarRef.current;
+        if (!ref) return;
+        if (ref.isCollapsed()) ref.expand();
+        else ref.collapse();
+      },
+      "theme.cycle": () => {
+        const order: Array<"system" | "light" | "dark"> = ["system", "light", "dark"];
+        const curr = usePreferencesStore.getState().theme;
+        const next = order[(order.indexOf(curr) + 1) % order.length];
+        void setTheme(next);
+      },
+      "generator.new": () => openGeneratorTab(),
+    },
+    {
+      // Don't hijack keystrokes while the user is typing — but the global
+      // mod-prefixed shortcuts (palette, settings) are explicit chord keys
+      // that won't conflict with text input. Only filter out PLAIN-key
+      // shortcuts that would interfere with typing.
+      isDisabled: (_id, e) => {
+        const tag =
+          (document.activeElement as HTMLElement | null)?.tagName ?? "";
+        const isText = tag === "INPUT" || tag === "TEXTAREA";
+        // Anything with a primary modifier is safe to fire even inside
+        // text inputs (Ctrl+K, Ctrl+, etc.) — that's the standard editor
+        // contract. Plain keys are not currently used by these shortcuts
+        // but the guard future-proofs against accidentally adding one.
+        const hasMod = e.ctrlKey || e.metaKey || e.altKey;
+        return isText && !hasMod;
+      },
+    },
+  );
 
   // Currently-selected case id (derived from active tab), so the test-plans
   // panel can highlight the row matching what's on screen.
@@ -404,6 +536,17 @@ export default function App() {
     const t = tabs.find((tab) => tab.id === activeId);
     return t && t.kind === "test-case" ? t.caseId : null;
   }, [activeId, tabs]);
+
+  // What the active generator tab is doing right now (if the active tab IS
+  // a generator). Used by StatusBarModelPicker to lock the model when the
+  // user is in a draft / refining — outside any GenerationSessionProvider,
+  // so we read from the lifted phase map by activeId.
+  const activeGenSessionInfo = useMemo(() => {
+    if (activeId === null) return null;
+    const t = tabs.find((tab) => tab.id === activeId);
+    if (!t || t.kind !== "generator") return null;
+    return genSessionPhases[activeId] ?? null;
+  }, [activeId, tabs, genSessionPhases]);
 
   const [adoConfigured, setAdoConfigured] = useState(false);
   useEffect(() => {
@@ -445,7 +588,7 @@ export default function App() {
           >
             <div
               data-tauri-drag-region
-              className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
+              className="tabs-scroll flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
             >
               {tabs.length === 0 ? (
                 <span
@@ -574,6 +717,19 @@ export default function App() {
                       <GenerationHistoryPane
                         onOpenCase={openTestCaseTab}
                         onOpenBug={openBugTab}
+                        onOpenDraft={(run) => {
+                          // Create a fresh session store for the restored draft
+                          // and hydrate it BEFORE opening the tab — landing
+                          // directly in review without flashing input.
+                          const store = createGenerationSessionStore();
+                          const ok = store.getState().loadDraft(run);
+                          if (!ok) return;
+                          openGeneratorTab({
+                            planId: run.planId,
+                            suiteId: run.suiteId,
+                            hydrateFrom: store,
+                          });
+                        }}
                       />
                     </div>
                   </div>
@@ -612,6 +768,9 @@ export default function App() {
                           tabs={compatTabs}
                           activeId={activeId ?? -1}
                           onOpenCase={openTestCaseTab}
+                          storesRef={genStoresRef}
+                          onRenameTab={renameGeneratorTab}
+                          onReportSession={reportGenSession}
                         />
                       </div>
                       <div className="pointer-events-none absolute inset-0">
@@ -639,7 +798,7 @@ export default function App() {
           <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-border/60 bg-card/60 px-3 text-[11px] text-muted-foreground">
             <StatusBarBranch sourceRoot={sourceRoot} onPick={() => void pickSourceDir()} />
             <div className="ml-auto flex items-center gap-2">
-              <StatusBarModelPicker />
+              <StatusBarModelPicker activeSession={activeGenSessionInfo} />
               {staleCount > 0 ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -702,25 +861,10 @@ export default function App() {
           />
 
           <UpdaterDialog />
-          <OnboardingGate />
         </div>
       </TooltipProvider>
     </ThemeProvider>
   );
-}
-
-/** Opens the first-run onboarding wizard when preferences indicate it hasn't
- *  been completed. Renders nothing once the flag flips so the dialog can't
- *  reappear over normal usage. */
-function OnboardingGate() {
-  const onboardingComplete = usePreferencesStore((s) => s.onboardingComplete);
-  const [open, setOpen] = useState(!onboardingComplete);
-  // If the user re-runs onboarding from settings, the prefs flag flips back
-  // to false; reopen automatically so the dialog can be triggered remotely.
-  useEffect(() => {
-    if (!onboardingComplete) setOpen(true);
-  }, [onboardingComplete]);
-  return <OnboardingDialog open={open} onClose={() => setOpen(false)} />;
 }
 
 /**
@@ -783,38 +927,69 @@ function StatusBarBranch({
 }
 
 /**
- * Compact status-bar model switcher. Reflects the default model used when a
- * generation doesn't specify its own override. Disabled while a generation
- * is mid-run so the user can't swap the model out from under an in-flight
- * request (the next run picks up the new default).
+ * Compact status-bar model switcher. This is the *default* model — picking
+ * here mutates the persisted preference, so the choice survives restarts.
+ * For a one-off swap (this run only) the user picks from the generator's
+ * action-row picker instead. Disabled while a generation is mid-flight.
  */
-function StatusBarModelPicker() {
+function StatusBarModelPicker({
+  activeSession,
+}: {
+  /** Phase + isRefining for the currently-active generator tab (if any).
+   *  null when no generator tab is active or open. App.tsx aggregates this
+   *  from per-tab Provider scopes since the status bar lives outside any
+   *  GenerationSessionProvider. */
+  activeSession: { phase: SessionState["phase"]; isRefining: boolean } | null;
+}) {
   const selectedModelId = useChatStore((s) => s.selectedModelId);
   const setSelectedModelId = useChatStore((s) => s.setSelectedModelId);
-  const generationPhase = useGenerationSession((s) => s.phase);
+  const availability = useModelAvailability();
+  const generationPhase = activeSession?.phase ?? "input";
+  const isRefining = activeSession?.isRefining ?? false;
   const isRunning =
     generationPhase === "analyzing" || generationPhase === "publishing";
+  // Once a draft exists (review/done) the conversation has an established
+  // model — flipping it mid-thread strands follow-ups against a model that
+  // never saw the prior turns. Lock until the user explicitly starts new.
+  const isInDraft = generationPhase === "review" || generationPhase === "done";
+  const isLocked = isRunning || isRefining || isInDraft;
   const model = getModel(selectedModelId);
   return (
     <ModelPicker
       value={selectedModelId}
       onChange={setSelectedModelId}
-      disabled={isRunning}
-      disabledReason="A generation is running — model swap takes effect on the next run."
+      filter={availability.isAvailable}
+      disabled={isLocked}
+      disabledReason={
+        isRunning
+          ? "A generation is running — model swap takes effect on the next run."
+          : isRefining
+            ? "Refining the current draft — the model is locked for this thread."
+            : "A draft is open. Start a new session to switch models."
+      }
       side="top"
       align="end"
+      emptyMessage={
+        <>No providers connected. Open Settings → Models to add one.</>
+      }
       trigger={({ label, provider, disabled }) => (
         <Tooltip>
           <TooltipTrigger asChild>
             <span
               className={cn(
-                // Matches the source-dir + ADO status pills next to it:
-                // same height, border, padding and hover treatment so the
-                // status bar reads as a single typographic system.
+                // Matches the source-dir + ADO status pills next to it.
+                // Adds a "default" tag at the front so the user is never
+                // confused about whether they're staring at the persisted
+                // default or a one-off override — overrides only live on
+                // the generator page.
                 "flex h-5 items-center gap-1.5 rounded-md border border-border/60 bg-card px-1.5 transition-colors hover:text-foreground",
                 disabled && "cursor-not-allowed opacity-50",
               )}
             >
+              <span className="font-mono text-[9.5px] uppercase tracking-wide text-muted-foreground/70">
+                default
+              </span>
+              <span className="text-muted-foreground/30">·</span>
               <ProviderIcon provider={provider} size={11} />
               <span className="max-w-[160px] truncate">{label}</span>
               <span className="text-muted-foreground/40">·</span>
@@ -823,10 +998,14 @@ function StatusBarModelPicker() {
               </span>
             </span>
           </TooltipTrigger>
-          <TooltipContent side="top" className="text-[11px]">
+          <TooltipContent side="top" className="max-w-[280px] text-[11px]">
             {disabled
-              ? "Generation in progress — change applies next run."
-              : "Default model. Pick a different one for this generation only from the run panel."}
+              ? isRunning
+                ? "Generation in progress — change applies next run."
+                : isRefining
+                  ? "Refining the current draft — model is locked for this thread."
+                  : "A draft is open. Start a new session to switch models."
+              : "Default model for all generations. Set once here (or in Settings → Models) — pick a different model for a single run from the generator's action row."}
           </TooltipContent>
         </Tooltip>
       )}

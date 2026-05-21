@@ -1,11 +1,29 @@
-import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import type { ThemePref } from "@/modules/settings/store";
+import type {
+  EditorThemeId,
+  ThemePref,
+} from "@/modules/settings/store";
 import {
+  EDITOR_FONT_SIZES,
+  EDITOR_TAB_SIZES,
+  EDITOR_THEMES,
+  EDITOR_THEME_LABELS,
   setAutostart,
-  setOnboardingComplete,
+  setEditorFontSize,
+  setEditorHighlightActiveLine,
+  setEditorLineNumbers,
+  setEditorTabSize,
+  setEditorTheme,
+  setEditorWordWrap,
   setRestoreWindowState,
 } from "@/modules/settings/store";
 import { useTheme } from "@/modules/theme";
@@ -30,6 +48,14 @@ export function GeneralSection() {
   const { theme, setTheme } = useTheme();
   const autostart = usePreferencesStore((s) => s.autostart);
   const restoreWindowState = usePreferencesStore((s) => s.restoreWindowState);
+  const editorTheme = usePreferencesStore((s) => s.editorTheme);
+  const editorFontSize = usePreferencesStore((s) => s.editorFontSize);
+  const editorLineNumbers = usePreferencesStore((s) => s.editorLineNumbers);
+  const editorWordWrap = usePreferencesStore((s) => s.editorWordWrap);
+  const editorHighlightActiveLine = usePreferencesStore(
+    (s) => s.editorHighlightActiveLine,
+  );
+  const editorTabSize = usePreferencesStore((s) => s.editorTabSize);
 
   // Reconcile autostart pref with the actual OS state on mount — the user may
   // have toggled it from System Settings.
@@ -111,20 +137,99 @@ export function GeneralSection() {
         </div>
       </div>
 
+      {/* Code editor preferences — applied to the read-only code viewer
+          (`fs_read_file` source previews + bug code-ref jumps). */}
       <div className="flex flex-col gap-2">
-        <Label>Setup</Label>
-        <SettingRow
-          title="Re-run onboarding"
-          description="Walks through Azure DevOps + AI provider + source directory again on the next focus of the main window."
-        >
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => void setOnboardingComplete(false)}
+        <Label>Code editor</Label>
+        <div className="flex flex-col gap-2">
+          <SettingRow
+            title="Theme"
+            description="Each theme is a pair — picking it once covers both light and dark mode. DevOps Studio blends into the app chrome; the rest are battle-tested favorites that fall back to a paired light variant when the app flips to light mode."
           >
-            Re-run setup
-          </Button>
-        </SettingRow>
+            <Select
+              value={editorTheme}
+              onValueChange={(v) => void setEditorTheme(v as EditorThemeId)}
+            >
+              <SelectTrigger className="w-[200px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {EDITOR_THEMES.map((id) => (
+                  <SelectItem key={id} value={id}>
+                    {EDITOR_THEME_LABELS[id]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </SettingRow>
+          <SettingRow
+            title="Font size"
+            description="Editor font size in pixels."
+          >
+            <Select
+              value={String(editorFontSize)}
+              onValueChange={(v) => void setEditorFontSize(Number(v))}
+            >
+              <SelectTrigger className="w-[120px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {EDITOR_FONT_SIZES.map((size) => (
+                  <SelectItem key={size} value={String(size)}>
+                    {size}px
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </SettingRow>
+          <SettingRow
+            title="Tab size"
+            description="Width of a tab character in the gutter and on indentation."
+          >
+            <Select
+              value={String(editorTabSize)}
+              onValueChange={(v) => void setEditorTabSize(Number(v))}
+            >
+              <SelectTrigger className="w-[120px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {EDITOR_TAB_SIZES.map((n) => (
+                  <SelectItem key={n} value={String(n)}>
+                    {n} spaces
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </SettingRow>
+          <SettingRow
+            title="Show line numbers"
+            description="Toggle the gutter that displays line numbers and the fold controls."
+          >
+            <Switch
+              checked={editorLineNumbers}
+              onCheckedChange={(v) => void setEditorLineNumbers(v)}
+            />
+          </SettingRow>
+          <SettingRow
+            title="Soft-wrap long lines"
+            description="Wrap long lines at the viewport edge instead of scrolling horizontally."
+          >
+            <Switch
+              checked={editorWordWrap}
+              onCheckedChange={(v) => void setEditorWordWrap(v)}
+            />
+          </SettingRow>
+          <SettingRow
+            title="Highlight the active line"
+            description="Tint the row containing the cursor (or the highlighted range from a bug code link)."
+          >
+            <Switch
+              checked={editorHighlightActiveLine}
+              onCheckedChange={(v) => void setEditorHighlightActiveLine(v)}
+            />
+          </SettingRow>
+        </div>
       </div>
     </div>
   );

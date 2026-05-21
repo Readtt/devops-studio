@@ -274,7 +274,7 @@ fn html_escape(s: &str) -> String {
 /// is plain text inside an HTML comment plus a human-visible list so users
 /// browsing the bug in the ADO web UI can click through.
 fn build_repro_steps_html(repro: &str, code_links: &[CodeLink]) -> String {
-    let mut out = format!("<P>{}</P>", html_escape(repro));
+    let mut out = render_repro_body(repro);
     if code_links.is_empty() {
         return out;
     }
@@ -305,6 +305,89 @@ fn build_repro_steps_html(repro: &str, code_links: &[CodeLink]) -> String {
     out
 }
 
+/// Render the structured plain-text repro body the analyst emits into ADO-
+/// friendly HTML. Each blank-line-separated paragraph becomes its own `<P>`,
+/// labeled section headers (e.g. "STEPS TO REPRODUCE:" on its own line) are
+/// wrapped in `<strong>`, and remaining newlines become `<BR>` so the
+/// numbered list reads as a list instead of a single run-on sentence.
+///
+/// Falls back to a single `<P>` for legacy bodies that came in without the
+/// structured layout — the publish path stays compatible with older drafts.
+fn render_repro_body(repro: &str) -> String {
+    let trimmed = repro.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    // Split on blank lines so each "section" (PRECONDITION, STEPS …) becomes
+    // its own paragraph block in ADO. Inside a section, single newlines stay
+    // as `<BR>` so the numbered repro steps render line-by-line.
+    let mut out = String::new();
+    for paragraph in trimmed.split("\n\n") {
+        let paragraph = paragraph.trim_matches(|c: char| c == '\r' || c == '\n');
+        if paragraph.is_empty() {
+            continue;
+        }
+        out.push_str("<P>");
+        let mut first = true;
+        for line in paragraph.split('\n') {
+            if !first {
+                out.push_str("<BR>");
+            }
+            first = false;
+            out.push_str(&render_repro_line(line));
+        }
+        out.push_str("</P>");
+    }
+    out
+}
+
+/// Per-line emitter for `render_repro_body` — bolds a labeled section header
+/// when the line looks like `LABEL:` (or `LABEL: trailing text`) so the
+/// section structure reads at a glance in the ADO web UI.
+fn render_repro_line(line: &str) -> String {
+    let line = line.trim_end_matches('\r');
+    if let Some((label, rest)) = label_split(line) {
+        let mut s = format!("<strong>{}</strong>", html_escape(&label));
+        if !rest.is_empty() {
+            s.push_str(&format!(" {}", html_escape(&rest)));
+        }
+        return s;
+    }
+    html_escape(line)
+}
+
+/// True when a line is a section header of the form `WORDS:` (with optional
+/// trailing content). Returns the label (without the colon) and any trailing
+/// content. The label must be uppercase / structural — we don't bold every
+/// line that happens to end in a colon.
+fn label_split(line: &str) -> Option<(String, String)> {
+    let trimmed = line.trim_start();
+    let colon_pos = trimmed.find(':')?;
+    let label = &trimmed[..colon_pos];
+    // Reject labels longer than ~6 words or that contain lowercase — the
+    // structured layout the analyst emits is always uppercase, short labels
+    // ("STEPS TO REPRODUCE:", "ENVIRONMENT:"). Anything else is just prose.
+    if label.is_empty() || label.len() > 60 {
+        return None;
+    }
+    let mut has_lower = false;
+    for ch in label.chars() {
+        if ch.is_lowercase() {
+            has_lower = true;
+            break;
+        }
+        if !(ch.is_uppercase() || ch.is_ascii_digit() || ch == ' ' || ch == '/' || ch == '-' || ch == '_') {
+            return None;
+        }
+    }
+    if has_lower {
+        return None;
+    }
+    let rest = trimmed[colon_pos + 1..].trim().to_string();
+    let label_with_colon = format!("{}:", label);
+    Some((label_with_colon, rest))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,6 +396,35 @@ mod tests {
     fn repro_steps_without_code_links_is_just_repro() {
         let html = build_repro_steps_html("Click submit, app crashes.", &[]);
         assert_eq!(html, "<P>Click submit, app crashes.</P>");
+    }
+
+    #[test]
+    fn structured_repro_renders_section_headers_bold() {
+        let body = "PRECONDITION:\nSignedin user\n\nSTEPS TO REPRODUCE:\n1. Open page\n2. Click submit\n\nEXPECTED RESULT:\nOK toast\n\nACTUAL RESULT:\n500 error";
+        let html = build_repro_steps_html(body, &[]);
+        assert!(html.contains("<strong>PRECONDITION:</strong>"));
+        assert!(html.contains("<strong>STEPS TO REPRODUCE:</strong>"));
+        assert!(html.contains("<strong>EXPECTED RESULT:</strong>"));
+        assert!(html.contains("<strong>ACTUAL RESULT:</strong>"));
+        // Single-newline-separated lines inside a section render as <BR>.
+        assert!(html.contains("1. Open page<BR>2. Click submit"));
+    }
+
+    #[test]
+    fn structured_repro_with_trailing_text_on_label_line() {
+        // The analyst sometimes inlines the value on the same line as the
+        // label: "ENVIRONMENT: Chrome 120 on macOS". Bold the label only.
+        let html = build_repro_steps_html("ENVIRONMENT: Chrome 120 on macOS", &[]);
+        assert!(html.contains("<strong>ENVIRONMENT:</strong> Chrome 120 on macOS"));
+    }
+
+    #[test]
+    fn lowercase_label_is_not_bolded() {
+        // Free-form prose lines that just happen to contain a colon must not
+        // be misclassified as section headers.
+        let html = build_repro_steps_html("note: this is just a note", &[]);
+        assert!(!html.contains("<strong>"));
+        assert!(html.contains("note: this is just a note"));
     }
 
     #[test]

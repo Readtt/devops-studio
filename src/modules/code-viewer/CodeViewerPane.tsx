@@ -6,17 +6,32 @@ import { json } from "@codemirror/lang-json";
 import { markdown } from "@codemirror/lang-markdown";
 import { html } from "@codemirror/lang-html";
 import { css } from "@codemirror/lang-css";
+import { StreamLanguage } from "@codemirror/language";
+import { csharp } from "@codemirror/legacy-modes/mode/clike";
 import { EditorView, Decoration, type DecorationSet } from "@codemirror/view";
 import { StateField, StateEffect } from "@codemirror/state";
 import { tokyoNight } from "@uiw/codemirror-theme-tokyo-night";
 import { githubDark, githubLight } from "@uiw/codemirror-theme-github";
+import { atomone } from "@uiw/codemirror-theme-atomone";
+import { aura } from "@uiw/codemirror-theme-aura";
+import { copilot } from "@uiw/codemirror-theme-copilot";
+import { nord } from "@uiw/codemirror-theme-nord";
+import { xcodeDark, xcodeLight } from "@uiw/codemirror-theme-xcode";
+import { devopsStudioDark } from "./themes/devopsStudioDark";
+import { devopsStudioLight } from "./themes/devopsStudioLight";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import type { EditorThemeId } from "@/modules/settings/store";
 import { ExternalLink, RefreshIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -42,7 +57,19 @@ export function CodeViewerPane({ path, startLine, endLine }: Props) {
     | { kind: "error"; message: string }
   >({ kind: "loading" });
   const viewRef = useRef<ReactCodeMirrorRef | null>(null);
+  // Bumped whenever an external request asks us to re-scroll + re-pulse the
+  // SAME range (e.g. the user clicked the same code-ref chip again — the
+  // tab is reused so props are identical, but the effect still needs to fire).
+  const [pulseTick, setPulseTick] = useState(0);
   const themePref = usePreferencesStore((s) => s.theme);
+  const editorThemeId = usePreferencesStore((s) => s.editorTheme);
+  const editorFontSize = usePreferencesStore((s) => s.editorFontSize);
+  const editorLineNumbers = usePreferencesStore((s) => s.editorLineNumbers);
+  const editorWordWrap = usePreferencesStore((s) => s.editorWordWrap);
+  const editorHighlightActiveLine = usePreferencesStore(
+    (s) => s.editorHighlightActiveLine,
+  );
+  const editorTabSize = usePreferencesStore((s) => s.editorTabSize);
 
   useEffect(() => {
     let cancelled = false;
@@ -72,13 +99,14 @@ export function CodeViewerPane({ path, startLine, endLine }: Props) {
 
   const langExt = useMemo(() => languageFor(path), [path]);
   const theme = useMemo(
-    () => resolveTheme(themePref),
-    [themePref],
+    () => resolveTheme(editorThemeId, themePref),
+    [editorThemeId, themePref],
   );
 
-  // Once content is loaded, scroll to the linked range and apply the
-  // range-highlight decoration. We do this in an effect on the imperative
-  // handle rather than via initial state so re-loads behave the same.
+  // Once content is loaded, scroll to the linked range, apply the highlight,
+  // and pulse it briefly so the eye finds the line in a long file. We do
+  // this in an effect on the imperative handle rather than via initial
+  // state so re-loads behave the same.
   useEffect(() => {
     if (state.kind !== "ok") return;
     const view = viewRef.current?.view;
@@ -87,20 +115,59 @@ export function CodeViewerPane({ path, startLine, endLine }: Props) {
     const end = clampLine(endLine ?? startLine ?? 1, view.state.doc.lines);
     const fromPos = view.state.doc.line(start).from;
     const toPos = view.state.doc.line(end).to;
+    // Setting `pulse: true` triggers the keyframe animation defined in
+    // rangeHighlightTheme; the class is auto-removed by the next dispatch.
     view.dispatch({
       effects: [
-        setHighlightedRange.of({ from: fromPos, to: toPos }),
-        // EditorView.scrollIntoView accepts a numeric position or an
-        // EditorSelection.range — single number lands the linked block in
-        // view without requiring a selection on a read-only buffer.
+        setHighlightedRange.of({ from: fromPos, to: toPos, pulse: true }),
         EditorView.scrollIntoView(fromPos, { y: "center" }),
       ],
     });
-  }, [state, startLine, endLine]);
+    // After the animation finishes, drop the pulse class but keep the
+    // static highlight so the user can still see WHICH block we jumped to.
+    const id = window.setTimeout(() => {
+      const v = viewRef.current?.view;
+      if (!v) return;
+      v.dispatch({
+        effects: [setHighlightedRange.of({ from: fromPos, to: toPos, pulse: false })],
+      });
+    }, 1600);
+    return () => window.clearTimeout(id);
+  }, [state, startLine, endLine, pulseTick]);
+
+  // External re-pulse channel. Fired by the tab dispatcher when the user
+  // clicks the same code-ref chip a second time — the tab is reused so the
+  // props don't change, but the user still expects "jump back + pulse".
+  useEffect(() => {
+    const onPulse = (e: Event) => {
+      const ce = e as CustomEvent<{
+        path: string;
+        startLine?: number;
+        endLine?: number;
+      }>;
+      if (!ce.detail) return;
+      if (ce.detail.path !== path) return;
+      if ((ce.detail.startLine ?? null) !== (startLine ?? null)) return;
+      if ((ce.detail.endLine ?? null) !== (endLine ?? null)) return;
+      setPulseTick((t) => t + 1);
+    };
+    window.addEventListener("devops-studio:re-pulse-code-range", onPulse);
+    return () =>
+      window.removeEventListener(
+        "devops-studio:re-pulse-code-range",
+        onPulse,
+      );
+  }, [path, startLine, endLine]);
 
   const ext = useMemo(
-    () => [langExt, rangeHighlightField, rangeHighlightTheme].filter(Boolean) as any,
-    [langExt],
+    () =>
+      [
+        langExt,
+        rangeHighlightField,
+        rangeHighlightTheme,
+        editorWordWrap ? EditorView.lineWrapping : null,
+      ].filter(Boolean) as any,
+    [langExt, editorWordWrap],
   );
 
   return (
@@ -115,38 +182,52 @@ export function CodeViewerPane({ path, startLine, endLine }: Props) {
           </span>
         ) : null}
         <div className="ml-auto flex shrink-0 gap-1">
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 px-2 text-[11px]"
-            onClick={() => {
-              setState({ kind: "loading" });
-              // Re-trigger by changing key — easier than re-implementing the
-              // load logic. Bumping a counter via state would also work.
-              invoke<ReadResult>("fs_read_file", {
-                path,
-                workspace: { kind: "local" as const },
-              })
-                .then((r) => {
-                  if (r.kind === "text") setState({ kind: "ok", content: r.content });
-                  else if (r.kind === "binary") setState({ kind: "binary" });
-                  else setState({ kind: "toolarge", size: r.size, limit: r.limit });
-                })
-                .catch((e) => setState({ kind: "error", message: String(e) }));
-            }}
-          >
-            <HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />
-            Reload
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 px-2 text-[11px]"
-            onClick={() => void openUrl(`file://${path}`)}
-          >
-            <HugeiconsIcon icon={ExternalLink} size={12} strokeWidth={1.75} />
-            Reveal
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2 text-[11px]"
+                onClick={() => {
+                  setState({ kind: "loading" });
+                  // Re-trigger by changing key — easier than re-implementing the
+                  // load logic. Bumping a counter via state would also work.
+                  invoke<ReadResult>("fs_read_file", {
+                    path,
+                    workspace: { kind: "local" as const },
+                  })
+                    .then((r) => {
+                      if (r.kind === "text") setState({ kind: "ok", content: r.content });
+                      else if (r.kind === "binary") setState({ kind: "binary" });
+                      else setState({ kind: "toolarge", size: r.size, limit: r.limit });
+                    })
+                    .catch((e) => setState({ kind: "error", message: String(e) }));
+                }}
+              >
+                <HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />
+                Reload
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-[11px]">
+              Re-read this file from disk
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 px-2 text-[11px]"
+                onClick={() => void openUrl(`file://${path}`)}
+              >
+                <HugeiconsIcon icon={ExternalLink} size={12} strokeWidth={1.75} />
+                Reveal
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-[11px]">
+              Open the file in your OS file manager
+            </TooltipContent>
+          </Tooltip>
         </div>
       </header>
       <div className="min-h-0 flex-1 overflow-hidden">
@@ -179,15 +260,15 @@ export function CodeViewerPane({ path, startLine, endLine }: Props) {
             readOnly
             editable={false}
             basicSetup={{
-              lineNumbers: true,
-              foldGutter: true,
-              highlightActiveLine: false,
+              lineNumbers: editorLineNumbers,
+              foldGutter: editorLineNumbers,
+              highlightActiveLine: editorHighlightActiveLine,
               autocompletion: false,
               searchKeymap: false,
-              tabSize: 2,
+              tabSize: editorTabSize,
             }}
             height="100%"
-            style={{ height: "100%", fontSize: "12.5px" }}
+            style={{ height: "100%", fontSize: `${editorFontSize}px` }}
           />
         )}
       </div>
@@ -216,6 +297,7 @@ function languageFor(path: string) {
     case "go":
       return go();
     case "json":
+    case "jsonc":
       return json();
     case "md":
     case "mdx":
@@ -223,11 +305,34 @@ function languageFor(path: string) {
       return markdown();
     case "html":
     case "htm":
+    case "xml":
+    case "xhtml":
+    case "svg":
+    case "vue":
+    case "svelte":
       return html();
     case "css":
     case "scss":
     case "less":
+    case "sass":
       return css();
+    case "cs":
+    case "csx":
+      // C# via @codemirror/legacy-modes' clike. Not as full-fidelity as a
+      // dedicated parser, but covers keywords, strings, comments, and
+      // numbers — enough to read code at a glance.
+      return StreamLanguage.define(csharp);
+    case "razor":
+    case "cshtml":
+    case "vbhtml":
+      // Razor pages are HTML with C# expression islands. We highlight as
+      // HTML so the markup reads correctly; @code/@expr blocks fall back
+      // to plain text inside the html() parser, which is acceptable for
+      // a read-only viewer.
+      return html();
+    // No dedicated language packages installed for these; fall through to
+    // plain text so the chosen theme's base colours still apply. Adding
+    // proper modes is a follow-up that requires npm installs.
     default:
       return null;
   }
@@ -235,7 +340,11 @@ function languageFor(path: string) {
 
 // --- Range highlight decoration --------------------------------------------
 
-const setHighlightedRange = StateEffect.define<{ from: number; to: number } | null>();
+const setHighlightedRange = StateEffect.define<{
+  from: number;
+  to: number;
+  pulse: boolean;
+} | null>();
 
 const rangeHighlightField = StateField.define<DecorationSet>({
   create: () => Decoration.none,
@@ -246,12 +355,15 @@ const rangeHighlightField = StateField.define<DecorationSet>({
         if (e.value === null) {
           deco = Decoration.none;
         } else {
-          const { from, to } = e.value;
+          const { from, to, pulse } = e.value;
+          const cls = pulse
+            ? "cm-linked-line cm-linked-line-pulse"
+            : "cm-linked-line";
+          const startLine = tr.state.doc.lineAt(from).number;
+          const endLine = tr.state.doc.lineAt(to).number;
           deco = Decoration.set([
-            Decoration.line({
-              attributes: { class: "cm-linked-line" },
-            }).range(from),
-            ...rangeLineDecos(tr.state.doc.lineAt(from).number, tr.state.doc.lineAt(to).number, tr.state.doc),
+            Decoration.line({ attributes: { class: cls } }).range(from),
+            ...rangeLineDecos(startLine, endLine, tr.state.doc, cls),
           ]);
         }
       }
@@ -265,21 +377,43 @@ function rangeLineDecos(
   startLine: number,
   endLine: number,
   doc: { line: (n: number) => { from: number } },
+  cls: string,
 ) {
   if (endLine <= startLine) return [];
   const out = [];
   for (let n = startLine + 1; n <= endLine; n++) {
-    out.push(Decoration.line({ attributes: { class: "cm-linked-line" } }).range(doc.line(n).from));
+    out.push(Decoration.line({ attributes: { class: cls } }).range(doc.line(n).from));
   }
   return out;
 }
 
+// The pulse animation amps the highlight up for ~1.5s after the user jumps
+// to a code link so the target block is impossible to miss in a long file.
+// We keyframe via opacity-scaled background tints (not box-shadow) because
+// CodeMirror line decorations don't reliably nest a child to animate.
 const rangeHighlightTheme = EditorView.baseTheme({
   ".cm-linked-line": {
     backgroundColor: "rgba(99, 102, 241, 0.12)",
+    transition: "background-color 600ms ease-out",
   },
   "&dark .cm-linked-line": {
     backgroundColor: "rgba(129, 140, 248, 0.18)",
+  },
+  ".cm-linked-line-pulse": {
+    animation: "cm-linked-line-pulse 1.4s ease-out 1",
+  },
+  "@keyframes cm-linked-line-pulse": {
+    "0%": { backgroundColor: "rgba(99, 102, 241, 0.45)" },
+    "40%": { backgroundColor: "rgba(99, 102, 241, 0.30)" },
+    "100%": { backgroundColor: "rgba(99, 102, 241, 0.12)" },
+  },
+  "&dark .cm-linked-line-pulse": {
+    animation: "cm-linked-line-pulse-dark 1.4s ease-out 1",
+  },
+  "@keyframes cm-linked-line-pulse-dark": {
+    "0%": { backgroundColor: "rgba(129, 140, 248, 0.55)" },
+    "40%": { backgroundColor: "rgba(129, 140, 248, 0.35)" },
+    "100%": { backgroundColor: "rgba(129, 140, 248, 0.18)" },
   },
 });
 
@@ -289,15 +423,33 @@ function clampLine(n: number, total: number): number {
 
 // --- Theme resolution -------------------------------------------------------
 
-function resolveTheme(pref: string) {
-  const dark = isDark(pref);
-  // The user can change theme later via Settings; we re-render on every theme
-  // change because the pref is a zustand subscription in the caller.
-  return dark ? tokyoNight : githubLight;
-  // (tokyo-night defaults to dark; githubLight is a clean light theme.
-  //  Phase 6 can let users pick from the full list re-added to package.json.)
-  // The unused import below keeps the option open without a build error.
-  void githubDark;
+/** Resolve the user's editor-theme preference to a CodeMirror Extension.
+ *  Each theme family carries an analogous light/dark pair, so picking
+ *  "DevOps Studio" or "Xcode" in dark mode and flipping the app to light
+ *  swaps the editor to the *same family's* light variant — not a generic
+ *  GitHub Light fallback. Dark-only upstream themes still degrade to a
+ *  paired light theme so the editor never lands on white-on-white.
+ */
+function resolveTheme(editorThemeId: EditorThemeId, themePref: string) {
+  const dark = isDark(themePref);
+  const map: Record<EditorThemeId, { light: unknown; dark: unknown }> = {
+    // Hand-tuned pair: matches the app's OLED chrome (dark) / paper (light).
+    "devops-studio": { light: devopsStudioLight, dark: devopsStudioDark },
+    // Both variants ship with the upstream theme — natural pairings.
+    github: { light: githubLight, dark: githubDark },
+    xcode: { light: xcodeLight, dark: xcodeDark },
+    // Dark-only upstreams. Fall back to githubLight for a clean, neutral
+    // light counterpart — the only goal is "stays readable when the app
+    // flips to light", not perfect aesthetic mirroring (those themes are
+    // canonically dark and the user is explicitly picking a dark theme).
+    "atom-one": { light: githubLight, dark: atomone },
+    aura: { light: githubLight, dark: aura },
+    copilot: { light: githubLight, dark: copilot },
+    nord: { light: githubLight, dark: nord },
+    "tokyo-night": { light: githubLight, dark: tokyoNight },
+  };
+  const entry = map[editorThemeId] ?? map["devops-studio"];
+  return (dark ? entry.dark : entry.light) as never;
 }
 
 function isDark(pref: string): boolean {

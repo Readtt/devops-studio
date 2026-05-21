@@ -1,0 +1,655 @@
+import {
+  KeyboardEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  HelpCircleIcon,
+  PlayIcon,
+  ArrowTurnBackwardIcon,
+  Cancel01Icon,
+  Clock01Icon,
+  AlertCircleIcon,
+  AiBrain01Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  useGenerationSession,
+  type SessionState,
+} from "../store/useGenerationSession";
+import { AnalyzeActivityLog } from "./AnalyzeActivityLog";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
+
+/** Quick-fire preset instructions. The strings are intentionally written
+ *  the way a tester would say them out loud — they read as natural prompts,
+ *  not commands, so the analyst's tone stays human in the refined output. */
+const PRESETS: ReadonlyArray<{ label: string; prompt: string; hint: string }> =
+  [
+    {
+      label: "find-bugs",
+      hint: "Look at the source and surface concrete defects",
+      prompt:
+        "Re-read the attached/searchable source and surface any concrete bugs that the current draft cases would not catch. Add new bug entries with codeRefs pointing at the exact lines.",
+    },
+    {
+      label: "smoke-check",
+      hint: "Verify each step against the code; flag broken ones",
+      prompt:
+        "Walk through each kept case step-by-step against the actual source. If a step's expected behaviour does NOT match what the code does, replace that case with a corrected one and add a bug entry explaining the divergence with codeRefs.",
+    },
+    {
+      label: "edge-cases",
+      hint: "Add boundary, negative, and concurrency cases",
+      prompt:
+        "Add additional edge-case and negative-path test cases that the current draft is missing: boundary values, concurrent / race conditions, malformed input, partial failures, and permission denials where they apply.",
+    },
+    {
+      label: "tighten-steps",
+      hint: "Make actions/expected results more precise",
+      prompt:
+        "Keep the same coverage but tighten the prose. Every step's Action should be one concrete thing the tester does; every Expected should be an observable, deterministic outcome. No vague verbs.",
+    },
+    {
+      label: "re-ground",
+      hint: "Re-anchor cases in the actual code paths",
+      prompt:
+        "Re-anchor every case in the actual code paths. Read the relevant files via Read/Glob/Grep, update sourceLinks on each case with the files it exercises, and fix any case whose steps don't match what the code actually does.",
+    },
+  ];
+
+type Props = {
+  /** When true, the composer renders the in-flight running strip with the
+   *  activity log inline. Otherwise it renders the idle composer. */
+  isRefining: boolean;
+};
+
+/** Stdin-style follow-up composer pinned to the bottom of the review pane.
+ *  Reads like a REPL prompt continuing the same session — the user types a
+ *  natural-language instruction (or picks a preset) and the model refines
+ *  the draft in place. While the call is in flight, the surface morphs into
+ *  a live status strip with the streaming activity log so the user sees
+ *  exactly what the analyst is doing, identical to the analyze phase. */
+export function RefineComposer({ isRefining }: Props) {
+  const refine = useGenerationSession((s) => s.refine);
+  const cases = useGenerationSession((s) => s.cases);
+  const bugs = useGenerationSession((s) => s.bugs);
+  const allowCodeSearch = useGenerationSession((s) => s.allowCodeSearch);
+  const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
+  const activityLog = useGenerationSession((s) => s.activityLog);
+  const stepLabel = useGenerationSession((s) => s.stepLabel);
+  const refineUndoSnapshot = useGenerationSession(
+    (s) => s.refineUndoSnapshot,
+  );
+  const undoRefine = useGenerationSession((s) => s.undoRefine);
+  const refineError = useGenerationSession((s) => s.refineError);
+  const dismissRefineError = useGenerationSession(
+    (s) => s.dismissRefineError,
+  );
+  const refineHistory = useGenerationSession((s) => s.refineHistory);
+  const refineRounds = useGenerationSession((s) => s.refineRounds);
+  const [roundsOpen, setRoundsOpen] = useState(false);
+
+  const [text, setText] = useState("");
+  const [showHelp, setShowHelp] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Re-focus once the run finishes so a follow-up follow-up is one keystroke
+  // away. Skipped when the user is reading the log or hovering elsewhere.
+  useEffect(() => {
+    if (!isRefining && document.activeElement?.tagName !== "TEXTAREA") {
+      textareaRef.current?.focus({ preventScroll: true });
+    }
+  }, [isRefining]);
+
+  const keptCases = useMemo(
+    () => cases.filter((c) => c.decision === "keep").length,
+    [cases],
+  );
+  const keptBugs = useMemo(
+    () => bugs.filter((b) => b.decision === "keep").length,
+    [bugs],
+  );
+
+  const codeSearchOn = allowCodeSearch && !!sourceRoot;
+
+  const submit = useCallback(() => {
+    const value = text.trim();
+    if (!value || isRefining) return;
+    void refine(value);
+    setText("");
+  }, [text, isRefining, refine]);
+
+  const onKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      const submitCombo =
+        (e.metaKey || e.ctrlKey) && (e.key === "Enter" || e.key === "Return");
+      if (submitCombo) {
+        e.preventDefault();
+        submit();
+      }
+    },
+    [submit],
+  );
+
+  const applyPreset = (prompt: string) => {
+    setText((curr) => {
+      const trimmed = curr.trim();
+      if (trimmed.length === 0) return prompt;
+      // Append-with-spacer so a user who's already typed something can stack
+      // multiple presets together before sending.
+      return `${trimmed}\n\n${prompt}`;
+    });
+    // Push focus back so the cursor sits after the inserted text.
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.selectionStart = el.value.length;
+      el.selectionEnd = el.value.length;
+    });
+  };
+
+  // --- Running state -------------------------------------------------------
+  // While the refine is in flight we hide the textarea and show the same
+  // streaming-log surface the analyze phase uses, so the user gets the same
+  // grounded "I can see what it's doing" feedback for follow-ups.
+  if (isRefining) {
+    return (
+      <section className="relative">
+        <DockHeader running />
+        <div className="rounded-md border border-primary/40 bg-primary/[0.04] p-2.5">
+          <div className="mb-2 flex items-center gap-2">
+            <Spinner className="size-3.5 text-primary" />
+            <span className="font-mono text-[11px] text-primary/90">
+              {stepLabel || "Reading current draft…"}
+            </span>
+            <span className="ml-auto font-mono text-[10px] text-muted-foreground/60">
+              refine in progress · esc cancels
+            </span>
+          </div>
+          <AnalyzeActivityLog entries={activityLog} />
+        </div>
+      </section>
+    );
+  }
+
+  // --- Idle composer -------------------------------------------------------
+  return (
+    <section className="relative">
+      <DockHeader />
+
+      {refineError ? (
+        <div className="mb-2 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/[0.06] px-2.5 py-1.5">
+          <HugeiconsIcon
+            icon={AlertCircleIcon}
+            size={12}
+            strokeWidth={1.75}
+            className="mt-0.5 shrink-0 text-destructive"
+          />
+          <div className="min-w-0 flex-1">
+            <p className="font-mono text-[10.5px] uppercase tracking-wider text-destructive/85">
+              refine failed
+            </p>
+            <p className="mt-0.5 break-words text-[10.5px] text-destructive/90">
+              {refineError}
+            </p>
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              Your draft is unchanged — fix the underlying issue and try
+              again.
+            </p>
+          </div>
+          <button
+            type="button"
+            aria-label="Dismiss refine error"
+            onClick={dismissRefineError}
+            className="shrink-0 rounded-sm p-0.5 text-destructive/70 hover:bg-destructive/15 hover:text-destructive"
+          >
+            <HugeiconsIcon
+              icon={Cancel01Icon}
+              size={10}
+              strokeWidth={2}
+            />
+          </button>
+        </div>
+      ) : null}
+
+      {refineUndoSnapshot ? (
+        <div className="mb-2 flex items-center justify-between gap-2 rounded-md border border-amber-500/30 bg-amber-500/[0.06] px-2.5 py-1.5">
+          <p className="font-mono text-[10.5px] text-amber-700 dark:text-amber-300">
+            <span className="opacity-60">›</span> refined just now —{" "}
+            <span className="opacity-80">
+              prior batch ({refineUndoSnapshot.cases.length} case
+              {refineUndoSnapshot.cases.length === 1 ? "" : "s"},{" "}
+              {refineUndoSnapshot.bugs.length} bug
+              {refineUndoSnapshot.bugs.length === 1 ? "" : "s"}) is recoverable
+            </span>
+          </p>
+          <Button
+            size="xs"
+            variant="ghost"
+            onClick={undoRefine}
+            className="text-amber-700 hover:bg-amber-500/15 hover:text-amber-800 dark:text-amber-300 dark:hover:text-amber-200"
+          >
+            <HugeiconsIcon icon={ArrowTurnBackwardIcon} size={10} strokeWidth={1.75} />
+            undo refine
+          </Button>
+        </div>
+      ) : null}
+
+      {/* Preset chips. Editor-flavored mono shorthand to match the rest of
+          the app's voice — these read like dot-commands in a REPL, not like
+          chatbot quick replies. */}
+      <div className="mb-1.5 flex flex-wrap items-center gap-1">
+        <span className="select-none font-mono text-[10px] text-muted-foreground/60">
+          presets:
+        </span>
+        {PRESETS.map((p) => (
+          <Tooltip key={p.label}>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => applyPreset(p.prompt)}
+                className={cn(
+                  "group inline-flex h-5 items-center gap-1 rounded-sm border border-border/50 bg-card px-1.5 font-mono text-[10px] text-muted-foreground transition-colors",
+                  "hover:border-primary/40 hover:bg-primary/[0.08] hover:text-primary",
+                )}
+              >
+                <span className="text-muted-foreground/50 group-hover:text-primary/70">
+                  /
+                </span>
+                {p.label}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-[260px] text-[11px]">
+              {p.hint}
+            </TooltipContent>
+          </Tooltip>
+        ))}
+        <button
+          type="button"
+          onClick={() => setShowHelp((v) => !v)}
+          aria-label="What can I ask?"
+          className="ml-1 inline-flex size-4 items-center justify-center rounded-sm text-muted-foreground/60 hover:bg-foreground/[0.06] hover:text-foreground"
+        >
+          <HugeiconsIcon icon={HelpCircleIcon} size={11} strokeWidth={1.75} />
+        </button>
+        {refineRounds.length > 0 ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => setRoundsOpen(true)}
+                aria-label="View past refine rounds with thinking"
+                className="inline-flex h-5 items-center gap-1 rounded-sm border border-border/50 bg-card px-1.5 font-mono text-[10px] text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/[0.08] hover:text-primary"
+              >
+                <HugeiconsIcon
+                  icon={AiBrain01Icon}
+                  size={10}
+                  strokeWidth={1.75}
+                />
+                thinking
+                <span className="rounded-sm bg-foreground/[0.08] px-1 text-[9px] tabular-nums">
+                  {refineRounds.length}
+                </span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="text-[11px]">
+              Read every past round — what you asked, the tool calls the model
+              made, and how the draft changed.
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
+        {refineHistory.length > 0 ? (
+          <Popover>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="Recent follow-ups"
+                    className="inline-flex h-5 items-center gap-1 rounded-sm border border-border/50 bg-card px-1.5 font-mono text-[10px] text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/[0.08] hover:text-primary"
+                  >
+                    <HugeiconsIcon
+                      icon={Clock01Icon}
+                      size={10}
+                      strokeWidth={1.75}
+                    />
+                    history
+                    <span className="rounded-sm bg-foreground/[0.08] px-1 text-[9px] tabular-nums">
+                      {refineHistory.length}
+                    </span>
+                  </button>
+                </PopoverTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="text-[11px]">
+                Recall a recent follow-up
+              </TooltipContent>
+            </Tooltip>
+            <PopoverContent
+              align="start"
+              side="top"
+              sideOffset={6}
+              className="w-[360px] p-1"
+            >
+              <p className="px-2 pb-1 pt-1 font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
+                Recent follow-ups
+              </p>
+              <ul className="flex max-h-[260px] flex-col gap-px overflow-y-auto">
+                {refineHistory.map((prompt, i) => (
+                  <li key={`${i}-${prompt.slice(0, 20)}`}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setText(prompt);
+                        // Defer focus so the popover dismisses first.
+                        requestAnimationFrame(() => {
+                          const el = textareaRef.current;
+                          if (!el) return;
+                          el.focus();
+                          el.setSelectionRange(
+                            el.value.length,
+                            el.value.length,
+                          );
+                        });
+                      }}
+                      className="block w-full rounded-sm px-2 py-1.5 text-left text-[11px] hover:bg-foreground/[0.05]"
+                    >
+                      <span className="mr-1.5 font-mono text-[9.5px] text-muted-foreground/55 tabular-nums">
+                        {String(i + 1).padStart(2, "0")}
+                      </span>
+                      <span className="line-clamp-2 text-foreground/85">
+                        {prompt}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </PopoverContent>
+          </Popover>
+        ) : null}
+      </div>
+
+      {showHelp ? (
+        <div className="mb-2 rounded-md border border-border/50 bg-card/60 px-2.5 py-2 text-[10.5px] leading-relaxed text-muted-foreground">
+          <p>
+            <span className="font-mono text-foreground/80">refine</span> sends
+            a follow-up against the cases &amp; bugs you can see right now.
+            Tell the analyst what to change — &ldquo;step 3 doesn&rsquo;t
+            match the code in <span className="font-mono">login.ts</span>,
+            fix it&rdquo;, or &ldquo;there&rsquo;s a race when two requests
+            land simultaneously, add a case&rdquo;. The full draft is
+            re-emitted; skipped items stay skipped.
+          </p>
+        </div>
+      ) : null}
+
+      <RefineRoundsDialog
+        open={roundsOpen}
+        onOpenChange={setRoundsOpen}
+        rounds={refineRounds}
+      />
+
+      {/* The composer itself — wrapped to look like a fenced code block so
+          it visually belongs to the "this app is your editor" voice. */}
+      <div
+        className={cn(
+          "group relative overflow-hidden rounded-md border border-border/60 bg-card/40 transition-colors",
+          "focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-ring/30",
+        )}
+      >
+        {/* Left rail — mint glyph signals "this is the prompt line". */}
+        <div className="absolute inset-y-0 left-0 flex w-7 select-none flex-col items-center justify-start pt-2 font-mono text-[11px] text-primary/80">
+          <span aria-hidden>▍</span>
+        </div>
+
+        <textarea
+          ref={textareaRef}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={onKeyDown}
+          rows={4}
+          placeholder="ask a follow-up — e.g. &quot;step 3 in case #2 doesn't match auth.ts, fix it&quot; or &quot;add an edge case for empty input&quot;"
+          className="block min-h-[96px] w-full resize-y bg-transparent py-2.5 pl-7 pr-3 font-mono text-[11.5px] leading-relaxed outline-none placeholder:text-muted-foreground/55"
+        />
+
+        {/* Context strip at the bottom of the composer — tells the user what
+            the model will actually see. Keeps the affordance honest: "I'm
+            sending the current draft along with your question." */}
+        <div className="flex items-center justify-between gap-2 border-t border-border/40 bg-foreground/[0.025] px-3 py-1">
+          <div className="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground/75">
+            <span>ctx:</span>
+            <span className="text-foreground/75">
+              {keptCases} case{keptCases === 1 ? "" : "s"}
+            </span>
+            <span className="text-muted-foreground/40">·</span>
+            <span className="text-foreground/75">
+              {keptBugs} bug{keptBugs === 1 ? "" : "s"}
+            </span>
+            <span className="text-muted-foreground/40">·</span>
+            <span
+              className={cn(
+                codeSearchOn ? "text-primary/80" : "text-muted-foreground/60",
+              )}
+            >
+              code-search: {codeSearchOn ? "on" : "off"}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            {text.trim().length > 0 ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="Clear composer"
+                    onClick={() => setText("")}
+                    className="grid size-5 place-items-center rounded-sm text-muted-foreground hover:bg-foreground/[0.08] hover:text-foreground"
+                  >
+                    <HugeiconsIcon
+                      icon={Cancel01Icon}
+                      size={10}
+                      strokeWidth={2}
+                    />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-[11px]">
+                  Clear
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
+            <kbd className="hidden select-none rounded-sm border border-border/50 bg-card px-1 font-mono text-[9.5px] text-muted-foreground/70 sm:inline-block">
+              ⌘↵
+            </kbd>
+            <Button
+              size="sm"
+              onClick={submit}
+              disabled={text.trim().length === 0}
+            >
+              <HugeiconsIcon icon={PlayIcon} size={10} strokeWidth={2} />
+              refine
+            </Button>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** Modal listing every refine round on this draft: prompt, activity log,
+ *  before/after counts, outcome. The whole thinking process is here so the
+ *  user can re-trace why a draft is in its current shape. */
+function RefineRoundsDialog({
+  open,
+  onOpenChange,
+  rounds,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  rounds: SessionState["refineRounds"];
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Refine thinking history</DialogTitle>
+          <DialogDescription>
+            Every follow-up sent on this draft, in order. The activity log
+            shows the tool calls and thinking the model emitted on each round.
+          </DialogDescription>
+        </DialogHeader>
+        <ScrollArea className="max-h-[70vh] min-h-0 pr-2">
+          <ol className="flex flex-col gap-3">
+            {rounds.map((r, i) => (
+              <li
+                key={`${r.timestamp}-${i}`}
+                className="rounded-md border border-border/60 bg-card/40 p-3"
+              >
+                <header className="flex items-center justify-between gap-2 pb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[9.5px] text-muted-foreground/70 tabular-nums">
+                      #{String(i + 1).padStart(2, "0")}
+                    </span>
+                    <OutcomeBadge outcome={r.outcome} />
+                    <span className="font-mono text-[10px] text-muted-foreground/70">
+                      {formatRoundTimestamp(r.timestamp)}
+                    </span>
+                  </div>
+                  <span className="font-mono text-[10px] text-muted-foreground">
+                    {r.beforeCases} → {r.afterCases} cases ·{" "}
+                    {r.beforeBugs} → {r.afterBugs} bugs
+                  </span>
+                </header>
+                <div className="rounded-sm border border-border/40 bg-foreground/[0.025] p-2">
+                  <p className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
+                    follow-up
+                  </p>
+                  <p className="mt-1 whitespace-pre-wrap break-words text-[11.5px] text-foreground/90">
+                    {r.instruction}
+                  </p>
+                </div>
+                {r.error ? (
+                  <p className="mt-2 rounded-sm border border-destructive/30 bg-destructive/[0.06] px-2 py-1 text-[10.5px] text-destructive">
+                    {r.error}
+                  </p>
+                ) : null}
+                {r.activityLog.length > 0 ? (
+                  <details className="mt-2 group/log">
+                    <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground">
+                      <span className="font-mono text-muted-foreground/70 group-open/log:rotate-90 transition-transform">
+                        ›
+                      </span>
+                      thinking &amp; tool calls
+                      <span className="ml-1 font-mono normal-case text-[9.5px] text-muted-foreground/55">
+                        ({r.activityLog.length})
+                      </span>
+                    </summary>
+                    <div className="mt-1.5">
+                      <AnalyzeActivityLog entries={r.activityLog} />
+                    </div>
+                  </details>
+                ) : (
+                  <p className="mt-2 text-[10px] italic text-muted-foreground/70">
+                    No activity captured.
+                  </p>
+                )}
+              </li>
+            ))}
+          </ol>
+        </ScrollArea>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function OutcomeBadge({
+  outcome,
+}: {
+  outcome: SessionState["refineRounds"][number]["outcome"];
+}) {
+  if (outcome === "ok") {
+    return (
+      <span className="rounded-sm bg-primary/15 px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-primary">
+        ok
+      </span>
+    );
+  }
+  if (outcome === "empty") {
+    return (
+      <span className="rounded-sm bg-amber-500/15 px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-amber-700 dark:text-amber-300">
+        empty
+      </span>
+    );
+  }
+  return (
+    <span className="rounded-sm bg-destructive/15 px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-destructive">
+      failed
+    </span>
+  );
+}
+
+function formatRoundTimestamp(iso: string): string {
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+/** Section header — lowercase mono in the project's "editor voice", with an
+ *  optional running-state pulse so the user spots state changes at a glance. */
+function DockHeader({ running }: { running?: boolean }) {
+  return (
+    <div className="mb-1.5 flex items-center gap-2">
+      <span
+        aria-hidden
+        className={cn(
+          "inline-block size-1.5 rounded-full",
+          running
+            ? "animate-pulse bg-primary"
+            : "bg-foreground/40 dark:bg-foreground/30",
+        )}
+      />
+      <span className="font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">
+        ask follow-up
+      </span>
+      {running ? (
+        <span className="font-mono text-[10px] text-primary/85">
+          · running
+        </span>
+      ) : null}
+      <span className="ml-auto font-mono text-[10px] text-muted-foreground/55">
+        no regenerate · keeps current decisions
+      </span>
+    </div>
+  );
+}

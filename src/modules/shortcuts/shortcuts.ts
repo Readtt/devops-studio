@@ -13,10 +13,12 @@ export type ShortcutId =
   | "palette.open"
   | "settings.open"
   | "sidebar.toggle"
+  | "theme.cycle"
   | "tab.close"
   | "tab.next"
   | "tab.prev"
   | "stale.scan"
+  | "generator.new"
   | "view.zoomIn"
   | "view.zoomOut"
   | "view.zoomReset";
@@ -57,6 +59,18 @@ export const SHORTCUTS: Shortcut[] = [
     label: "Toggle sidebar (Plans / Stale / History)",
     group: "General",
     defaultBindings: [{ [MOD_PROP]: true, key: "b" }],
+  },
+  {
+    id: "theme.cycle",
+    label: "Cycle theme (System → Light → Dark)",
+    group: "General",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "t" }],
+  },
+  {
+    id: "generator.new",
+    label: "New Generate tab",
+    group: "Tabs",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "g" }],
   },
   {
     id: "tab.close",

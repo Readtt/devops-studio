@@ -1,3 +1,13 @@
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -15,7 +25,9 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type GenerationMode,
+  type SessionState,
   useGenerationSession,
+  useGenerationSessionStore,
 } from "./store/useGenerationSession";
 import { useTestPlans } from "@/modules/test-plans";
 import { adoErrorMessage } from "@/modules/ado";
@@ -42,6 +54,8 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { AnalyzeActivityLog } from "./components/AnalyzeActivityLog";
 import { AttachmentList } from "./components/AttachmentList";
+import { EditableText } from "./components/EditableText";
+import { RefineComposer } from "./components/RefineComposer";
 import { TargetContextChip } from "./components/TargetContextChip";
 import { BugCaseLinkPicker } from "./components/BugCaseLinkPicker";
 import {
@@ -52,6 +66,17 @@ import { Attachment01Icon } from "@hugeicons/core-free-icons";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { useChatStore } from "@/modules/ai/store/chatStore";
+import { getModel } from "@/modules/ai/config";
+import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
+import { ArrowDown01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
+
+/** Tab title trimmer — keeps the cap below the visible width budget so
+ *  multiple generator tabs side by side don't squish each other. */
+function ellipsizeForTab(s: string, max = 36): string {
+  const trimmed = s.trim();
+  if (trimmed.length <= max) return trimmed;
+  return `${trimmed.slice(0, max - 1)}…`;
+}
 
 const MODE_LABELS: Record<GenerationMode, string> = {
   happy: "Happy path only",
@@ -68,19 +93,37 @@ const STEPS = [
 ] as const;
 
 type Props = {
+  /** Tab id this pane is rendered for. Used to scope the rename + phase
+   *  reporter callbacks so multi-tab updates don't collide. */
+  tabId?: number;
   initialPlanId?: number | null;
   initialSuiteId?: number | null;
   onOpenCase?: (input: { caseId: number; title: string }) => void;
+  /** Rename the owning tab. The pane calls this once the draft has a
+   *  reasonable label (first case title once review lands, etc.). */
+  onRenameTab?: (tabId: number, title: string) => void;
+  /** Report this session's phase + isRefining up to App.tsx so the status
+   *  bar can lock the model picker when the active tab has a draft. */
+  onReportSession?: (
+    tabId: number,
+    next: { phase: SessionState["phase"]; isRefining: boolean },
+  ) => void;
 };
 
 export function GeneratorPane({
+  tabId,
   initialPlanId,
   initialSuiteId,
   onOpenCase,
+  onRenameTab,
+  onReportSession,
 }: Props) {
   const phase = useGenerationSession((s) => s.phase);
   const setTarget = useGenerationSession((s) => s.setTarget);
   const planId = useGenerationSession((s) => s.planId);
+  const isRefining = useGenerationSession((s) => s.isRefining);
+  const cases = useGenerationSession((s) => s.cases);
+  const requirements = useGenerationSession((s) => s.requirements);
 
   useEffect(() => {
     if (planId === null && initialPlanId) {
@@ -88,6 +131,31 @@ export function GeneratorPane({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Report phase + isRefining up so the App-level status bar can lock the
+  // model picker when the active tab is mid-draft. Cheap effect; the
+  // reducer in App.tsx no-ops when nothing changed.
+  useEffect(() => {
+    if (tabId === undefined || !onReportSession) return;
+    onReportSession(tabId, { phase, isRefining });
+  }, [tabId, onReportSession, phase, isRefining]);
+
+  // Rename the owning tab once the draft has something concrete to label
+  // it with — first case title preferred, spec excerpt as fallback. Only
+  // refreshed on phase transitions to avoid churning the tab title every
+  // keystroke as the user edits the spec.
+  useEffect(() => {
+    if (tabId === undefined || !onRenameTab) return;
+    // Title-worthy moments: review (first cases land), done (publishable
+    // identity for the tab list). At the same key transitions, also pick
+    // up rename-after-edit since cases[0].title may have changed.
+    if (phase !== "review" && phase !== "done") return;
+    const first = cases[0]?.title?.trim();
+    if (first) onRenameTab(tabId, ellipsizeForTab(first));
+    else if (requirements.trim()) {
+      onRenameTab(tabId, ellipsizeForTab(requirements.trim().split("\n")[0]));
+    }
+  }, [tabId, onRenameTab, phase, cases, requirements]);
 
   return (
     <div className="flex h-full flex-col bg-background">
@@ -117,13 +185,41 @@ export function GeneratorPane({
 function ProgressStrip({
   phase,
 }: {
-  phase: ReturnType<typeof useGenerationSession.getState>["phase"];
+  phase: SessionState["phase"];
 }) {
   const startNew = useGenerationSession((s) => s.startNew);
+  const goToInput = useGenerationSession((s) => s.goToInput);
+  const goToReview = useGenerationSession((s) => s.goToReview);
+  const cases = useGenerationSession((s) => s.cases);
+  const bugs = useGenerationSession((s) => s.bugs);
   const currentIdx = useMemo(() => {
     if (phase === "error") return 0;
     return STEPS.findIndex((s) => s.id === phase);
   }, [phase]);
+
+  // Decide which breadcrumb steps the user can actually jump to. We never
+  // permit jumping INTO analyze / publishing — those are in-flight phases
+  // and bouncing into them mid-run would corrupt state. Review and input
+  // are safe targets as long as the prerequisite data exists.
+  const canReachInput = phase !== "analyzing" && phase !== "publishing";
+  const hasDraft = cases.length > 0 || bugs.length > 0;
+  const canReachReview =
+    hasDraft && phase !== "analyzing" && phase !== "publishing";
+  const navigators: Partial<
+    Record<(typeof STEPS)[number]["id"], { onClick: () => void; hint: string }>
+  > = {};
+  if (canReachInput) {
+    navigators.input = {
+      onClick: goToInput,
+      hint: "Back to the spec / target form (your draft stays put)",
+    };
+  }
+  if (canReachReview) {
+    navigators.review = {
+      onClick: goToReview,
+      hint: "Return to the review pane",
+    };
+  }
 
   return (
     <header className="flex h-9 shrink-0 items-center justify-between gap-4 border-b border-border/60 bg-card/40 px-5">
@@ -136,29 +232,61 @@ function ProgressStrip({
           {STEPS.map((step, i) => {
             const completed = i < currentIdx;
             const active = i === currentIdx;
+            const nav = active ? undefined : navigators[step.id];
+            const label = (
+              <span
+                className={cn(
+                  "transition-colors duration-150",
+                  active
+                    ? "rounded-sm bg-primary/15 px-1.5 py-0.5 font-semibold text-primary"
+                    : completed
+                      ? "text-foreground/55 line-through decoration-foreground/30"
+                      : "text-muted-foreground/45",
+                  // Dotted underline announces clickability without competing
+                  // with the strike-through on completed steps — the cursor +
+                  // hover bg confirm it on pointer movement.
+                  nav &&
+                    "cursor-pointer rounded-sm px-1 py-0.5 underline decoration-dotted underline-offset-4 decoration-foreground/30 hover:bg-foreground/[0.06] hover:text-foreground hover:decoration-primary/70 hover:no-underline-strike",
+                )}
+              >
+                {step.label}
+              </span>
+            );
             return (
               <li key={step.id} className="flex items-center">
                 {i > 0 ? (
                   <span className="px-1.5 text-muted-foreground/30">·</span>
                 ) : null}
-                <span
-                  className={cn(
-                    "transition-colors duration-150",
-                    active
-                      ? "rounded-sm bg-primary/15 px-1.5 py-0.5 font-semibold text-primary"
-                      : completed
-                        ? "text-foreground/55 line-through decoration-foreground/30"
-                        : "text-muted-foreground/45",
-                  )}
-                >
-                  {step.label}
-                </span>
+                {nav ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={nav.onClick}
+                        aria-label={`Jump to ${step.label} phase`}
+                        className="font-mono"
+                      >
+                        {label}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="text-[11px]">
+                      {nav.hint}
+                    </TooltipContent>
+                  </Tooltip>
+                ) : (
+                  label
+                )}
               </li>
             );
           })}
         </ol>
       </div>
-      {phase !== "input" && phase !== "analyzing" ? (
+      {/* The error phase has its own Retry / Start over pair — surfacing
+          another "New session" affordance at the top of the same screen was
+          a foot-gun: a quick click here looks like "go back to retry" but
+          actually wipes the spec. Limit the header button to review / done
+          phases where it unambiguously means "throw this away". */}
+      {phase === "review" || phase === "done" ? (
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
@@ -198,10 +326,22 @@ function InputPhase() {
   const addRichAttachment = useGenerationSession((s) => s.addRichAttachment);
   const removeAttachment = useGenerationSession((s) => s.removeAttachment);
   const analyze = useGenerationSession((s) => s.analyze);
+  // Cases/bugs survive a breadcrumb-back to input. A second analyze would
+  // silently discard that draft once the model returns — so we gate the
+  // button behind a confirm dialog when a draft is present. Empty state
+  // (fresh session) bypasses the dialog so the common case stays one click.
+  const draftCases = useGenerationSession((s) => s.cases);
+  const draftBugs = useGenerationSession((s) => s.bugs);
+  const hasDraft = draftCases.length > 0 || draftBugs.length > 0;
+  const [reAnalyzeOpen, setReAnalyzeOpen] = useState(false);
+  const sessionStore = useGenerationSessionStore();
   const defaultModelId = useChatStore((s) => s.selectedModelId);
   const activeModelId = overrideModelId ?? defaultModelId;
+  const activeModel = getModel(activeModelId);
+  const defaultModel = getModel(defaultModelId);
   const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
   const aiEngine = usePreferencesStore((s) => s.aiEngine);
+  const availability = useModelAvailability();
   const showCodeSearchToggle =
     aiEngine === "claude-agent-sdk" && !!sourceRoot;
   const [isDragOver, setIsDragOver] = useState(false);
@@ -528,12 +668,191 @@ function InputPhase() {
           </label>
         ) : null}
 
-        <div className="flex items-center justify-end gap-2 border-t border-border/40 pt-3">
-          <Button onClick={analyze} disabled={!canAnalyze}>
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/40 pt-3">
+          {/* Per-run model picker. Picks up the current default from the
+              status bar / settings, but lets the user swap for just this
+              generation. Hidden providers (no key, wrong engine) drop out
+              automatically so the dropdown only ever shows usable choices. */}
+          <ModelPicker
+            value={activeModelId}
+            onChange={(id) =>
+              setOverrideModelId(id === defaultModelId ? null : id)
+            }
+            filter={availability.isAvailable}
+            side="top"
+            align="start"
+            emptyMessage={
+              aiEngine === "claude-agent-sdk" ? (
+                <>
+                  Claude Code drives Anthropic models only. Switch engines in
+                  Settings → Models for BYOK access.
+                </>
+              ) : (
+                <>No providers connected. Add one in Settings → Models.</>
+              )
+            }
+            trigger={({ provider }) => (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    className={cn(
+                      // Two visual states, both with their own scope tag so
+                      // there's no ambiguity about whether this run inherits
+                      // the persisted default or carries a per-run swap.
+                      // Override gets the primary accent; the default-state
+                      // chip stays understated so the picker reads as a hint,
+                      // not a CTA.
+                      "inline-flex h-8 items-center gap-2 rounded-md border bg-card px-2.5 text-[11.5px] transition-colors hover:border-primary/60",
+                      overrideModelId
+                        ? "border-primary/50 bg-primary/[0.06]"
+                        : "border-border/60",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "rounded-sm px-1 py-px font-mono text-[9.5px] uppercase tracking-wide",
+                        overrideModelId
+                          ? "bg-primary/15 text-primary"
+                          : "bg-foreground/[0.06] text-muted-foreground",
+                      )}
+                    >
+                      {overrideModelId ? "run-only" : "default"}
+                    </span>
+                    <ProviderIcon provider={provider} size={12} />
+                    <span className="max-w-[180px] truncate font-medium">
+                      {activeModel.label}
+                    </span>
+                    <span className="font-mono text-[10px] text-muted-foreground/85">
+                      · {activeModel.hint.toLowerCase()}
+                    </span>
+                    <HugeiconsIcon
+                      icon={ArrowDown01Icon}
+                      size={10}
+                      strokeWidth={2}
+                      className="opacity-60"
+                    />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="top"
+                  variant="panel"
+                  className="max-w-[300px] px-3 py-2 text-[11px] leading-relaxed"
+                >
+                  {overrideModelId ? (
+                    <p>
+                      <span className="font-medium">Run-only override.</span>{" "}
+                      This generation uses{" "}
+                      <span className="font-mono">{activeModel.label}</span>{" "}
+                      instead of the default{" "}
+                      <span className="font-mono">{defaultModel.label}</span>.
+                      The choice resets when you start a new session.
+                    </p>
+                  ) : (
+                    <p>
+                      <span className="font-medium">Default model.</span> Pick
+                      a different one here to swap models for just this run —
+                      it won't change the persisted default in the status bar
+                      / settings.
+                    </p>
+                  )}
+                </TooltipContent>
+              </Tooltip>
+            )}
+          />
+          {overrideModelId ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  onClick={() => setOverrideModelId(null)}
+                  aria-label="Use default model"
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <HugeiconsIcon
+                    icon={RefreshIcon}
+                    size={10}
+                    strokeWidth={1.75}
+                  />
+                  Use default
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent
+                side="top"
+                variant="panel"
+                className="max-w-[280px] px-3 py-2 text-[11px] leading-relaxed"
+              >
+                Drop the per-run override and use the persisted default (
+                <span className="font-mono">{defaultModel.label}</span>).
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
+          <span className="flex-1" />
+          {hasDraft ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  onClick={() => void sessionStore.getState().goToReview()}
+                  aria-label="Back to current draft"
+                >
+                  <HugeiconsIcon icon={ArrowLeft02Icon} size={11} strokeWidth={2} />
+                  Back to draft
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-[260px] text-[11px]">
+                You have {draftCases.length} case
+                {draftCases.length === 1 ? "" : "s"} in review. Pick up where
+                you left off instead of re-running the analyzer.
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
+          <Button
+            onClick={() => {
+              if (hasDraft) setReAnalyzeOpen(true);
+              else void analyze();
+            }}
+            disabled={!canAnalyze}
+          >
             <HugeiconsIcon icon={PlayIcon} size={11} strokeWidth={2} />
-            Analyze
+            {hasDraft ? "Re-analyze" : "Analyze"}
           </Button>
         </div>
+
+        {/* Re-analyze confirm. Discarding a hand-edited draft because of a
+            stray click is the kind of silent loss the user explicitly
+            asked us to prevent — surface it once with a clear cost. */}
+        <AlertDialog open={reAnalyzeOpen} onOpenChange={setReAnalyzeOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                Discard the current draft and re-analyze?
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                You have {draftCases.length} case
+                {draftCases.length === 1 ? "" : "s"}
+                {draftBugs.length > 0
+                  ? ` and ${draftBugs.length} bug suggestion${draftBugs.length === 1 ? "" : "s"}`
+                  : ""}{" "}
+                in review, including any manual edits. Re-analyzing replaces
+                that draft with whatever the model returns next — there's no
+                undo for this step.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Keep the draft</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  setReAnalyzeOpen(false);
+                  void analyze();
+                }}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                Discard &amp; re-analyze
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </section>
 
       {/* Preview pane — what the run will actually do. Surfaces the things
@@ -550,25 +869,37 @@ function InputPhase() {
           <PreviewRow
             label="Model"
             value={
-              <ModelPicker
-                value={activeModelId}
-                onChange={(id) =>
-                  setOverrideModelId(id === defaultModelId ? null : id)
-                }
-                side="bottom"
-                align="end"
-                trigger={({ label, provider }) => (
-                  <span className="inline-flex items-center gap-1.5 rounded-sm border border-border/60 bg-card/70 px-1.5 py-0.5 text-[10.5px] transition-colors hover:border-primary/60">
-                    <ProviderIcon provider={provider} size={10} />
-                    <span className="max-w-[140px] truncate">{label}</span>
-                    {overrideModelId ? (
-                      <span className="rounded-sm bg-primary/15 px-1 py-px font-mono text-[9px] text-primary">
-                        override
-                      </span>
-                    ) : null}
+              overrideModelId ? (
+                <span className="inline-flex flex-col items-end gap-0.5">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="rounded-sm bg-primary/15 px-1 py-px font-mono text-[9px] text-primary">
+                      run
+                    </span>
+                    <ProviderIcon provider={activeModel.provider} size={10} />
+                    <span className="max-w-[140px] truncate font-mono text-[10.5px] text-primary/90">
+                      {activeModel.label}
+                    </span>
                   </span>
-                )}
-              />
+                  <span className="inline-flex items-center gap-1.5 text-muted-foreground/70">
+                    <span className="rounded-sm bg-foreground/[0.06] px-1 py-px font-mono text-[9px]">
+                      default
+                    </span>
+                    <span className="max-w-[140px] truncate font-mono text-[10px] line-through decoration-muted-foreground/30">
+                      {defaultModel.label}
+                    </span>
+                  </span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="rounded-sm bg-foreground/[0.06] px-1 py-px font-mono text-[9px] text-muted-foreground">
+                    default
+                  </span>
+                  <ProviderIcon provider={activeModel.provider} size={10} />
+                  <span className="max-w-[140px] truncate font-mono text-[10.5px]">
+                    {activeModel.label}
+                  </span>
+                </span>
+              )
             }
           />
           <PreviewRow
@@ -622,6 +953,12 @@ function AnalyzingPhase() {
   const requirements = useGenerationSession((s) => s.requirements);
   const mode = useGenerationSession((s) => s.mode);
   const activityLog = useGenerationSession((s) => s.activityLog);
+  const attachments = useGenerationSession((s) => s.attachments);
+  // Long specs dominate the analyzing view — collapse anything past ~12
+  // lines / 800 chars by default so the focus stays on the streaming log.
+  const isLongSpec =
+    requirements.length > 800 || requirements.split("\n").length > 12;
+  const [specOpen, setSpecOpen] = useState(!isLongSpec);
 
   // Allow Esc to cancel from any focus.
   useEffect(() => {
@@ -664,11 +1001,47 @@ function AnalyzingPhase() {
         <AnalyzeActivityLog entries={activityLog} />
       </div>
 
-      <Field label={`Requirements (${MODE_LABELS[mode]})`}>
-        <pre className="whitespace-pre-wrap rounded-md border border-border/40 bg-muted/30 px-3 py-2 font-mono text-[11px] text-foreground/80">
-          {requirements.trim()}
-        </pre>
-      </Field>
+      {/* Collapsible spec — defaults to closed for long pastes so the user
+          can keep eyes on the streaming activity log without scrolling
+          past hundreds of lines of requirements. */}
+      <section>
+        <button
+          type="button"
+          onClick={() => setSpecOpen((v) => !v)}
+          className="mb-1.5 flex w-full items-center gap-1.5 rounded-sm px-1 text-left text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <HugeiconsIcon
+            icon={specOpen ? ArrowDown01Icon : ArrowRight01Icon}
+            size={11}
+            strokeWidth={1.75}
+          />
+          <span>Requirements ({MODE_LABELS[mode]})</span>
+          <span className="ml-1 font-mono normal-case text-[9.5px] text-muted-foreground/55">
+            {requirements.length.toLocaleString()} chars
+          </span>
+        </button>
+        {specOpen ? (
+          <pre className="max-h-72 overflow-y-auto whitespace-pre-wrap rounded-md border border-border/40 bg-muted/30 px-3 py-2 font-mono text-[11px] text-foreground/80">
+            {requirements.trim()}
+          </pre>
+        ) : (
+          <p className="line-clamp-2 rounded-md border border-dashed border-border/40 bg-muted/15 px-3 py-2 font-mono text-[11px] italic text-muted-foreground/85">
+            {requirements.trim().slice(0, 280)}
+            {requirements.length > 280 ? "…" : ""}
+          </p>
+        )}
+      </section>
+
+      {/* Attachments the analyst is actually seeing. Read-only here — the
+          analyzing phase is no place to remove inputs mid-run. */}
+      {attachments.length > 0 ? (
+        <section>
+          <h2 className="mb-1.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
+            Attachments ({attachments.length})
+          </h2>
+          <AttachmentList attachments={attachments} />
+        </section>
+      ) : null}
 
       <div>
         <h2 className="mb-1.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
@@ -701,9 +1074,17 @@ function ReviewPhase({
   const bugs = useGenerationSession((s) => s.bugs);
   const setCaseDecision = useGenerationSession((s) => s.setCaseDecision);
   const setBugDecision = useGenerationSession((s) => s.setBugDecision);
+  const setCaseTitle = useGenerationSession((s) => s.setCaseTitle);
+  const setCaseRationale = useGenerationSession((s) => s.setCaseRationale);
+  const setCaseStep = useGenerationSession((s) => s.setCaseStep);
+  const addCaseStep = useGenerationSession((s) => s.addCaseStep);
+  const removeCaseStep = useGenerationSession((s) => s.removeCaseStep);
+  const setBugTitle = useGenerationSession((s) => s.setBugTitle);
+  const setBugReproSteps = useGenerationSession((s) => s.setBugReproSteps);
   const publish = useGenerationSession((s) => s.publish);
   const startNew = useGenerationSession((s) => s.startNew);
   const durationMs = useGenerationSession((s) => s.durationMs);
+  const isRefining = useGenerationSession((s) => s.isRefining);
 
   const kept = useMemo(
     () => cases.filter((c) => c.decision === "keep").length,
@@ -714,28 +1095,51 @@ function ReviewPhase({
     [bugs],
   );
 
-  // Keyboard nav: j/k step through cases, space toggles keep, p publishes.
+  // Keyboard nav: j/k step through the full list (cases first, then bugs).
+  // Indices in [0, cases.length) target cases via [data-case-row=…]; indices
+  // in [cases.length, cases.length + bugs.length) target bugs via
+  // [data-bug-row=…] with the bug-local index. Space toggles keep on whichever
+  // row is focused; p publishes when at least one case is kept.
   const focusedRef = useRef(0);
   useEffect(() => {
-    if (cases.length === 0) return;
+    const total = cases.length + bugs.length;
+    if (total === 0) return;
+    const focusIndex = (n: number) => {
+      const clamped = Math.max(0, Math.min(total - 1, n));
+      focusedRef.current = clamped;
+      const el =
+        clamped < cases.length
+          ? document.querySelector<HTMLElement>(
+              `[data-case-row="${clamped}"]`,
+            )
+          : document.querySelector<HTMLElement>(
+              `[data-bug-row="${clamped - cases.length}"]`,
+            );
+      el?.focus();
+    };
     const onKey = (e: KeyboardEvent) => {
       const t = (document.activeElement as HTMLElement | null)?.tagName ?? "";
+      // Don't hijack typing inside form controls — including the EditableText
+      // editors that swap in <input> / <textarea> when the user clicks a title.
       if (t === "INPUT" || t === "TEXTAREA") return;
       if (e.key === "j") {
-        focusedRef.current = Math.min(cases.length - 1, focusedRef.current + 1);
-        document
-          .querySelector<HTMLElement>(`[data-case-row="${focusedRef.current}"]`)
-          ?.focus();
+        focusIndex(focusedRef.current + 1);
       } else if (e.key === "k") {
-        focusedRef.current = Math.max(0, focusedRef.current - 1);
-        document
-          .querySelector<HTMLElement>(`[data-case-row="${focusedRef.current}"]`)
-          ?.focus();
-      } else if (e.key === " " && focusedRef.current < cases.length) {
-        const c = cases[focusedRef.current];
-        if (c) {
-          e.preventDefault();
-          setCaseDecision(c.uid, c.decision === "keep" ? "skip" : "keep");
+        focusIndex(focusedRef.current - 1);
+      } else if (e.key === " ") {
+        const idx = focusedRef.current;
+        if (idx < cases.length) {
+          const c = cases[idx];
+          if (c) {
+            e.preventDefault();
+            setCaseDecision(c.uid, c.decision === "keep" ? "skip" : "keep");
+          }
+        } else {
+          const b = bugs[idx - cases.length];
+          if (b) {
+            e.preventDefault();
+            setBugDecision(b.uid, b.decision === "keep" ? "skip" : "keep");
+          }
         }
       } else if (e.key.toLowerCase() === "p") {
         if (kept > 0) {
@@ -746,7 +1150,7 @@ function ReviewPhase({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [cases, kept, setCaseDecision, publish]);
+  }, [cases, bugs, kept, setCaseDecision, setBugDecision, publish]);
 
   if (cases.length === 0 && bugs.length === 0) {
     return (
@@ -808,7 +1212,7 @@ function ReviewPhase({
             : ""}
           {durationMs ? ` · ${(durationMs / 1000).toFixed(1)}s` : ""}.
           <span className="ml-2 text-muted-foreground/70">
-            j/k to nav · space to toggle · p to publish
+            j/k to nav cases &amp; bugs · space to toggle · p to publish
           </span>
         </p>
         <Button onClick={() => void publish()} disabled={kept === 0}>
@@ -832,43 +1236,71 @@ function ReviewPhase({
               )}
             >
               <div className="flex items-start gap-2">
-                <button
-                  type="button"
-                  aria-label={c.decision === "keep" ? "Skip" : "Keep"}
-                  onClick={() =>
-                    setCaseDecision(c.uid, c.decision === "keep" ? "skip" : "keep")
-                  }
-                  className={cn(
-                    "mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-sm transition-all duration-150",
-                    c.decision === "keep"
-                      ? "bg-primary/20 text-primary hover:bg-primary/30"
-                      : "bg-foreground/[0.08] text-muted-foreground hover:bg-foreground/[0.12]",
-                  )}
-                >
-                  <HugeiconsIcon
-                    icon={c.decision === "keep" ? CheckmarkCircle02Icon : RemoveCircleIcon}
-                    size={11}
-                    strokeWidth={1.75}
-                  />
-                </button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label={c.decision === "keep" ? "Skip" : "Keep"}
+                      onClick={() =>
+                        setCaseDecision(
+                          c.uid,
+                          c.decision === "keep" ? "skip" : "keep",
+                        )
+                      }
+                      className={cn(
+                        "mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-sm transition-all duration-150",
+                        c.decision === "keep"
+                          ? "bg-primary/20 text-primary hover:bg-primary/30"
+                          : "bg-foreground/[0.08] text-muted-foreground hover:bg-foreground/[0.12]",
+                      )}
+                    >
+                      <HugeiconsIcon
+                        icon={c.decision === "keep" ? CheckmarkCircle02Icon : RemoveCircleIcon}
+                        size={11}
+                        strokeWidth={1.75}
+                      />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" className="text-[11px]">
+                    {c.decision === "keep"
+                      ? "Skip this case (won't be published)"
+                      : "Keep this case (will be published on Publish)"}
+                  </TooltipContent>
+                </Tooltip>
                 <div className="min-w-0 flex-1">
-                  <p
+                  <EditableText
+                    value={c.title}
+                    onCommit={(next) => setCaseTitle(c.uid, next)}
+                    placeholder="(no title — click to edit)"
+                    variant="singleline"
+                    ariaLabel="Case title"
                     className={cn(
-                      "text-[12px] font-medium leading-snug",
-                      c.decision === "skip" && "line-through decoration-foreground/40",
+                      "block text-[12px] font-medium leading-snug",
+                      c.decision === "skip" &&
+                        "line-through decoration-foreground/40",
                     )}
-                  >
-                    {c.title}
-                  </p>
-                  {c.rationale ? (
-                    <p className="mt-0.5 text-[10.5px] text-muted-foreground">
-                      {c.rationale}
-                    </p>
-                  ) : null}
+                  />
+                  <div className="mt-0.5">
+                    <EditableText
+                      value={c.rationale}
+                      onCommit={(next) => setCaseRationale(c.uid, next)}
+                      placeholder="(add a one-line rationale)"
+                      variant="multiline"
+                      ariaLabel="Case rationale"
+                      className="block text-[10.5px] text-muted-foreground"
+                    />
+                  </div>
                 </div>
-                <span className="text-[10px] text-muted-foreground/70">
-                  {c.steps.length} step{c.steps.length === 1 ? "" : "s"}
-                </span>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="cursor-help text-[10px] text-muted-foreground/70">
+                      {c.steps.length} step{c.steps.length === 1 ? "" : "s"}
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="left" className="text-[11px]">
+                    Expand &ldquo;Show steps&rdquo; below to read or edit them
+                  </TooltipContent>
+                </Tooltip>
               </div>
 
               {c.similarMatches.length > 0 ? (
@@ -878,9 +1310,22 @@ function ReviewPhase({
                       key={m.caseId}
                       className="flex items-center gap-1.5 text-[10.5px] text-amber-700 dark:text-amber-300"
                     >
-                      <span className="rounded-sm bg-amber-500/15 px-1 py-px text-[9.5px] font-medium uppercase tracking-wide">
-                        {(m.score * 100).toFixed(0)}%
-                      </span>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="cursor-help rounded-sm bg-amber-500/15 px-1 py-px text-[9.5px] font-medium uppercase tracking-wide">
+                            {(m.score * 100).toFixed(0)}%
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent
+                          side="top"
+                          variant="panel"
+                          className="max-w-[260px] px-3 py-2 text-[11px] leading-relaxed"
+                        >
+                          Title similarity to an existing case in this suite.
+                          You can publish the new case anyway, but ≥85% usually
+                          means the existing case already covers it.
+                        </TooltipContent>
+                      </Tooltip>
                       <span className="truncate">
                         Similar to{" "}
                         <button
@@ -902,23 +1347,86 @@ function ReviewPhase({
                 </div>
               ) : null}
 
-              <details className="ml-6">
-                <summary className="cursor-pointer list-none text-[10.5px] text-muted-foreground hover:text-foreground">
-                  Show steps
+              <details className="ml-6 group/steps">
+                <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[10.5px] text-muted-foreground hover:text-foreground">
+                  <HugeiconsIcon
+                    icon={ArrowRight01Icon}
+                    size={9}
+                    strokeWidth={1.75}
+                    className="transition-transform group-open/steps:rotate-90"
+                  />
+                  <span>Show steps</span>
+                  <span className="font-mono text-[9.5px] text-muted-foreground/55">
+                    · click any field to edit
+                  </span>
                 </summary>
-                <ol className="mt-1 flex flex-col gap-0.5 border-l border-border/40 pl-3 text-[11px]">
+                <ol className="mt-1.5 flex flex-col gap-1 border-l border-border/40 pl-3 text-[11px]">
                   {c.steps.map((s, idx) => (
-                    <li key={idx} className="grid grid-cols-[1fr_1fr] gap-3 py-0.5">
-                      <div className="text-foreground/85">
-                        <span className="mr-1 font-mono text-muted-foreground">
-                          {idx + 1}.
-                        </span>
-                        {s.action}
-                      </div>
-                      <div className="text-muted-foreground">→ {s.expected}</div>
+                    <li
+                      key={idx}
+                      className="group/step grid grid-cols-[auto_1fr_auto_1fr_auto] items-start gap-2 py-0.5"
+                    >
+                      <span className="mt-px font-mono text-[10px] text-muted-foreground/70 tabular-nums">
+                        {String(idx + 1).padStart(2, "0")}
+                      </span>
+                      <EditableText
+                        value={s.action}
+                        onCommit={(next) =>
+                          setCaseStep(c.uid, idx, { action: next })
+                        }
+                        placeholder="(action)"
+                        variant="multiline"
+                        ariaLabel={`Step ${idx + 1} action`}
+                        className="block text-foreground/85"
+                      />
+                      <span className="mt-px shrink-0 text-muted-foreground/60">
+                        →
+                      </span>
+                      <EditableText
+                        value={s.expected}
+                        onCommit={(next) =>
+                          setCaseStep(c.uid, idx, { expected: next })
+                        }
+                        placeholder="(expected)"
+                        variant="multiline"
+                        ariaLabel={`Step ${idx + 1} expected`}
+                        className="block text-muted-foreground"
+                      />
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            aria-label={`Remove step ${idx + 1}`}
+                            disabled={c.steps.length <= 1}
+                            onClick={() => removeCaseStep(c.uid, idx)}
+                            className={cn(
+                              "mt-px inline-flex size-4 items-center justify-center rounded-sm text-muted-foreground/40 opacity-0 transition-all group-hover/step:opacity-100 hover:bg-destructive/15 hover:text-destructive",
+                              c.steps.length <= 1 && "cursor-not-allowed",
+                            )}
+                          >
+                            <HugeiconsIcon
+                              icon={Cancel01Icon}
+                              size={9}
+                              strokeWidth={2}
+                            />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="left" className="text-[11px]">
+                          {c.steps.length <= 1
+                            ? "Cases must have at least one step"
+                            : "Remove this step"}
+                        </TooltipContent>
+                      </Tooltip>
                     </li>
                   ))}
                 </ol>
+                <button
+                  type="button"
+                  onClick={() => addCaseStep(c.uid)}
+                  className="ml-3 mt-1.5 inline-flex items-center gap-1 rounded-sm border border-dashed border-border/50 px-2 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/[0.04] hover:text-primary"
+                >
+                  + add step
+                </button>
               </details>
 
               {c.tags.length > 0 ? (
@@ -940,53 +1448,85 @@ function ReviewPhase({
 
       {bugs.length > 0 ? (
         <section className="mt-1">
+          {/* Bug section heading is intentionally identical to the cases-list
+              header — visual rhythm matters more than verbose nesting. */}
           <h2 className="mb-1.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
             Bug suggestions
           </h2>
           <ul className="flex flex-col gap-1.5">
-            {bugs.map((b) => (
-              <li
-                key={b.uid}
-                className={cn(
-                  "rounded-md border bg-card/40 px-3 py-2",
-                  b.decision === "keep" ? "border-border/60" : "border-border/20 opacity-55",
-                )}
-              >
-                <div className="flex items-start gap-2">
-                  <button
-                    type="button"
-                    aria-label={b.decision === "keep" ? "Skip" : "Keep"}
-                    onClick={() =>
-                      setBugDecision(b.uid, b.decision === "keep" ? "skip" : "keep")
-                    }
-                    className={cn(
-                      "mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-sm transition-colors",
-                      b.decision === "keep"
-                        ? "bg-rose-500/15 text-rose-700 hover:bg-rose-500/25 dark:text-rose-300"
-                        : "bg-foreground/[0.08] text-muted-foreground hover:bg-foreground/[0.12]",
-                    )}
-                  >
-                    <HugeiconsIcon
-                      icon={b.decision === "keep" ? CheckmarkCircle02Icon : RemoveCircleIcon}
-                      size={11}
-                      strokeWidth={1.75}
-                    />
-                  </button>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-start gap-2">
-                      <p className="min-w-0 flex-1 text-[12px] font-medium leading-snug">
-                        {b.title}
-                      </p>
-                      <SeverityBadge severity={b.severity} />
-                    </div>
-                    <BugParentRow bug={b} />
+            {bugs.map((b, i) => (
+              <li key={b.uid}>
+                <div
+                  tabIndex={0}
+                  data-bug-row={i}
+                  className={cn(
+                    "group relative rounded-md border bg-card/40 px-3 py-2 transition-all focus:outline-none focus:ring-2 focus:ring-ring/30",
+                    "focus-visible:before:absolute focus-visible:before:-left-3 focus-visible:before:top-1/2 focus-visible:before:-translate-y-1/2 focus-visible:before:text-rose-500 focus-visible:before:content-['▸']",
+                    b.decision === "keep"
+                      ? "border-border/60"
+                      : "border-border/20 opacity-55",
+                  )}
+                >
+                  <div className="flex items-start gap-2">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          aria-label={b.decision === "keep" ? "Skip" : "Keep"}
+                          onClick={() =>
+                            setBugDecision(
+                              b.uid,
+                              b.decision === "keep" ? "skip" : "keep",
+                            )
+                          }
+                          className={cn(
+                            "mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded-sm transition-colors",
+                            b.decision === "keep"
+                              ? "bg-rose-500/15 text-rose-700 hover:bg-rose-500/25 dark:text-rose-300"
+                              : "bg-foreground/[0.08] text-muted-foreground hover:bg-foreground/[0.12]",
+                          )}
+                        >
+                          <HugeiconsIcon
+                            icon={b.decision === "keep" ? CheckmarkCircle02Icon : RemoveCircleIcon}
+                            size={11}
+                            strokeWidth={1.75}
+                          />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="right" className="text-[11px]">
+                        {b.decision === "keep"
+                          ? "Skip this bug (won't be filed)"
+                          : "Keep this bug (will be filed as a child of its parent case)"}
+                      </TooltipContent>
+                    </Tooltip>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-start gap-2">
+                        <EditableText
+                          value={b.title}
+                          onCommit={(next) => setBugTitle(b.uid, next)}
+                          placeholder="(no title — click to edit)"
+                          variant="singleline"
+                          ariaLabel="Bug title"
+                          className="block min-w-0 flex-1 text-[12px] font-medium leading-snug"
+                        />
+                        <SeverityBadge severity={b.severity} />
+                      </div>
+                      <BugParentRow bug={b} />
 
-                    <p className="mt-1 whitespace-pre-wrap text-[11px] text-foreground/85">
-                      {b.reproSteps}
-                    </p>
-                    {b.codeRefs && b.codeRefs.length > 0 ? (
-                      <BugCodeRefChips refs={b.codeRefs} />
-                    ) : null}
+                      <div className="mt-1">
+                        <EditableText
+                          value={b.reproSteps}
+                          onCommit={(next) => setBugReproSteps(b.uid, next)}
+                          placeholder="(add repro steps — click to edit)"
+                          variant="multiline"
+                          ariaLabel="Bug repro steps"
+                          className="block whitespace-pre-wrap text-[11px] text-foreground/85"
+                        />
+                      </div>
+                      {b.codeRefs && b.codeRefs.length > 0 ? (
+                        <BugCodeRefChips refs={b.codeRefs} />
+                      ) : null}
+                    </div>
                   </div>
                 </div>
               </li>
@@ -994,6 +1534,14 @@ function ReviewPhase({
           </ul>
         </section>
       ) : null}
+
+      {/* Follow-up composer — sits at the bottom of the review pane so the
+          user can iterate on the draft without leaving review. Renders its
+          own running-state strip with the streaming log while a refine is
+          in flight (mirrors the analyze phase). */}
+      <div className="mt-3 border-t border-dashed border-border/40 pt-3">
+        <RefineComposer isRefining={isRefining} />
+      </div>
     </div>
   );
 }
@@ -1218,7 +1766,7 @@ type ErrorClass = {
  *  instead of just dumping the text. */
 function classifyError(
   message: string,
-  errorPhase: ReturnType<typeof useGenerationSession.getState>["errorPhase"],
+  errorPhase: SessionState["errorPhase"],
 ): ErrorClass {
   const lower = message.toLowerCase();
 
@@ -1269,6 +1817,34 @@ function classifyError(
       steps: [
         "Install Claude Code from claude.ai/code if you haven't.",
         "In Models settings, re-detect the CLI and run setup-token if the auth status is empty.",
+      ],
+      primary: {
+        label: "Open AI / Models",
+        icon: AiBrain01Icon,
+        onClick: () => void openSettingsWindow("models"),
+      },
+    };
+  }
+
+  if (
+    /claude exited with code/.test(lower) ||
+    /could not spawn claude/.test(lower) ||
+    /non-zero-exit/.test(lower)
+  ) {
+    // The CLI ran but exited non-zero — the tail of stderr is appended to
+    // the message by claudeErrorMessage. Surface that as the "why" so the
+    // user sees the actual reason (bad model, missing key, etc.) instead
+    // of a generic "Something went wrong".
+    return {
+      code: "CLAUDE/01 · NON-ZERO-EXIT",
+      title: "Claude Code CLI failed mid-run",
+      icon: PlugSocketIcon,
+      tone: "auth",
+      why: message,
+      steps: [
+        "Open Settings → Models and re-detect the CLI — re-run setup-token if Authenticated isn't green.",
+        "If the engine is set to Claude Code, make sure the active model is an Anthropic one (Opus / Sonnet / Haiku).",
+        "If you're on the Anthropic API-key auth mode, verify the key under Providers → Anthropic.",
       ],
       primary: {
         label: "Open AI / Models",
@@ -1595,7 +2171,7 @@ function ErrorPhase() {
 function PublishLogList({
   log,
 }: {
-  log: ReturnType<typeof useGenerationSession.getState>["publishLog"];
+  log: SessionState["publishLog"];
 }) {
   return (
     <ul className="divide-y divide-border/40 overflow-hidden rounded-md border border-border/60 bg-card/40">

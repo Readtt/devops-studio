@@ -18,31 +18,60 @@ export type ThemePref = "system" | "light" | "dark";
 export type AiEngine = "vercel-ai-sdk" | "claude-agent-sdk";
 export type ClaudeAuthMode = "max-oauth" | "api-key";
 
+/**
+ * Editor theme families. Each id resolves to a dark or light variant based on
+ * the app's resolved theme. Themes that only have one upstream variant (atom-
+ * one is dark-only, etc.) fall back to a sensible counterpart so picking
+ * "Atom One" never strands you on an unreadable color combination when the
+ * OS / app theme flips.
+ *
+ * Legacy ids ("devops-studio-dark", "github-dark", "github-light", "xcode-dark",
+ * "xcode-light") are kept in EDITOR_THEME_LEGACY_MAP so old preference files
+ * migrate transparently the first time they load.
+ */
 export const EDITOR_THEMES = [
-  "atomone",
+  "devops-studio",
+  "github",
+  "xcode",
+  "atom-one",
   "aura",
   "copilot",
-  "github-dark",
-  "github-light",
   "nord",
   "tokyo-night",
-  "xcode-dark",
-  "xcode-light",
 ] as const;
 
 export type EditorThemeId = (typeof EDITOR_THEMES)[number];
 
 export const EDITOR_THEME_LABELS: Record<EditorThemeId, string> = {
-  atomone: "Atom One",
+  "devops-studio": "DevOps Studio",
+  github: "GitHub",
+  xcode: "Xcode",
+  "atom-one": "Atom One",
   aura: "Aura",
   copilot: "Copilot",
-  "github-dark": "GitHub Dark",
-  "github-light": "GitHub Light",
   nord: "Nord",
   "tokyo-night": "Tokyo Night",
-  "xcode-dark": "Xcode Dark",
-  "xcode-light": "Xcode Light",
 };
+
+/** Map the legacy variant-specific ids onto the new family ids so the user
+ *  doesn't have to re-pick their theme after the upgrade. */
+const EDITOR_THEME_LEGACY_MAP: Record<string, EditorThemeId> = {
+  "devops-studio-dark": "devops-studio",
+  "devops-studio-light": "devops-studio",
+  "github-dark": "github",
+  "github-light": "github",
+  "xcode-dark": "xcode",
+  "xcode-light": "xcode",
+  atomone: "atom-one",
+};
+
+function normalizeEditorTheme(raw: unknown): EditorThemeId {
+  if (typeof raw !== "string") return DEFAULT_PREFERENCES.editorTheme;
+  if ((EDITOR_THEMES as readonly string[]).includes(raw)) {
+    return raw as EditorThemeId;
+  }
+  return EDITOR_THEME_LEGACY_MAP[raw] ?? DEFAULT_PREFERENCES.editorTheme;
+}
 
 export type Preferences = {
   theme: ThemePref;
@@ -82,10 +111,17 @@ export type Preferences = {
   /** Absolute path to the user's source directory. Code-link rows in the Bug
    *  pane resolve relative paths against this when opening the code viewer. */
   sourceRoot: string | null;
-  /** Set to true the first time the user finishes (or skips through) the
-   *  first-run onboarding wizard. The wizard only auto-opens when this is
-   *  false; a "re-run setup" button in settings can reset and re-trigger it. */
-  onboardingComplete: boolean;
+  // Code editor preferences — applied to the read-only CodeMirror pane.
+  /** Editor font size in px. */
+  editorFontSize: number;
+  /** Show line numbers in the editor gutter. */
+  editorLineNumbers: boolean;
+  /** Soft-wrap long lines instead of horizontal scrolling. */
+  editorWordWrap: boolean;
+  /** Highlight the currently-active line. */
+  editorHighlightActiveLine: boolean;
+  /** Width of a tab character in spaces. */
+  editorTabSize: number;
 };
 
 const STORE_PATH = "devops-studio-settings.json";
@@ -123,7 +159,17 @@ const KEY_SHORTCUTS = "shortcuts";
 const KEY_AI_ENGINE = "aiEngine";
 const KEY_CLAUDE_AUTH_MODE = "claudeAuthMode";
 const KEY_SOURCE_ROOT = "sourceRoot";
-const KEY_ONBOARDING_COMPLETE = "onboardingComplete";
+const KEY_EDITOR_FONT_SIZE = "editorFontSize";
+const KEY_EDITOR_LINE_NUMBERS = "editorLineNumbers";
+const KEY_EDITOR_WORD_WRAP = "editorWordWrap";
+const KEY_EDITOR_HIGHLIGHT_ACTIVE_LINE = "editorHighlightActiveLine";
+const KEY_EDITOR_TAB_SIZE = "editorTabSize";
+
+export const EDITOR_FONT_SIZE_DEFAULT = 12.5;
+export const EDITOR_FONT_SIZE_MIN = 10;
+export const EDITOR_FONT_SIZE_MAX = 22;
+export const EDITOR_FONT_SIZES = [10, 11, 12, 12.5, 13, 14, 15, 16, 18, 20, 22] as const;
+export const EDITOR_TAB_SIZES = [2, 4, 8] as const;
 
 export const TERMINAL_FONT_SIZE_DEFAULT = 14;
 export const TERMINAL_FONT_SIZE_MIN = 8;
@@ -143,7 +189,7 @@ export const TERMINAL_SCROLLBACK_PRESETS = [
 export const DEFAULT_PREFERENCES: Preferences = {
   theme: "system",
   defaultModelId: DEFAULT_MODEL_ID,
-  editorTheme: "atomone",
+  editorTheme: "devops-studio",
   customInstructions: "",
   autostart: false,
   restoreWindowState: true,
@@ -174,7 +220,11 @@ export const DEFAULT_PREFERENCES: Preferences = {
   aiEngine: "vercel-ai-sdk",
   claudeAuthMode: "api-key",
   sourceRoot: null,
-  onboardingComplete: false,
+  editorFontSize: EDITOR_FONT_SIZE_DEFAULT,
+  editorLineNumbers: true,
+  editorWordWrap: false,
+  editorHighlightActiveLine: true,
+  editorTabSize: 2,
 };
 
 const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
@@ -201,8 +251,7 @@ export async function loadPreferences(): Promise<Preferences> {
     theme: get<ThemePref>(KEY_THEME) ?? DEFAULT_PREFERENCES.theme,
     defaultModelId:
       get<ModelId>(KEY_DEFAULT_MODEL) ?? DEFAULT_PREFERENCES.defaultModelId,
-    editorTheme:
-      get<EditorThemeId>(KEY_EDITOR_THEME) ?? DEFAULT_PREFERENCES.editorTheme,
+    editorTheme: normalizeEditorTheme(get<unknown>(KEY_EDITOR_THEME)),
     customInstructions:
       get<string>(KEY_CUSTOM_INSTRUCTIONS) ??
       DEFAULT_PREFERENCES.customInstructions,
@@ -279,9 +328,19 @@ export async function loadPreferences(): Promise<Preferences> {
       DEFAULT_PREFERENCES.claudeAuthMode,
     sourceRoot:
       get<string | null>(KEY_SOURCE_ROOT) ?? DEFAULT_PREFERENCES.sourceRoot,
-    onboardingComplete:
-      get<boolean>(KEY_ONBOARDING_COMPLETE) ??
-      DEFAULT_PREFERENCES.onboardingComplete,
+    editorFontSize: clampEditorFontSize(
+      get<number>(KEY_EDITOR_FONT_SIZE) ?? DEFAULT_PREFERENCES.editorFontSize,
+    ),
+    editorLineNumbers:
+      get<boolean>(KEY_EDITOR_LINE_NUMBERS) ??
+      DEFAULT_PREFERENCES.editorLineNumbers,
+    editorWordWrap:
+      get<boolean>(KEY_EDITOR_WORD_WRAP) ?? DEFAULT_PREFERENCES.editorWordWrap,
+    editorHighlightActiveLine:
+      get<boolean>(KEY_EDITOR_HIGHLIGHT_ACTIVE_LINE) ??
+      DEFAULT_PREFERENCES.editorHighlightActiveLine,
+    editorTabSize:
+      get<number>(KEY_EDITOR_TAB_SIZE) ?? DEFAULT_PREFERENCES.editorTabSize,
   };
 }
 
@@ -295,10 +354,6 @@ export async function setClaudeAuthMode(value: ClaudeAuthMode): Promise<void> {
 
 export async function setSourceRoot(value: string | null): Promise<void> {
   await writePref(KEY_SOURCE_ROOT, value);
-}
-
-export async function setOnboardingComplete(value: boolean): Promise<void> {
-  await writePref(KEY_ONBOARDING_COMPLETE, value);
 }
 
 export async function setTheme(value: ThemePref): Promise<void> {
@@ -419,6 +474,37 @@ export async function setTerminalFontSize(value: number): Promise<void> {
   await writePref(KEY_TERMINAL_FONT_SIZE, clamped);
 }
 
+function clampEditorFontSize(value: number): number {
+  if (!Number.isFinite(value)) return EDITOR_FONT_SIZE_DEFAULT;
+  // Round to the nearest 0.5 so the slider lands on consistent steps.
+  const rounded = Math.round(value * 2) / 2;
+  return Math.min(
+    EDITOR_FONT_SIZE_MAX,
+    Math.max(EDITOR_FONT_SIZE_MIN, rounded),
+  );
+}
+
+export async function setEditorFontSize(value: number): Promise<void> {
+  await writePref(KEY_EDITOR_FONT_SIZE, clampEditorFontSize(value));
+}
+export async function setEditorLineNumbers(value: boolean): Promise<void> {
+  await writePref(KEY_EDITOR_LINE_NUMBERS, value);
+}
+export async function setEditorWordWrap(value: boolean): Promise<void> {
+  await writePref(KEY_EDITOR_WORD_WRAP, value);
+}
+export async function setEditorHighlightActiveLine(
+  value: boolean,
+): Promise<void> {
+  await writePref(KEY_EDITOR_HIGHLIGHT_ACTIVE_LINE, value);
+}
+export async function setEditorTabSize(value: number): Promise<void> {
+  const clamped = EDITOR_TAB_SIZES.includes(value as (typeof EDITOR_TAB_SIZES)[number])
+    ? value
+    : DEFAULT_PREFERENCES.editorTabSize;
+  await writePref(KEY_EDITOR_TAB_SIZE, clamped);
+}
+
 function clampScrollback(value: number): number {
   if (!Number.isFinite(value)) return TERMINAL_SCROLLBACK_DEFAULT;
   return Math.min(
@@ -491,7 +577,11 @@ export async function onPreferencesChange(
     [KEY_AI_ENGINE]: "aiEngine",
     [KEY_CLAUDE_AUTH_MODE]: "claudeAuthMode",
     [KEY_SOURCE_ROOT]: "sourceRoot",
-    [KEY_ONBOARDING_COMPLETE]: "onboardingComplete",
+    [KEY_EDITOR_FONT_SIZE]: "editorFontSize",
+    [KEY_EDITOR_LINE_NUMBERS]: "editorLineNumbers",
+    [KEY_EDITOR_WORD_WRAP]: "editorWordWrap",
+    [KEY_EDITOR_HIGHLIGHT_ACTIVE_LINE]: "editorHighlightActiveLine",
+    [KEY_EDITOR_TAB_SIZE]: "editorTabSize",
   };
   // Same-process writes still fire onChange immediately; cross-window writes
   // arrive via the Tauri event emitted by writePref().
