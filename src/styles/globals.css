@@ -59,11 +59,11 @@
     --card-foreground: oklch(0.148 0.004 228.8);
     --popover: oklch(1 0 0);
     --popover-foreground: oklch(0.148 0.004 228.8);
-    /* Signature mint-emerald — light-mode reads as a deep, almost forest tone
-     * for legibility against white. Used for the publish CTA, kept-case
-     * indicators, ADO connected dot, and active-row accent. Semantics:
-     * "test pass / green path". */
-    --primary: oklch(0.52 0.13 150);
+    /* Signature Azure DevOps blue (#0078D4) — light-mode tuned slightly
+     * deeper for legibility against white. Used for the publish CTA, kept-
+     * case indicators, ADO connected dot, and active-row accent. Picks the
+     * hue from the platform the app is built around. */
+    --primary: oklch(0.55 0.16 244);
     --primary-foreground: oklch(0.987 0.002 197.1);
     --secondary: oklch(0.963 0.002 197.1);
     --secondary-foreground: oklch(0.218 0.008 223.9);
@@ -74,7 +74,7 @@
     --destructive: oklch(0.577 0.245 27.325);
     --border: oklch(0.925 0.005 214.3);
     --input: oklch(0.925 0.005 214.3);
-    --ring: oklch(0.52 0.13 150 / 0.5);
+    --ring: oklch(0.55 0.16 244 / 0.5);
     --chart-1: oklch(0.872 0.007 219.6);
     --chart-2: oklch(0.56 0.021 213.5);
     --chart-3: oklch(0.45 0.017 213.2);
@@ -103,10 +103,10 @@
     --card-foreground: oklch(0.987 0.002 197.1);
     --popover: oklch(0.14 0.003 240);
     --popover-foreground: oklch(0.987 0.002 197.1);
-    /* Signature mint-emerald, dark-mode tuned — high chroma, mid lightness so
-     * it pops against pure black without burning the retina. Same hue as
-     * light mode so the brand identity holds across themes. */
-    --primary: oklch(0.74 0.15 150);
+    /* Signature Azure DevOps blue, dark-mode tuned — brighter sky tone so
+     * it stays vibrant against pure black. Same hue (244) as light mode for
+     * brand continuity. */
+    --primary: oklch(0.7 0.17 244);
     --primary-foreground: oklch(0.14 0.003 240);
     --secondary: oklch(0.2 0.004 240);
     --secondary-foreground: oklch(0.987 0.002 197.1);
@@ -117,7 +117,7 @@
     --destructive: oklch(0.704 0.191 22.216);
     --border: oklch(1 0 0 / 12%);
     --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.74 0.15 150 / 0.5);
+    --ring: oklch(0.7 0.17 244 / 0.5);
     --chart-1: oklch(0.872 0.007 219.6);
     --chart-2: oklch(0.56 0.021 213.5);
     --chart-3: oklch(0.45 0.017 213.2);
