@@ -32,7 +32,8 @@ src-tauri/gen/schemas
 # OS junk
 Thumbs.db
 
-.github/
+# Upstream-inherited docs that don't apply to DevOps Studio yet — keep
+# ignored until rewritten for this project.
 docs/
 CHANGELOG.md
 ROADMAP.md
@@ -40,3 +41,7 @@ CONTRIBUTING.md
 SECURITY.md
 CODE_OF_CONDUCT.md
 AGENTS.md
+
+# Stale Terax screenshots from the upstream `.github/assets/`; keep ignored
+# until DevOps-Studio-specific screenshots replace them.
+.github/assets/
