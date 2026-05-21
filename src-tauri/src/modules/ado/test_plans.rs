@@ -24,10 +24,16 @@ pub async fn list_plans(state: &AdoState) -> AdoResult<Vec<TestPlanRef>> {
 pub async fn list_suites(state: &AdoState, plan_id: i64) -> AdoResult<Vec<SuiteRef>> {
     let (conn, _) = state.snapshot();
     let conn = conn.ok_or(AdoError::NotConfigured)?;
-    let url = project_api(
-        &conn,
-        &format!("testplan/Plans/{plan_id}/suites?asTreeView=true"),
-    );
+    // The default response is a flat list of every suite in the plan with
+    // `parentSuite: { id, name }` populated for every non-root suite — which
+    // is exactly what buildSuiteTree on the frontend wants.
+    //
+    // We previously sent `asTreeView=true`, but that returns a NESTED payload:
+    // only the root suite appears at the top level, with descendants tucked
+    // into a `children` field that our flat RawSuite deserializer can't see.
+    // The result was "No suites in this plan." for every plan with real
+    // suites, because the root suite was the only thing we ever parsed.
+    let url = project_api(&conn, &format!("testplan/Plans/{plan_id}/suites"));
     let resp: PagedResponse<RawSuite> = get_json(state, &url, "suites").await?;
     Ok(resp.value.into_iter().map(RawSuite::into_ref).collect())
 }
