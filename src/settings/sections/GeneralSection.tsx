@@ -1,8 +1,13 @@
+import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { ThemePref } from "@/modules/settings/store";
-import { setAutostart, setRestoreWindowState } from "@/modules/settings/store";
+import {
+  setAutostart,
+  setOnboardingComplete,
+  setRestoreWindowState,
+} from "@/modules/settings/store";
 import { useTheme } from "@/modules/theme";
 import { ComputerIcon, Moon02Icon, Sun03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -104,6 +109,22 @@ export function GeneralSection() {
             />
           </SettingRow>
         </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <Label>Setup</Label>
+        <SettingRow
+          title="Re-run onboarding"
+          description="Walks through Azure DevOps + AI provider + source directory again on the next focus of the main window."
+        >
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void setOnboardingComplete(false)}
+          >
+            Re-run setup
+          </Button>
+        </SettingRow>
       </div>
     </div>
   );

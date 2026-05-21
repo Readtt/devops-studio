@@ -33,6 +33,7 @@ import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { getModel } from "@/modules/ai/config";
+import { OnboardingDialog } from "@/modules/onboarding";
 import type { Tab } from "@/modules/tabs/lib/useTabs";
 import {
   AlertCircleIcon,
@@ -701,10 +702,25 @@ export default function App() {
           />
 
           <UpdaterDialog />
+          <OnboardingGate />
         </div>
       </TooltipProvider>
     </ThemeProvider>
   );
+}
+
+/** Opens the first-run onboarding wizard when preferences indicate it hasn't
+ *  been completed. Renders nothing once the flag flips so the dialog can't
+ *  reappear over normal usage. */
+function OnboardingGate() {
+  const onboardingComplete = usePreferencesStore((s) => s.onboardingComplete);
+  const [open, setOpen] = useState(!onboardingComplete);
+  // If the user re-runs onboarding from settings, the prefs flag flips back
+  // to false; reopen automatically so the dialog can be triggered remotely.
+  useEffect(() => {
+    if (!onboardingComplete) setOpen(true);
+  }, [onboardingComplete]);
+  return <OnboardingDialog open={open} onClose={() => setOpen(false)} />;
 }
 
 /**

@@ -82,6 +82,10 @@ export type Preferences = {
   /** Absolute path to the user's source directory. Code-link rows in the Bug
    *  pane resolve relative paths against this when opening the code viewer. */
   sourceRoot: string | null;
+  /** Set to true the first time the user finishes (or skips through) the
+   *  first-run onboarding wizard. The wizard only auto-opens when this is
+   *  false; a "re-run setup" button in settings can reset and re-trigger it. */
+  onboardingComplete: boolean;
 };
 
 const STORE_PATH = "devops-studio-settings.json";
@@ -119,6 +123,7 @@ const KEY_SHORTCUTS = "shortcuts";
 const KEY_AI_ENGINE = "aiEngine";
 const KEY_CLAUDE_AUTH_MODE = "claudeAuthMode";
 const KEY_SOURCE_ROOT = "sourceRoot";
+const KEY_ONBOARDING_COMPLETE = "onboardingComplete";
 
 export const TERMINAL_FONT_SIZE_DEFAULT = 14;
 export const TERMINAL_FONT_SIZE_MIN = 8;
@@ -169,6 +174,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   aiEngine: "vercel-ai-sdk",
   claudeAuthMode: "api-key",
   sourceRoot: null,
+  onboardingComplete: false,
 };
 
 const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
@@ -273,6 +279,9 @@ export async function loadPreferences(): Promise<Preferences> {
       DEFAULT_PREFERENCES.claudeAuthMode,
     sourceRoot:
       get<string | null>(KEY_SOURCE_ROOT) ?? DEFAULT_PREFERENCES.sourceRoot,
+    onboardingComplete:
+      get<boolean>(KEY_ONBOARDING_COMPLETE) ??
+      DEFAULT_PREFERENCES.onboardingComplete,
   };
 }
 
@@ -286,6 +295,10 @@ export async function setClaudeAuthMode(value: ClaudeAuthMode): Promise<void> {
 
 export async function setSourceRoot(value: string | null): Promise<void> {
   await writePref(KEY_SOURCE_ROOT, value);
+}
+
+export async function setOnboardingComplete(value: boolean): Promise<void> {
+  await writePref(KEY_ONBOARDING_COMPLETE, value);
 }
 
 export async function setTheme(value: ThemePref): Promise<void> {
@@ -478,6 +491,7 @@ export async function onPreferencesChange(
     [KEY_AI_ENGINE]: "aiEngine",
     [KEY_CLAUDE_AUTH_MODE]: "claudeAuthMode",
     [KEY_SOURCE_ROOT]: "sourceRoot",
+    [KEY_ONBOARDING_COMPLETE]: "onboardingComplete",
   };
   // Same-process writes still fire onChange immediately; cross-window writes
   // arrive via the Tauri event emitted by writePref().
