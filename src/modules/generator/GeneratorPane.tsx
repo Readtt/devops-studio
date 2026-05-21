@@ -40,6 +40,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { AnalyzeActivityLog } from "./components/AnalyzeActivityLog";
 import { AttachmentList } from "./components/AttachmentList";
+import { TargetContextChip } from "./components/TargetContextChip";
 import {
   ingestFile,
   synthesizeClipboardImageName,
@@ -288,6 +289,13 @@ function InputPhase() {
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_280px]">
       <section className="flex min-w-0 flex-col gap-3">
         <Field label="Requirements / feature spec">
+          {planId !== null && suiteId !== null ? (
+            <TargetContextChip
+              planId={planId}
+              suiteId={suiteId}
+              className="mb-1.5"
+            />
+          ) : null}
           <div
             onDragEnter={(e) => {
               e.preventDefault();

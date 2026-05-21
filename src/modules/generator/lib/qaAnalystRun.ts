@@ -31,10 +31,31 @@ export type RunAttachment = {
   sizeBytes?: number;
 };
 
+/** Target plan + suite context surfaced to the model so generated cases
+ *  inherit the right area/iteration and the AI knows the suite hierarchy
+ *  it's writing for — not just a dedup list of existing titles. */
+export type TargetContext = {
+  planId: number;
+  planName: string | null;
+  suiteId: number;
+  suiteName: string | null;
+  /** Names of ancestor suites from root → parent of current suite. Empty
+   *  array when the suite is directly under the plan root. */
+  suitePath: string[];
+  /** Default Azure DevOps area path the plan was created under. Generated
+   *  cases inherit this unless the model overrides. */
+  areaPath: string | null;
+  /** Default ADO iteration path for the plan. */
+  iterationPath: string | null;
+};
+
 export type RunInput = {
   requirements: string;
   attachments: RunAttachment[];
   existingCaseTitles: Pick<TestCaseRef, "id" | "title">[];
+  /** Plan/suite the generator will publish into. The runner embeds this in
+   *  the user prompt so the model knows where these cases live. */
+  targetContext?: TargetContext | null;
   mode: GenerationMode;
   /** Provider keys hydrated from the OS keychain (chatStore.apiKeys). */
   keys: ProviderKeys;
@@ -136,9 +157,12 @@ function buildUserPrompt(input: RunInput): string {
       : "\n\nSource code attached for grounding:\n\n" +
         input.attachments.map(formatAttachmentBlock).join("\n\n");
 
+  const targetBlock = renderTargetContext(input.targetContext);
+
   return [
     modeLine,
     "",
+    targetBlock,
     "Feature requirements:",
     input.requirements.trim(),
     "",
@@ -147,7 +171,43 @@ function buildUserPrompt(input: RunInput): string {
     "",
     "Return ONLY the DraftBatch JSON. Schema:",
     JSON.stringify(DRAFT_BATCH_SHAPE, null, 2),
-  ].join("\n");
+  ]
+    .filter((line) => line !== null)
+    .join("\n");
+}
+
+/** Build the TARGET CONTEXT block embedded near the top of the user prompt.
+ *  Returns an empty string when no context is available — the prompt then
+ *  proceeds without it. */
+export function renderTargetContext(
+  ctx: TargetContext | null | undefined,
+): string {
+  if (!ctx) return "";
+  const planLine = ctx.planName
+    ? `- Plan: ${ctx.planName} (#${ctx.planId})`
+    : `- Plan: #${ctx.planId}`;
+  const suiteWithPath = ctx.suitePath.length > 0
+    ? `${ctx.suitePath.join(" › ")} › ${ctx.suiteName ?? `#${ctx.suiteId}`}`
+    : ctx.suiteName ?? `#${ctx.suiteId}`;
+  const suiteLine = `- Suite: ${suiteWithPath} (#${ctx.suiteId})`;
+  const areaLine = ctx.areaPath
+    ? `- Default area path: ${ctx.areaPath}`
+    : null;
+  const iterLine = ctx.iterationPath
+    ? `- Default iteration path: ${ctx.iterationPath}`
+    : null;
+  return [
+    "TARGET CONTEXT — these are the test plan and suite the cases will be",
+    "published into. Cases inherit the default area / iteration unless your",
+    "draft overrides them explicitly.",
+    planLine,
+    suiteLine,
+    areaLine,
+    iterLine,
+    "",
+  ]
+    .filter((line): line is string => line !== null)
+    .join("\n");
 }
 
 /** Schema-shape hint embedded in the prompt — keeps the model honest. */

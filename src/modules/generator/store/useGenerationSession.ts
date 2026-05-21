@@ -5,16 +5,21 @@ import {
   createBugAndLink,
   getConnection,
   indexCaseLinks,
+  listPlans,
   listSuiteCases,
+  listSuites,
   toAdoError,
   type AdoError,
   type CreatedWorkItem,
   type DraftCase as AdoDraftCase,
+  type SuiteRef,
+  type TestPlanRef,
 } from "@/modules/ado";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import {
   type GenerationMode as Mode,
   type RunResult,
+  type TargetContext,
   runQaAnalyst,
 } from "../lib/qaAnalystRun";
 import { runQaAnalystClaude } from "../lib/qaAnalystRunClaude";
@@ -243,6 +248,7 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
     };
 
     let existingCaseTitles: { id: number; title: string }[] = [];
+    let targetContext: TargetContext | null = null;
     if (planId && suiteId) {
       try {
         existingCaseTitles = (await listSuiteCases(planId, suiteId)).map(
@@ -251,6 +257,12 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
       } catch (e) {
         // Non-fatal — duplicate detection just won't fire.
         console.warn("[generator] couldn't load existing cases:", e);
+      }
+      try {
+        targetContext = await buildTargetContext(planId, suiteId);
+      } catch (e) {
+        // Non-fatal — the run still works, the prompt just lacks the chip.
+        console.warn("[generator] couldn't build target context:", e);
       }
     }
 
@@ -268,6 +280,7 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
           requirements,
           attachments,
           existingCaseTitles,
+          targetContext,
           mode,
           // Claude CLI only understands anthropic model ids; substitute a
           // safe default when the user's globally-selected model is from a
@@ -285,6 +298,7 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
           requirements,
           attachments,
           existingCaseTitles,
+          targetContext,
           mode,
           keys,
           modelId,
@@ -563,6 +577,43 @@ function renderSourceLinksBlock(
     trackingBranch,
   }));
   return renderBlock(sl);
+}
+
+/** Resolve plan + suite metadata into the structured TargetContext that the
+ *  analyst engines embed at the top of the user prompt. Walks the suite tree
+ *  to build the parent path so the model sees "Auth › Sign-in › 2FA" instead
+ *  of an orphan suite id. */
+async function buildTargetContext(
+  planId: number,
+  suiteId: number,
+): Promise<TargetContext> {
+  const [plans, suites] = await Promise.all([
+    listPlans().catch<TestPlanRef[]>(() => []),
+    listSuites(planId).catch<SuiteRef[]>(() => []),
+  ]);
+  const plan = plans.find((p) => p.id === planId) ?? null;
+  const suite = suites.find((s) => s.id === suiteId) ?? null;
+  const byId = new Map(suites.map((s) => [s.id, s]));
+  const path: string[] = [];
+  let cursor = suite?.parentSuiteId ?? null;
+  // Cap traversal depth — a real ADO tree is shallow but a corrupt parent
+  // ref shouldn't be able to spin this loop forever.
+  let guard = 0;
+  while (cursor != null && guard++ < 64) {
+    const parent = byId.get(cursor);
+    if (!parent) break;
+    path.unshift(parent.name);
+    cursor = parent.parentSuiteId ?? null;
+  }
+  return {
+    planId,
+    planName: plan?.name ?? null,
+    suiteId,
+    suiteName: suite?.name ?? null,
+    suitePath: path,
+    areaPath: plan?.areaPath ?? null,
+    iterationPath: plan?.iteration ?? null,
+  };
 }
 
 function errToString(e: unknown): string {

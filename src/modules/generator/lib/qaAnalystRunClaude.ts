@@ -14,9 +14,11 @@ import type { ModelId } from "@/modules/ai/config";
 import type { TestCaseRef } from "@/modules/ado";
 import {
   formatAttachmentBlock,
+  renderTargetContext,
   type GenerationMode,
   type RunAttachment,
   type RunResult,
+  type TargetContext,
 } from "./qaAnalystRun";
 import {
   clampOutputFull,
@@ -30,6 +32,8 @@ export type RunClaudeInput = {
   requirements: string;
   attachments: RunAttachment[];
   existingCaseTitles: Pick<TestCaseRef, "id" | "title">[];
+  /** Plan/suite the generator will publish into — see qaAnalystRun.ts. */
+  targetContext?: TargetContext | null;
   mode: GenerationMode;
   modelId: ModelId;
   /** Working directory for the CLI's built-in Read/Glob/Grep tools — the
@@ -232,9 +236,12 @@ function buildUserPrompt(input: RunClaudeInput): string {
       : "\n\nAdditional source attachments:\n\n" +
         input.attachments.map(formatAttachmentBlock).join("\n\n");
 
+  const targetBlock = renderTargetContext(input.targetContext);
+
   return [
     modeLine,
     "",
+    targetBlock,
     sourceHint,
     "",
     "Feature requirements:",
