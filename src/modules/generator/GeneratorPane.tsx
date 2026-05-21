@@ -954,10 +954,28 @@ function ReviewPhase({
                     />
                   </button>
                   <div className="min-w-0 flex-1">
-                    <p className="text-[12px] font-medium">{b.title}</p>
-                    <p className="mt-0.5 text-[10.5px] text-muted-foreground">
-                      Severity: {b.severity}
-                    </p>
+                    <div className="flex items-start gap-2">
+                      <p className="min-w-0 flex-1 text-[12px] font-medium leading-snug">
+                        {b.title}
+                      </p>
+                      <SeverityBadge severity={b.severity} />
+                    </div>
+                    {(() => {
+                      const idx = b.linkedDraftCaseIndex;
+                      const parent =
+                        idx != null && idx >= 0 && idx < cases.length
+                          ? cases[idx]
+                          : null;
+                      if (!parent) return null;
+                      return (
+                        <p className="mt-0.5 text-[10.5px] text-muted-foreground">
+                          Reproduces in:{" "}
+                          <span className="font-medium text-foreground/85">
+                            {parent.title}
+                          </span>
+                        </p>
+                      );
+                    })()}
                     <p className="mt-1 whitespace-pre-wrap text-[11px] text-foreground/85">
                       {b.reproSteps}
                     </p>
@@ -972,6 +990,28 @@ function ReviewPhase({
         </section>
       ) : null}
     </div>
+  );
+}
+
+/** Color-coded severity chip — visually distinguishes critical and high
+ *  from medium / low so reviewers triage at a glance. */
+function SeverityBadge({ severity }: { severity: string }) {
+  const tone = severity.startsWith("1")
+    ? "border-destructive/40 bg-destructive/15 text-destructive"
+    : severity.startsWith("2")
+      ? "border-rose-500/40 bg-rose-500/15 text-rose-700 dark:text-rose-300"
+      : severity.startsWith("3")
+        ? "border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300"
+        : "border-border/60 bg-card/60 text-muted-foreground";
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded-sm border px-1.5 py-0.5 text-[10px] font-medium tracking-tight",
+        tone,
+      )}
+    >
+      {severity}
+    </span>
   );
 }
 

@@ -12,6 +12,7 @@ import {
   type CodeLink,
   type ConnectionStatus,
 } from "@/modules/ado";
+import { useWorkItemTitles } from "@/modules/ado/hooks/useWorkItemTitles";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useMemo, useState } from "react";
 import { parseCodeLinks, stripCodeLinksBlock } from "./lib/codeLinksParser";
@@ -75,6 +76,14 @@ export function BugPane({ bugId, sourceRoot }: Props) {
     () => (bug ? parseCodeLinks(bug.reproStepsHtml) : []),
     [bug],
   );
+
+  // Resolve linked work-item titles. Called unconditionally so the hook
+  // count is stable across render branches (loading / error / loaded).
+  const linkedIds = useMemo(
+    () => (bug ? bug.linkedWorkItems.map((lwi) => lwi.id) : []),
+    [bug],
+  );
+  const { titleFor, loadingFor } = useWorkItemTitles(linkedIds);
 
   if (loading && !bug) {
     return (
@@ -249,33 +258,46 @@ export function BugPane({ bugId, sourceRoot }: Props) {
         {bug.linkedWorkItems.length > 0 ? (
           <Section title={`Linked work items (${bug.linkedWorkItems.length})`}>
             <ul className="flex flex-col gap-1">
-              {bug.linkedWorkItems.map((lwi) => (
-                <li
-                  key={`${lwi.rel}-${lwi.id}`}
-                  className="flex items-center gap-2 rounded-md border border-border/40 bg-card/40 px-2.5 py-1.5 text-[11.5px]"
-                >
-                  <span className="inline-flex h-4 shrink-0 items-center rounded-sm bg-foreground/[0.06] px-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                    {lwi.kind}
-                  </span>
-                  <span className="font-mono text-[10.5px] text-muted-foreground">
-                    #{lwi.id}
-                  </span>
-                  {lwi.webUrl ? (
-                    <button
-                      type="button"
-                      onClick={() => void openUrl(lwi.webUrl)}
-                      className="ml-auto inline-flex shrink-0 items-center gap-1 text-[10.5px] text-muted-foreground hover:text-foreground"
-                    >
-                      <HugeiconsIcon
-                        icon={ExternalLink}
-                        size={10}
-                        strokeWidth={1.75}
-                      />
-                      ADO
-                    </button>
-                  ) : null}
-                </li>
-              ))}
+              {bug.linkedWorkItems.map((lwi) => {
+                const title = titleFor(lwi.id);
+                const isLoading = loadingFor(lwi.id);
+                return (
+                  <li
+                    key={`${lwi.rel}-${lwi.id}`}
+                    className="flex items-center gap-2 rounded-md border border-border/40 bg-card/40 px-2.5 py-1.5 text-[11.5px]"
+                  >
+                    <span className="inline-flex h-4 shrink-0 items-center rounded-sm bg-foreground/[0.06] px-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                      {lwi.kind}
+                    </span>
+                    <span className="font-mono text-[10.5px] text-muted-foreground">
+                      #{lwi.id}
+                    </span>
+                    {title ? (
+                      <span className="min-w-0 flex-1 truncate">{title}</span>
+                    ) : isLoading ? (
+                      <Skeleton className="h-3 w-32" />
+                    ) : (
+                      <span className="flex-1 text-[10.5px] italic text-muted-foreground/60">
+                        (title unavailable)
+                      </span>
+                    )}
+                    {lwi.webUrl ? (
+                      <button
+                        type="button"
+                        onClick={() => void openUrl(lwi.webUrl)}
+                        className="ml-auto inline-flex shrink-0 items-center gap-1 text-[10.5px] text-muted-foreground hover:text-foreground"
+                      >
+                        <HugeiconsIcon
+                          icon={ExternalLink}
+                          size={10}
+                          strokeWidth={1.75}
+                        />
+                        ADO
+                      </button>
+                    ) : null}
+                  </li>
+                );
+              })}
             </ul>
           </Section>
         ) : null}

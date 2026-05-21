@@ -17,6 +17,7 @@ pub mod tags;
 pub mod test_cases;
 pub mod test_plans;
 pub mod types;
+pub mod work_items;
 
 use serde::Deserialize;
 use tauri::{AppHandle, Manager, State};
@@ -227,6 +228,25 @@ pub async fn ado_get_case(
     test_plans::get_case(&state, case_id).await
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSuiteInput {
+    pub plan_id: i64,
+    /// `None` means "attach under the plan's root suite" — i.e. add a
+    /// top-level suite. Otherwise the new suite nests under this one.
+    pub parent_suite_id: Option<i64>,
+    pub name: String,
+}
+
+#[tauri::command]
+pub async fn ado_create_suite(
+    state: State<'_, AdoState>,
+    input: CreateSuiteInput,
+) -> Result<SuiteRef, AdoError> {
+    test_plans::create_static_suite(&state, input.plan_id, input.parent_suite_id, &input.name)
+        .await
+}
+
 // --- Publishing ---
 
 #[derive(Deserialize)]
@@ -295,6 +315,14 @@ pub async fn ado_link_bug_to_case(
 #[tauri::command]
 pub async fn ado_get_bug(state: State<'_, AdoState>, bug_id: i64) -> Result<Bug, AdoError> {
     bugs::get_bug(&state, bug_id).await
+}
+
+#[tauri::command]
+pub async fn ado_get_work_item_titles(
+    state: State<'_, AdoState>,
+    ids: Vec<i64>,
+) -> Result<Vec<work_items::WorkItemTitle>, AdoError> {
+    work_items::get_work_item_titles(&state, &ids).await
 }
 
 #[tauri::command]

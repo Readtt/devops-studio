@@ -15,7 +15,13 @@ import {
 import { AzureDevOpsLogo } from "@/components/AzureDevOpsLogo";
 import { ProjectSwitcher } from "@/modules/ado/ProjectSwitcher";
 import { cn } from "@/lib/utils";
-import { adoErrorMessage, getConnection, markForReview } from "@/modules/ado";
+import {
+  adoErrorMessage,
+  getConnection,
+  markForReview,
+  type LinkedWorkItem,
+} from "@/modules/ado";
+import { useWorkItemTitles } from "@/modules/ado/hooks/useWorkItemTitles";
 import { useTestPlans, type CaseDetailsState, type SuiteLoad } from "./hooks/useTestPlans";
 import { NewSuiteDialog } from "./NewSuiteDialog";
 import {
@@ -1042,67 +1048,8 @@ function CaseDetails({
         ) : null}
       </div>
 
-      {tc.linkedWorkItems.length > 0 ? (
-        <ul className="flex flex-col gap-0.5">
-          {tc.linkedWorkItems.slice(0, 6).map((lwi) => {
-            const isLikelyBug = lwi.kind === "Tested by" || lwi.kind === "Tests";
-            return (
-              <li
-                key={`${lwi.rel}-${lwi.id}`}
-                className="flex items-center gap-1.5 text-[10.5px]"
-              >
-                <HugeiconsIcon
-                  icon={isLikelyBug ? Bug01Icon : Link01Icon}
-                  size={9}
-                  strokeWidth={1.75}
-                  className={cn(
-                    "shrink-0",
-                    isLikelyBug ? "text-rose-500/80" : "text-muted-foreground/70",
-                  )}
-                />
-                <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
-                  {lwi.kind}
-                </span>
-                <span className="font-mono text-[9.5px] text-muted-foreground">
-                  #{lwi.id}
-                </span>
-                {isLikelyBug ? (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      window.dispatchEvent(
-                        new CustomEvent("devops-studio:open-bug", {
-                          detail: { bugId: lwi.id },
-                        }),
-                      )
-                    }
-                    className="truncate text-foreground/85 hover:text-primary hover:underline"
-                  >
-                    open in app
-                  </button>
-                ) : lwi.webUrl ? (
-                  <button
-                    type="button"
-                    onClick={() => void openUrl(lwi.webUrl)}
-                    className="truncate text-foreground/70 hover:text-foreground"
-                  >
-                    open in ADO
-                  </button>
-                ) : null}
-              </li>
-            );
-          })}
-          {tc.linkedWorkItems.length > 6 ? (
-            <li className="text-[9.5px] text-muted-foreground/70">
-              + {tc.linkedWorkItems.length - 6} more — open case to view all
-            </li>
-          ) : null}
-        </ul>
-      ) : (
-        <p className="text-[10px] italic text-muted-foreground/60">
-          No linked work items.
-        </p>
-      )}
+      <LinkedWorkItemsList items={tc.linkedWorkItems} />
+
 
       {caseWebUrl ? (
         <button
@@ -1115,6 +1062,91 @@ function CaseDetails({
         </button>
       ) : null}
     </div>
+  );
+}
+
+/** Linked-work-item rows with batched title resolution. Kept in its own
+ *  component so the title-fetch hook can be called unconditionally (the
+ *  parent CaseDetails has multiple early returns above this point). */
+function LinkedWorkItemsList({ items }: { items: LinkedWorkItem[] }) {
+  const ids = useMemo(() => items.map((i) => i.id), [items]);
+  const { titleFor, loadingFor } = useWorkItemTitles(ids);
+  if (items.length === 0) {
+    return (
+      <p className="text-[10px] italic text-muted-foreground/60">
+        No linked work items.
+      </p>
+    );
+  }
+  return (
+    <ul className="flex flex-col gap-0.5">
+      {items.slice(0, 6).map((lwi) => {
+        const isLikelyBug = lwi.kind === "Tested by" || lwi.kind === "Tests";
+        const title = titleFor(lwi.id);
+        const isLoadingTitle = loadingFor(lwi.id);
+        return (
+          <li
+            key={`${lwi.rel}-${lwi.id}`}
+            className="flex items-center gap-1.5 text-[10.5px]"
+          >
+            <HugeiconsIcon
+              icon={isLikelyBug ? Bug01Icon : Link01Icon}
+              size={9}
+              strokeWidth={1.75}
+              className={cn(
+                "shrink-0",
+                isLikelyBug ? "text-rose-500/80" : "text-muted-foreground/70",
+              )}
+            />
+            <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
+              {lwi.kind}
+            </span>
+            <span className="font-mono text-[9.5px] text-muted-foreground">
+              #{lwi.id}
+            </span>
+            {title ? (
+              <span className="min-w-0 flex-1 truncate text-foreground/85">
+                {title}
+              </span>
+            ) : isLoadingTitle ? (
+              <Skeleton className="h-2.5 w-24" />
+            ) : (
+              <span className="flex-1 italic text-muted-foreground/60">
+                (title unavailable)
+              </span>
+            )}
+            {isLikelyBug ? (
+              <button
+                type="button"
+                onClick={() =>
+                  window.dispatchEvent(
+                    new CustomEvent("devops-studio:open-bug", {
+                      detail: { bugId: lwi.id },
+                    }),
+                  )
+                }
+                className="shrink-0 text-[9.5px] text-foreground/85 hover:text-primary hover:underline"
+              >
+                open
+              </button>
+            ) : lwi.webUrl ? (
+              <button
+                type="button"
+                onClick={() => void openUrl(lwi.webUrl)}
+                className="shrink-0 text-[9.5px] text-foreground/70 hover:text-foreground"
+              >
+                ADO
+              </button>
+            ) : null}
+          </li>
+        );
+      })}
+      {items.length > 6 ? (
+        <li className="text-[9.5px] text-muted-foreground/70">
+          + {items.length - 6} more — open case to view all
+        </li>
+      ) : null}
+    </ul>
   );
 }
 

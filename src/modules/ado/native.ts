@@ -130,6 +130,18 @@ export async function listSuiteCases(
   return TestCaseRefSchema.array().parse(raw);
 }
 
+export type CreateSuiteArgs = {
+  planId: number;
+  /** `null` attaches the new suite under the plan's root (i.e. top-level). */
+  parentSuiteId: number | null;
+  name: string;
+};
+
+export async function createSuite(input: CreateSuiteArgs): Promise<SuiteRef> {
+  const raw = await invoke("ado_create_suite", { input });
+  return SuiteRefSchema.parse(raw);
+}
+
 export async function getCase(caseId: number): Promise<TestCase> {
   const raw = await invoke("ado_get_case", { caseId });
   return TestCaseSchema.parse(raw);
@@ -244,6 +256,21 @@ export async function markForReview(
   reason: string,
 ): Promise<void> {
   await invoke("ado_mark_for_review", { input: { caseId, reason } });
+}
+
+export type WorkItemTitle = {
+  id: number;
+  title: string;
+};
+
+/** Batch-fetch System.Title for a list of work-item ids. Used to surface
+ *  human-readable previews on linked-work-item rows. */
+export async function getWorkItemTitles(
+  ids: number[],
+): Promise<WorkItemTitle[]> {
+  if (ids.length === 0) return [];
+  const raw = await invoke<WorkItemTitle[]>("ado_get_work_item_titles", { ids });
+  return raw;
 }
 
 export type IndexLinkInput = {
