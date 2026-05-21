@@ -558,11 +558,11 @@ function InputPhase() {
                 side="bottom"
                 align="end"
                 trigger={({ label, provider }) => (
-                  <span className="inline-flex items-center gap-1.5 rounded-sm border border-border/60 bg-card/70 px-1.5 py-0.5 text-[10.5px] hover:border-primary/60">
+                  <span className="inline-flex items-center gap-1.5 rounded-sm border border-border/60 bg-card/70 px-1.5 py-0.5 text-[10.5px] transition-colors hover:border-primary/60">
                     <ProviderIcon provider={provider} size={10} />
                     <span className="max-w-[140px] truncate">{label}</span>
                     {overrideModelId ? (
-                      <span className="rounded-sm bg-primary/15 px-1 py-px font-mono text-[9px] uppercase tracking-wide text-primary">
+                      <span className="rounded-sm bg-primary/15 px-1 py-px font-mono text-[9px] text-primary">
                         override
                       </span>
                     ) : null}
@@ -1015,7 +1015,7 @@ function BugParentRow({
 
   return (
     <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10.5px] text-muted-foreground">
-      <span>Reproduces in:</span>
+      <span className="font-mono text-muted-foreground/70">repro-in:</span>
       {parent ? (
         <span
           className={cn(
@@ -1031,8 +1031,8 @@ function BugParentRow({
         <span className="italic text-muted-foreground/60">no parent case</span>
       )}
       {parentSkipped ? (
-        <span className="rounded-sm border border-amber-500/40 bg-amber-500/[0.08] px-1.5 py-px text-[9.5px] font-medium uppercase tracking-tight text-amber-700 dark:text-amber-300">
-          parent skipped
+        <span className="rounded-sm border border-amber-500/40 bg-amber-500/[0.08] px-1.5 py-px font-mono text-[9.5px] text-amber-700 dark:text-amber-300">
+          parent-skipped
         </span>
       ) : null}
       <BugCaseLinkPicker
@@ -1047,24 +1047,46 @@ function BugParentRow({
   );
 }
 
-/** Color-coded severity chip — visually distinguishes critical and high
- *  from medium / low so reviewers triage at a glance. */
+/** Severity indicator in the project's editor-native voice: a vertical
+ *  accent bar in the severity color (sharper than a soft pastel pill),
+ *  with the severity rendered as a monospace shorthand (1·crit / 2·high /
+ *  3·med / 4·low) so the badges line up vertically across the bug list. */
 function SeverityBadge({ severity }: { severity: string }) {
-  const tone = severity.startsWith("1")
-    ? "border-destructive/40 bg-destructive/15 text-destructive"
+  const grade = severity.startsWith("1")
+    ? { code: "1·crit", text: "text-destructive", bar: "bg-destructive" }
     : severity.startsWith("2")
-      ? "border-rose-500/40 bg-rose-500/15 text-rose-700 dark:text-rose-300"
+      ? {
+          code: "2·high",
+          text: "text-rose-600 dark:text-rose-300",
+          bar: "bg-rose-500",
+        }
       : severity.startsWith("3")
-        ? "border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300"
-        : "border-border/60 bg-card/60 text-muted-foreground";
+        ? {
+            code: "3·med",
+            text: "text-amber-700 dark:text-amber-300",
+            bar: "bg-amber-500",
+          }
+        : {
+            code: "4·low",
+            text: "text-muted-foreground",
+            bar: "bg-muted-foreground/60",
+          };
   return (
     <span
+      title={severity}
       className={cn(
-        "shrink-0 rounded-sm border px-1.5 py-0.5 text-[10px] font-medium tracking-tight",
-        tone,
+        "inline-flex shrink-0 items-stretch overflow-hidden rounded-sm border border-border/60 bg-card/60",
       )}
     >
-      {severity}
+      <span className={cn("w-[3px] shrink-0", grade.bar)} />
+      <span
+        className={cn(
+          "px-1.5 py-0.5 font-mono text-[10px] tracking-tight",
+          grade.text,
+        )}
+      >
+        {grade.code}
+      </span>
     </span>
   );
 }
@@ -1104,13 +1126,21 @@ function BugCodeRefChips({
                 }),
               );
             }}
-            className="inline-flex items-center gap-1 rounded border border-border/60 bg-card/70 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground hover:border-primary/50 hover:text-foreground"
+            // file:line in mono with the line range colored as a mint
+            // accent — keeps the path scannable while the actionable bit
+            // (jump target) reads at a glance.
+            className="group inline-flex items-center gap-1 rounded-sm border border-border/60 bg-card/70 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
             title={r.symbol ?? undefined}
           >
-            <HugeiconsIcon icon={CodeIcon} size={9} strokeWidth={1.75} />
-            <span className="truncate">
-              {r.file}:{lineLabel}
-            </span>
+            <HugeiconsIcon
+              icon={CodeIcon}
+              size={9}
+              strokeWidth={1.75}
+              className="text-muted-foreground/60 group-hover:text-primary/80"
+            />
+            <span className="truncate text-foreground/80">{r.file}</span>
+            <span className="text-muted-foreground/50">:</span>
+            <span className="text-primary/85 tabular-nums">{lineLabel}</span>
           </button>
         );
       })}

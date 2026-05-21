@@ -34,9 +34,9 @@ export function BugCaseLinkPicker({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="inline-flex items-center gap-1 rounded-sm border border-border/60 bg-card/60 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:border-primary/50 hover:text-foreground"
+          className="inline-flex items-center gap-1 rounded-sm border border-border/60 bg-card/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
         >
-          <span className="font-mono">link →</span>
+          <span className="text-muted-foreground/50">→</span>
           <span className="max-w-[180px] truncate">{triggerLabel}</span>
         </button>
       </PopoverTrigger>

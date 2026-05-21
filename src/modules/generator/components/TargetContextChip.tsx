@@ -83,16 +83,19 @@ export function TargetContextChip({
 
   if (planId == null || suiteId == null) return null;
 
-  const breadcrumb = resolved
-    ? [resolved.planName, ...resolved.suitePath, resolved.suiteName].join(" › ")
-    : `Plan #${planId} › Suite #${suiteId}`;
+  const segments = resolved
+    ? [resolved.planName, ...resolved.suitePath, resolved.suiteName]
+    : [`#${planId}`, `#${suiteId}`];
 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <div
           className={cn(
-            "inline-flex max-w-full items-center gap-1.5 truncate rounded-md border border-border/60 bg-card/50 px-2 py-1 text-[10.5px] text-muted-foreground",
+            // Prompt-line chip: monospaced breadcrumb with terminal-style
+            // separators. Matches the project's progress strips and bug
+            // code-ref chips.
+            "inline-flex max-w-full items-center gap-1.5 truncate rounded-md border border-border/60 bg-card/50 px-2 py-1 font-mono text-[10.5px]",
             className,
           )}
         >
@@ -100,12 +103,29 @@ export function TargetContextChip({
             icon={FolderOpenIcon}
             className="size-3 shrink-0 text-primary/70"
           />
-          <span className="font-mono text-foreground/80">Context:</span>
-          <span className="truncate" title={breadcrumb}>
-            {breadcrumb}
+          <span className="text-muted-foreground/70">target:</span>
+          <span
+            className="flex min-w-0 items-center truncate text-foreground/80"
+            title={segments.join(" › ")}
+          >
+            {segments.map((seg, i) => (
+              <span key={i} className="flex items-center">
+                {i > 0 ? (
+                  <span className="px-1 text-muted-foreground/40">›</span>
+                ) : null}
+                <span
+                  className={cn(
+                    "truncate",
+                    i === segments.length - 1 && "text-primary/85",
+                  )}
+                >
+                  {seg}
+                </span>
+              </span>
+            ))}
           </span>
           {existingCaseCount != null && existingCaseCount > 0 ? (
-            <span className="shrink-0 rounded-sm bg-foreground/[0.06] px-1 py-px font-mono text-[10px] uppercase tracking-wide">
+            <span className="shrink-0 rounded-sm bg-foreground/[0.06] px-1 py-px text-[10px] text-muted-foreground">
               {existingCaseCount} existing
             </span>
           ) : null}
@@ -119,7 +139,8 @@ export function TargetContextChip({
             {resolved?.planName ?? `#${planId}`}
           </li>
           <li>
-            <span className="text-muted-foreground">Suite:</span> {breadcrumb}
+            <span className="text-muted-foreground">Suite:</span>{" "}
+            {segments.join(" › ")}
           </li>
           {resolved?.areaPath ? (
             <li>

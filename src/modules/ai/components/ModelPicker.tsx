@@ -212,7 +212,7 @@ function ModelRow({
           <span className="truncate text-[12px] font-medium">
             {model.label}
           </span>
-          <span className="font-mono text-[10px] text-muted-foreground">
+          <span className="font-mono text-[10px] lowercase tracking-tight text-muted-foreground">
             {model.hint}
           </span>
         </div>

@@ -123,33 +123,54 @@ export function GenerationHistoryPane({ onOpenCase, onOpenBug }: Props) {
         </Tooltip>
       </div>
 
-      <div className="flex flex-col gap-1.5 border-b border-border/60 px-2 py-1.5">
+      <div className="border-b border-border/60 px-2 pt-1.5">
         <input
           value={textFilter}
           onChange={(e) => setTextFilter(e.target.value)}
           placeholder="Filter by plan, suite, case, or text…"
-          className="w-full rounded-md border border-border/60 bg-background/70 px-2 py-1 text-[11.5px] outline-none focus:border-primary/50"
+          className="mb-1.5 w-full rounded-md border border-border/60 bg-background/70 px-2 py-1 text-[11.5px] outline-none focus:border-primary/50"
         />
-        <div className="flex items-center gap-1">
-          {(["all", "draft", "published"] as const).map((id) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setStatusFilter(id)}
-              className={cn(
-                "rounded-sm border px-1.5 py-0.5 text-[10px] font-medium tracking-tight transition-colors",
-                statusFilter === id
-                  ? "border-primary/40 bg-primary/[0.08] text-primary"
-                  : "border-border/40 bg-card/40 text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {id === "all"
-                ? `All (${runs.length})`
-                : id === "draft"
-                  ? `Drafts (${runs.filter((r) => (r.status ?? "published") === "draft").length})`
-                  : `Published (${runs.filter((r) => (r.status ?? "published") === "published").length})`}
-            </button>
-          ))}
+        {/* Console-tab filter row — flush, shared baseline, monospace counts.
+            Matches the editor/terminal voice the rest of the app uses for
+            tree-state controls. */}
+        <div className="-mb-px flex items-center gap-3 font-mono text-[10.5px]">
+          {(["all", "draft", "published"] as const).map((id) => {
+            const count =
+              id === "all"
+                ? runs.length
+                : runs.filter(
+                    (r) => (r.status ?? "published") === id,
+                  ).length;
+            const isActive = statusFilter === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setStatusFilter(id)}
+                className={cn(
+                  "relative flex items-center gap-1.5 pb-1.5 transition-colors",
+                  isActive
+                    ? "text-primary"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <span className={isActive ? "font-semibold" : ""}>{id}</span>
+                <span
+                  className={cn(
+                    "rounded-sm px-1 py-px text-[9.5px] tabular-nums",
+                    isActive
+                      ? "bg-primary/15 text-primary"
+                      : "bg-foreground/[0.06] text-muted-foreground/70",
+                  )}
+                >
+                  {count}
+                </span>
+                {isActive ? (
+                  <span className="absolute inset-x-0 bottom-0 h-px bg-primary" />
+                ) : null}
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -360,15 +381,17 @@ function RowAction({
 }
 
 function StatusBadge({ status }: { status: RunStatus }) {
+  // Mono lowercase so it reads as a state tag (consistent with how the
+  // generator's progress strip writes "input · analyze · review").
   if (status === "draft") {
     return (
-      <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
+      <span className="rounded-sm bg-amber-500/15 px-1.5 py-px font-mono text-[10px] text-amber-700 dark:text-amber-300">
         draft
       </span>
     );
   }
   return (
-    <span className="rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+    <span className="rounded-sm bg-primary/15 px-1.5 py-px font-mono text-[10px] text-primary">
       published
     </span>
   );

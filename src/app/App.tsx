@@ -808,14 +808,18 @@ function StatusBarModelPicker() {
           <TooltipTrigger asChild>
             <span
               className={cn(
+                // Matches the source-dir + ADO status pills next to it:
+                // same height, border, padding and hover treatment so the
+                // status bar reads as a single typographic system.
                 "flex h-5 items-center gap-1.5 rounded-md border border-border/60 bg-card px-1.5 transition-colors hover:text-foreground",
                 disabled && "cursor-not-allowed opacity-50",
               )}
             >
               <ProviderIcon provider={provider} size={11} />
               <span className="max-w-[160px] truncate">{label}</span>
-              <span className="font-mono text-[10px] text-muted-foreground/60">
-                {model.hint}
+              <span className="text-muted-foreground/40">·</span>
+              <span className="font-mono text-[10px] text-muted-foreground/70">
+                {model.hint.toLowerCase()}
               </span>
             </span>
           </TooltipTrigger>

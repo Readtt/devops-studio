@@ -42,8 +42,15 @@ function AttachmentChip({
 }) {
   const isImage = attachment.kind === "image";
   const isText = attachment.kind === "text";
+  // Strip the extension so we can render it as a separate mono tag — the
+  // visual rhythm matches how the rest of the app surfaces structural
+  // metadata (file:line on bug refs, hint on model rows, etc.).
+  const lastDot = attachment.path.lastIndexOf(".");
+  const stem =
+    lastDot > 0 ? attachment.path.slice(0, lastDot) : attachment.path;
+  const ext = lastDot > 0 ? attachment.path.slice(lastDot + 1) : null;
   return (
-    <div className="group inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-card/60 py-1 pl-1 pr-1.5 text-[11px]">
+    <div className="group inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-card/60 py-1 pl-1 pr-1.5 text-[11px] transition-colors hover:border-primary/40">
       {isImage && attachment.content.startsWith("data:") ? (
         <img
           src={attachment.content}
@@ -60,9 +67,14 @@ function AttachmentChip({
         />
       )}
       <span className="max-w-[160px] truncate font-mono text-foreground/85">
-        {attachment.path}
+        {stem}
       </span>
-      <span className="font-mono text-[10px] text-muted-foreground/70">
+      {ext ? (
+        <span className="shrink-0 rounded-sm bg-foreground/[0.06] px-1 py-px font-mono text-[9.5px] text-muted-foreground">
+          .{ext}
+        </span>
+      ) : null}
+      <span className="font-mono text-[10px] text-muted-foreground/70 tabular-nums">
         {formatSize(attachment.sizeBytes)}
       </span>
       <Tooltip>

@@ -44,12 +44,13 @@ export function AnalyzeActivityLog({ entries, className }: Props) {
     return (
       <div
         className={cn(
-          "flex items-center gap-2 rounded-md border border-dashed border-border/50 bg-card/20 px-3 py-2 text-[10.5px] text-muted-foreground/70",
+          "flex items-center gap-2 rounded-md border border-dashed border-border/50 bg-card/20 px-3 py-2 font-mono text-[10.5px] text-muted-foreground/70",
           className,
         )}
       >
         <HugeiconsIcon icon={AiBrain01Icon} className="size-3.5" />
-        Waiting for the model to start…
+        <span className="text-muted-foreground/40">$</span>
+        <span>waiting for the model to start…</span>
       </div>
     );
   }
@@ -59,10 +60,17 @@ export function AnalyzeActivityLog({ entries, className }: Props) {
       ref={containerRef}
       onScroll={onScroll}
       className={cn(
-        "flex max-h-64 flex-col gap-1 overflow-y-auto rounded-md border border-border/60 bg-card/40 p-2",
+        // Left-rail "log stream" framing: a single accent line down the
+        // left edge anchors the activity timeline visually without adding
+        // a heavier card border that competes with the page's own panel.
+        "relative flex max-h-64 flex-col gap-px overflow-y-auto rounded-md border border-border/60 bg-card/40 p-1.5",
         className,
       )}
     >
+      <span
+        aria-hidden
+        className="pointer-events-none absolute inset-y-1.5 left-3.5 w-px bg-border/50"
+      />
       {entries.map((entry) => (
         <ActivityRow key={entry.id} entry={entry} />
       ))}

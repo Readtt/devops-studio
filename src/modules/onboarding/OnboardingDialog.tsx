@@ -128,51 +128,48 @@ export function OnboardingDialog({ open, onClose }: Props) {
 }
 
 function StepProgress({ active }: { active: Step }) {
+  // Mirrors the generator's ProgressStrip — terminal-prompt style with a
+  // mint-tinted active chip and line-through completed steps. Same vocab
+  // as the rest of the app so onboarding doesn't read as a separate brand.
   const items: Array<{ id: Step; label: string }> = [
-    { id: "welcome", label: "Welcome" },
-    { id: "ado", label: "Azure DevOps" },
-    { id: "ai", label: "AI provider" },
-    { id: "source", label: "Source dir" },
-    { id: "done", label: "Done" },
+    { id: "welcome", label: "welcome" },
+    { id: "ado", label: "azure-devops" },
+    { id: "ai", label: "ai-provider" },
+    { id: "source", label: "source-dir" },
+    { id: "done", label: "done" },
   ];
   const activeIdx = items.findIndex((i) => i.id === active);
   return (
-    <div className="flex items-center gap-2 border-b border-border/50 bg-card/40 px-6 py-2.5">
-      {items.map((item, i) => {
-        const isActive = i === activeIdx;
-        const isCompleted = i < activeIdx;
-        return (
-          <div key={item.id} className="flex items-center gap-2">
-            <span
-              className={cn(
-                "flex size-4 items-center justify-center rounded-full text-[9.5px] font-mono",
-                isActive
-                  ? "bg-primary text-primary-foreground"
-                  : isCompleted
-                    ? "bg-primary/30 text-primary"
-                    : "bg-muted text-muted-foreground/60",
-              )}
-            >
-              {i + 1}
-            </span>
-            <span
-              className={cn(
-                "text-[10.5px]",
-                isActive
-                  ? "font-medium text-foreground"
-                  : isCompleted
-                    ? "text-muted-foreground line-through"
-                    : "text-muted-foreground/60",
-              )}
-            >
-              {item.label}
-            </span>
-            {i < items.length - 1 ? (
-              <span className="text-muted-foreground/30">·</span>
-            ) : null}
-          </div>
-        );
-      })}
+    <div className="flex h-9 items-center gap-2 border-b border-border/50 bg-card/40 px-6 font-mono text-[11px]">
+      <span className="font-semibold tracking-tight text-foreground/85">
+        setup
+      </span>
+      <span className="text-muted-foreground/60">→</span>
+      <ol className="flex items-center gap-0">
+        {items.map((item, i) => {
+          const isActive = i === activeIdx;
+          const isCompleted = i < activeIdx;
+          return (
+            <li key={item.id} className="flex items-center">
+              {i > 0 ? (
+                <span className="px-1.5 text-muted-foreground/30">·</span>
+              ) : null}
+              <span
+                className={cn(
+                  "transition-colors duration-150",
+                  isActive
+                    ? "rounded-sm bg-primary/15 px-1.5 py-0.5 font-semibold text-primary"
+                    : isCompleted
+                      ? "text-foreground/55 line-through decoration-foreground/30"
+                      : "text-muted-foreground/45",
+                )}
+              >
+                {item.label}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
     </div>
   );
 }
@@ -489,9 +486,11 @@ function DoneStep() {
           generation") and paste a spec to see your first test cases.
         </DialogDescription>
       </DialogHeader>
-      <p className="text-[10.5px] text-muted-foreground/85">
-        Re-run this wizard any time from Settings → General.
-      </p>
+      <div className="rounded-md border border-border/50 bg-card/40 px-2 py-1.5 font-mono text-[10.5px] text-muted-foreground/85">
+        <span className="text-muted-foreground/40">$</span>{" "}
+        <span className="text-foreground/85">settings → general</span>{" "}
+        <span className="text-muted-foreground/60">·</span> re-run setup any time
+      </div>
     </div>
   );
 }
