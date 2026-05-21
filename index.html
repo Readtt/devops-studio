@@ -8,11 +8,6 @@
     <script>
       (function () {
         try {
-          // Fast-path theme key — mirrors FAST_PATH_KEY in
-          // src/modules/theme/ThemeProvider.tsx. Renamed from
-          // "terax-ui-theme-shadow"; existing users see one-time
-          // unstyled flash on first launch after this commit, then
-          // the new key is populated and the fast-path resumes.
           var t = localStorage.getItem("devops-studio-ui-theme-shadow");
           var resolved =
             t === "light" || t === "dark"

@@ -32,8 +32,6 @@ src-tauri/gen/schemas
 # OS junk
 Thumbs.db
 
-# Carried over from upstream Terax — kept locally, not committed to the
-# DevOps Studio fork until we re-author them for this project.
 .github/
 docs/
 CHANGELOG.md
@@ -42,4 +40,3 @@ CONTRIBUTING.md
 SECURITY.md
 CODE_OF_CONDUCT.md
 AGENTS.md
-TERAX.md

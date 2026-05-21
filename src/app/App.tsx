@@ -160,6 +160,24 @@ export default function App() {
   const [activeId, setActiveId] = useState<number | null>(null);
   const nextIdRef = useRef(1);
 
+  // Tab strip horizontal scroll: the scrollbar is hidden because the strip
+  // shares its container with the window-drag region, and a visible bar
+  // there grabbed window-drag events instead of scrolling. Wheel scroll
+  // is translated to horizontal here so the user can still browse a long
+  // tab list with the trackpad / mouse.
+  const tabsScrollRef = useRef<HTMLDivElement | null>(null);
+  const activeTabRef = useRef<HTMLDivElement | null>(null);
+  const onTabsWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    const el = tabsScrollRef.current;
+    if (!el) return;
+    // Don't intercept already-horizontal wheels (shift+wheel on most
+    // mice, or trackpad two-finger horizontal swipes) — those are
+    // already going where the user expects.
+    if (e.deltaX !== 0) return;
+    if (e.deltaY === 0) return;
+    el.scrollLeft += e.deltaY;
+  }, []);
+
   // Per-generator-tab Zustand stores. Each generator tab owns its own
   // session state — no more singleton-store trampling when the user has
   // two drafts in flight. The map is a ref because React state would cause
@@ -592,6 +610,16 @@ export default function App() {
     return t && t.kind === "test-case" ? t.caseId : null;
   }, [activeId, tabs]);
 
+  // Keep the active tab in view as the user opens / closes tabs or
+  // cycles via shortcuts. Without this, the activated tab can sit
+  // offscreen when the strip overflows and the user has no visible
+  // scrollbar to find it with.
+  useEffect(() => {
+    const el = activeTabRef.current;
+    if (!el) return;
+    el.scrollIntoView({ inline: "nearest", block: "nearest" });
+  }, [activeId]);
+
   // What the active generator tab is doing right now (if the active tab IS
   // a generator). Used by StatusBarModelPicker to lock the model when the
   // user is in a draft / refining — outside any GenerationSessionProvider,
@@ -642,7 +670,9 @@ export default function App() {
             )}
           >
             <div
+              ref={tabsScrollRef}
               data-tauri-drag-region
+              onWheel={onTabsWheel}
               className="tabs-scroll flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
             >
               {tabs.length === 0 ? (
@@ -658,6 +688,7 @@ export default function App() {
                   return (
                     <div
                       key={t.id}
+                      ref={active ? activeTabRef : undefined}
                       className={cn(
                         "group flex h-7 min-w-0 shrink-0 items-center gap-1 rounded-md px-2 text-[11.5px] transition-colors",
                         active

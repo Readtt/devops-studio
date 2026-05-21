@@ -19,10 +19,6 @@ DevOps Studio is a Tauri 2 + React desktop app built for QA testers who live in 
 - **Embedded terminal** — run `claude` or any CLI alongside, multi-pane xterm with WebGL
 - **Bring-your-own AI** — Anthropic, OpenAI, Google, Groq, xAI, local models via LM Studio / Ollama
 
-## Status
-
-v0.1 — initial fork from the open-source [Terax](https://github.com/crynta/terax-ai) AI terminal. Active development.
-
 ## Build
 
 ```sh
@@ -41,4 +37,4 @@ Then open the Test Plans sidebar, pick a plan/suite, and start generating.
 
 ## License
 
-Apache 2.0 — inherits Terax's license.
+Apache 2.0

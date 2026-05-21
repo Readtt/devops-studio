@@ -1,6 +1,6 @@
 # DevOps Studio — Project Guide for Claude
 
-DevOps Studio is a Tauri 2 desktop app for QA testers working in Azure DevOps Test Plans. Paste a feature spec, drag source files in, and the app generates publishable test cases with bug suggestions, code links, and duplicate detection. Forked from Terax (terminal/AI editor); the terminal/shell/agents UI has been removed.
+DevOps Studio is a Tauri 2 desktop app for QA testers working in Azure DevOps Test Plans. Paste a feature spec, drag source files in, and the app generates publishable test cases with bug suggestions, code links, and duplicate detection.
 
 ## Tech stack
 

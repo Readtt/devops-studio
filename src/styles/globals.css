@@ -380,27 +380,30 @@ html *::-webkit-scrollbar {
   display: none;
 }
 
-/* Tab strip — surface a thin horizontal scrollbar only when the row overflows.
- * The global kill above zeroes every scrollbar, so we have to win on specificity
- * with the html selector and !important. The bar lives inside the 36 px header
- * so it has to be very short (3 px) to read as a hairline. */
+/* Tab strip — the row scrolls horizontally when overflowing, but the
+ * scrollbar itself is hidden. Two reasons:
+ *   1. The scrollable container is also marked `data-tauri-drag-region`
+ *      so the empty header acts as a window-drag handle. With a visible
+ *      scrollbar, grabbing the bar grabbed the window instead of the
+ *      scrollbar — annoying and a clear bug.
+ *   2. At the 36px header height, a 3px hairline bar reads as visual
+ *      noise. Wheel scroll + auto-scroll-active-into-view (see
+ *      App.tsx) keeps the row navigable without it.
+ *
+ * The global kill above already zeroes scrollbars; these rules just
+ * spell that out explicitly for the tab strip so future "make all
+ * scrollbars visible" passes don't accidentally re-enable it here. */
 html .tabs-scroll {
-  scrollbar-width: thin !important;
-  scrollbar-color: oklch(0.65 0 0 / 0.35) transparent;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
 }
-html .tabs-scroll::-webkit-scrollbar {
-  height: 3px !important;
-  display: block !important;
-}
-html .tabs-scroll::-webkit-scrollbar-thumb {
-  background: oklch(0.65 0 0 / 0.35);
-  border-radius: 2px;
-}
-html .tabs-scroll::-webkit-scrollbar-thumb:hover {
-  background: oklch(0.55 0 0 / 0.55);
-}
+html .tabs-scroll::-webkit-scrollbar,
+html .tabs-scroll::-webkit-scrollbar-thumb,
 html .tabs-scroll::-webkit-scrollbar-track {
-  background: transparent;
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+  background: transparent !important;
 }
 
 @keyframes ds-collapsible-down {
