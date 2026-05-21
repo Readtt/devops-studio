@@ -14,6 +14,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - platform: macos-latest
+            args: --target aarch64-apple-darwin
+            rust-target: aarch64-apple-darwin
+          - platform: macos-latest
+            args: --target x86_64-apple-darwin
+            rust-target: x86_64-apple-darwin
           - platform: ubuntu-22.04
             args: ""
             rust-target: ""
@@ -58,6 +64,41 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        shell: bash
+        run: |
+          set -e
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          DEFAULT="See the assets to download and install. Auto-update is built in."
+          if [[ ! -f CHANGELOG.md ]]; then
+            BODY="$DEFAULT"
+          else
+            BODY=$(awk -v ver="$VERSION" '
+              /^## \[/ {
+                if (found) exit
+                if (index($0, "[" ver "]")) { found=1; next }
+              }
+              found { print }
+            ' CHANGELOG.md | sed -e :a -e "/^[[:space:]]*$/{$d;N;ba" -e "}")
+            if [[ -z "$(echo "$BODY" | tr -d '[:space:]')" ]]; then
+              BODY="$DEFAULT"
+            fi
+          fi
+          # macOS users get a heads-up about Gatekeeper on first launch — the
+          # builds are unsigned (no Apple Developer Program account yet).
+          BODY="${BODY}
+
+---
+
+**macOS users:** the .dmg / .app bundles are unsigned. See [docs/install-macos.md](https://github.com/Readtt/devops-studio/blob/main/docs/install-macos.md) for how to bypass Gatekeeper on first launch."
+          {
+            echo "body<<NOTES_EOF"
+            echo "$BODY"
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -66,7 +107,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "DevOps Studio ${{ github.ref_name }}"
-          releaseBody: "See the assets to download and install. Auto-update is built in."
-          releaseDraft: true
+          releaseBody: ${{ steps.notes.outputs.body }}
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

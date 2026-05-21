@@ -49,7 +49,28 @@ API keys live in the OS keychain (Windows Credential Manager / macOS Keychain / 
 - **Persistent drafts** — every edit autosaves to history. Close the tab, close the window, reopen — your draft (including refine thinking) lands back exactly as you left it.
 - **Generation history pane** with status filters (draft / published), search by plan/suite/title, and "Open in review" to resume any draft.
 
-## Build
+## Install
+
+Grab the latest installer for your platform from the
+[releases page](https://github.com/Readtt/devops-studio/releases/latest):
+
+| OS | Asset |
+|----|-------|
+| Windows | `DevOps Studio_x.y.z_x64-setup.exe` or `_x64_en-US.msi` |
+| Linux (Debian/Ubuntu) | `DevOps Studio_x.y.z_amd64.deb` |
+| Linux (Fedora/RHEL) | `DevOps Studio-x.y.z-1.x86_64.rpm` |
+| Linux (anywhere else) | `DevOps Studio_x.y.z_amd64.AppImage` |
+| macOS (Apple Silicon) | `DevOps Studio_x.y.z_aarch64.dmg` |
+| macOS (Intel) | `DevOps Studio_x.y.z_x64.dmg` |
+
+**macOS users:** the bundles are unsigned for now (no Apple Developer
+account). See [docs/install-macos.md](docs/install-macos.md) for the
+Gatekeeper bypass on first launch.
+
+Auto-update is built in — once installed, future versions download and
+install in-place after you click the prompt.
+
+## Build from source
 
 ```sh
 pnpm install
@@ -84,6 +105,12 @@ Then open the **Test Plans** sidebar, expand a plan, click `+Generate` on any su
 - **ADO client:** Native Rust `reqwest`, PAT in OS keychain
 - **Code viewer:** CodeMirror 6 with hand-tuned syntax themes
 - **Storage:** Tauri Store (settings) + SQLite (generation history)
+
+## Releases
+
+Release process and changelog format are documented in
+[CLAUDE.md → Release process](CLAUDE.md#release-process). Every release is
+recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## History
 

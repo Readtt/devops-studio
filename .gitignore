@@ -33,9 +33,8 @@ src-tauri/gen/schemas
 Thumbs.db
 
 # Upstream-inherited docs that don't apply to DevOps Studio yet — keep
-# ignored until rewritten for this project.
-docs/
-CHANGELOG.md
+# ignored until rewritten for this project. (CHANGELOG.md and docs/ are
+# now intentionally tracked — see CLAUDE.md → Release process.)
 ROADMAP.md
 CONTRIBUTING.md
 SECURITY.md

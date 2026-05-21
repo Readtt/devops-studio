@@ -114,6 +114,81 @@ The bottom status bar shows the current git branch of the user's source director
 
 If `AzureDevOpsSection`'s tracking branch is set to the sentinel `$current`, the staleness scanner resolves it at scan-time from the live source-dir branch instead of using the saved value.
 
+## Release process
+
+Public repo: **https://github.com/Readtt/devops-studio**.
+Releases auto-publish from `.github/workflows/release.yml` whenever a `v*`
+tag is pushed. The workflow builds Windows + Linux + macOS installers, signs
+every updater artifact with the private key in `TAURI_SIGNING_PRIVATE_KEY`,
+and creates the GitHub release using the matching CHANGELOG section as the
+release body.
+
+**Cutting a new release**
+
+Always go through `scripts/release.sh` — it keeps the four version sources
+(`package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`,
+`src-tauri/Cargo.lock`) in sync with CHANGELOG.md and the git tag. Skipping
+the script and bumping by hand is how the updater silently breaks.
+
+```bash
+./scripts/release.sh 0.1.3
+```
+
+Opens `$EDITOR` (or nano) with a Keep-a-Changelog stub — fill in `### Added`,
+`### Fixed`, `### Changed`, `### Removed` sections, save, exit. The script
+then:
+
+1. Prepends your entry to `CHANGELOG.md` as `## [0.1.3] - YYYY-MM-DD`.
+2. Bumps all four version files to `0.1.3`.
+3. Commits as `chore(release): 0.1.3` with the notes in the commit body.
+4. Tags `v0.1.3` (annotated, notes as the message).
+5. Pushes `main` and the tag → the Release workflow fires.
+6. If `gh` is on PATH, prints the workflow run URL.
+
+If you want to pass notes from a file instead of opening the editor, use
+`--notes-file path/to/notes.md`. For a hotfix where you want to push the tag
+first and write notes later, `--no-edit` substitutes a placeholder entry —
+amend the commit before pushing if you go that route.
+
+**CHANGELOG conventions**
+
+The release workflow extracts the section matching the pushed tag by
+literally searching for `## [<version>]` in `CHANGELOG.md`. If the section
+is missing or empty, the release body falls back to a generic string. So:
+
+- Always include a section for the version you're tagging.
+- Use the exact heading format `## [x.y.z] - YYYY-MM-DD` — the workflow
+  matches on `[x.y.z]` only, but the date is for humans.
+- Stick to `### Added`, `### Fixed`, `### Changed`, `### Removed`
+  subheadings. Other content is allowed but those four cover most cases.
+
+**Version-bump rules**
+
+- Patch (`0.1.x`) for bug fixes and small chores.
+- Minor (`0.x.0`) for new user-visible features.
+- Major (`x.0.0`) when we break a contract — e.g. ADO connection format,
+  history schema, or anything in the published JSON shapes.
+
+**Signing key inventory**
+
+- Local: `~/.tauri/devops-studio.key` (private, no password). Back this up.
+- Repo secret: `TAURI_SIGNING_PRIVATE_KEY` on `Readtt/devops-studio`.
+- Public key: baked into `src-tauri/tauri.conf.json` → `plugins.updater.pubkey`.
+
+If the local key is ever lost AND the GitHub secret is rotated, every
+existing install will refuse future updates (signature mismatch against the
+pubkey baked into the app). The fix is to ship a new app version with the
+new pubkey embedded — users have to download that one manually.
+
+**macOS notes**
+
+We don't have an Apple Developer Program account, so macOS builds are
+unsigned. The release workflow's `releaseBody` step injects a footer
+pointing macOS users at `docs/install-macos.md` for the Gatekeeper bypass.
+If we ever get an Apple account, restore the `APPLE_*` env vars in
+`.github/workflows/release.yml` (history has the previous version) and add
+the matching repo secrets.
+
 ## Contribution notes for follow-ups
 
 - **Don't regenerate shadcn components** from the registry — we customized them. If you must update, diff carefully.
@@ -122,3 +197,4 @@ If `AzureDevOpsSection`'s tracking branch is set to the sentinel `$current`, the
 - **One feature, one phase commit.** When in doubt, look at `.claude/plans/humming-coalescing-petal.md` for the phased remediation plan.
 - **Skeleton loaders, not spinners.** When a list is loading, show shadcn `<Skeleton>` rows that mirror the eventual content.
 - **Tooltips on every icon-only button.** Use `<Tooltip><TooltipTrigger asChild>…</TooltipTrigger><TooltipContent side="bottom" className="text-[11px]">…</TooltipContent></Tooltip>`.
+- **Every new Windows subprocess spawn must hide the console window.** Use the `hide_console()` helper in `src-tauri/src/modules/{claude,git}.rs` (or inline `cmd.creation_flags(0x0800_0000)` for `std::process::Command` with `CommandExt` imported). Without it the spawn flashes a cmd.exe window — for a poller like `git_repo_info` that runs every 30 s, the result looks (and is) broken.
