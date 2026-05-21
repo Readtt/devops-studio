@@ -141,6 +141,10 @@ export type SessionState = {
   setRequirements: (s: string) => void;
   setMode: (m: GenerationMode) => void;
   setTarget: (planId: number | null, suiteId: number | null) => void;
+  /** Backfill plan/suite display names when they were missing from a
+   *  loaded draft. Triggers a draft autosave so subsequent reopens use
+   *  the resolved labels without another ADO lookup. */
+  setPlanSuiteNames: (planName: string | null, suiteName: string | null) => void;
   setAllowCodeSearch: (v: boolean) => void;
   /** Set or clear (null) the per-generation model override. */
   setOverrideModelId: (id: ModelId | null) => void;
@@ -241,6 +245,7 @@ const initialState: Omit<
   | "setRequirements"
   | "setMode"
   | "setTarget"
+  | "setPlanSuiteNames"
   | "setAllowCodeSearch"
   | "setOverrideModelId"
   | "addAttachment"
@@ -401,6 +406,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
   // sync with whichever plan/suite is actually selected.
   setTarget: (planId, suiteId) =>
     set({ planId, suiteId, planName: null, suiteName: null }),
+  setPlanSuiteNames: (planName, suiteName) => {
+    set({ planName, suiteName });
+    schedulePersistDraft();
+  },
   setAllowCodeSearch: (v) => set({ allowCodeSearch: v }),
   setOverrideModelId: (id) => set({ overrideModelId: id }),
   addAttachment: (path, content) =>

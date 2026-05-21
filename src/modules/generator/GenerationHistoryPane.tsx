@@ -12,6 +12,7 @@ import {
   type GenerationRun,
   type RunStatus,
 } from "./lib/history";
+import { useTestPlans } from "@/modules/test-plans";
 import {
   Bug01Icon,
   Cancel01Icon,
@@ -261,6 +262,12 @@ function RunCard({
   const isDraft = (run.status ?? "published") === "draft";
   const canRestoreDraft = isDraft && !!run.draftPayload?.cases;
 
+  // Resolve plan + suite names from the shared cache when the saved row
+  // only carries ids. Old runs (pre-name-capture) and any row that lost
+  // network at save time will hit this path; once the names land they
+  // render in place — no need to re-save the row.
+  const { planLabel, suiteLabel } = useResolvedTargetLabels(run);
+
   return (
     <li className="rounded-md border border-border/40 bg-card/40">
       <button
@@ -282,10 +289,9 @@ function RunCard({
             ) : null}
           </div>
           <p className="mt-0.5 truncate text-[10.5px] text-muted-foreground">
-            {run.planName ?? (run.planId != null ? `Plan #${run.planId}` : "—")}
+            {planLabel}
             {" · "}
-            {run.suiteName ??
-              (run.suiteId != null ? `Suite #${run.suiteId}` : "All suites")}
+            {suiteLabel}
           </p>
           <p className="mt-0.5 text-[10.5px] text-muted-foreground/85">
             {run.cases.length} case{run.cases.length === 1 ? "" : "s"} ·{" "}
@@ -485,6 +491,57 @@ function StatusBadge({ status }: { status: RunStatus }) {
       published
     </span>
   );
+}
+
+/** Read plan + suite labels for a history row, falling back to the
+ *  useTestPlans cache when the row only carries ids. Lazily kicks off a
+ *  suites fetch for unknown plans so subsequent renders pick up the
+ *  resolved suite name without the user manually clicking around.
+ *
+ *  Returns formatted strings (not raw ids) so the caller can just drop
+ *  them into the row layout. */
+function useResolvedTargetLabels(run: GenerationRun): {
+  planLabel: string;
+  suiteLabel: string;
+} {
+  const plans = useTestPlans((s) => s.plans);
+  const bySuite = useTestPlans((s) => s.bySuite);
+  const loadSuites = useTestPlans((s) => s.loadSuites);
+
+  // Trigger a suites lookup for the plan if we have an id, no name, and
+  // nothing cached. Cheap — useTestPlans dedupes in-flight requests.
+  useEffect(() => {
+    if (run.planId == null) return;
+    if (run.suiteName) return; // already named, no need to fetch
+    const planLoad = bySuite.get(run.planId);
+    const planSuites = planLoad?.suites;
+    if (!planSuites || planSuites.length === 0) {
+      if (!planLoad?.loading) {
+        void loadSuites(run.planId);
+      }
+    }
+  }, [run.planId, run.suiteName, bySuite, loadSuites]);
+
+  const resolvedPlanName =
+    run.planName ??
+    (run.planId != null
+      ? plans.find((p) => p.id === run.planId)?.name ?? null
+      : null);
+  const resolvedSuiteName =
+    run.suiteName ??
+    (run.planId != null && run.suiteId != null
+      ? bySuite.get(run.planId)?.suites.find((s) => s.id === run.suiteId)
+          ?.name ?? null
+      : null);
+
+  const planLabel =
+    resolvedPlanName ??
+    (run.planId != null ? `Plan #${run.planId}` : "—");
+  const suiteLabel =
+    resolvedSuiteName ??
+    (run.suiteId != null ? `Suite #${run.suiteId}` : "All suites");
+
+  return { planLabel, suiteLabel };
 }
 
 function formatTimestamp(iso: string): string {

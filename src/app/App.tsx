@@ -64,11 +64,13 @@ const SIDEBAR_VIEW_STORAGE_KEY = "devops-studio.sidebar.view";
  *  this logic in its rename effect.
  */
 function deriveGeneratorTabTitle(state: SessionState): string {
-  const plan = state.planName?.trim() || (state.planId ? `#${state.planId}` : "");
-  const suite = state.suiteName?.trim() || (state.suiteId ? `#${state.suiteId}` : "");
+  const plan = state.planName?.trim() || "";
+  const suite = state.suiteName?.trim() || "";
   if (plan && suite) return ellipsize(`${plan} · ${suite}`, 48);
   if (suite) return ellipsize(suite, 48);
   if (plan) return ellipsize(plan, 48);
+  if (state.suiteId) return `Suite #${state.suiteId}`;
+  if (state.planId) return `Plan #${state.planId}`;
   const firstLine = state.requirements.trim().split("\n")[0];
   if (firstLine.length > 0) return ellipsize(firstLine, 48);
   return "Generate cases";

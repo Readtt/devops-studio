@@ -78,6 +78,76 @@ function ellipsizeForTab(s: string, max = 36): string {
   return `${trimmed.slice(0, max - 1)}…`;
 }
 
+/** Resolve missing plan + suite names against the shared useTestPlans
+ *  cache, fetching when nothing's cached. Wired into GeneratorPane so a
+ *  draft loaded with bare ids (older runs, ADO-unreachable analyses)
+ *  picks up its label as soon as the plan list lands. */
+function useTabTargetNameBackfill({
+  planId,
+  suiteId,
+  planName,
+  suiteName,
+  onResolved,
+}: {
+  planId: number | null;
+  suiteId: number | null;
+  planName: string | null;
+  suiteName: string | null;
+  onResolved: (planName: string | null, suiteName: string | null) => void;
+}) {
+  const plans = useTestPlans((s) => s.plans);
+  const bySuite = useTestPlans((s) => s.bySuite);
+  const refreshConnection = useTestPlans((s) => s.refreshConnection);
+  const refreshPlans = useTestPlans((s) => s.refreshPlans);
+  const loadSuites = useTestPlans((s) => s.loadSuites);
+  const initialized = useTestPlans((s) => s.initialized);
+  const configured = useTestPlans((s) => s.configured);
+  const plansLoading = useTestPlans((s) => s.plansLoading);
+
+  // 1. Ensure the connection + plan list are hydrated so we have something
+  //    to resolve against. Cheap when already loaded.
+  useEffect(() => {
+    if (!initialized) {
+      void refreshConnection();
+    } else if (configured && plans.length === 0 && !plansLoading) {
+      void refreshPlans();
+    }
+  }, [initialized, configured, plans.length, plansLoading, refreshConnection, refreshPlans]);
+
+  // 2. When the session has a planId but no planName, look it up. Trigger
+  //    a suites load too so suiteName can be resolved next pass.
+  useEffect(() => {
+    if (planId === null) return;
+    if (!planName) {
+      const plan = plans.find((p) => p.id === planId);
+      if (plan?.name) {
+        // We resolved plan but might still be missing suite — emit what
+        // we have now, the next effect run will fill the suite.
+        const suite =
+          suiteId != null
+            ? bySuite.get(planId)?.suites.find((s) => s.id === suiteId)?.name ??
+              suiteName
+            : suiteName;
+        onResolved(plan.name, suite ?? null);
+      }
+    }
+    if (suiteId !== null && !suiteName) {
+      const planLoad = bySuite.get(planId);
+      if (!planLoad || (planLoad.suites.length === 0 && !planLoad.loading)) {
+        void loadSuites(planId);
+        return;
+      }
+      const suite = planLoad.suites.find((s) => s.id === suiteId);
+      if (suite?.name) {
+        // Hand back the latest known plan + the newly-resolved suite.
+        const resolvedPlanName =
+          planName ?? plans.find((p) => p.id === planId)?.name ?? null;
+        onResolved(resolvedPlanName, suite.name);
+      }
+    }
+  }, [planId, suiteId, planName, suiteName, plans, bySuite, loadSuites, onResolved]);
+}
+
 /** Derive a tab label from the session's target (plan + suite) so users
  *  can scan multiple generator tabs at a glance. Generator sessions are
  *  identified by *what they're generating against*, not by the contents
@@ -95,11 +165,17 @@ function deriveTabLabelFromTarget(input: {
   suiteId: number | null;
   requirements: string;
 }): string {
-  const plan = input.planName?.trim() || (input.planId ? `#${input.planId}` : "");
-  const suite = input.suiteName?.trim() || (input.suiteId ? `#${input.suiteId}` : "");
+  const plan = input.planName?.trim() || "";
+  const suite = input.suiteName?.trim() || "";
+  // Both names known → "<plan> · <suite>". Suite without a plan name →
+  // suite alone (plan picker may still be loading). Names missing →
+  // fall back to a numeric stub so the tab isn't blank while names
+  // resolve.
   if (plan && suite) return ellipsizeForTab(`${plan} · ${suite}`, 48);
   if (suite) return ellipsizeForTab(suite);
   if (plan) return ellipsizeForTab(plan);
+  if (input.suiteId) return `Suite #${input.suiteId}`;
+  if (input.planId) return `Plan #${input.planId}`;
   const firstLine = input.requirements.trim().split("\n")[0];
   if (firstLine) return ellipsizeForTab(firstLine);
   return "Generate cases";
@@ -153,6 +229,7 @@ export function GeneratorPane({
 }: Props) {
   const phase = useGenerationSession((s) => s.phase);
   const setTarget = useGenerationSession((s) => s.setTarget);
+  const setPlanSuiteNames = useGenerationSession((s) => s.setPlanSuiteNames);
   const planId = useGenerationSession((s) => s.planId);
   const suiteId = useGenerationSession((s) => s.suiteId);
   const planName = useGenerationSession((s) => s.planName);
@@ -192,6 +269,19 @@ export function GeneratorPane({
     });
     onRenameTab(tabId, label);
   }, [tabId, onRenameTab, planName, planId, suiteName, suiteId, requirements]);
+
+  // Backfill plan + suite display names when a loaded draft has only ids
+  // (sessions saved before names were captured, or ones where ADO was
+  // unreachable at analyze time). Looks the names up via the shared
+  // useTestPlans cache; `setPlanSuiteNames` persists them via the
+  // draft autosave so the next reopen renders directly without lookup.
+  useTabTargetNameBackfill({
+    planId,
+    suiteId,
+    planName,
+    suiteName,
+    onResolved: setPlanSuiteNames,
+  });
 
   return (
     <div className="flex h-full flex-col bg-background">

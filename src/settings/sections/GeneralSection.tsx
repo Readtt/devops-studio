@@ -308,10 +308,16 @@ export function GeneralSection() {
 }
 
 /** Built-in command-line templates for popular editors. Picking one
- *  populates the field; the user can still customize after. */
+ *  populates the field; the user can still customize after.
+ *
+ *  Visual Studio's CLI (`devenv`) doesn't have a direct "--goto line"
+ *  flag — the only way to land on a line from the command line is via
+ *  `/command "Edit.GoTo"`. That spawns the goto-line popup in VS;
+ *  good enough to position the user without requiring extensions. */
 const EXTERNAL_EDITOR_PRESETS: ReadonlyArray<{ label: string; template: string }> = [
   { label: "VS Code", template: "code --goto {file}:{line}" },
   { label: "Cursor", template: "cursor --goto {file}:{line}" },
+  { label: "Visual Studio", template: 'devenv /Edit {file} /Command "Edit.GoTo {line}"' },
   { label: "Sublime", template: "subl {file}:{line}" },
   { label: "Zed", template: "zed {file}:{line}" },
   { label: "Vim", template: "vim +{line} {file}" },

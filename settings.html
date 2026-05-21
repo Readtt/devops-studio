@@ -8,7 +8,8 @@
     <script>
       (function () {
         try {
-          var t = localStorage.getItem("terax-ui-theme-shadow");
+          // Same fast-path key as index.html / ThemeProvider.tsx.
+          var t = localStorage.getItem("devops-studio-ui-theme-shadow");
           var resolved =
             t === "light" || t === "dark"
               ? t

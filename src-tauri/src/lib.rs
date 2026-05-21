@@ -1,6 +1,8 @@
 mod modules;
 
 use modules::{ado, claude, fs, git, history, net, secrets, staleness, workspace};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_window_state::StateFlags;
@@ -56,12 +58,16 @@ async fn open_external_editor(
     }
     let line = start_line.unwrap_or(1).to_string();
     let end = end_line.unwrap_or_else(|| start_line.unwrap_or(1)).to_string();
+    // Normalize separators so paths joined from a Windows source root +
+    // POSIX relative segments don't trip up editors that key off the
+    // native separator (vim, VS, anything that maps file URIs internally).
+    let file_native = normalize_path_separators(&file_path);
     let mut iter = tokens.into_iter();
     let program = iter.next().expect("len > 0");
     let mut args: Vec<String> = Vec::new();
     for raw in iter {
         let substituted = raw
-            .replace("{file}", &file_path)
+            .replace("{file}", &file_native)
             .replace("{line}", &line)
             .replace("{endLine}", &end);
         args.push(substituted);
@@ -69,7 +75,7 @@ async fn open_external_editor(
     // If the template never referenced {file}, default-append it. The user's
     // shorthand "code" or "subl" should still open the file.
     if !template.contains("{file}") {
-        args.push(file_path.clone());
+        args.push(file_native.clone());
     }
     std::process::Command::new(&program)
         .args(&args)
@@ -83,10 +89,23 @@ async fn open_external_editor(
 /// editor invocation — it reveals the file in its containing folder.
 #[tauri::command]
 async fn reveal_in_file_manager(file_path: String) -> Result<(), String> {
+    // Normalize separators first. Paths coming from the analyst / bug
+    // pipeline often mix backslashes and forward slashes — joining a
+    // Windows source root with POSIX-style relative paths produces things
+    // like `C:\Users\me\repo/src/file.ts`. Most OS tools accept the
+    // platform's native separators only; explorer.exe in particular
+    // silently falls back to the user home directory when the path is
+    // malformed.
+    let normalized = normalize_path_separators(&file_path);
+
     #[cfg(target_os = "windows")]
     {
+        // explorer.exe /select,<path> requires Windows backslashes AND no
+        // space after the comma. We pass them as a single argument so
+        // Rust doesn't quote the path (which would also confuse explorer).
+        let arg = format!("/select,{}", normalized);
         std::process::Command::new("explorer.exe")
-            .arg(format!("/select,{}", file_path))
+            .raw_arg(&arg)
             .spawn()
             .map_err(|e| format!("explorer.exe failed: {e}"))?;
         return Ok(());
@@ -95,7 +114,7 @@ async fn reveal_in_file_manager(file_path: String) -> Result<(), String> {
     {
         std::process::Command::new("open")
             .arg("-R")
-            .arg(&file_path)
+            .arg(&normalized)
             .spawn()
             .map_err(|e| format!("open -R failed: {e}"))?;
         return Ok(());
@@ -103,9 +122,9 @@ async fn reveal_in_file_manager(file_path: String) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         // No portable "reveal" — fall back to opening the containing dir.
-        let parent = std::path::Path::new(&file_path)
+        let parent = std::path::Path::new(&normalized)
             .parent()
-            .ok_or_else(|| format!("no parent directory for {file_path}"))?;
+            .ok_or_else(|| format!("no parent directory for {normalized}"))?;
         std::process::Command::new("xdg-open")
             .arg(parent)
             .spawn()
@@ -114,6 +133,62 @@ async fn reveal_in_file_manager(file_path: String) -> Result<(), String> {
     }
     #[allow(unreachable_code)]
     Err("unsupported platform".into())
+}
+
+/// Normalize path separators to the platform's native form. Strips a
+/// trailing slash too — explorer.exe interprets a trailing separator on
+/// `/select,<dir>\` as "open this directory, don't select anything".
+fn normalize_path_separators(p: &str) -> String {
+    if cfg!(target_os = "windows") {
+        // Collapse repeated slashes and unify on backslash.
+        let unified: String = p.chars().map(|c| if c == '/' { '\\' } else { c }).collect();
+        // Squash duplicate backslashes that may come from naive joins
+        // ("C:\repo\\src\\file" → "C:\repo\src\file"). UNC paths
+        // (starting with \\) are preserved by leaving the first pair
+        // intact.
+        let mut out = String::with_capacity(unified.len());
+        let mut prev_back = false;
+        let mut i = 0;
+        for ch in unified.chars() {
+            if ch == '\\' {
+                if prev_back {
+                    // Only allow the very first \\… for UNC. Otherwise drop.
+                    if i == 1 {
+                        out.push(ch);
+                    }
+                } else {
+                    out.push(ch);
+                }
+                prev_back = true;
+            } else {
+                out.push(ch);
+                prev_back = false;
+            }
+            i += 1;
+        }
+        // Drop a trailing backslash (explorer.exe quirk).
+        if out.ends_with('\\') && out.len() > 1 {
+            out.pop();
+        }
+        out
+    } else {
+        // POSIX — unify on forward slash and collapse duplicates.
+        let unified: String = p.chars().map(|c| if c == '\\' { '/' } else { c }).collect();
+        let mut out = String::with_capacity(unified.len());
+        let mut prev_slash = false;
+        for ch in unified.chars() {
+            if ch == '/' {
+                if !prev_slash {
+                    out.push(ch);
+                }
+                prev_slash = true;
+            } else {
+                out.push(ch);
+                prev_slash = false;
+            }
+        }
+        out
+    }
 }
 
 /// Shell-style argument splitter. Honors single/double quotes so a path
@@ -203,6 +278,66 @@ mod shell_split_tests {
     #[test]
     fn unterminated_quote_errors() {
         assert!(shell_split(r#"code "unterminated"#).is_err());
+    }
+}
+
+#[cfg(test)]
+mod normalize_path_tests {
+    use super::normalize_path_separators;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_unifies_mixed_separators() {
+        let input = r"C:\Users\me\source/repos\proj/src/file.ts";
+        assert_eq!(
+            normalize_path_separators(input),
+            r"C:\Users\me\source\repos\proj\src\file.ts"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_collapses_duplicate_backslashes() {
+        assert_eq!(
+            normalize_path_separators(r"C:\repo\\src\\file"),
+            r"C:\repo\src\file"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_preserves_unc_prefix() {
+        assert_eq!(
+            normalize_path_separators(r"\\server\share\file.txt"),
+            r"\\server\share\file.txt"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_drops_trailing_separator() {
+        assert_eq!(
+            normalize_path_separators(r"C:\Users\me\repo\"),
+            r"C:\Users\me\repo"
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn posix_unifies_mixed_separators() {
+        assert_eq!(
+            normalize_path_separators(r"/home/me\src/file.ts"),
+            "/home/me/src/file.ts"
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn posix_collapses_duplicate_slashes() {
+        assert_eq!(
+            normalize_path_separators("/home//me///file"),
+            "/home/me/file"
+        );
     }
 }
 
