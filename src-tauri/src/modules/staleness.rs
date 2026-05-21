@@ -112,7 +112,7 @@ fn chrono_like_now() -> String {
 /// Convert UNIX seconds to (year, month, day, hour, minute, second) in UTC.
 /// Public-domain algorithm (Howard Hinnant) — handles all dates we care about.
 fn epoch_to_ymdhms(secs: i64) -> (i32, u32, u32, u32, u32, u32) {
-    let days = secs.div_euclid(86_400) as i64;
+    let days = secs.div_euclid(86_400);
     let s = secs.rem_euclid(86_400) as u32;
     let hour = s / 3600;
     let minute = (s / 60) % 60;
@@ -234,10 +234,11 @@ pub async fn ado_scan_staleness(
     // baselines and per-pair file→case map. Doing this in a short critical
     // section keeps the SQLite lock from blocking the ADO HTTP calls below.
     type RepoBranch = (String, String);
-    let snapshot: (
+    type StaleSnapshot = (
         Vec<(RepoBranch, String)>,
         std::collections::HashMap<RepoBranch, Vec<(String, i64)>>,
-    ) = stale.with_conn(&app, |conn| {
+    );
+    let snapshot: StaleSnapshot = stale.with_conn(&app, |conn| {
         let mut pairs: Vec<(RepoBranch, String)> = Vec::new();
         {
             let mut stmt = conn

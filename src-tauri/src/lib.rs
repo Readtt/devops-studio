@@ -148,8 +148,7 @@ fn normalize_path_separators(p: &str) -> String {
         // intact.
         let mut out = String::with_capacity(unified.len());
         let mut prev_back = false;
-        let mut i = 0;
-        for ch in unified.chars() {
+        for (i, ch) in unified.chars().enumerate() {
             if ch == '\\' {
                 if prev_back {
                     // Only allow the very first \\… for UNC. Otherwise drop.
@@ -164,7 +163,6 @@ fn normalize_path_separators(p: &str) -> String {
                 out.push(ch);
                 prev_back = false;
             }
-            i += 1;
         }
         // Drop a trailing backslash (explorer.exe quirk).
         if out.ends_with('\\') && out.len() > 1 {

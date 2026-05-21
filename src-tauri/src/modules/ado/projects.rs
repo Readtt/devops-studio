@@ -38,7 +38,7 @@ pub async fn list_projects(state: &AdoState) -> AdoResult<Vec<ProjectRef>> {
     }
 
     // Stable alphabetical so the dropdown order survives refreshes.
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|p| p.name.to_lowercase());
     Ok(out)
 }
 

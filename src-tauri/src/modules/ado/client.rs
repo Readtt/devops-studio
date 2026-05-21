@@ -140,6 +140,7 @@ pub fn normalize_org_url(s: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod url_tests {
     use super::*;
 
@@ -218,9 +219,7 @@ fn urlencoded(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.as_bytes() {
         let c = *b;
-        let unreserved = (c >= b'A' && c <= b'Z')
-            || (c >= b'a' && c <= b'z')
-            || (c >= b'0' && c <= b'9')
+        let unreserved = c.is_ascii_alphanumeric()
             || c == b'-'
             || c == b'_'
             || c == b'.'
