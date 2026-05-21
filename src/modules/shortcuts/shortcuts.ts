@@ -1,45 +1,27 @@
 import { IS_MAC, MOD_PROP } from "@/lib/platform";
 
 /**
- * Single source of truth for keyboard shortcuts.
+ * Single source of truth for keyboard shortcuts. The Shortcuts settings
+ * page renders whatever lives here; useGlobalShortcuts dispatches on it.
+ *
+ * Generator review-phase keys (j / k / space / p / Esc) are intentionally
+ * context-local and not declared here — they only fire when the review
+ * grid is on screen and the user isn't typing in an input.
  */
 
 export type ShortcutId =
-  | "tab.new"
-  | "tab.newPrivate"
-  | "tab.newPreview"
-  | "tab.newEditor"
+  | "palette.open"
+  | "settings.open"
+  | "sidebar.toggle"
   | "tab.close"
   | "tab.next"
   | "tab.prev"
-  | "tab.selectByIndex"
-  | "pane.splitRight"
-  | "pane.splitDown"
-  | "pane.focusNext"
-  | "pane.focusPrev"
-  | "pane.source"
-  | "search.focus"
-  | "explorer.search"
-  | "explorer.focus"
+  | "stale.scan"
   | "view.zoomIn"
   | "view.zoomOut"
-  | "view.zoomReset"
-  | "ai.toggle"
-  | "ai.askSelection"
-  | "shortcuts.open"
-  | "settings.open"
-  | "sidebar.toggle"
-  | "editor.undo"
-  | "editor.redo";
+  | "view.zoomReset";
 
-export type ShortcutGroup =
-  | "General"
-  | "Tabs"
-  | "Panes"
-  | "Search"
-  | "AI"
-  | "View"
-  | "Editor";
+export type ShortcutGroup = "General" | "Tabs" | "View" | "ADO";
 
 export type KeyBinding = {
   key: string;
@@ -59,76 +41,28 @@ export type Shortcut = {
 
 export const SHORTCUTS: Shortcut[] = [
   {
+    id: "palette.open",
+    label: "Open command palette",
+    group: "General",
+    defaultBindings: [{ [MOD_PROP]: true, key: "k" }],
+  },
+  {
     id: "settings.open",
     label: "Open settings",
     group: "General",
     defaultBindings: [{ [MOD_PROP]: true, key: "," }],
   },
   {
-    id: "shortcuts.open",
-    label: "Show keyboard shortcuts",
+    id: "sidebar.toggle",
+    label: "Toggle sidebar (Plans / Stale / History)",
     group: "General",
-    defaultBindings: [{ [MOD_PROP]: true, key: "k" }],
-  },
-  {
-    id: "tab.new",
-    label: "New tab",
-    group: "Tabs",
-    defaultBindings: [{ [MOD_PROP]: true, key: "t" }],
-  },
-  {
-    id: "tab.newPrivate",
-    label: "New private terminal",
-    group: "Tabs",
-    defaultBindings: [{ [MOD_PROP]: true, key: "r" }],
-  },
-  {
-    id: "tab.newPreview",
-    label: "New preview tab",
-    group: "Tabs",
-    defaultBindings: [{ [MOD_PROP]: true, key: "p" }],
-  },
-  {
-    id: "tab.newEditor",
-    label: "New editor tab",
-    group: "Tabs",
-    defaultBindings: [{ [MOD_PROP]: true, key: "e" }],
+    defaultBindings: [{ [MOD_PROP]: true, key: "b" }],
   },
   {
     id: "tab.close",
-    label: "Close tab or pane",
+    label: "Close active tab",
     group: "Tabs",
     defaultBindings: [{ [MOD_PROP]: true, key: "w" }],
-  },
-  {
-    id: "pane.splitRight",
-    label: "Split pane right",
-    group: "Panes",
-    defaultBindings: [{ [MOD_PROP]: true, key: "d" }],
-  },
-  {
-    id: "pane.splitDown",
-    label: "Split pane down",
-    group: "Panes",
-    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "d" }],
-  },
-  {
-    id: "pane.focusNext",
-    label: "Focus next pane",
-    group: "Panes",
-    defaultBindings: [{ [MOD_PROP]: true, key: "]" }],
-  },
-  {
-    id: "pane.focusPrev",
-    label: "Focus previous pane",
-    group: "Panes",
-    defaultBindings: [{ [MOD_PROP]: true, key: "[" }],
-  },  
-  {
-    id: "pane.source",
-    label: "Toggle source panel",
-    group: "Panes",
-    defaultBindings: [{ [MOD_PROP]: true, key: "g" }],
   },
   {
     id: "tab.next",
@@ -143,46 +77,10 @@ export const SHORTCUTS: Shortcut[] = [
     defaultBindings: [{ ctrl: true, shift: true, key: "Tab" }],
   },
   {
-    id: "tab.selectByIndex",
-    label: "Jump to tab 1–9",
-    group: "Tabs",
-    defaultBindings: [{ [MOD_PROP]: true, key: "1" }],
-  },
-  {
-    id: "explorer.search",
-    label: "Search files",
-    group: "Search",
-    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "f" }],
-  },
-  {
-    id: "search.focus",
-    label: "Find in terminal",
-    group: "Search",
-    defaultBindings: [{ [MOD_PROP]: true, key: "f" }],
-  },
-  {
-    id: "ai.toggle",
-    label: "Toggle AI agent",
-    group: "AI",
-    defaultBindings: [{ [MOD_PROP]: true, key: "i" }],
-  },
-  {
-    id: "ai.askSelection",
-    label: "Ask AI about selection",
-    group: "AI",
-    defaultBindings: [{ [MOD_PROP]: true, key: "l" }],
-  },
-  {
-    id: "sidebar.toggle",
-    label: "Toggle file explorer",
-    group: "View",
-    defaultBindings: [{ [MOD_PROP]: true, key: "b" }],
-  },
-  {
-    id: "explorer.focus",
-    label: "Toggle file explorer focus",
-    group: "View",
-    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "e" }],
+    id: "stale.scan",
+    label: "Scan for stale test cases",
+    group: "ADO",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "s" }],
   },
   {
     id: "view.zoomIn",
@@ -210,34 +108,9 @@ export const SHORTCUTS: Shortcut[] = [
     group: "View",
     defaultBindings: [{ [MOD_PROP]: true, key: "0" }],
   },
-  // Editor entries are display-only: CodeMirror's historyKeymap binds these
-  // keys natively. We register them here so the shortcuts dialog can surface
-  // them — they don't have App-level handlers, so `useGlobalShortcuts` falls
-  // through without `preventDefault`, leaving CodeMirror to handle the event.
-  // Also excluded from the customization UI in ShortcutsSection.
-  {
-    id: "editor.undo",
-    label: "Undo",
-    group: "Editor",
-    defaultBindings: [{ [MOD_PROP]: true, key: "z" }],
-  },
-  {
-    id: "editor.redo",
-    label: "Redo",
-    group: "Editor",
-    defaultBindings: [{ [MOD_PROP]: true, key: "y" }],
-  },
 ];
 
-export const SHORTCUT_GROUPS: ShortcutGroup[] = [
-  "General",
-  "Tabs",
-  "Panes",
-  "View",
-  "Search",
-  "AI",
-  "Editor",
-];
+export const SHORTCUT_GROUPS: ShortcutGroup[] = ["General", "Tabs", "ADO", "View"];
 
 /**
  * Matching logic: checks if a KeyboardEvent matches a KeyBinding.
@@ -245,18 +118,11 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
 export function matchBinding(
   e: KeyboardEvent,
   binding: KeyBinding,
-  id?: ShortcutId
+  _id?: ShortcutId,
 ): boolean {
   const eventKey = e.key.toLowerCase();
   const bindingKey = binding.key.toLowerCase();
-
-  // Special case for Jump to Tab 1-9
-  if (id === "tab.selectByIndex") {
-    if (!/^[1-9]$/.test(e.key)) return false;
-  } else if (eventKey !== bindingKey) {
-    return false;
-  }
-
+  if (eventKey !== bindingKey) return false;
   return (
     !!e.ctrlKey === !!binding.ctrl &&
     !!e.shiftKey === !!binding.shift &&

@@ -77,16 +77,9 @@ export function ShortcutsDialog({ open, onOpenChange }: Props) {
                           </span>
                           {tokens.length > 0 ? (
                             <KbdGroup>
-                              {tokens.map((token, i) => {
-                                let label = token;
-                                if (
-                                  s.id === "tab.selectByIndex" &&
-                                  i === tokens.length - 1
-                                ) {
-                                  label = "1…9";
-                                }
-                                return <Kbd key={i}>{label}</Kbd>;
-                              })}
+                              {tokens.map((token, i) => (
+                                <Kbd key={i}>{token}</Kbd>
+                              ))}
                             </KbdGroup>
                           ) : (
                             <span className="text-xs text-muted-foreground italic">

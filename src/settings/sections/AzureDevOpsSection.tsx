@@ -201,7 +201,11 @@ export function AzureDevOpsSection() {
         description="Connect to your Azure DevOps organization to read Test Plans and publish generated cases."
       />
 
-      <StatusBadgeRow status={status} />
+      <StatusBadgeRow
+        status={status}
+        onTest={onTest}
+        canTest={canSave && !saving && status.kind !== "verifying"}
+      />
 
       <div className="flex flex-col gap-2">
         <Label>Connection</Label>
@@ -389,16 +393,6 @@ export function AzureDevOpsSection() {
 
       <div className="flex justify-end gap-2 border-t border-border/40 pt-3">
         <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={onTest}
-          disabled={saving || status.kind === "verifying" || !canSave}
-        >
-          {status.kind === "verifying" ? "Testing…" : "Test connection"}
-        </Button>
-        <Button
-          size="sm"
           onClick={onSave}
           disabled={saving || !canSave}
         >
@@ -409,7 +403,15 @@ export function AzureDevOpsSection() {
   );
 }
 
-function StatusBadgeRow({ status }: { status: StatusBadge }) {
+function StatusBadgeRow({
+  status,
+  onTest,
+  canTest,
+}: {
+  status: StatusBadge;
+  onTest: () => void;
+  canTest: boolean;
+}) {
   const map: Record<
     StatusBadge["kind"],
     { dot: string; label: string }
@@ -438,7 +440,7 @@ function StatusBadgeRow({ status }: { status: StatusBadge }) {
   return (
     <div className="flex items-start gap-2 rounded-md border border-border/60 bg-card/40 px-3 py-2 text-[12px]">
       <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", meta.dot)} />
-      <div className="flex min-w-0 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col">
         <span className="font-medium">{meta.label}</span>
         {detail ? (
           <span className="break-words text-[11px] text-muted-foreground">
@@ -446,6 +448,16 @@ function StatusBadgeRow({ status }: { status: StatusBadge }) {
           </span>
         ) : null}
       </div>
+      <Button
+        type="button"
+        variant="outline"
+        size="xs"
+        onClick={onTest}
+        disabled={!canTest}
+        className="shrink-0"
+      >
+        {status.kind === "verifying" ? "Testing…" : "Test"}
+      </Button>
     </div>
   );
 }

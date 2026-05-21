@@ -37,11 +37,9 @@ export function ShortcutsSection() {
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
 
   const filteredShortcuts = useMemo(() => {
-    // Filter out internal/non-overridable shortcuts like tab.selectByIndex.
-    const base = SHORTCUTS.filter((s) => s.id !== "tab.selectByIndex");
-    if (!search) return base;
+    if (!search) return SHORTCUTS;
     const lower = search.toLowerCase();
-    return base.filter(
+    return SHORTCUTS.filter(
       (s) =>
         s.label.toLowerCase().includes(lower) ||
         s.group.toLowerCase().includes(lower)

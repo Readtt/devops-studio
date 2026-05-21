@@ -107,6 +107,7 @@ export function ModelsSection() {
   const [adding, setAdding] = useState<Set<ProviderId>>(new Set());
 
   const defaultModel = usePreferencesStore((s) => s.defaultModelId);
+  const engine = usePreferencesStore((s) => s.aiEngine);
   const lmstudioBaseURL = usePreferencesStore((s) => s.lmstudioBaseURL);
   const lmstudioModelId = usePreferencesStore((s) => s.lmstudioModelId);
   const mlxBaseURL = usePreferencesStore((s) => s.mlxBaseURL);
@@ -224,11 +225,24 @@ export function ModelsSection() {
 
       <AiEngineSection />
 
-      <DefaultsBlock
-        defaultModel={defaultModel}
-        configuredIds={configuredIds}
-        keys={keys}
-      />
+      {/* Only Vercel AI SDK uses these defaults; Claude Code's model is
+          managed by the CLI itself (claude /model). */}
+      {engine === "vercel-ai-sdk" ? (
+        <DefaultsBlock
+          defaultModel={defaultModel}
+          configuredIds={configuredIds}
+          keys={keys}
+        />
+      ) : (
+        <div className="flex flex-col gap-2">
+          <Label>Defaults</Label>
+          <div className="rounded-lg border border-dashed border-border/60 bg-card/40 px-3 py-2.5 text-[11px] text-muted-foreground">
+            Claude Code manages model selection itself. Run{" "}
+            <code className="font-mono text-foreground/85">claude /model</code>{" "}
+            in your terminal to change the active model.
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
