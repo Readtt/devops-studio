@@ -66,6 +66,8 @@ export type PublishLogEntry = {
   error?: string;
 };
 
+import type { ModelId } from "@/modules/ai/config";
+
 export type AttachmentKind = "text" | "image" | "binary";
 
 export type Attachment = {
@@ -94,6 +96,10 @@ export type SessionState = {
    *  source root is set. Defaults to true so first-time users get the
    *  better experience without having to find a hidden toggle. */
   allowCodeSearch: boolean;
+  /** Per-generation model override. When null, the run uses
+   *  useChatStore.selectedModelId (the global default). Reset to null on
+   *  startNew so each session starts from the latest default. */
+  overrideModelId: ModelId | null;
   // Analyzing
   stepLabel: string;
   /** Streaming activity from the analyst engines: tool calls, results, and
@@ -118,6 +124,8 @@ export type SessionState = {
   setMode: (m: GenerationMode) => void;
   setTarget: (planId: number | null, suiteId: number | null) => void;
   setAllowCodeSearch: (v: boolean) => void;
+  /** Set or clear (null) the per-generation model override. */
+  setOverrideModelId: (id: ModelId | null) => void;
   /** Add a text attachment. Convenience wrapper around `addRichAttachment`
    *  for the existing single-string-content callers. */
   addAttachment: (path: string, content: string) => void;
@@ -148,6 +156,7 @@ const initialState: Omit<
   | "setMode"
   | "setTarget"
   | "setAllowCodeSearch"
+  | "setOverrideModelId"
   | "addAttachment"
   | "addRichAttachment"
   | "removeAttachment"
@@ -167,6 +176,7 @@ const initialState: Omit<
   suiteId: null,
   mode: "thorough",
   allowCodeSearch: true,
+  overrideModelId: null,
   stepLabel: "",
   activityLog: [],
   durationMs: null,
@@ -185,6 +195,7 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
   setMode: (m) => set({ mode: m }),
   setTarget: (planId, suiteId) => set({ planId, suiteId }),
   setAllowCodeSearch: (v) => set({ allowCodeSearch: v }),
+  setOverrideModelId: (id) => set({ overrideModelId: id }),
   addAttachment: (path, content) =>
     set((s) => {
       if (s.attachments.some((a) => a.path === path)) return s;
@@ -213,7 +224,7 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
     })),
 
   analyze: async () => {
-    const { requirements, attachments, planId, suiteId, mode, allowCodeSearch } = get();
+    const { requirements, attachments, planId, suiteId, mode, allowCodeSearch, overrideModelId } = get();
     if (!requirements.trim()) {
       set({
         phase: "error",
@@ -268,7 +279,10 @@ export const useGenerationSession = create<SessionState>((set, get) => ({
 
     const chat = useChatStore.getState();
     const keys = chat.apiKeys;
-    const modelId = chat.selectedModelId;
+    // Per-generation override wins over the global default. Resetting on
+    // startNew keeps each new run anchored to the latest default unless the
+    // user explicitly picks a model again.
+    const modelId = overrideModelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
     const engineSel = selectEngine(modelId);
 

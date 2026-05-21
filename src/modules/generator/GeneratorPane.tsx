@@ -46,6 +46,9 @@ import {
   synthesizeClipboardImageName,
 } from "./lib/ingestAttachment";
 import { Attachment01Icon } from "@hugeicons/core-free-icons";
+import { ModelPicker } from "@/modules/ai/components/ModelPicker";
+import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
+import { useChatStore } from "@/modules/ai/store/chatStore";
 
 const MODE_LABELS: Record<GenerationMode, string> = {
   happy: "Happy path only",
@@ -183,13 +186,17 @@ function InputPhase() {
   const suiteId = useGenerationSession((s) => s.suiteId);
   const allowCodeSearch = useGenerationSession((s) => s.allowCodeSearch);
   const attachments = useGenerationSession((s) => s.attachments);
+  const overrideModelId = useGenerationSession((s) => s.overrideModelId);
   const setRequirements = useGenerationSession((s) => s.setRequirements);
   const setMode = useGenerationSession((s) => s.setMode);
   const setTarget = useGenerationSession((s) => s.setTarget);
   const setAllowCodeSearch = useGenerationSession((s) => s.setAllowCodeSearch);
+  const setOverrideModelId = useGenerationSession((s) => s.setOverrideModelId);
   const addRichAttachment = useGenerationSession((s) => s.addRichAttachment);
   const removeAttachment = useGenerationSession((s) => s.removeAttachment);
   const analyze = useGenerationSession((s) => s.analyze);
+  const defaultModelId = useChatStore((s) => s.selectedModelId);
+  const activeModelId = overrideModelId ?? defaultModelId;
   const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
   const aiEngine = usePreferencesStore((s) => s.aiEngine);
   const showCodeSearchToggle =
@@ -520,6 +527,30 @@ function InputPhase() {
           <PreviewRow label="Plan" value={planName ?? "—"} />
           <PreviewRow label="Suite" value={suiteName ?? "—"} />
           <PreviewRow label="Mode" value={MODE_LABELS[mode]} />
+          <PreviewRow
+            label="Model"
+            value={
+              <ModelPicker
+                value={activeModelId}
+                onChange={(id) =>
+                  setOverrideModelId(id === defaultModelId ? null : id)
+                }
+                side="bottom"
+                align="end"
+                trigger={({ label, provider }) => (
+                  <span className="inline-flex items-center gap-1.5 rounded-sm border border-border/60 bg-card/70 px-1.5 py-0.5 text-[10.5px] hover:border-primary/60">
+                    <ProviderIcon provider={provider} size={10} />
+                    <span className="max-w-[140px] truncate">{label}</span>
+                    {overrideModelId ? (
+                      <span className="rounded-sm bg-primary/15 px-1 py-px font-mono text-[9px] uppercase tracking-wide text-primary">
+                        override
+                      </span>
+                    ) : null}
+                  </span>
+                )}
+              />
+            }
+          />
           <PreviewRow
             label="Branch"
             value={

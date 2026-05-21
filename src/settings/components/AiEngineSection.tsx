@@ -3,6 +3,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+import { ModelPicker } from "@/modules/ai/components/ModelPicker";
+import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
+import { useChatStore } from "@/modules/ai/store/chatStore";
+import { getModel } from "@/modules/ai/config";
 import {
   cancelSetupClaudeToken,
   checkClaudeAuth,
@@ -299,8 +303,54 @@ export function AiEngineSection() {
               </div>
             ) : null}
           </div>
+
+          <ClaudeModelRow />
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/** Anthropic-only model picker shown when the Claude Code engine is active.
+ *  Writes through to the global default model so chat + generator both pick
+ *  up the change. Filtered to anthropic provider so users don't accidentally
+ *  pick a GPT or Gemini model that the Claude CLI can't drive. */
+function ClaudeModelRow() {
+  const selectedModelId = useChatStore((s) => s.selectedModelId);
+  const setSelectedModelId = useChatStore((s) => s.setSelectedModelId);
+  const current = getModel(selectedModelId);
+  // If the user lands here with a non-Anthropic default, surface that — the
+  // run engine will substitute a safe default at request time but we still
+  // want them to make an explicit pick.
+  const isAnthropic = current.provider === "anthropic";
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label className="text-[11.5px] text-muted-foreground">
+        Claude model
+      </Label>
+      <ModelPicker
+        value={selectedModelId}
+        onChange={setSelectedModelId}
+        filter={(id) => getModel(id).provider === "anthropic"}
+        side="bottom"
+        align="start"
+        trigger={({ label, provider }) => (
+          <span className="inline-flex h-8 items-center gap-2 rounded-md border border-border/60 bg-card px-2.5 text-[12px] hover:border-primary/60">
+            <ProviderIcon provider={provider} size={12} />
+            <span className="truncate">
+              {isAnthropic ? label : "Pick a Claude model"}
+            </span>
+            <span className="ml-auto font-mono text-[10px] text-muted-foreground">
+              {isAnthropic ? current.hint : "current default is not Anthropic"}
+            </span>
+          </span>
+        )}
+      />
+      <p className="text-[10.5px] text-muted-foreground/85">
+        The Claude Code CLI only understands Anthropic model ids. Pick one
+        here — it becomes your default for chat and the generator. Run-time
+        overrides on the generator page still apply per session.
+      </p>
     </div>
   );
 }

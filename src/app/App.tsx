@@ -29,6 +29,10 @@ import { useGenerationSession } from "@/modules/generator/store/useGenerationSes
 import { useSourceDirGitInfo } from "@/modules/git";
 import { getConnection } from "@/modules/ado";
 import { AzureDevOpsLogo } from "@/components/AzureDevOpsLogo";
+import { ModelPicker } from "@/modules/ai/components/ModelPicker";
+import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
+import { useChatStore } from "@/modules/ai/store/chatStore";
+import { getModel } from "@/modules/ai/config";
 import type { Tab } from "@/modules/tabs/lib/useTabs";
 import {
   AlertCircleIcon,
@@ -634,6 +638,7 @@ export default function App() {
           <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-border/60 bg-card/60 px-3 text-[11px] text-muted-foreground">
             <StatusBarBranch sourceRoot={sourceRoot} onPick={() => void pickSourceDir()} />
             <div className="ml-auto flex items-center gap-2">
+              <StatusBarModelPicker />
               {staleCount > 0 ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -758,5 +763,53 @@ function StatusBarBranch({
         )}
       </TooltipContent>
     </Tooltip>
+  );
+}
+
+/**
+ * Compact status-bar model switcher. Reflects the default model used when a
+ * generation doesn't specify its own override. Disabled while a generation
+ * is mid-run so the user can't swap the model out from under an in-flight
+ * request (the next run picks up the new default).
+ */
+function StatusBarModelPicker() {
+  const selectedModelId = useChatStore((s) => s.selectedModelId);
+  const setSelectedModelId = useChatStore((s) => s.setSelectedModelId);
+  const generationPhase = useGenerationSession((s) => s.phase);
+  const isRunning =
+    generationPhase === "analyzing" || generationPhase === "publishing";
+  const model = getModel(selectedModelId);
+  return (
+    <ModelPicker
+      value={selectedModelId}
+      onChange={setSelectedModelId}
+      disabled={isRunning}
+      disabledReason="A generation is running — model swap takes effect on the next run."
+      side="top"
+      align="end"
+      trigger={({ label, provider, disabled }) => (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span
+              className={cn(
+                "flex h-5 items-center gap-1.5 rounded-md border border-border/60 bg-card px-1.5 transition-colors hover:text-foreground",
+                disabled && "cursor-not-allowed opacity-50",
+              )}
+            >
+              <ProviderIcon provider={provider} size={11} />
+              <span className="max-w-[160px] truncate">{label}</span>
+              <span className="font-mono text-[10px] text-muted-foreground/60">
+                {model.hint}
+              </span>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="text-[11px]">
+            {disabled
+              ? "Generation in progress — change applies next run."
+              : "Default model. Pick a different one for this generation only from the run panel."}
+          </TooltipContent>
+        </Tooltip>
+      )}
+    />
   );
 }
