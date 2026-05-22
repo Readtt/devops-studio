@@ -6,6 +6,8 @@ import {
   listSuiteCases,
   listSuites,
   toAdoError,
+  updatePlanName,
+  updateSuiteName,
   type AdoError,
   type SuiteRef,
   type TestCase,
@@ -60,6 +62,18 @@ type State = {
   /** Fetch full case data (state, priority, linked work items, etc.) on
    *  demand. Idempotent — repeat calls return the cached value. */
   loadCaseDetails: (caseId: number) => Promise<void>;
+  /** Rename a suite optimistically and persist via ADO. Returns null on
+   *  success, an AdoError when the server rejects the rename (the in-memory
+   *  name reverts in that case). The new name is trimmed; an empty/identical
+   *  name is a no-op. */
+  renameSuite: (
+    planId: number,
+    suiteId: number,
+    name: string,
+  ) => Promise<AdoError | null>;
+  /** Rename a test plan. Same contract as renameSuite — optimistic patch
+   *  of the in-memory plans list with revert on failure. */
+  renamePlan: (planId: number, name: string) => Promise<AdoError | null>;
   /** Cancel any in-flight suite or case loads for this plan and forget the
    *  fact that we were loading. Called when the user collapses a plan. */
   cancelPlanLoads: (planId: number) => void;
@@ -263,6 +277,70 @@ export const useTestPlans = create<State>((set, get) => ({
       });
     } finally {
       inFlightCaseDetails.delete(caseId);
+    }
+  },
+
+  renameSuite: async (planId, suiteId, name) => {
+    const trimmed = name.trim();
+    if (trimmed.length === 0) return null;
+    const prevSuites = get().bySuite.get(planId)?.suites ?? [];
+    const prev = prevSuites.find((s) => s.id === suiteId);
+    if (!prev) return null;
+    if (prev.name === trimmed) return null;
+
+    // Optimistic patch: swap the suite's name in the in-memory tree so the
+    // sidebar reflects the rename immediately, without waiting for the ADO
+    // round-trip. If the server rejects, we revert below.
+    const apply = (newName: string) => {
+      set((s) => {
+        const nextBy = new Map(s.bySuite);
+        const load = nextBy.get(planId);
+        if (!load) return {};
+        const nextSuites = load.suites.map((suite) =>
+          suite.id === suiteId ? { ...suite, name: newName } : suite,
+        );
+        nextBy.set(planId, { ...load, suites: nextSuites });
+        return { bySuite: nextBy };
+      });
+    };
+
+    apply(trimmed);
+    try {
+      const updated = await updateSuiteName(planId, suiteId, trimmed);
+      // ADO sometimes normalizes whitespace / casing — write back whatever
+      // the server actually saved so we stay consistent on the next render.
+      if (updated.name !== trimmed) apply(updated.name);
+      return null;
+    } catch (e) {
+      apply(prev.name);
+      return toAdoError(e);
+    }
+  },
+
+  renamePlan: async (planId, name) => {
+    const trimmed = name.trim();
+    if (trimmed.length === 0) return null;
+    const prevPlans = get().plans;
+    const prev = prevPlans.find((p) => p.id === planId);
+    if (!prev) return null;
+    if (prev.name === trimmed) return null;
+
+    const apply = (newName: string) => {
+      set((s) => ({
+        plans: s.plans.map((p) =>
+          p.id === planId ? { ...p, name: newName } : p,
+        ),
+      }));
+    };
+
+    apply(trimmed);
+    try {
+      const updated = await updatePlanName(planId, trimmed);
+      if (updated.name !== trimmed) apply(updated.name);
+      return null;
+    } catch (e) {
+      apply(prev.name);
+      return toAdoError(e);
     }
   },
 

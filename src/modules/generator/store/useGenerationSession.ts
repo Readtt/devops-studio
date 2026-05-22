@@ -27,10 +27,7 @@ import {
 } from "../lib/qaAnalystRun";
 import { runQaAnalystClaude } from "../lib/qaAnalystRunClaude";
 import { resolveClaudeModelId, selectEngine } from "@/modules/ai/lib/engine";
-import {
-  isDynamicTrackingBranch,
-  resolveTrackingBranch,
-} from "@/modules/git";
+import { resolveTrackingBranch } from "@/modules/git";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { invoke } from "@tauri-apps/api/core";
 import type {
@@ -189,6 +186,10 @@ export type SessionState = {
    *  after the original case was skipped. */
   setBugParent: (bugUid: string, caseUid: string | null) => void;
   publish: () => Promise<void>;
+  /** Replace the display title for a single publish-log entry. Used by the
+   *  done-phase focus refresh to pick up renames made in the ADO web UI
+   *  after we published. */
+  setPublishLogTitle: (uid: string, title: string) => void;
   /** True while a refine() call is in flight. The review UI swaps to a
    *  streaming-log layout, similar to the analyze phase, while this is set. */
   isRefining: boolean;
@@ -235,6 +236,10 @@ export type SessionState = {
    *  exists (cases.length > 0); otherwise no-op so a click can't strand the
    *  user on an empty review screen. */
   goToReview: () => void;
+  /** Jump back to the done phase. Only valid once publish has actually run
+   *  (publishLog is non-empty); otherwise no-op so a click can't strand the
+   *  user on an empty success screen. Mirrors goToReview's design. */
+  goToDone: () => void;
   reset: () => void;
   startNew: () => void;
   /** Hydrate the session from a saved draft history row. Returns true when
@@ -272,6 +277,7 @@ const initialState: Omit<
   | "setBugTitle"
   | "setBugReproSteps"
   | "publish"
+  | "setPublishLogTitle"
   | "reset"
   | "startNew"
   | "loadDraft"
@@ -281,6 +287,7 @@ const initialState: Omit<
   | "dismissRefineError"
   | "goToInput"
   | "goToReview"
+  | "goToDone"
 > = {
   phase: "input",
   requirements: "",
@@ -833,24 +840,27 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     // Pull the default tracking branch once for staleness baselines. If the
     // user configured `$current`, resolve to the live source-dir branch so
     // each generation is indexed on the branch the user is actually working
-    // on, not whatever was saved at setup time.
+    // on, not whatever was saved at setup time. We also capture the source-
+    // dir HEAD SHA here so bug code refs can be stamped with the same commit
+    // — cases get a baseline via indexCaseLinks, bugs didn't have an
+    // equivalent so the rendered SHA was always blank.
     let trackingBranch = "main";
+    let sourceDirSha: string | null = null;
     try {
       const conn = await getConnection();
       const saved = conn.defaultTrackingBranch ?? "";
       let sourceDirBranch: string | null = null;
-      if (isDynamicTrackingBranch(saved)) {
-        const sourceRoot = usePreferencesStore.getState().sourceRoot;
-        if (sourceRoot) {
-          try {
-            const info = await invoke<{ branch: string | null }>(
-              "git_repo_info",
-              { path: sourceRoot },
-            );
-            sourceDirBranch = info?.branch ?? null;
-          } catch {
-            // If git_repo_info fails we'll fall through to the "main" fallback.
-          }
+      const sourceRoot = usePreferencesStore.getState().sourceRoot;
+      if (sourceRoot) {
+        try {
+          const info = await invoke<{
+            branch: string | null;
+            commit: string | null;
+          }>("git_repo_info", { path: sourceRoot });
+          sourceDirBranch = info?.branch ?? null;
+          sourceDirSha = info?.commit ?? null;
+        } catch {
+          // If git_repo_info fails we'll fall through to the "main" fallback.
         }
       }
       trackingBranch = resolveTrackingBranch(saved, sourceDirBranch);
@@ -894,6 +904,13 @@ export function createGenerationSessionStore(): GenerationSessionStore {
                 branch: trackingBranch,
                 filePath: l.filePath,
                 symbol: l.symbol ?? undefined,
+                // Hand the source-dir HEAD SHA to the indexer so it doesn't
+                // have to call ADO's commits API to resolve a baseline. Most
+                // users' source isn't in an ADO Git repo (it's GitHub /
+                // GitLab / local) — without a SHA hint the indexer's HEAD
+                // lookup 404s and every published case shows a "no drift
+                // tracking" pill. Passing the local SHA short-circuits that.
+                baselineSha: sourceDirSha ?? undefined,
               })),
             );
           } catch (e) {
@@ -933,7 +950,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
             file: r.file,
             startLine: r.startLine,
             endLine: r.endLine ?? undefined,
-            commitSha: null,
+            // Stamp the source-dir HEAD SHA so the bug's code refs survive
+            // future drift the same way case source-links do. Null fallback
+            // is fine — older bugs without a SHA render without the commit
+            // chip in BugPane and the user can still navigate by file/line.
+            commitSha: sourceDirSha,
           })),
         });
         updateLog(set, b.uid, { status: "ok", result: created });
@@ -987,6 +1008,14 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     } catch {
       // Persisting is non-essential — the run still completed.
     }
+  },
+
+  setPublishLogTitle: (uid, title) => {
+    set((s) => ({
+      publishLog: s.publishLog.map((e) =>
+        e.uid === uid ? { ...e, title } : e,
+      ),
+    }));
   },
 
   reset: () => set({ ...initialState }),
@@ -1262,6 +1291,17 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     const s = get();
     if (s.cases.length === 0 && s.bugs.length === 0) return;
     set({ phase: "review", error: null, errorPhase: null });
+  },
+
+  goToDone: () => {
+    const s = get();
+    // Refuse the jump if no publish has actually happened — landing on a
+    // success screen with an empty log is just confusing. Also refuse mid-
+    // flight phases; the natural exit there is cancel(), not a sideways
+    // breadcrumb click.
+    if (s.publishLog.length === 0) return;
+    if (s.phase === "analyzing" || s.phase === "publishing") return;
+    set({ phase: "done", error: null, errorPhase: null });
   },
 
   undoRefine: () => {

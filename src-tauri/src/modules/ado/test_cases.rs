@@ -295,6 +295,34 @@ pub async fn update_description(
     Ok(())
 }
 
+/// Replace the System.Title of any work item — used by the in-app rename
+/// affordance on the case / bug detail panes. ADO doesn't distinguish work
+/// item types here; the same patch works for a Test Case, Bug, or anything
+/// else. Title is required by ADO, so we reject empty strings up front
+/// instead of letting the server return a confusing 400.
+pub async fn update_work_item_title(
+    state: &AdoState,
+    work_item_id: i64,
+    title: &str,
+) -> AdoResult<()> {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return Err(AdoError::Local {
+            message: "Title can't be empty.".into(),
+        });
+    }
+    let (conn, _) = state.snapshot();
+    let conn = conn.ok_or(AdoError::NotConfigured)?;
+    let url = project_api(&conn, &format!("wit/workitems/{work_item_id}"));
+    let ops = vec![JsonPatchOp {
+        op: "add",
+        path: "/fields/System.Title".into(),
+        value: Value::String(trimmed.to_string()),
+    }];
+    let _: Value = patch_json_patch(state, &url, &ops, "update title").await?;
+    Ok(())
+}
+
 fn merge_description(base: &str, links_block: Option<&str>) -> String {
     match links_block {
         Some(block) if !block.is_empty() => format!("{base}\n\n{block}"),

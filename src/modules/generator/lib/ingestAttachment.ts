@@ -137,14 +137,22 @@ export async function ingestFile(
   };
 }
 
-/** Synthesize a filename for a clipboard image that arrived without one. */
+// Monotonic counter so two pastes within the same millisecond still get
+// distinct synthesized names. Without it, the addRichAttachment dedup-by-
+// path would silently replace the first paste with the second.
+let pasteCounter = 0;
+
+/** Synthesize a filename for a clipboard image that arrived without one.
+ *  Includes milliseconds + a monotonic counter so rapid pastes never collide
+ *  on name (which would otherwise dedup against each other in the store). */
 export function synthesizeClipboardImageName(mime: string): string {
   const ext = mime.split("/")[1] || "png";
   const stamp = new Date()
     .toISOString()
     .replace(/[:.]/g, "-")
-    .slice(0, 19);
-  return `pasted-${stamp}.${ext}`;
+    .slice(0, 23); // includes milliseconds
+  pasteCounter = (pasteCounter + 1) % 100000;
+  return `pasted-${stamp}-${pasteCounter}.${ext}`;
 }
 
 function isProbablyText(file: File, mime: string): boolean {

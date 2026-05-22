@@ -13,6 +13,7 @@ import {
   type RunStatus,
 } from "./lib/history";
 import { useTestPlans } from "@/modules/test-plans";
+import { CopyableSectionHeader } from "@/components/CopyableSectionHeader";
 import {
   Bug01Icon,
   Cancel01Icon,
@@ -372,9 +373,17 @@ function RunCard({
           ) : null}
           {run.cases.length > 0 ? (
             <div className="mb-1.5">
-              <p className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                Cases
-              </p>
+              <CopyableSectionHeader
+                label="Cases"
+                kind="Test Case"
+                items={run.cases.map((c) => ({
+                  id: c.adoId ?? null,
+                  title: c.title,
+                  webUrl: c.webUrl ?? null,
+                }))}
+                count={run.cases.length}
+                className="mb-1"
+              />
               <ul className="flex flex-col gap-px">
                 {run.cases.map((c, i) => (
                   <li key={`${run.id}-c-${i}`}>
@@ -400,9 +409,17 @@ function RunCard({
           ) : null}
           {run.bugs.length > 0 ? (
             <div>
-              <p className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                Bugs
-              </p>
+              <CopyableSectionHeader
+                label="Bugs"
+                kind="Bug"
+                items={run.bugs.map((b) => ({
+                  id: b.adoId ?? null,
+                  title: b.title,
+                  webUrl: b.webUrl ?? null,
+                }))}
+                count={run.bugs.length}
+                className="mb-1"
+              />
               <ul className="flex flex-col gap-px">
                 {run.bugs.map((b, i) => (
                   <li key={`${run.id}-b-${i}`}>

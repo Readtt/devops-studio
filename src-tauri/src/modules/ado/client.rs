@@ -302,6 +302,30 @@ pub async fn patch_json_patch<B: serde::Serialize, T: DeserializeOwned>(
     handle_response(resp, resource_label).await
 }
 
+/// PATCH with a plain application/json body. Some ADO endpoints (testplan
+/// suite updates, for example) expect a regular partial-update payload
+/// rather than the JSON Patch envelope.
+pub async fn patch_json<B: serde::Serialize, T: DeserializeOwned>(
+    state: &AdoState,
+    url: &str,
+    body: &B,
+    resource_label: &str,
+) -> AdoResult<T> {
+    let (_, pat) = state.snapshot();
+    let pat = pat.ok_or(AdoError::NotConfigured)?;
+    let resp = state
+        .http()
+        .patch(url)
+        .header(reqwest::header::AUTHORIZATION, auth_header(&pat))
+        .header(reqwest::header::ACCEPT, "application/json")
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(serde_json::to_vec(body).map_err(AdoError::local)?)
+        .send()
+        .await
+        .map_err(|e| network_with_url(e, url))?;
+    handle_response(resp, resource_label).await
+}
+
 /// Wrap a reqwest error with the URL we tried so the user can diagnose
 /// builder/DNS/timeout failures from the UI instead of guessing.
 fn network_with_url(e: reqwest::Error, url: &str) -> AdoError {

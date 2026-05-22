@@ -7,6 +7,7 @@ import {
   getBug,
   getConnection,
   toAdoError,
+  updateWorkItemTitle,
   type AdoError,
   type Bug,
   type CodeLink,
@@ -14,7 +15,7 @@ import {
 } from "@/modules/ado";
 import { useWorkItemTitles } from "@/modules/ado/hooks/useWorkItemTitles";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { parseCodeLinks, stripCodeLinksBlock } from "./lib/codeLinksParser";
 import {
   Bug01Icon,
@@ -26,6 +27,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { LinkedWorkItem } from "@/modules/ado";
+import { EditableText } from "@/modules/generator/components/EditableText";
 
 type Props = {
   bugId: number;
@@ -39,6 +41,26 @@ export function BugPane({ bugId, sourceRoot }: Props) {
   const [conn, setConn] = useState<ConnectionStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<AdoError | null>(null);
+  const [titleSaveError, setTitleSaveError] = useState<string | null>(null);
+  const [savingTitle, setSavingTitle] = useState(false);
+
+  async function commitTitle(next: string): Promise<void> {
+    if (!bug) return;
+    const trimmed = next.trim();
+    if (trimmed.length === 0 || trimmed === bug.title) return;
+    const previous = bug.title;
+    setBug({ ...bug, title: trimmed });
+    setTitleSaveError(null);
+    setSavingTitle(true);
+    try {
+      await updateWorkItemTitle(bug.id, trimmed);
+    } catch (e) {
+      setBug({ ...bug, title: previous });
+      setTitleSaveError(adoErrorMessage(toAdoError(e)) || "Failed to save title.");
+    } finally {
+      setSavingTitle(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -62,7 +84,7 @@ export function BugPane({ bugId, sourceRoot }: Props) {
     };
   }, [bugId]);
 
-  async function reload() {
+  const reload = useCallback(async () => {
     setLoading(true);
     try {
       const b = await getBug(bugId);
@@ -73,7 +95,7 @@ export function BugPane({ bugId, sourceRoot }: Props) {
     } finally {
       setLoading(false);
     }
-  }
+  }, [bugId]);
 
   const codeLinks = useMemo<CodeLink[]>(
     () => (bug ? parseCodeLinks(bug.reproStepsHtml) : []),
@@ -86,7 +108,21 @@ export function BugPane({ bugId, sourceRoot }: Props) {
     () => (bug ? bug.linkedWorkItems.map((lwi) => lwi.id) : []),
     [bug],
   );
-  const { titleFor, loadingFor } = useWorkItemTitles(linkedIds);
+  const { titleFor, loadingFor, refresh: refreshLinkedTitles } =
+    useWorkItemTitles(linkedIds);
+
+  // Refetch from ADO on window focus so renames / metadata edits made in the
+  // ADO web UI show up the next time the user tabs back. Skipped during a
+  // save round-trip to avoid stomping the optimistic title update.
+  useEffect(() => {
+    const onFocus = () => {
+      if (loading || savingTitle) return;
+      void reload();
+      refreshLinkedTitles();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [loading, savingTitle, reload, refreshLinkedTitles]);
 
   if (loading && !bug) {
     return (
@@ -116,17 +152,24 @@ export function BugPane({ bugId, sourceRoot }: Props) {
     <div className="flex h-full flex-col overflow-y-auto">
       <header className="border-b border-border/60 bg-card/40 px-6 py-4">
         <div className="flex items-center justify-between gap-3">
-          <h1 className="min-w-0 truncate text-[16px] font-semibold tracking-tight">
+          <h1 className="flex min-w-0 flex-1 items-baseline gap-1.5 text-[16px] font-semibold tracking-tight">
             <HugeiconsIcon
               icon={Bug01Icon}
               size={14}
               strokeWidth={1.75}
-              className="mr-1.5 inline-block -translate-y-0.5 text-rose-500"
+              className="shrink-0 translate-y-0.5 text-rose-500"
             />
-            <span className="mr-1.5 font-mono text-[12.5px] font-normal text-muted-foreground">
+            <span className="shrink-0 font-mono text-[12.5px] font-normal text-muted-foreground">
               #{bug.id}
             </span>
-            {bug.title}
+            <EditableText
+              value={bug.title}
+              onCommit={(next) => void commitTitle(next)}
+              variant="singleline"
+              ariaLabel="Bug title"
+              placeholder="(no title — click to edit)"
+              className="min-w-0 flex-1 truncate"
+            />
           </h1>
           <div className="flex shrink-0 gap-1">
             <Tooltip>
@@ -167,6 +210,11 @@ export function BugPane({ bugId, sourceRoot }: Props) {
         <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
           {buildMetadataInline(bug)}
         </p>
+        {titleSaveError ? (
+          <p className="mt-1.5 rounded-sm border border-destructive/30 bg-destructive/[0.06] px-2 py-1 text-[10.5px] text-destructive">
+            Couldn't save the title: {titleSaveError}
+          </p>
+        ) : null}
         {bug.tags.length > 0 ? (
           <div className="mt-2 flex flex-wrap gap-1">
             {bug.tags.map((t) => (

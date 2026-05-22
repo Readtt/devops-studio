@@ -30,7 +30,7 @@ import {
   useGenerationSessionStore,
 } from "./store/useGenerationSession";
 import { useTestPlans } from "@/modules/test-plans";
-import { adoErrorMessage } from "@/modules/ado";
+import { adoErrorMessage, getWorkItemTitles } from "@/modules/ado";
 import { useSourceDirGitInfo } from "@/modules/git";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
@@ -58,6 +58,7 @@ import { EditableText } from "./components/EditableText";
 import { RefineComposer } from "./components/RefineComposer";
 import { TargetContextChip } from "./components/TargetContextChip";
 import { BugCaseLinkPicker } from "./components/BugCaseLinkPicker";
+import { CopyableSectionHeader } from "@/components/CopyableSectionHeader";
 import {
   ingestFile,
   synthesizeClipboardImageName,
@@ -316,8 +317,10 @@ function ProgressStrip({
   const startNew = useGenerationSession((s) => s.startNew);
   const goToInput = useGenerationSession((s) => s.goToInput);
   const goToReview = useGenerationSession((s) => s.goToReview);
+  const goToDone = useGenerationSession((s) => s.goToDone);
   const cases = useGenerationSession((s) => s.cases);
   const bugs = useGenerationSession((s) => s.bugs);
+  const publishLog = useGenerationSession((s) => s.publishLog);
   const currentIdx = useMemo(() => {
     if (phase === "error") return 0;
     return STEPS.findIndex((s) => s.id === phase);
@@ -325,12 +328,16 @@ function ProgressStrip({
 
   // Decide which breadcrumb steps the user can actually jump to. We never
   // permit jumping INTO analyze / publishing — those are in-flight phases
-  // and bouncing into them mid-run would corrupt state. Review and input
-  // are safe targets as long as the prerequisite data exists.
+  // and bouncing into them mid-run would corrupt state. Review, input, and
+  // done are safe targets as long as the prerequisite data exists.
   const canReachInput = phase !== "analyzing" && phase !== "publishing";
   const hasDraft = cases.length > 0 || bugs.length > 0;
   const canReachReview =
     hasDraft && phase !== "analyzing" && phase !== "publishing";
+  // Done is reachable once publish has actually run — without a publish log
+  // there's nothing to show on the success screen.
+  const canReachDone =
+    publishLog.length > 0 && phase !== "analyzing" && phase !== "publishing";
   const navigators: Partial<
     Record<(typeof STEPS)[number]["id"], { onClick: () => void; hint: string }>
   > = {};
@@ -344,6 +351,12 @@ function ProgressStrip({
     navigators.review = {
       onClick: goToReview,
       hint: "Return to the review pane",
+    };
+  }
+  if (canReachDone) {
+    navigators.done = {
+      onClick: goToDone,
+      hint: "Return to the publish summary",
     };
   }
 
@@ -1244,7 +1257,8 @@ function ReviewPhase({
       el?.focus();
     };
     const onKey = (e: KeyboardEvent) => {
-      const t = (document.activeElement as HTMLElement | null)?.tagName ?? "";
+      const active = document.activeElement as HTMLElement | null;
+      const t = active?.tagName ?? "";
       // Don't hijack typing inside form controls — including the EditableText
       // editors that swap in <input> / <textarea> when the user clicks a title.
       if (t === "INPUT" || t === "TEXTAREA") return;
@@ -1253,18 +1267,29 @@ function ReviewPhase({
       } else if (e.key === "k") {
         focusIndex(focusedRef.current - 1);
       } else if (e.key === " ") {
-        const idx = focusedRef.current;
-        if (idx < cases.length) {
-          const c = cases[idx];
+        // Resolve the toggle target from the actually-focused row, NOT from
+        // focusedRef. The ref is only updated by j/k — if the user clicked a
+        // row to focus it, the ref is stale and space would toggle the wrong
+        // item (which is exactly the "space doesn't disable bugs when I click
+        // them" bug). data-case-row / data-bug-row are the canonical row ids.
+        const caseAttr = active?.dataset.caseRow;
+        const bugAttr = active?.dataset.bugRow;
+        if (caseAttr !== undefined) {
+          const c = cases[Number(caseAttr)];
           if (c) {
             e.preventDefault();
             setCaseDecision(c.uid, c.decision === "keep" ? "skip" : "keep");
+            // Re-sync the j/k cursor to the row we just acted on so the next
+            // j/k press continues from where the user is, not from wherever
+            // they last keyboard-navigated.
+            focusedRef.current = Number(caseAttr);
           }
-        } else {
-          const b = bugs[idx - cases.length];
+        } else if (bugAttr !== undefined) {
+          const b = bugs[Number(bugAttr)];
           if (b) {
             e.preventDefault();
             setBugDecision(b.uid, b.decision === "keep" ? "skip" : "keep");
+            focusedRef.current = cases.length + Number(bugAttr);
           }
         }
       } else if (e.key.toLowerCase() === "p") {
@@ -1346,6 +1371,15 @@ function ReviewPhase({
           {keptBugs > 0 ? ` + ${keptBugs} bug${keptBugs === 1 ? "" : "s"}` : ""}
         </Button>
       </div>
+
+      <CopyableSectionHeader
+        label="Cases"
+        kind="Test Case"
+        items={cases
+          .filter((c) => c.decision === "keep")
+          .map((c) => ({ id: null, title: c.title }))}
+        count={cases.length}
+      />
 
       <ul className="flex flex-col gap-1.5">
         {cases.map((c, i) => (
@@ -1576,9 +1610,14 @@ function ReviewPhase({
         <section className="mt-1">
           {/* Bug section heading is intentionally identical to the cases-list
               header — visual rhythm matters more than verbose nesting. */}
-          <h2 className="mb-1.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
-            Bug suggestions
-          </h2>
+          <CopyableSectionHeader
+            label="Bugs"
+            kind="Bug"
+            items={bugs
+              .filter((b) => b.decision === "keep")
+              .map((b) => ({ id: null, title: b.title }))}
+            count={bugs.length}
+          />
           <ul className="flex flex-col gap-1.5">
             {bugs.map((b, i) => (
               <li key={b.uid}>
@@ -1842,9 +1881,37 @@ function PublishingPhase() {
 
 function DonePhase() {
   const log = useGenerationSession((s) => s.publishLog);
+  const setPublishLogTitle = useGenerationSession((s) => s.setPublishLogTitle);
   const startNew = useGenerationSession((s) => s.startNew);
   const ok = log.filter((e) => e.status === "ok").length;
   const failed = log.filter((e) => e.status === "failed").length;
+
+  // When the window regains focus, re-fetch titles for the published items
+  // so renames made directly in the ADO web UI show up on the success
+  // screen. We only patch entries whose title actually changed to avoid
+  // pointless re-renders + draft autosave churn.
+  useEffect(() => {
+    const onFocus = async () => {
+      const published = log.filter((e) => e.status === "ok" && e.result);
+      if (published.length === 0) return;
+      const ids = published.map((e) => e.result!.id);
+      try {
+        const rows = await getWorkItemTitles(ids);
+        const byId = new Map(rows.map((r) => [r.id, r.title]));
+        for (const entry of published) {
+          const fresh = byId.get(entry.result!.id);
+          if (fresh && fresh !== entry.title) {
+            setPublishLogTitle(entry.uid, fresh);
+          }
+        }
+      } catch {
+        // Best-effort — the user can always hit Refresh on the detail
+        // pane if the focus path didn't catch their edit.
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [log, setPublishLogTitle]);
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between rounded-md border border-border/60 bg-card/40 px-3 py-2">
@@ -2299,38 +2366,140 @@ function PublishLogList({
 }: {
   log: SessionState["publishLog"];
 }) {
+  const cases = log.filter((e) => e.kind === "case");
+  const bugs = log.filter((e) => e.kind === "bug");
   return (
-    <ul className="divide-y divide-border/40 overflow-hidden rounded-md border border-border/60 bg-card/40">
-      {log.map((e) => (
-        <li
-          key={e.uid}
-          className="flex items-center gap-2 px-3 py-1.5 text-[11px]"
-        >
-          <StatusDot status={e.status} />
-          <span className="inline-flex shrink-0 items-center rounded-sm bg-foreground/[0.06] px-1.5 py-px text-[9.5px] font-medium uppercase tracking-wide text-muted-foreground">
-            {e.kind}
-          </span>
-          <span className="min-w-0 flex-1 truncate">{e.title}</span>
-          {e.result ? (
-            <button
-              type="button"
-              onClick={() => void openUrl(e.result!.webUrl)}
-              className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
-            >
-              <HugeiconsIcon
-                icon={ExternalLink}
-                size={10}
-                strokeWidth={1.75}
-              />
-              #{e.result.id}
-            </button>
-          ) : null}
-          {e.error ? (
-            <span className="text-[10px] text-destructive">{e.error}</span>
-          ) : null}
-        </li>
-      ))}
-    </ul>
+    <div className="flex flex-col gap-3">
+      {cases.length > 0 ? (
+        <PublishLogSection
+          label="Cases"
+          kind="Test Case"
+          entries={cases}
+          openInApp={(id, title) =>
+            window.dispatchEvent(
+              new CustomEvent("devops-studio:open-test-case", {
+                detail: { caseId: id, title: `#${id} · ${title}` },
+              }),
+            )
+          }
+        />
+      ) : null}
+      {bugs.length > 0 ? (
+        <PublishLogSection
+          label="Bugs"
+          kind="Bug"
+          entries={bugs}
+          openInApp={(id, title) =>
+            window.dispatchEvent(
+              new CustomEvent("devops-studio:open-bug", {
+                detail: { bugId: id, title: `Bug #${id} · ${title}` },
+              }),
+            )
+          }
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** Per-kind group inside the publish log. Has a copy-on-hover header so the
+ *  user can grab all cases (or all bugs) as a `<Kind> <id>: <title>` list
+ *  for pasting into Asana / Notion — pre-formatted so the id auto-links via
+ *  the HTML clipboard payload. */
+function PublishLogSection({
+  label,
+  kind,
+  entries,
+  openInApp,
+}: {
+  label: string;
+  kind: string;
+  entries: SessionState["publishLog"];
+  openInApp: (id: number, title: string) => void;
+}) {
+  const copyItems = entries
+    .filter((e) => e.status === "ok" && e.result)
+    .map((e) => ({
+      id: e.result!.id,
+      title: e.title,
+      webUrl: e.result!.webUrl,
+    }));
+  return (
+    <section>
+      <CopyableSectionHeader
+        label={label}
+        kind={kind}
+        items={copyItems}
+        count={entries.length}
+      />
+      <ul className="divide-y divide-border/40 overflow-hidden rounded-md border border-border/60 bg-card/40">
+        {entries.map((e) => (
+          <li
+            key={e.uid}
+            className="flex items-center gap-2 px-3 py-1.5 text-[11px]"
+          >
+            <StatusDot status={e.status} />
+            <span className="min-w-0 flex-1 truncate">{e.title}</span>
+            {/* Source-link indexing on cases is best-effort — when it fails
+                the case itself is still published, but the staleness scanner
+                won't auto-detect drift. Treat as a warning, not a failure. */}
+            {e.error && e.status === "ok" ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-amber-500/15 px-1.5 py-px text-[9.5px] font-medium text-amber-700 dark:text-amber-300">
+                    <HugeiconsIcon
+                      icon={AlertCircleIcon}
+                      size={9}
+                      strokeWidth={1.75}
+                    />
+                    no drift tracking
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="left"
+                  variant="panel"
+                  className="max-w-[280px] px-3 py-2 text-[11px] leading-relaxed"
+                >
+                  Published, but the staleness index couldn't be updated — this
+                  case won't auto-flag when its source files change. Detail:{" "}
+                  <span className="font-mono text-[10px]">{e.error}</span>
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
+            {e.error && e.status === "failed" ? (
+              <span className="truncate text-[10px] text-destructive">
+                {e.error}
+              </span>
+            ) : null}
+            {e.result ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => openInApp(e.result!.id, e.title)}
+                  className="inline-flex h-5 shrink-0 items-center gap-1 rounded-sm border border-transparent px-1.5 text-[10.5px] text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/[0.08] hover:text-primary"
+                  title="Open in this app"
+                >
+                  Open
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void openUrl(e.result!.webUrl)}
+                  className="inline-flex h-5 shrink-0 items-center gap-1 text-muted-foreground hover:text-foreground"
+                  title="Open in Azure DevOps web"
+                >
+                  <HugeiconsIcon
+                    icon={ExternalLink}
+                    size={10}
+                    strokeWidth={1.75}
+                  />
+                  #{e.result.id}
+                </button>
+              </>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

@@ -6,7 +6,7 @@
 //!   - `/_apis/testplan/Plans/{p}/Suites/{s}/TestCase` — case refs in a suite
 //!   - `/_apis/wit/workitems/{id}`      — the case as a work item (steps live here)
 
-use super::client::{get_json, get_raw_json, post_json, project_api, AdoState};
+use super::client::{get_json, get_raw_json, patch_json, post_json, project_api, AdoState};
 use super::errors::{AdoError, AdoResult};
 use super::test_cases::work_item_to_case;
 use super::types::{PagedResponse, SuiteRef, TestCase, TestCaseRef, TestPlanRef};
@@ -190,6 +190,97 @@ pub async fn create_static_suite(
         name: new_name,
         suite_type,
         parent_suite_id: Some(parent_id),
+    })
+}
+
+/// Rename an existing static test suite. ADO's testplan suite update accepts
+/// a partial JSON body — `name` is the only field we touch. Rejects empty
+/// names up front so the server returns a friendlier error than the generic
+/// validation message.
+pub async fn update_suite_name(
+    state: &AdoState,
+    plan_id: i64,
+    suite_id: i64,
+    name: &str,
+) -> AdoResult<SuiteRef> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(AdoError::Local {
+            message: "Suite name can't be empty.".into(),
+        });
+    }
+    let (conn, _) = state.snapshot();
+    let conn = conn.ok_or(AdoError::NotConfigured)?;
+    let url = project_api(
+        &conn,
+        &format!("testplan/Plans/{plan_id}/suites/{suite_id}"),
+    );
+    let body = json!({ "name": trimmed });
+    let raw: Value = patch_json(state, &url, &body, "rename suite").await?;
+    let new_name = raw
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(trimmed)
+        .to_string();
+    let suite_type = raw
+        .get("suiteType")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let parent_suite_id = raw
+        .get("parentSuite")
+        .and_then(|p| p.get("id"))
+        .and_then(json_to_i64);
+    Ok(SuiteRef {
+        id: suite_id,
+        name: new_name,
+        suite_type,
+        parent_suite_id,
+    })
+}
+
+/// Rename a Test Plan. PATCHes `/_apis/testplan/Plans/{planId}` with a
+/// partial `{ name }` body. Mirrors update_suite_name's contract: empty
+/// names rejected up front, the response is parsed back into a full
+/// `TestPlanRef` so the caller can swap it into local state.
+pub async fn update_plan_name(
+    state: &AdoState,
+    plan_id: i64,
+    name: &str,
+) -> AdoResult<TestPlanRef> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(AdoError::Local {
+            message: "Plan name can't be empty.".into(),
+        });
+    }
+    let (conn, _) = state.snapshot();
+    let conn = conn.ok_or(AdoError::NotConfigured)?;
+    let url = project_api(&conn, &format!("testplan/Plans/{plan_id}"));
+    let body = json!({ "name": trimmed });
+    let raw: Value = patch_json(state, &url, &body, "rename plan").await?;
+    let new_name = raw
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(trimmed)
+        .to_string();
+    let iteration = raw
+        .get("iteration")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let area_path = raw
+        .get("areaPath")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let state_field = raw
+        .get("state")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    Ok(TestPlanRef {
+        id: plan_id,
+        name: new_name,
+        iteration,
+        area_path,
+        state: state_field,
     })
 }
 

@@ -176,12 +176,19 @@ pub async fn ado_index_case_links(
         if baselines.contains_key(&key) {
             continue;
         }
-        // No baseline given — ask ADO for the latest commit on this branch.
-        let commits = repos::list_commits_since(&ado, &l.repo_id, &l.branch, None).await?;
-        let head = commits
-            .first()
-            .map(|c| c.commit_id.clone())
-            .unwrap_or_default();
+        // No baseline given — try ADO for the latest commit on this branch.
+        // If ADO doesn't know about the repo (common case: source is on
+        // GitHub/GitLab/local, not in ADO Repos), don't fail the whole index
+        // operation. We record an empty baseline so the case is still
+        // tracked for review state and future scans; drift detection just
+        // won't auto-flag this case until a real SHA shows up.
+        let head = match repos::list_commits_since(&ado, &l.repo_id, &l.branch, None).await {
+            Ok(commits) => commits
+                .first()
+                .map(|c| c.commit_id.clone())
+                .unwrap_or_default(),
+            Err(_) => String::new(),
+        };
         baselines.insert(key, head);
     }
 

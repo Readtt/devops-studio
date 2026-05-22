@@ -247,6 +247,37 @@ pub async fn ado_create_suite(
         .await
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameSuiteInput {
+    pub plan_id: i64,
+    pub suite_id: i64,
+    pub name: String,
+}
+
+#[tauri::command]
+pub async fn ado_update_suite_name(
+    state: State<'_, AdoState>,
+    input: RenameSuiteInput,
+) -> Result<SuiteRef, AdoError> {
+    test_plans::update_suite_name(&state, input.plan_id, input.suite_id, &input.name).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenamePlanInput {
+    pub plan_id: i64,
+    pub name: String,
+}
+
+#[tauri::command]
+pub async fn ado_update_plan_name(
+    state: State<'_, AdoState>,
+    input: RenamePlanInput,
+) -> Result<TestPlanRef, AdoError> {
+    test_plans::update_plan_name(&state, input.plan_id, &input.name).await
+}
+
 // --- Publishing ---
 
 #[derive(Deserialize)]
@@ -345,6 +376,21 @@ pub async fn ado_update_case_description(
     input: UpdateDescriptionInput,
 ) -> Result<(), AdoError> {
     test_cases::update_description(&state, input.case_id, &input.description).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateTitleInput {
+    pub work_item_id: i64,
+    pub title: String,
+}
+
+#[tauri::command]
+pub async fn ado_update_work_item_title(
+    state: State<'_, AdoState>,
+    input: UpdateTitleInput,
+) -> Result<(), AdoError> {
+    test_cases::update_work_item_title(&state, input.work_item_id, &input.title).await
 }
 
 #[derive(Deserialize)]

@@ -7,12 +7,13 @@ import {
   getCase,
   getConnection,
   toAdoError,
+  updateWorkItemTitle,
   type AdoError,
   type ConnectionStatus,
   type TestCase,
 } from "@/modules/ado";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { parseSourceLinks } from "./lib/sourceLinksParser";
 import { StepsTable } from "./lib/stepsRenderer";
 import {
@@ -25,6 +26,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useWorkItemTitles } from "@/modules/ado/hooks/useWorkItemTitles";
 import type { LinkedWorkItem } from "@/modules/ado";
+import { EditableText } from "@/modules/generator/components/EditableText";
 
 type Props = {
   caseId: number;
@@ -35,6 +37,29 @@ export function TestCasePane({ caseId }: Props) {
   const [conn, setConn] = useState<ConnectionStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<AdoError | null>(null);
+  const [titleSaveError, setTitleSaveError] = useState<string | null>(null);
+  const [savingTitle, setSavingTitle] = useState(false);
+
+  // Optimistic title commit: update local state first so the UI feels live,
+  // revert on a wire-level failure. ADO's response carries the new System.Title
+  // but we already have it locally, so a refetch is unnecessary on success.
+  async function commitTitle(next: string): Promise<void> {
+    if (!tc) return;
+    const trimmed = next.trim();
+    if (trimmed.length === 0 || trimmed === tc.title) return;
+    const previous = tc.title;
+    setTc({ ...tc, title: trimmed });
+    setTitleSaveError(null);
+    setSavingTitle(true);
+    try {
+      await updateWorkItemTitle(tc.id, trimmed);
+    } catch (e) {
+      setTc({ ...tc, title: previous });
+      setTitleSaveError(adoErrorMessage(toAdoError(e)) || "Failed to save title.");
+    } finally {
+      setSavingTitle(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -58,7 +83,7 @@ export function TestCasePane({ caseId }: Props) {
     };
   }, [caseId]);
 
-  async function reload() {
+  const reload = useCallback(async () => {
     setLoading(true);
     try {
       const c = await getCase(caseId);
@@ -69,7 +94,7 @@ export function TestCasePane({ caseId }: Props) {
     } finally {
       setLoading(false);
     }
-  }
+  }, [caseId]);
 
   // Resolve linked work-item titles. Called unconditionally so the hook
   // count is stable across render branches (loading / error / loaded).
@@ -77,7 +102,23 @@ export function TestCasePane({ caseId }: Props) {
     () => (tc ? tc.linkedWorkItems.map((lwi) => lwi.id) : []),
     [tc],
   );
-  const { titleFor, loadingFor } = useWorkItemTitles(linkedIds);
+  const { titleFor, loadingFor, refresh: refreshLinkedTitles } =
+    useWorkItemTitles(linkedIds);
+
+  // Refresh on window focus so renames made directly in ADO are picked up
+  // when the user tabs back into our app. Skip while a save is in flight
+  // (would race with our optimistic update) or while the initial load is
+  // still pending. Editor draft state lives inside EditableText, so a
+  // background `tc` swap during edit doesn't disturb in-progress typing.
+  useEffect(() => {
+    const onFocus = () => {
+      if (loading || savingTitle) return;
+      void reload();
+      refreshLinkedTitles();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [loading, savingTitle, reload, refreshLinkedTitles]);
 
   if (loading && !tc) {
     return (
@@ -109,11 +150,18 @@ export function TestCasePane({ caseId }: Props) {
     <div className="flex h-full flex-col overflow-y-auto">
       <header className="border-b border-border/60 bg-card/40 px-6 py-4">
         <div className="flex items-center justify-between gap-3">
-          <h1 className="min-w-0 truncate text-[16px] font-semibold tracking-tight">
-            <span className="mr-1.5 font-mono text-[12.5px] font-normal text-muted-foreground">
+          <h1 className="flex min-w-0 flex-1 items-baseline gap-1.5 text-[16px] font-semibold tracking-tight">
+            <span className="shrink-0 font-mono text-[12.5px] font-normal text-muted-foreground">
               #{tc.id}
             </span>
-            {tc.title}
+            <EditableText
+              value={tc.title}
+              onCommit={(next) => void commitTitle(next)}
+              variant="singleline"
+              ariaLabel="Test case title"
+              placeholder="(no title — click to edit)"
+              className="min-w-0 flex-1 truncate"
+            />
           </h1>
           <div className="flex shrink-0 gap-1">
             <Button
@@ -147,6 +195,11 @@ export function TestCasePane({ caseId }: Props) {
         <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
           {buildMetadataInline(tc)}
         </p>
+        {titleSaveError ? (
+          <p className="mt-1.5 rounded-sm border border-destructive/30 bg-destructive/[0.06] px-2 py-1 text-[10.5px] text-destructive">
+            Couldn't save the title: {titleSaveError}
+          </p>
+        ) : null}
         {tc.tags.length > 0 ? (
           <div className="mt-2 flex flex-wrap gap-1">
             {tc.tags.map((t) => (

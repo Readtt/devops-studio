@@ -29,6 +29,7 @@ import {
   ArrowRight01Icon,
   Bug01Icon,
   ExternalLink,
+  FileEditIcon,
   FolderAddIcon,
   FolderIcon,
   Link01Icon,
@@ -159,6 +160,12 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: P
   const [filter, setFilter] = useState(""); // debounced
   const [conn, setConn] = useState<ConnInfo | null>(null);
   const [newSuiteRequest, setNewSuiteRequest] = useState<NewSuiteRequest>(null);
+  // Suite-rename in flight. Only ONE suite is editable at a time — the UI
+  // swaps the suite name span for an inline input until commit / cancel.
+  const [renamingSuiteId, setRenamingSuiteId] = useState<number | null>(null);
+  // Same machinery for plan renames. Independent state so a plan rename
+  // doesn't accidentally exit a suite rename or vice versa.
+  const [renamingPlanId, setRenamingPlanId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!initialized) {
@@ -177,6 +184,24 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: P
       )
       .catch(() => setConn(null));
   }, [configured]);
+
+  // Refresh on window focus so renames made directly in ADO (plan or suite)
+  // show up the next time the user tabs back. We re-list plans always, then
+  // force-reload suites for any plan that's currently expanded — collapsed
+  // plans will fetch fresh next time the user opens them. Case-title drift
+  // would need a per-suite fetch which is too aggressive to do on every
+  // focus; the in-pane Refresh button is the escape hatch for that.
+  useEffect(() => {
+    if (!configured) return;
+    const onFocus = () => {
+      void refreshPlans();
+      for (const planId of expandedPlans) {
+        void loadSuites(planId, { force: true });
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [configured, expandedPlans, refreshPlans, loadSuites]);
 
   useEffect(() => {
     const id = window.setTimeout(() => {
@@ -429,6 +454,12 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: P
               loadSuiteCases={loadSuiteCases}
               activeCaseId={activeCaseId ?? null}
               conn={conn}
+              renamingSuiteId={renamingSuiteId}
+              onStartRename={setRenamingSuiteId}
+              onCancelRename={() => setRenamingSuiteId(null)}
+              isRenaming={renamingPlanId === p.id}
+              onStartRenamePlan={() => setRenamingPlanId(p.id)}
+              onCancelRenamePlan={() => setRenamingPlanId(null)}
             />
           ))}
         </ul>
@@ -501,6 +532,12 @@ type PlanRowProps = {
   loadSuiteCases: (planId: number, suiteId: number) => Promise<void>;
   activeCaseId: number | null;
   conn: ConnInfo | null;
+  renamingSuiteId: number | null;
+  onStartRename: (suiteId: number) => void;
+  onCancelRename: () => void;
+  isRenaming: boolean;
+  onStartRenamePlan: () => void;
+  onCancelRenamePlan: () => void;
 };
 
 function PlanRow({
@@ -522,11 +559,21 @@ function PlanRow({
   loadSuites,
   activeCaseId,
   conn,
+  renamingSuiteId,
+  onStartRename,
+  onCancelRename,
+  isRenaming,
+  onStartRenamePlan,
+  onCancelRenamePlan,
 }: PlanRowProps) {
   const data = bySuite.get(plan.id);
   const planWebUrl = conn
     ? `${conn.orgUrl}/${encodeURIComponent(conn.project)}/_testPlans/define?planId=${plan.id}`
     : null;
+  const [renameError, setRenameError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isRenaming) setRenameError(null);
+  }, [isRenaming]);
 
   const tree = useMemo(
     () => (data ? buildSuiteTree(data.suites, plan.name) : []),
@@ -539,7 +586,14 @@ function PlanRow({
         <ContextMenuTrigger asChild>
           <button
             type="button"
-            onClick={onToggle}
+            onClick={() => {
+              if (isRenaming) return;
+              onToggle();
+            }}
+            onDoubleClick={(e) => {
+              e.stopPropagation();
+              onStartRenamePlan();
+            }}
             className="flex w-full items-center gap-1 rounded-sm px-1.5 py-1 text-left text-[12px] transition-colors duration-150 hover:bg-foreground/[0.04]"
           >
             <HugeiconsIcon
@@ -548,7 +602,25 @@ function PlanRow({
               strokeWidth={1.75}
               className="shrink-0 text-muted-foreground"
             />
-            <span className="truncate font-medium">{plan.name}</span>
+            {isRenaming ? (
+              <InlineRenameInput
+                initialValue={plan.name}
+                onCommit={async (next) => {
+                  const err = await useTestPlans
+                    .getState()
+                    .renamePlan(plan.id, next);
+                  if (err) {
+                    setRenameError(adoErrorMessage(err) || "Couldn't rename.");
+                    return false;
+                  }
+                  onCancelRenamePlan();
+                  return true;
+                }}
+                onCancel={onCancelRenamePlan}
+              />
+            ) : (
+              <span className="truncate font-medium">{plan.name}</span>
+            )}
           </button>
         </ContextMenuTrigger>
         <ContextMenuContent>
@@ -557,6 +629,10 @@ function PlanRow({
           >
             <HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />
             Refresh suites
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={onStartRenamePlan}>
+            <HugeiconsIcon icon={FileEditIcon} size={12} strokeWidth={1.75} />
+            Rename plan
           </ContextMenuItem>
           <ContextMenuItem onSelect={onNewSuiteForPlan}>
             <HugeiconsIcon icon={FolderAddIcon} size={12} strokeWidth={1.75} />
@@ -582,6 +658,11 @@ function PlanRow({
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
+      {renameError ? (
+        <p className="ml-5 mt-0.5 truncate rounded-sm bg-destructive/[0.06] px-1.5 py-0.5 text-[10px] text-destructive">
+          {renameError}
+        </p>
+      ) : null}
       {expanded ? (
         <ul className="ml-3 border-l border-border/40 pl-1.5">
           {data?.loading ? (
@@ -626,6 +707,9 @@ function PlanRow({
                 onNewSuite={onNewSuiteForSuite}
                 conn={conn}
                 activeCaseId={activeCaseId}
+                renamingSuiteId={renamingSuiteId}
+                onStartRename={onStartRename}
+                onCancelRename={onCancelRename}
               />
             ))}
         </ul>
@@ -658,6 +742,86 @@ function treeHasMatchingSuite(
   return node.children.some((c) => treeHasMatchingSuite(c, matches));
 }
 
+/**
+ * Inline rename input shared by plan and suite rows. Auto-focuses + selects
+ * on mount so a single keystroke is enough to replace the name. Enter
+ * commits, Esc cancels, blur commits. While the in-flight rename is being
+ * persisted, the input grays out but stays mounted so a failure can be
+ * retried without losing the typed value. Click + keydown propagation is
+ * stopped so neither the parent <button>'s onClick nor the row-toggle
+ * keybindings fire while typing.
+ */
+function InlineRenameInput({
+  initialValue,
+  onCommit,
+  onCancel,
+}: {
+  initialValue: string;
+  onCommit: (next: string) => Promise<boolean>;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initialValue);
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.focus();
+    el.select();
+  }, []);
+
+  const commit = async () => {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      onCancel();
+      return;
+    }
+    if (trimmed === initialValue) {
+      onCancel();
+      return;
+    }
+    setBusy(true);
+    const ok = await onCommit(trimmed);
+    setBusy(false);
+    // onCommit's success path already calls onCancel via the parent. On
+    // failure we leave the input open so the user can edit + retry.
+    void ok;
+  };
+
+  return (
+    <input
+      ref={inputRef}
+      type="text"
+      value={value}
+      disabled={busy}
+      onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onChange={(e) => setValue(e.target.value)}
+      onBlur={() => {
+        // A blur from a click on its own Esc/Enter handlers would loop; the
+        // commit path's awaited promise has already finished by then.
+        if (!busy) void commit();
+      }}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void commit();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          onCancel();
+        }
+      }}
+      aria-label="Rename suite"
+      className={cn(
+        "min-w-0 flex-1 rounded-sm border border-primary/50 bg-card/80 px-1 py-0 text-[11.5px] outline-none focus:ring-2 focus:ring-ring/30",
+        busy && "opacity-60",
+      )}
+    />
+  );
+}
+
 // --- Suite row --------------------------------------------------------------
 
 type SuiteRowProps = {
@@ -676,6 +840,9 @@ type SuiteRowProps = {
   onNewSuite: (parentSuiteId: number, parentSuiteName: string) => void;
   conn: ConnInfo | null;
   activeCaseId: number | null;
+  renamingSuiteId: number | null;
+  onStartRename: (suiteId: number) => void;
+  onCancelRename: () => void;
 };
 
 function SuiteRow({
@@ -694,6 +861,9 @@ function SuiteRow({
   onNewSuite,
   conn,
   activeCaseId,
+  renamingSuiteId,
+  onStartRename,
+  onCancelRename,
 }: SuiteRowProps) {
   const { suite, children } = node;
   const expanded = forceExpand || expandedSuites.has(suite.id);
@@ -702,6 +872,13 @@ function SuiteRow({
   const cases = sc?.cases ?? null;
   const error = sc?.error ?? null;
   const hasChildren = children.length > 0;
+  const isRenaming = renamingSuiteId === suite.id;
+  const [renameError, setRenameError] = useState<string | null>(null);
+  // Clear any lingering rename error when the user exits rename mode by
+  // any path (commit, cancel, or another suite enters rename mode).
+  useEffect(() => {
+    if (!isRenaming) setRenameError(null);
+  }, [isRenaming]);
   const suiteWebUrl = conn
     ? `${conn.orgUrl}/${encodeURIComponent(
         conn.project,
@@ -714,7 +891,20 @@ function SuiteRow({
         <ContextMenuTrigger asChild>
           <button
             type="button"
-            onClick={() => onToggleSuite(suite.id)}
+            onClick={() => {
+              // Avoid toggling the suite when the user is mid-rename — the
+              // input below handles its own click; the row's onClick would
+              // otherwise collapse the section on every keypress focus loss.
+              if (isRenaming) return;
+              onToggleSuite(suite.id);
+            }}
+            onDoubleClick={(e) => {
+              // Windows Explorer-style double-click to rename. We stop
+              // propagation so the row's onClick doesn't fire the toggle as
+              // part of the same gesture.
+              e.stopPropagation();
+              onStartRename(suite.id);
+            }}
             className="flex w-full items-center gap-1 rounded-sm px-1.5 py-1 text-left text-[11.5px] transition-colors duration-150 hover:bg-foreground/[0.04]"
           >
             <HugeiconsIcon
@@ -732,7 +922,25 @@ function SuiteRow({
                 hasChildren ? "text-foreground/70" : "text-muted-foreground/70",
               )}
             />
-            <span className="truncate">{suite.name}</span>
+            {isRenaming ? (
+              <InlineRenameInput
+                initialValue={suite.name}
+                onCommit={async (next) => {
+                  const err = await useTestPlans
+                    .getState()
+                    .renameSuite(planId, suite.id, next);
+                  if (err) {
+                    setRenameError(adoErrorMessage(err) || "Couldn't rename.");
+                    return false;
+                  }
+                  onCancelRename();
+                  return true;
+                }}
+                onCancel={onCancelRename}
+              />
+            ) : (
+              <span className="truncate">{suite.name}</span>
+            )}
           </button>
         </ContextMenuTrigger>
         <ContextMenuContent>
@@ -743,6 +951,10 @@ function SuiteRow({
           >
             <HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />
             Refresh cases
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => onStartRename(suite.id)}>
+            <HugeiconsIcon icon={FileEditIcon} size={12} strokeWidth={1.75} />
+            Rename suite
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => onNewSuite(suite.id, suite.name)}>
             <HugeiconsIcon icon={FolderAddIcon} size={12} strokeWidth={1.75} />
@@ -768,6 +980,11 @@ function SuiteRow({
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
+      {renameError ? (
+        <p className="ml-7 mt-0.5 truncate rounded-sm bg-destructive/[0.06] px-1.5 py-0.5 text-[10px] text-destructive">
+          {renameError}
+        </p>
+      ) : null}
       {expanded ? (
         <ul className="ml-3 border-l border-border/40 pl-1.5">
           {/* Child suites first, then direct cases — matches the ADO web UI. */}
@@ -797,6 +1014,9 @@ function SuiteRow({
                 onNewSuite={onNewSuite}
                 conn={conn}
                 activeCaseId={activeCaseId}
+                renamingSuiteId={renamingSuiteId}
+                onStartRename={onStartRename}
+                onCancelRename={onCancelRename}
               />
             ))}
           {loading ? (

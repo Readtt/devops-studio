@@ -142,6 +142,32 @@ export async function createSuite(input: CreateSuiteArgs): Promise<SuiteRef> {
   return SuiteRefSchema.parse(raw);
 }
 
+/** Rename an existing static test suite. ADO returns the updated SuiteRef
+ *  on success; an empty name is rejected on the Rust side. */
+export async function updateSuiteName(
+  planId: number,
+  suiteId: number,
+  name: string,
+): Promise<SuiteRef> {
+  const raw = await invoke("ado_update_suite_name", {
+    input: { planId, suiteId, name },
+  });
+  return SuiteRefSchema.parse(raw);
+}
+
+/** Rename a Test Plan. Same contract as updateSuiteName — returns the
+ *  refreshed TestPlanRef so callers can swap it into local state without
+ *  another fetch. */
+export async function updatePlanName(
+  planId: number,
+  name: string,
+): Promise<TestPlanRef> {
+  const raw = await invoke("ado_update_plan_name", {
+    input: { planId, name },
+  });
+  return TestPlanRefSchema.parse(raw);
+}
+
 export async function getCase(caseId: number): Promise<TestCase> {
   const raw = await invoke("ado_get_case", { caseId });
   return TestCaseSchema.parse(raw);
@@ -200,6 +226,18 @@ export async function updateCaseDescription(
 ): Promise<void> {
   await invoke("ado_update_case_description", {
     input: { caseId, description },
+  });
+}
+
+/** Rename any work item (test case, bug, etc) by patching System.Title.
+ *  Trims whitespace on the Rust side and rejects empty titles before
+ *  hitting the wire. */
+export async function updateWorkItemTitle(
+  workItemId: number,
+  title: string,
+): Promise<void> {
+  await invoke("ado_update_work_item_title", {
+    input: { workItemId, title },
   });
 }
 
