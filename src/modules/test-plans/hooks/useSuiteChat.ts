@@ -20,11 +20,12 @@ import {
   type SuiteRef,
   type TestCase,
 } from "@/modules/ado";
+import type { ModelId } from "@/modules/ai/config";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   newSuiteChatMessageId,
-  runSuiteChat,
-  runSuiteChatClaude,
+  streamSuiteChat,
+  streamSuiteChatClaude,
   type SuiteChatMessage,
 } from "../lib/runSuiteChat";
 
@@ -57,6 +58,11 @@ export type SuiteChatState = {
   /** Run id of the in-flight Claude CLI subprocess (or null on the Vercel
    *  SDK path) so a cancel can target the right child. */
   activeClaudeRunId: string | null;
+  /** Per-chat model override. Null = inherit the user's current global
+   *  default (useChatStore.selectedModelId). Set this per-thread so a user
+   *  can run one chat on Sonnet for code-grounded review and another on
+   *  Haiku for quick lookups without flipping the global picker. */
+  modelId: ModelId | null;
 };
 
 const initialChatState = (): SuiteChatState => ({
@@ -72,6 +78,7 @@ const initialChatState = (): SuiteChatState => ({
   busy: false,
   error: null,
   activeClaudeRunId: null,
+  modelId: null,
 });
 
 type Store = {
@@ -85,6 +92,9 @@ type Store = {
   cancel: (planId: number, suiteId: number) => void;
   clearMessages: (planId: number, suiteId: number) => void;
   dismissError: (planId: number, suiteId: number) => void;
+  /** Set the model used for this specific chat thread. `null` reverts to
+   *  inheriting the global default. */
+  setModel: (planId: number, suiteId: number, modelId: ModelId | null) => void;
 };
 
 const key = (planId: number, suiteId: number) => `${planId}:${suiteId}`;
@@ -192,32 +202,71 @@ export const useSuiteChat = create<Store>((set, get) => ({
     if (curr.busy) return;
     if (!curr.cases) return; // refuse to chat without loaded cases
 
+    // Push the user message AND an empty assistant message in the same
+    // commit. The empty one is the streaming buffer — we append chunks to
+    // it as the model produces text so the UI renders incrementally
+    // instead of waiting for the full reply.
     const userMsg: SuiteChatMessage = {
       id: newSuiteChatMessageId(),
       role: "user",
       content: text,
       timestamp: new Date().toISOString(),
     };
+    const assistantId = newSuiteChatMessageId();
+    const assistantMsg: SuiteChatMessage = {
+      id: assistantId,
+      role: "assistant",
+      content: "",
+      timestamp: new Date().toISOString(),
+    };
     patch(set, planId, suiteId, {
       busy: true,
       error: null,
-      messages: [...curr.messages, userMsg],
+      messages: [...curr.messages, userMsg, assistantMsg],
     });
+
+    // Appends a chunk to whichever message in the slice has id===assistantId.
+    // Re-reading from get() each call lets concurrent patches (cancel,
+    // clear) survive: if the assistant message was removed (e.g. user
+    // cleared mid-stream), we silently drop the chunk.
+    const appendDelta = (delta: string) => {
+      if (!delta) return;
+      set((s) => {
+        const k = key(planId, suiteId);
+        const next = new Map(s.byKey);
+        const slice = next.get(k);
+        if (!slice) return s;
+        let found = false;
+        const messages = slice.messages.map((m) => {
+          if (m.id !== assistantId) return m;
+          found = true;
+          return { ...m, content: m.content + delta };
+        });
+        if (!found) return s;
+        next.set(k, { ...slice, messages });
+        return { byKey: next };
+      });
+    };
 
     const chat = useChatStore.getState();
     const keys = chat.apiKeys;
-    const modelId = chat.selectedModelId;
+    // Per-thread model override wins over the user's global pick. Lets a
+    // user run different chats on different models without churning the
+    // status-bar picker.
+    const modelId = curr.modelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
     const engineSel = selectEngine(modelId);
     const sourceRoot = prefs.sourceRoot ?? null;
+    // Snapshot messages WITHOUT the newly-pushed user + placeholder
+    // assistant — the runner builds the prompt from "history + newQuestion"
+    // and we don't want the placeholder feeding back into the prompt.
     const priorMessages = curr.messages;
 
     try {
-      let assistantText: string;
       if (engineSel.engine === "claude-agent-sdk" && engineSel.active) {
         const runId = `sc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
         patch(set, planId, suiteId, { activeClaudeRunId: runId });
-        const res = await runSuiteChatClaude({
+        await streamSuiteChatClaude({
           runId,
           suiteName: curr.suiteName,
           suitePath: curr.suitePath,
@@ -229,10 +278,10 @@ export const useSuiteChat = create<Store>((set, get) => ({
           sourceRoot,
           authMode: engineSel.authMode ?? "api-key",
           bareMode: prefs.claudeBareMode,
+          onText: appendDelta,
         });
-        assistantText = res.text;
       } else {
-        const res = await runSuiteChat({
+        await streamSuiteChat({
           suiteName: curr.suiteName,
           suitePath: curr.suitePath,
           planName: curr.planName,
@@ -242,20 +291,23 @@ export const useSuiteChat = create<Store>((set, get) => ({
           keys,
           modelId,
           sourceRootHint: sourceRoot,
+          onText: appendDelta,
         });
-        assistantText = res.text;
       }
-      const assistantMsg: SuiteChatMessage = {
-        id: newSuiteChatMessageId(),
-        role: "assistant",
-        content: assistantText || "(empty response)",
-        timestamp: new Date().toISOString(),
-      };
-      const after = get().byKey.get(key(planId, suiteId));
-      patch(set, planId, suiteId, {
-        busy: false,
-        activeClaudeRunId: null,
-        messages: [...(after?.messages ?? []), assistantMsg],
+      // Empty-stream guard: if the model returned nothing, leave a clear
+      // placeholder rather than a blank bubble.
+      set((s) => {
+        const k = key(planId, suiteId);
+        const next = new Map(s.byKey);
+        const slice = next.get(k);
+        if (!slice) return s;
+        const messages = slice.messages.map((m) =>
+          m.id === assistantId && m.content.length === 0
+            ? { ...m, content: "(empty response)" }
+            : m,
+        );
+        next.set(k, { ...slice, messages, busy: false, activeClaudeRunId: null });
+        return { byKey: next };
       });
     } catch (e) {
       const cancelled =
@@ -263,18 +315,35 @@ export const useSuiteChat = create<Store>((set, get) => ({
         e !== null &&
         (e as { kind?: string }).kind === "cancelled";
       if (!cancelled) console.error("[suite-chat] failed:", e);
-      patch(set, planId, suiteId, {
-        busy: false,
-        activeClaudeRunId: null,
-        error: cancelled
-          ? null
-          : typeof e === "object" &&
-              e !== null &&
-              (e as { kind?: string }).kind
-            ? claudeErrorMessage(e) || adoErrorMessage(toAdoError(e))
-            : String(e),
+      // On error: drop the placeholder assistant message and surface the
+      // error banner so the user can resend after fixing the cause. The
+      // user's message stays in the thread.
+      set((s) => {
+        const k = key(planId, suiteId);
+        const next = new Map(s.byKey);
+        const slice = next.get(k);
+        if (!slice) return s;
+        const messages = slice.messages.filter((m) => m.id !== assistantId);
+        next.set(k, {
+          ...slice,
+          messages,
+          busy: false,
+          activeClaudeRunId: null,
+          error: cancelled
+            ? null
+            : typeof e === "object" &&
+                e !== null &&
+                (e as { kind?: string }).kind
+              ? claudeErrorMessage(e) || adoErrorMessage(toAdoError(e))
+              : String(e),
+        });
+        return { byKey: next };
       });
     }
+  },
+
+  setModel: (planId, suiteId, modelId) => {
+    patch(set, planId, suiteId, { modelId });
   },
 
   cancel: (planId, suiteId) => {

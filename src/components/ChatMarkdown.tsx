@@ -1,0 +1,335 @@
+import { Fragment, type ReactNode } from "react";
+import { cn } from "@/lib/utils";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
+
+/**
+ * Minimal markdown renderer tuned for chat assistant messages. Covers the
+ * cases the analyst actually emits — paragraphs, bullets / numbered lists,
+ * **bold**, *italic*, `inline code`, ```fenced code```, [links](href),
+ * headings (#, ##, ###), and blockquotes. Tables and HTML pass through as
+ * literal text by design — the chat layer doesn't need them and a full
+ * CommonMark parser would mean another dep.
+ *
+ * The fenced-code block additionally gets a hover-copy button and a
+ * language chip in the corner; this is the affordance the user is most
+ * likely to use day-to-day (lifting a snippet into a test step or bug
+ * repro). Inline code stays plain.
+ */
+export function ChatMarkdown({
+  source,
+  className,
+}: {
+  source: string;
+  className?: string;
+}) {
+  const blocks = parseBlocks(source);
+  return (
+    <div className={cn("flex flex-col gap-2", className)}>
+      {blocks.map((b, i) => (
+        <BlockRenderer key={i} block={b} />
+      ))}
+    </div>
+  );
+}
+
+// --- Block grammar ----------------------------------------------------------
+
+type Block =
+  | { kind: "heading"; level: 1 | 2 | 3; text: string }
+  | { kind: "paragraph"; text: string }
+  | { kind: "bullets"; items: string[] }
+  | { kind: "numbered"; items: string[] }
+  | { kind: "quote"; text: string }
+  | { kind: "code"; lang: string | null; body: string }
+  | { kind: "hr" };
+
+function parseBlocks(source: string): Block[] {
+  const lines = source.replace(/\r\n/g, "\n").split("\n");
+  const out: Block[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    // Fenced code — preserve interior verbatim, no other parsing inside.
+    const fence = line.match(/^```(\w[\w-]*)?\s*$/);
+    if (fence) {
+      const lang = fence[1] ?? null;
+      const body: string[] = [];
+      i++;
+      while (i < lines.length && !/^```\s*$/.test(lines[i])) {
+        body.push(lines[i]);
+        i++;
+      }
+      i++; // consume closing fence (or EOF)
+      out.push({ kind: "code", lang, body: body.join("\n") });
+      continue;
+    }
+    if (/^\s*$/.test(line)) {
+      i++;
+      continue;
+    }
+    if (/^---+\s*$/.test(line)) {
+      out.push({ kind: "hr" });
+      i++;
+      continue;
+    }
+    const heading = line.match(/^(#{1,3})\s+(.*)$/);
+    if (heading) {
+      const level = heading[1].length as 1 | 2 | 3;
+      out.push({ kind: "heading", level, text: heading[2] });
+      i++;
+      continue;
+    }
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*[-*]\s+/, ""));
+        i++;
+      }
+      out.push({ kind: "bullets", items });
+      continue;
+    }
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*\d+\.\s+/, ""));
+        i++;
+      }
+      out.push({ kind: "numbered", items });
+      continue;
+    }
+    if (/^\s*>\s?/.test(line)) {
+      const quoted: string[] = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        quoted.push(lines[i].replace(/^\s*>\s?/, ""));
+        i++;
+      }
+      out.push({ kind: "quote", text: quoted.join(" ") });
+      continue;
+    }
+    // Paragraph — coalesce consecutive non-blank lines.
+    const para: string[] = [line];
+    i++;
+    while (
+      i < lines.length &&
+      !/^\s*$/.test(lines[i]) &&
+      !/^```/.test(lines[i]) &&
+      !/^#{1,3}\s+/.test(lines[i]) &&
+      !/^\s*[-*]\s+/.test(lines[i]) &&
+      !/^\s*\d+\.\s+/.test(lines[i]) &&
+      !/^\s*>\s?/.test(lines[i])
+    ) {
+      para.push(lines[i]);
+      i++;
+    }
+    out.push({ kind: "paragraph", text: para.join(" ") });
+  }
+  return out;
+}
+
+function BlockRenderer({ block }: { block: Block }) {
+  switch (block.kind) {
+    case "heading": {
+      const size =
+        block.level === 1
+          ? "text-[14px] font-semibold"
+          : block.level === 2
+            ? "text-[13px] font-semibold"
+            : "text-[12.5px] font-medium";
+      return <p className={cn(size, "leading-snug")}>{renderInline(block.text)}</p>;
+    }
+    case "paragraph":
+      return (
+        <p className="text-[12px] leading-relaxed">{renderInline(block.text)}</p>
+      );
+    case "bullets":
+      return (
+        <ul className="ml-4 list-disc text-[12px] leading-relaxed marker:text-muted-foreground/55">
+          {block.items.map((t, i) => (
+            <li key={i}>{renderInline(t)}</li>
+          ))}
+        </ul>
+      );
+    case "numbered":
+      return (
+        <ol className="ml-4 list-decimal text-[12px] leading-relaxed marker:text-muted-foreground/55">
+          {block.items.map((t, i) => (
+            <li key={i}>{renderInline(t)}</li>
+          ))}
+        </ol>
+      );
+    case "quote":
+      return (
+        <p className="border-l-2 border-border/60 pl-2 text-[11.5px] italic text-muted-foreground">
+          {renderInline(block.text)}
+        </p>
+      );
+    case "hr":
+      return <hr className="border-border/40" />;
+    case "code":
+      return <CodeBlock lang={block.lang} body={block.body} />;
+  }
+}
+
+function CodeBlock({ lang, body }: { lang: string | null; body: string }) {
+  const [copied, setCopied] = useState(false);
+  const onCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(body);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1100);
+    } catch {
+      // ignore — non-secure context or permission denied
+    }
+  };
+  return (
+    <div className="group/code relative overflow-hidden rounded-md border border-border/50 bg-foreground/[0.04]">
+      {lang ? (
+        <span className="absolute right-9 top-1 select-none rounded-sm bg-foreground/[0.06] px-1.5 py-px font-mono text-[9px] uppercase tracking-wider text-muted-foreground/85">
+          {lang}
+        </span>
+      ) : null}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={onCopy}
+            aria-label="Copy code"
+            className={cn(
+              "absolute right-1.5 top-1 grid size-5 place-items-center rounded-sm transition-colors",
+              "opacity-0 group-hover/code:opacity-100 focus-visible:opacity-100",
+              copied
+                ? "bg-primary/15 text-primary opacity-100"
+                : "text-muted-foreground/80 hover:bg-foreground/[0.06] hover:text-foreground",
+            )}
+          >
+            <HugeiconsIcon
+              icon={copied ? Tick02Icon : Copy01Icon}
+              size={10}
+              strokeWidth={1.75}
+            />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="left" className="text-[11px]">
+          {copied ? "Copied" : "Copy code"}
+        </TooltipContent>
+      </Tooltip>
+      <pre className="overflow-x-auto px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground/90">
+        <code>{body}</code>
+      </pre>
+    </div>
+  );
+}
+
+// --- Inline span renderer ---------------------------------------------------
+
+/**
+ * Render inline markup inside paragraph / heading / list-item content. The
+ * grammar we support: `inline code`, **bold**, *italic*, [text](href). All
+ * tokenized in one left-to-right pass so e.g. **a*b*c** behaves sensibly.
+ */
+function renderInline(input: string): ReactNode {
+  const nodes: ReactNode[] = [];
+  let key = 0;
+  let i = 0;
+  while (i < input.length) {
+    // Inline code — highest precedence so backticks inside ** don't pair.
+    if (input[i] === "`") {
+      const end = input.indexOf("`", i + 1);
+      if (end > i) {
+        nodes.push(
+          <code
+            key={key++}
+            className="rounded-sm bg-foreground/[0.08] px-1 py-px font-mono text-[11px]"
+          >
+            {input.slice(i + 1, end)}
+          </code>,
+        );
+        i = end + 1;
+        continue;
+      }
+    }
+    // Link [text](url) — both ADO web URLs and code-viewer dispatches.
+    if (input[i] === "[") {
+      const close = findUnescaped(input, "]", i + 1);
+      if (close !== -1 && input[close + 1] === "(") {
+        const paren = findUnescaped(input, ")", close + 2);
+        if (paren !== -1) {
+          const text = input.slice(i + 1, close);
+          const href = input.slice(close + 2, paren).trim();
+          nodes.push(
+            <button
+              key={key++}
+              type="button"
+              onClick={() => {
+                if (href.startsWith("http")) void openUrl(href);
+                else if (href.startsWith("/")) void openUrl(href); // unhandled, falls through
+              }}
+              className="text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
+            >
+              {text}
+            </button>,
+          );
+          i = paren + 1;
+          continue;
+        }
+      }
+    }
+    // Bold (**) — pair eagerly within line.
+    if (input[i] === "*" && input[i + 1] === "*") {
+      const end = input.indexOf("**", i + 2);
+      if (end > i) {
+        nodes.push(
+          <strong key={key++} className="font-semibold">
+            {renderInline(input.slice(i + 2, end))}
+          </strong>,
+        );
+        i = end + 2;
+        continue;
+      }
+    }
+    // Italic (*) — single-star; skip when it's actually a bullet/list marker
+    // (caller has already split paragraphs, so this is purely inline).
+    if (input[i] === "*") {
+      const end = input.indexOf("*", i + 1);
+      if (end > i) {
+        nodes.push(
+          <em key={key++} className="italic">
+            {renderInline(input.slice(i + 1, end))}
+          </em>,
+        );
+        i = end + 1;
+        continue;
+      }
+    }
+    // Plain run — accumulate until next markup char.
+    const next = nextMarkupIndex(input, i + 1);
+    nodes.push(
+      <Fragment key={key++}>{input.slice(i, next)}</Fragment>,
+    );
+    i = next;
+  }
+  return nodes;
+}
+
+function findUnescaped(s: string, needle: string, from: number): number {
+  for (let i = from; i < s.length; i++) {
+    if (s[i] === "\\") {
+      i++; // skip escaped char
+      continue;
+    }
+    if (s[i] === needle) return i;
+  }
+  return -1;
+}
+
+function nextMarkupIndex(s: string, from: number): number {
+  for (let i = from; i < s.length; i++) {
+    const c = s[i];
+    if (c === "`" || c === "[" || c === "*") return i;
+  }
+  return s.length;
+}

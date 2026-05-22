@@ -194,22 +194,18 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
       .catch(() => setConn(null));
   }, [configured]);
 
-  // Refresh on window focus so renames made directly in ADO (plan or suite)
-  // show up the next time the user tabs back. We re-list plans always, then
-  // force-reload suites for any plan that's currently expanded — collapsed
-  // plans will fetch fresh next time the user opens them. Case-title drift
-  // would need a per-suite fetch which is too aggressive to do on every
-  // focus; the in-pane Refresh button is the escape hatch for that.
-  useEffect(() => {
+  // Manual refresh wrapper used by the toolbar button (and anyone else who
+  // wants to force a re-sync of the Explorer tree). We hit `listPlans` for
+  // plan renames, then force-reload suites for every plan that's currently
+  // expanded so suite renames also flow in. Auto-refreshing this on every
+  // window-focus event was too aggressive — it fired N HTTP requests every
+  // alt+tab and surfaced as visible lag while typing in another window.
+  const refreshExplorer = useCallback(() => {
     if (!configured) return;
-    const onFocus = () => {
-      void refreshPlans();
-      for (const planId of expandedPlans) {
-        void loadSuites(planId, { force: true });
-      }
-    };
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
+    void refreshPlans();
+    for (const planId of expandedPlans) {
+      void loadSuites(planId, { force: true });
+    }
   }, [configured, expandedPlans, refreshPlans, loadSuites]);
 
   useEffect(() => {
@@ -399,8 +395,8 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
             <Button
               size="icon-xs"
               variant="ghost"
-              aria-label="Refresh plans"
-              onClick={() => void refreshPlans()}
+              aria-label="Refresh plans and expanded suites"
+              onClick={refreshExplorer}
             >
               <HugeiconsIcon
                 icon={RefreshIcon}
@@ -411,7 +407,7 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
             </Button>
           </TooltipTrigger>
           <TooltipContent side="bottom">
-            Refetch the plan list from Azure DevOps
+            Refetch plans + every expanded suite from Azure DevOps
           </TooltipContent>
         </Tooltip>
         <Tooltip>

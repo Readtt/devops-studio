@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useGenerationSession } from "../store/useGenerationSession";
+import { ChatMarkdown } from "@/components/ChatMarkdown";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   AiBrain01Icon,
@@ -147,13 +148,17 @@ export function ReviewChat() {
                   >
                     <div
                       className={cn(
-                        "max-w-[85%] whitespace-pre-wrap break-words rounded-md px-2.5 py-1.5 text-[11.5px] leading-relaxed",
+                        "max-w-[85%] break-words rounded-md px-2.5 py-1.5 text-[11.5px] leading-relaxed",
                         m.role === "user"
-                          ? "bg-primary/15 text-foreground"
+                          ? "whitespace-pre-wrap bg-primary/15 text-foreground"
                           : "bg-foreground/[0.05] text-foreground/90",
                       )}
                     >
-                      {m.content}
+                      {m.role === "assistant" ? (
+                        <ChatMarkdown source={m.content} />
+                      ) : (
+                        m.content
+                      )}
                     </div>
                   </li>
                 ))}

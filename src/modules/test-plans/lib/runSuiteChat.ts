@@ -9,10 +9,10 @@
 // the more useful one here because the file-system tools let the model
 // validate test cases against the real codebase.
 
-import { generateText } from "ai";
+import { generateText, streamText } from "ai";
 import { getModel, type ModelId } from "@/modules/ai/config";
 import { buildLanguageModel } from "@/modules/ai/lib/agent";
-import { runClaudeQuery } from "@/modules/ai/lib/claude";
+import { runClaudeQuery, type ClaudeEvent } from "@/modules/ai/lib/claude";
 import type { ClaudeAuthMode } from "@/modules/ai/lib/engine";
 import { getKey } from "@/modules/ai/lib/keyring";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
@@ -111,6 +111,32 @@ export async function runSuiteChat(
   return { text: result.text ?? "", durationMs: Date.now() - start };
 }
 
+/** Streaming variant of runSuiteChat. Calls `onText` with each text delta
+ *  as the model produces it; resolves once the stream finishes. The full
+ *  accumulated text is returned for debugging/logging — the caller is
+ *  expected to have already rendered it via onText. */
+export async function streamSuiteChat(
+  input: VercelSuiteChatInput & { onText: (delta: string) => void },
+): Promise<SuiteChatRunResult> {
+  const model = getModel(input.modelId);
+  const lm = await buildLanguageModel(model.provider, input.keys, model.id, {
+    lmstudioBaseURL: input.lmstudioBaseURL,
+  });
+  const userPrompt = buildSuiteChatUserPrompt(input, input.sourceRootHint);
+  const start = Date.now();
+  const result = streamText({
+    model: lm,
+    system: SUITE_CHAT_SYSTEM_PROMPT,
+    prompt: userPrompt,
+  });
+  let acc = "";
+  for await (const chunk of result.textStream) {
+    acc += chunk;
+    input.onText(chunk);
+  }
+  return { text: acc, durationMs: Date.now() - start };
+}
+
 // --- Claude CLI path --------------------------------------------------------
 
 export type ClaudeSuiteChatInput = SuiteChatRunInput & {
@@ -142,6 +168,67 @@ export async function runSuiteChatClaude(
     bare: input.bareMode,
     env,
   });
+  return { text: result.text ?? "", durationMs: Date.now() - start };
+}
+
+/** Streaming Claude CLI variant. The CLI emits one `assistant` event per
+ *  model message; each event's content array can have `text` blocks (what
+ *  we surface as a delta) and `tool_use` blocks (which we ignore for chat
+ *  UX — the user only needs the prose). We dedup-by-emitted-prefix so the
+ *  final-text reconciliation in the runner doesn't double-append. */
+export async function streamSuiteChatClaude(
+  input: ClaudeSuiteChatInput & { onText: (delta: string) => void },
+): Promise<SuiteChatRunResult> {
+  const env: Record<string, string> = {};
+  if (input.authMode === "api-key") {
+    const key = await getKey("anthropic");
+    if (key) env.ANTHROPIC_API_KEY = key;
+  }
+  const userPrompt = buildSuiteChatUserPrompt(input, input.sourceRoot);
+  const start = Date.now();
+  // Track already-emitted text by message id so a repeated assistant event
+  // (which the CLI sometimes does as it consolidates) doesn't duplicate.
+  const seenByMsgId = new Map<string, string>();
+  const onEvent = (event: ClaudeEvent) => {
+    if (event.type !== "assistant") return;
+    const msg = event.message as
+      | { id?: string; content?: Array<Record<string, unknown>> }
+      | undefined;
+    const msgId = msg?.id ?? "anon";
+    const blocks = msg?.content ?? [];
+    let combined = "";
+    for (const b of blocks) {
+      if (b && (b as { type?: string }).type === "text") {
+        const t = (b as { text?: string }).text ?? "";
+        combined += t;
+      }
+    }
+    const prior = seenByMsgId.get(msgId) ?? "";
+    if (combined.length > prior.length && combined.startsWith(prior)) {
+      const delta = combined.slice(prior.length);
+      seenByMsgId.set(msgId, combined);
+      input.onText(delta);
+    } else if (combined && combined !== prior) {
+      // Non-prefix update (rare — CLI rewrote the body). Emit the whole
+      // thing as a new chunk so the user still sees the model output.
+      seenByMsgId.set(msgId, combined);
+      input.onText(combined);
+    }
+  };
+  const result = await runClaudeQuery(
+    {
+      runId: input.runId,
+      prompt: userPrompt,
+      systemPrompt: SUITE_CHAT_SYSTEM_PROMPT,
+      cwd: input.sourceRoot ?? undefined,
+      model: input.modelId,
+      permissionMode: "bypassPermissions",
+      allowedTools: ["Read", "Glob", "Grep"],
+      bare: input.bareMode,
+      env,
+    },
+    onEvent,
+  );
   return { text: result.text ?? "", durationMs: Date.now() - start };
 }
 

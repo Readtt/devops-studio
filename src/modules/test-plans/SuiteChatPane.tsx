@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -7,16 +7,28 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ChatMarkdown } from "@/components/ChatMarkdown";
 import { adoErrorMessage } from "@/modules/ado";
+import { MODELS, type ModelId } from "@/modules/ai/config";
+import { ModelPicker } from "@/modules/ai/components/ModelPicker";
+import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
+import { useChatStore } from "@/modules/ai/store/chatStore";
+import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
+import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   AiBrain01Icon,
-  AlertCircleIcon,
+  ArrowDown01Icon,
+  Cancel01Icon,
+  Copy01Icon,
   FolderIcon,
   GitBranchIcon,
+  MessageAdd01Icon,
   RefreshIcon,
   SentIcon,
+  Settings01Icon,
+  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { useSuiteChat } from "./hooks/useSuiteChat";
 
@@ -25,14 +37,20 @@ type Props = {
   suiteId: number;
 };
 
-/**
- * Full-pane chat over an already-published test suite.
- *
- * Distinct from the generator's review chat: here the cases live in ADO,
- * the assistant gets file-system tool access (when a source dir is set),
- * and the user can ask "does the SSO case actually match the code?" with
- * concrete code-grounded answers instead of speculation.
- */
+const SUGGESTED_PROMPTS_WITH_SOURCE = [
+  "Are there gaps in coverage for the auth flow?",
+  "Which cases are too vague to actually run?",
+  "Look at the login code — do my cases match how it returns errors?",
+  "If I asked whether these pass, what would you need to know?",
+];
+
+const SUGGESTED_PROMPTS_NO_SOURCE = [
+  "Are there gaps in coverage for the auth flow?",
+  "Which cases are too vague to actually run?",
+  "What edge cases am I missing for invalid input?",
+  "If I asked whether these pass, what would you need to know?",
+];
+
 export function SuiteChatPane({ planId, suiteId }: Props) {
   const state = useSuiteChat((s) => s.byKey.get(`${planId}:${suiteId}`));
   const ensure = useSuiteChat((s) => s.ensure);
@@ -41,9 +59,13 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
   const cancel = useSuiteChat((s) => s.cancel);
   const clearMessages = useSuiteChat((s) => s.clearMessages);
   const dismissError = useSuiteChat((s) => s.dismissError);
+  const setModel = useSuiteChat((s) => s.setModel);
   const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
+  const globalModelId = useChatStore((s) => s.selectedModelId);
+  const availability = useModelAvailability();
 
   const [draft, setDraft] = useState("");
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const threadRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -52,12 +74,46 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
     void loadCases(planId, suiteId);
   }, [planId, suiteId, ensure, loadCases]);
 
-  // Auto-scroll on new messages / busy flip.
+  // Auto-grow the composer to fit content, capped so a long paragraph
+  // doesn't push the thread off-screen. The cap matches the visual rhythm
+  // of the pane — past ~6 lines you really should be using a longer
+  // explanation in two messages.
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
+  }, [draft]);
+
+  // Auto-stick to the bottom when the user is already near the bottom, but
+  // pause auto-scroll when they've scrolled up to read older messages —
+  // surfacing a "Jump to latest" pill instead so the streaming text doesn't
+  // yank them away from what they were reading.
   useEffect(() => {
     const el = threadRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    const distanceFromBottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom < 96) {
+      el.scrollTop = el.scrollHeight;
+      setShowJumpToLatest(false);
+    } else {
+      setShowJumpToLatest(true);
+    }
   }, [state?.messages, state?.busy]);
+
+  // Track scroll position so the "Jump to latest" pill disappears once the
+  // user scrolls back down on their own.
+  useEffect(() => {
+    const el = threadRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+      setShowJumpToLatest(dist > 96);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
 
   if (!state) {
     return (
@@ -80,8 +136,11 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
     messages,
     busy,
     error,
+    modelId,
   } = state;
 
+  const activeModelId = modelId ?? globalModelId;
+  const activeModel = MODELS.find((m) => m.id === activeModelId);
   const sourceLabel = sourceRoot
     ? sourceRoot.split(/[\\/]/).filter(Boolean).slice(-1)[0] || sourceRoot
     : null;
@@ -95,148 +154,223 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
   };
 
   return (
-    <div className="flex h-full flex-col bg-background">
-      {/* Header: identity + meta + actions ------------------------------- */}
-      <header className="flex shrink-0 items-start justify-between gap-3 border-b border-border/60 bg-card/40 px-5 py-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-            <HugeiconsIcon
-              icon={AiBrain01Icon}
-              size={11}
-              strokeWidth={1.75}
-              className="text-primary"
-            />
-            <span className="font-mono uppercase tracking-wider">
-              suite chat
-            </span>
-          </div>
-          <h1 className="mt-0.5 flex items-baseline gap-1.5 text-[15px] font-semibold tracking-tight">
-            <HugeiconsIcon
-              icon={FolderIcon}
-              size={13}
-              strokeWidth={1.75}
-              className="translate-y-0.5 shrink-0 text-foreground/70"
-            />
-            <span className="min-w-0 truncate">
-              {titleParts.map((p, i) => (
-                <span key={i}>
-                  {i > 0 ? (
-                    <span className="mx-1.5 text-muted-foreground/40">›</span>
-                  ) : null}
-                  <span className={i === titleParts.length - 1 ? "" : "text-muted-foreground"}>
-                    {p}
-                  </span>
-                </span>
-              ))}
-            </span>
-          </h1>
-          <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
-            <span>
-              {casesLoading ? (
-                <>Loading cases…</>
-              ) : cases ? (
-                <>
-                  <span className="font-medium text-foreground/85">
-                    {cases.length}
-                  </span>{" "}
-                  case{cases.length === 1 ? "" : "s"} loaded
-                  {truncated ? (
-                    <span className="ml-1 text-amber-700 dark:text-amber-300">
-                      (of {totalCases} — capped at 50)
-                    </span>
-                  ) : null}
-                </>
-              ) : (
-                <>—</>
-              )}
-            </span>
-            <span className="text-muted-foreground/50">·</span>
-            <span
-              className={cn(
-                "inline-flex items-center gap-1",
-                sourceLabel ? "text-foreground/85" : "text-amber-700 dark:text-amber-300",
-              )}
-            >
+    <div className="relative flex h-full flex-col bg-background">
+      {/* Header ---------------------------------------------------------- */}
+      <header className="flex shrink-0 flex-col gap-1.5 border-b border-border/60 bg-card/30 px-5 py-3 backdrop-blur-sm">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
               <HugeiconsIcon
-                icon={GitBranchIcon}
-                size={10}
+                icon={AiBrain01Icon}
+                size={11}
                 strokeWidth={1.75}
+                className="text-primary"
               />
-              {sourceLabel ? (
-                <>
-                  source: <span className="font-mono">{sourceLabel}</span>
-                </>
-              ) : (
-                <>no source dir — code grounding off</>
+              <span className="font-mono uppercase tracking-wider">
+                suite chat
+              </span>
+            </div>
+            <h1 className="mt-0.5 flex items-baseline gap-1.5 text-[15px] font-semibold tracking-tight">
+              <HugeiconsIcon
+                icon={FolderIcon}
+                size={13}
+                strokeWidth={1.75}
+                className="translate-y-0.5 shrink-0 text-foreground/70"
+              />
+              <span className="min-w-0 truncate">
+                {titleParts.map((p, i) => (
+                  <span key={i}>
+                    {i > 0 ? (
+                      <span className="mx-1.5 text-muted-foreground/40">›</span>
+                    ) : null}
+                    <span
+                      className={
+                        i === titleParts.length - 1 ? "" : "text-muted-foreground"
+                      }
+                    >
+                      {p}
+                    </span>
+                  </span>
+                ))}
+              </span>
+            </h1>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <ModelPicker
+              value={activeModelId}
+              onChange={(id) => setModel(planId, suiteId, id)}
+              filter={(id) => availability.isAvailable(id)}
+              align="end"
+              side="bottom"
+              trigger={({ label, provider }) => (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="inline-flex h-7 max-w-[180px] items-center gap-1.5 truncate rounded-md border border-border/60 bg-card/60 px-2 text-[11px] text-foreground/85 hover:bg-foreground/[0.04]"
+                    >
+                      <ProviderIcon provider={provider} className="size-3" />
+                      <span className="truncate">{label}</span>
+                      {modelId ? (
+                        <span className="ml-0.5 rounded-sm bg-primary/15 px-1 py-px text-[9px] font-medium text-primary">
+                          pin
+                        </span>
+                      ) : null}
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="text-[11px]">
+                    {modelId
+                      ? `Model pinned for this chat. Click to change or unset.`
+                      : `Inherits the global model (${activeModel?.label ?? activeModelId}). Click to pin a different model for this chat only.`}
+                  </TooltipContent>
+                </Tooltip>
               )}
-            </span>
-          </p>
+              footer={
+                modelId ? (
+                  <button
+                    type="button"
+                    onClick={() => setModel(planId, suiteId, null as unknown as ModelId)}
+                    className="w-full px-2 py-1.5 text-left text-[11px] text-muted-foreground hover:bg-foreground/[0.04]"
+                  >
+                    Unpin — inherit global default
+                  </button>
+                ) : undefined
+              }
+            />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label="New thread"
+                  onClick={() => clearMessages(planId, suiteId)}
+                  disabled={messages.length === 0 || busy}
+                >
+                  <HugeiconsIcon
+                    icon={MessageAdd01Icon}
+                    size={12}
+                    strokeWidth={1.75}
+                  />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-[11px]">
+                Start a new thread (drops the current conversation; cases stay loaded)
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label="Reload cases"
+                  onClick={() => void loadCases(planId, suiteId, true)}
+                  disabled={casesLoading}
+                >
+                  <HugeiconsIcon
+                    icon={RefreshIcon}
+                    size={12}
+                    strokeWidth={1.75}
+                    className={casesLoading ? "animate-spin" : ""}
+                  />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-[11px]">
+                Re-fetch every case in this suite from Azure DevOps
+              </TooltipContent>
+            </Tooltip>
+            {!sourceRoot ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    aria-label="Open settings"
+                    onClick={() => void openSettingsWindow("general")}
+                  >
+                    <HugeiconsIcon
+                      icon={Settings01Icon}
+                      size={12}
+                      strokeWidth={1.75}
+                    />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-[11px]">
+                  Pick a source directory to enable code-grounded answers
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
+          </div>
         </div>
-        <div className="flex shrink-0 gap-1">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-muted-foreground">
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 px-2 text-[11px]"
-                onClick={() => void loadCases(planId, suiteId, true)}
-                disabled={casesLoading}
-              >
-                <HugeiconsIcon
-                  icon={RefreshIcon}
-                  size={12}
-                  strokeWidth={1.75}
-                  className={casesLoading ? "animate-spin" : ""}
-                />
-                Reload cases
-              </Button>
+              <span className="inline-flex items-center gap-1">
+                {casesLoading ? (
+                  "Loading cases…"
+                ) : cases ? (
+                  <>
+                    <span className="font-medium text-foreground/85">
+                      {cases.length}
+                    </span>{" "}
+                    case{cases.length === 1 ? "" : "s"}
+                    {truncated ? (
+                      <span className="text-amber-700 dark:text-amber-300">
+                        {" "}
+                        of {totalCases}
+                      </span>
+                    ) : null}
+                  </>
+                ) : (
+                  "—"
+                )}
+              </span>
             </TooltipTrigger>
             <TooltipContent side="bottom" className="text-[11px]">
-              Re-fetch every case in this suite from Azure DevOps
+              {truncated
+                ? `Loaded the first ${cases?.length ?? 0} of ${totalCases} cases — suite-wide questions may miss content beyond this window.`
+                : `Number of cases currently fed into the chat as context.`}
             </TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 px-2 text-[11px]"
-                onClick={() => clearMessages(planId, suiteId)}
-                disabled={messages.length === 0 || busy}
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1",
+                  sourceLabel
+                    ? "text-foreground/85"
+                    : "text-amber-700 dark:text-amber-300",
+                )}
               >
-                Clear chat
-              </Button>
+                <HugeiconsIcon
+                  icon={GitBranchIcon}
+                  size={10}
+                  strokeWidth={1.75}
+                />
+                {sourceLabel ? (
+                  <>
+                    source:{" "}
+                    <span className="font-mono">{sourceLabel}</span>
+                  </>
+                ) : (
+                  "no source dir"
+                )}
+              </span>
             </TooltipTrigger>
             <TooltipContent side="bottom" className="text-[11px]">
-              Drop the current conversation (cases stay loaded).
+              {sourceLabel
+                ? `Read/Glob/Grep available against this directory — the model can verify cases against actual code.`
+                : `Pick a source dir in Preferences to let the model verify cases against real code.`}
             </TooltipContent>
           </Tooltip>
         </div>
       </header>
 
       {/* Optional advisory banners --------------------------------------- */}
-      {!sourceRoot && cases && cases.length > 0 ? (
-        <div className="flex shrink-0 items-start gap-2 border-b border-amber-500/30 bg-amber-500/[0.05] px-5 py-2 text-[11px] text-amber-800 dark:text-amber-300">
-          <HugeiconsIcon
-            icon={AlertCircleIcon}
-            size={11}
-            strokeWidth={1.75}
-            className="mt-0.5 shrink-0"
-          />
-          <p className="leading-relaxed">
-            No source directory is set, so the analyst can only review case
-            definitions on their own merits. Set one in Settings → Preferences
-            to enable code-grounded answers (&ldquo;does the code in
-            <code className="mx-0.5 font-mono">login.ts</code> actually match
-            what step 3 asserts?&rdquo;).
-          </p>
-        </div>
-      ) : null}
       {truncated ? (
         <div className="shrink-0 border-b border-border/40 bg-foreground/[0.03] px-5 py-1.5 text-[10.5px] text-muted-foreground">
-          Showing the first 50 of {totalCases} cases. Suite-wide questions
-          may miss content outside this window — narrow the scope to specific
-          case ids when accuracy matters.
+          Showing the first {cases?.length ?? 0} of {totalCases} cases.
+          Suite-wide questions may miss content outside this window — narrow
+          to specific case ids when accuracy matters.
         </div>
       ) : null}
       {casesError ? (
@@ -246,89 +380,140 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
       ) : null}
 
       {/* Thread ----------------------------------------------------------- */}
-      <div
-        ref={threadRef}
-        className="min-h-0 flex-1 overflow-y-auto"
-      >
+      <div ref={threadRef} className="relative min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-5 py-5">
           {casesLoading && !cases ? (
             <CaseLoadingShimmer />
           ) : cases && cases.length === 0 ? (
             <EmptySuiteHint suiteName={suiteName} />
           ) : messages.length === 0 ? (
-            <ChatOnboarding hasCases={cases !== null && cases.length > 0} hasSource={!!sourceRoot} />
+            <Onboarding
+              hasCases={cases !== null && cases.length > 0}
+              hasSource={!!sourceRoot}
+              onPick={(p) => setDraft(p)}
+            />
           ) : null}
 
-          {messages.map((m) => (
-            <MessageBubble key={m.id} role={m.role} content={m.content} />
+          {messages.map((m, idx) => (
+            <MessageBubble
+              key={m.id}
+              role={m.role}
+              content={m.content}
+              streaming={busy && m.role === "assistant" && idx === messages.length - 1}
+            />
           ))}
-          {busy ? (
-            <div className="flex items-center gap-2 self-start rounded-md bg-foreground/[0.05] px-3 py-1.5 text-[11px] text-muted-foreground">
-              <span className="inline-flex h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
-              Thinking…
-              <button
-                type="button"
-                onClick={() => cancel(planId, suiteId)}
-                className="ml-1 font-mono text-[10px] underline-offset-2 hover:underline"
-              >
-                cancel
-              </button>
-            </div>
-          ) : null}
         </div>
+
+        {/* Floating jump-to-latest pill ----------------------------------- */}
+        {showJumpToLatest ? (
+          <button
+            type="button"
+            onClick={() => {
+              const el = threadRef.current;
+              if (el) el.scrollTop = el.scrollHeight;
+            }}
+            className="pointer-events-auto absolute bottom-3 left-1/2 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border/60 bg-card/95 px-3 py-1 text-[11px] font-medium text-foreground shadow-lg backdrop-blur-sm hover:bg-foreground/[0.04]"
+          >
+            <HugeiconsIcon
+              icon={ArrowDown01Icon}
+              size={11}
+              strokeWidth={1.75}
+            />
+            Jump to latest
+          </button>
+        ) : null}
       </div>
 
-      {/* Chat error banner ---------------------------------------------- */}
+      {/* Error banner --------------------------------------------------- */}
       {error ? (
         <div className="flex items-start gap-1.5 border-t border-destructive/30 bg-destructive/[0.06] px-5 py-1.5 text-[11px] text-destructive">
           <span className="flex-1">{error}</span>
-          <button
-            type="button"
-            onClick={() => dismissError(planId, suiteId)}
-            className="text-[10.5px] underline-offset-2 hover:underline"
-          >
-            dismiss
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => dismissError(planId, suiteId)}
+                className="text-[10.5px] underline-offset-2 hover:underline"
+              >
+                dismiss
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="text-[11px]">
+              Hide this error banner
+            </TooltipContent>
+          </Tooltip>
         </div>
       ) : null}
 
       {/* Composer ------------------------------------------------------- */}
       <div className="shrink-0 border-t border-border/40 bg-card/40 px-5 py-3">
         <div className="mx-auto max-w-3xl">
-          <div className="relative">
+          <div className="group relative flex items-end gap-2 rounded-lg border border-border/60 bg-input/40 px-3 py-2 transition-colors focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-ring/30">
             <textarea
               ref={inputRef}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
+                if (e.key === "Enter" && !e.shiftKey && !e.metaKey) {
                   e.preventDefault();
                   submit();
                 }
               }}
-              rows={2}
-              disabled={busy || casesLoading || !cases}
+              rows={1}
+              disabled={casesLoading || !cases}
               placeholder={
                 cases
-                  ? "Ask about these cases… (Enter to send, Shift+Enter for newline)"
+                  ? "Ask about these cases…  (Enter to send · Shift+Enter for newline)"
                   : "Loading cases…"
               }
-              className="w-full resize-none rounded-md border border-border/50 bg-input/40 px-3 py-2 pr-10 text-[12px] leading-relaxed outline-none focus:ring-2 focus:ring-ring/30"
+              className="min-h-[28px] w-full resize-none bg-transparent text-[12px] leading-relaxed outline-none placeholder:text-muted-foreground/55"
             />
-            <button
-              type="button"
-              onClick={submit}
-              disabled={!draft.trim() || busy || !cases}
-              aria-label="Send message"
-              className={cn(
-                "absolute bottom-2 right-2 grid size-7 place-items-center rounded-sm transition-colors",
-                draft.trim() && !busy && cases
-                  ? "bg-primary text-primary-foreground hover:bg-primary/85"
-                  : "bg-foreground/[0.06] text-muted-foreground/55",
-              )}
-            >
-              <HugeiconsIcon icon={SentIcon} size={12} strokeWidth={1.75} />
-            </button>
+            {busy ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    aria-label="Cancel response"
+                    onClick={() => cancel(planId, suiteId)}
+                    className="shrink-0 text-destructive hover:bg-destructive/15"
+                  >
+                    <HugeiconsIcon
+                      icon={Cancel01Icon}
+                      size={12}
+                      strokeWidth={1.75}
+                    />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-[11px]">
+                  Stop the response in flight
+                </TooltipContent>
+              </Tooltip>
+            ) : (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="icon-xs"
+                    aria-label="Send message"
+                    onClick={submit}
+                    disabled={!draft.trim() || !cases}
+                    className={cn(
+                      "shrink-0 transition-transform",
+                      draft.trim() && cases ? "scale-100" : "scale-95",
+                    )}
+                  >
+                    <HugeiconsIcon
+                      icon={SentIcon}
+                      size={12}
+                      strokeWidth={1.75}
+                    />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-[11px]">
+                  Send · Enter
+                </TooltipContent>
+              </Tooltip>
+            )}
           </div>
         </div>
       </div>
@@ -339,10 +524,27 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
 function MessageBubble({
   role,
   content,
+  streaming,
 }: {
   role: "user" | "assistant";
   content: string;
+  streaming: boolean;
 }) {
+  const [copied, setCopied] = useState(false);
+  const onCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1100);
+    } catch {
+      // ignore
+    }
+  };
+  const meta = useMemo(() => {
+    const wordCount = content.trim() ? content.trim().split(/\s+/).length : 0;
+    return wordCount;
+  }, [content]);
+
   return (
     <div
       className={cn(
@@ -352,15 +554,65 @@ function MessageBubble({
     >
       <div
         className={cn(
-          "max-w-[80%] whitespace-pre-wrap break-words rounded-md px-3 py-2 text-[12px] leading-relaxed",
+          "group/msg relative max-w-[88%] overflow-hidden rounded-lg text-[12px] leading-relaxed",
           role === "user"
-            ? "bg-primary/15 text-foreground"
-            : "bg-foreground/[0.05] text-foreground/90",
+            ? "bg-primary/12 text-foreground"
+            : "border border-border/40 bg-card/60 text-foreground/90",
         )}
       >
-        {content}
+        <div className="px-3 py-2">
+          {role === "user" ? (
+            <p className="whitespace-pre-wrap break-words">{content}</p>
+          ) : content ? (
+            <ChatMarkdown source={content} />
+          ) : streaming ? (
+            <StreamingPlaceholder />
+          ) : null}
+          {role === "assistant" && content && streaming ? (
+            <span className="ml-0.5 inline-block h-3 w-1.5 translate-y-0.5 animate-pulse rounded-sm bg-primary/80" />
+          ) : null}
+        </div>
+        {/* Per-message action rail — copy + (future) apply edit. Only
+            shows for assistant messages, slides in on hover. */}
+        {role === "assistant" && content && !streaming ? (
+          <div className="absolute right-1.5 top-1.5 flex items-center gap-1 opacity-0 transition-opacity group-hover/msg:opacity-100">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={onCopy}
+                  aria-label="Copy message"
+                  className={cn(
+                    "grid size-5 place-items-center rounded-sm transition-colors",
+                    copied
+                      ? "bg-primary/15 text-primary"
+                      : "text-muted-foreground/80 hover:bg-foreground/[0.06] hover:text-foreground",
+                  )}
+                >
+                  <HugeiconsIcon
+                    icon={copied ? Tick02Icon : Copy01Icon}
+                    size={10}
+                    strokeWidth={1.75}
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="text-[11px]">
+                {copied ? "Copied" : `Copy message (${meta} words)`}
+              </TooltipContent>
+            </Tooltip>
+          </div>
+        ) : null}
       </div>
     </div>
+  );
+}
+
+function StreamingPlaceholder() {
+  return (
+    <span className="inline-flex items-center gap-1 text-[11.5px] text-muted-foreground">
+      <span className="inline-flex h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
+      Thinking…
+    </span>
   );
 }
 
@@ -377,48 +629,52 @@ function CaseLoadingShimmer() {
 function EmptySuiteHint({ suiteName }: { suiteName: string | null }) {
   return (
     <div className="rounded-md border border-border/50 bg-card/40 px-4 py-4 text-[12px] leading-relaxed text-muted-foreground">
-      No cases in <span className="font-medium text-foreground/90">{suiteName ?? "this suite"}</span> yet —
-      generate some from the suite&apos;s context menu, then come back here
-      to chat about them.
+      No cases in{" "}
+      <span className="font-medium text-foreground/90">
+        {suiteName ?? "this suite"}
+      </span>{" "}
+      yet — generate some from the suite&apos;s context menu, then come back
+      here to chat about them.
     </div>
   );
 }
 
-function ChatOnboarding({
+function Onboarding({
   hasCases,
   hasSource,
+  onPick,
 }: {
   hasCases: boolean;
   hasSource: boolean;
+  onPick: (prompt: string) => void;
 }) {
   if (!hasCases) return null;
+  const prompts = hasSource
+    ? SUGGESTED_PROMPTS_WITH_SOURCE
+    : SUGGESTED_PROMPTS_NO_SOURCE;
   return (
-    <div className="rounded-md border border-border/50 bg-card/40 px-4 py-4 text-[12px] leading-relaxed">
-      <p className="font-medium text-foreground/90">Ask the analyst about this suite.</p>
-      <p className="mt-1.5 text-muted-foreground">
-        The full case list is in scope. Try things like:
+    <div className="rounded-lg border border-border/50 bg-card/40 px-4 py-4">
+      <p className="text-[13px] font-medium text-foreground/90">
+        Ask the analyst about this suite.
       </p>
-      <ul className="mt-1.5 ml-3 flex flex-col gap-1 text-[11.5px] text-muted-foreground">
-        <li>
-          &ldquo;Are there gaps in coverage for the auth flow?&rdquo;
-        </li>
-        <li>
-          &ldquo;Which cases are too vague to actually run?&rdquo;
-        </li>
-        {hasSource ? (
-          <li>
-            &ldquo;Look at <code className="font-mono">src/auth/login.ts</code>{" "}
-            — do the cases here actually match how the code returns errors?&rdquo;
-          </li>
-        ) : (
-          <li>
-            &ldquo;Set a source directory to ground answers in real code.&rdquo;
-          </li>
-        )}
-        <li>
-          &ldquo;If I asked you whether these all pass, what would you need?&rdquo;
-        </li>
-      </ul>
+      <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">
+        The full case list is in scope.
+        {hasSource
+          ? " Source directory is set — answers can reference real code via Read/Glob/Grep."
+          : " No source dir yet — answers will be limited to case-definition review."}
+      </p>
+      <div className="mt-2.5 flex flex-wrap gap-1.5">
+        {prompts.map((p) => (
+          <button
+            key={p}
+            type="button"
+            onClick={() => onPick(p)}
+            className="rounded-full border border-border/50 bg-background/60 px-2.5 py-1 text-[10.5px] text-foreground/80 transition-colors hover:border-primary/50 hover:bg-primary/[0.06] hover:text-primary"
+          >
+            {p}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
