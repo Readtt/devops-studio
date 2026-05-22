@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
 import {
+  AiBrain01Icon,
   AlertCircleIcon,
   Clock01Icon,
   TaskDone01Icon,
@@ -33,6 +34,7 @@ export function SidebarRail({ activeView, onSelectView, staleCount }: Props) {
       badge: staleCount,
     },
     { id: "history", label: "History", icon: Clock01Icon },
+    { id: "chat-history", label: "Chats", icon: AiBrain01Icon },
   ];
 
   return (

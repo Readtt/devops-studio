@@ -7,6 +7,7 @@ export { BugPane } from "./BugPane";
 export { BugStack } from "./BugStack";
 export { SuiteChatPane } from "./SuiteChatPane";
 export { SuiteChatStack } from "./SuiteChatStack";
+export { ChatHistoryPanel } from "./ChatHistoryPanel";
 export { useTestPlans } from "./hooks/useTestPlans";
 export { useStaleCases } from "./hooks/useStaleCases";
 export * from "./lib/sourceLinksParser";

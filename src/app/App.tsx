@@ -22,6 +22,7 @@ import {
 } from "@/modules/settings/store";
 import {
   BugStack,
+  ChatHistoryPanel,
   SuiteChatStack,
   StaleQueuePanel,
   TestCaseStack,
@@ -117,7 +118,12 @@ function readSidebarWidth(): number {
 function readSidebarView(): SidebarViewId {
   try {
     const stored = window.localStorage.getItem(SIDEBAR_VIEW_STORAGE_KEY);
-    if (stored === "test-plans" || stored === "stale-queue" || stored === "history") {
+    if (
+      stored === "test-plans" ||
+      stored === "stale-queue" ||
+      stored === "history" ||
+      stored === "chat-history"
+    ) {
       return stored;
     }
   } catch {
@@ -1001,6 +1007,19 @@ export default function App() {
                             runId: run.id,
                           });
                         }}
+                      />
+                    </div>
+                    <div
+                      className="absolute inset-0 flex flex-col"
+                      style={{
+                        display:
+                          sidebarView === "chat-history" ? "flex" : "none",
+                      }}
+                    >
+                      <ChatHistoryPanel
+                        onOpenChat={(input) =>
+                          openSuiteChatTab(input)
+                        }
                       />
                     </div>
                   </div>
