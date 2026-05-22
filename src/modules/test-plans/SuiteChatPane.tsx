@@ -8,7 +8,13 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ChatMarkdown } from "@/components/ChatMarkdown";
-import { adoErrorMessage } from "@/modules/ado";
+import {
+  adoErrorMessage,
+  toAdoError,
+  updateCaseSteps,
+  updateWorkItemTitle,
+} from "@/modules/ado";
+import type { ApplyEditResult } from "@/components/ChatMarkdown";
 import { MODELS, type ModelId } from "@/modules/ai/config";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
@@ -151,6 +157,78 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
     if (!text || busy || !cases) return;
     void sendMessage(planId, suiteId, text);
     setDraft("");
+  };
+
+  // Apply a model-suggested edit to ADO. Validates the payload against the
+  // loaded case set first — refuses to fire if the model targeted a case
+  // outside scope. Errors come back as a structured ApplyEditResult so
+  // the apply card renders them inline instead of a toast.
+  const handleApplyEdit = async (
+    payload: unknown,
+  ): Promise<ApplyEditResult> => {
+    if (!cases) return { ok: false, message: "Cases haven't finished loading." };
+    if (!payload || typeof payload !== "object") {
+      return { ok: false, message: "Edit payload is not an object." };
+    }
+    const p = payload as Record<string, unknown>;
+    const kind = typeof p.kind === "string" ? p.kind : null;
+    const caseId = typeof p.caseId === "number" ? p.caseId : null;
+    if (!caseId) {
+      return { ok: false, message: "Missing or invalid caseId." };
+    }
+    if (!cases.some((c) => c.id === caseId)) {
+      return {
+        ok: false,
+        message: `Case #${caseId} isn't in the loaded scope — reload cases and try again.`,
+      };
+    }
+    try {
+      if (kind === "rename") {
+        const title = typeof p.title === "string" ? p.title.trim() : "";
+        if (!title) return { ok: false, message: "Empty title — refusing." };
+        await updateWorkItemTitle(caseId, title);
+        // Force-reload cases so the in-prompt context reflects the new
+        // title for any follow-up question.
+        void loadCases(planId, suiteId, true);
+        return { ok: true, message: `Title updated on #${caseId}.` };
+      }
+      if (kind === "rewrite-steps") {
+        const raw = Array.isArray(p.steps) ? p.steps : null;
+        if (!raw || raw.length === 0) {
+          return { ok: false, message: "Step list is empty — refusing." };
+        }
+        const normalized: { index: number; action: string; expected: string }[] =
+          [];
+        for (let i = 0; i < raw.length; i++) {
+          const s = raw[i];
+          if (!s || typeof s !== "object") continue;
+          const obj = s as Record<string, unknown>;
+          normalized.push({
+            index: i + 1,
+            action: typeof obj.action === "string" ? obj.action : "",
+            expected: typeof obj.expected === "string" ? obj.expected : "",
+          });
+        }
+        if (normalized.length === 0) {
+          return { ok: false, message: "No valid steps in payload." };
+        }
+        await updateCaseSteps(caseId, normalized);
+        void loadCases(planId, suiteId, true);
+        return {
+          ok: true,
+          message: `Replaced ${normalized.length} step${normalized.length === 1 ? "" : "s"} on #${caseId}.`,
+        };
+      }
+      return {
+        ok: false,
+        message: `Unknown edit kind "${kind}". Supported: rename, rewrite-steps.`,
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        message: adoErrorMessage(toAdoError(e)) || String(e),
+      };
+    }
   };
 
   return (
@@ -400,6 +478,7 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
               role={m.role}
               content={m.content}
               streaming={busy && m.role === "assistant" && idx === messages.length - 1}
+              onApplyEdit={handleApplyEdit}
             />
           ))}
         </div>
@@ -525,10 +604,12 @@ function MessageBubble({
   role,
   content,
   streaming,
+  onApplyEdit,
 }: {
   role: "user" | "assistant";
   content: string;
   streaming: boolean;
+  onApplyEdit?: (payload: unknown) => Promise<ApplyEditResult>;
 }) {
   const [copied, setCopied] = useState(false);
   const onCopy = async () => {
@@ -564,7 +645,7 @@ function MessageBubble({
           {role === "user" ? (
             <p className="whitespace-pre-wrap break-words">{content}</p>
           ) : content ? (
-            <ChatMarkdown source={content} />
+            <ChatMarkdown source={content} onApplyEdit={onApplyEdit} />
           ) : streaming ? (
             <StreamingPlaceholder />
           ) : null}

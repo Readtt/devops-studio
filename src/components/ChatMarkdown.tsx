@@ -1,9 +1,8 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, useMemo, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
-import { useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 /**
@@ -19,18 +18,31 @@ import { openUrl } from "@tauri-apps/plugin-opener";
  * likely to use day-to-day (lifting a snippet into a test step or bug
  * repro). Inline code stays plain.
  */
+/** Action surface for chat-message-embedded "devops-edit" fences. Called
+ *  with the parsed JSON payload from the block. The caller decides what
+ *  to do (validate, call ADO, render success state). When omitted, the
+ *  block falls back to rendering as a normal fenced code preview. */
+export type ApplyEditHandler = (payload: unknown) => Promise<ApplyEditResult>;
+
+export type ApplyEditResult = {
+  ok: boolean;
+  message?: string;
+};
+
 export function ChatMarkdown({
   source,
   className,
+  onApplyEdit,
 }: {
   source: string;
   className?: string;
+  onApplyEdit?: ApplyEditHandler;
 }) {
   const blocks = parseBlocks(source);
   return (
     <div className={cn("flex flex-col gap-2", className)}>
       {blocks.map((b, i) => (
-        <BlockRenderer key={i} block={b} />
+        <BlockRenderer key={i} block={b} onApplyEdit={onApplyEdit} />
       ))}
     </div>
   );
@@ -130,7 +142,13 @@ function parseBlocks(source: string): Block[] {
   return out;
 }
 
-function BlockRenderer({ block }: { block: Block }) {
+function BlockRenderer({
+  block,
+  onApplyEdit,
+}: {
+  block: Block;
+  onApplyEdit?: ApplyEditHandler;
+}) {
   switch (block.kind) {
     case "heading": {
       const size =
@@ -170,8 +188,179 @@ function BlockRenderer({ block }: { block: Block }) {
     case "hr":
       return <hr className="border-border/40" />;
     case "code":
+      if (block.lang === "devops-edit" && onApplyEdit) {
+        return <ApplyEditCard body={block.body} onApply={onApplyEdit} />;
+      }
       return <CodeBlock lang={block.lang} body={block.body} />;
   }
+}
+
+/**
+ * Special rendering for `devops-edit` fenced blocks. Shows a compact summary
+ * of the proposed change and an Apply button that posts to ADO via the
+ * caller-provided handler. Maintains its own local state: idle → applying
+ * → ok | error. The error case keeps the Apply button visible so a flaky
+ * network doesn't strand the user — they can hit Apply again.
+ */
+function ApplyEditCard({
+  body,
+  onApply,
+}: {
+  body: string;
+  onApply: ApplyEditHandler;
+}) {
+  const [state, setState] = useState<"idle" | "applying" | "ok" | "error">(
+    "idle",
+  );
+  const [message, setMessage] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const parsed = useMemo(() => safeParse(body), [body]);
+
+  const onClick = async () => {
+    if (state === "applying" || state === "ok") return;
+    if (!parsed.ok) {
+      setState("error");
+      setMessage(parsed.error);
+      return;
+    }
+    setState("applying");
+    setMessage(null);
+    try {
+      const result = await onApply(parsed.value);
+      if (result.ok) {
+        setState("ok");
+        setMessage(result.message ?? "Applied to ADO.");
+      } else {
+        setState("error");
+        setMessage(result.message ?? "Couldn't apply.");
+      }
+    } catch (e) {
+      setState("error");
+      setMessage(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const summary = parsed.ok ? summarizeEdit(parsed.value) : "Suggested edit";
+  return (
+    <div
+      className={cn(
+        "overflow-hidden rounded-md border text-[11.5px]",
+        state === "ok"
+          ? "border-emerald-500/40 bg-emerald-500/[0.06]"
+          : state === "error"
+            ? "border-destructive/40 bg-destructive/[0.06]"
+            : "border-primary/30 bg-primary/[0.04]",
+      )}
+    >
+      <div className="flex items-start gap-2 px-2.5 py-2">
+        <span
+          className={cn(
+            "mt-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded-sm font-mono text-[9px] uppercase tracking-wider",
+            state === "ok"
+              ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+              : state === "error"
+                ? "bg-destructive/15 text-destructive"
+                : "bg-primary/15 text-primary",
+          )}
+        >
+          {state === "ok" ? (
+            <HugeiconsIcon icon={Tick02Icon} size={10} strokeWidth={2} />
+          ) : (
+            "edit"
+          )}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-[11.5px] font-medium leading-snug">{summary}</p>
+          {message ? (
+            <p
+              className={cn(
+                "mt-0.5 text-[10.5px] leading-relaxed",
+                state === "error"
+                  ? "text-destructive"
+                  : "text-muted-foreground",
+              )}
+            >
+              {message}
+            </p>
+          ) : null}
+        </div>
+        {state !== "ok" ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onClick}
+                disabled={state === "applying" || !parsed.ok}
+                className={cn(
+                  "shrink-0 rounded-sm border px-2 py-1 text-[10.5px] font-medium transition-colors",
+                  state === "applying"
+                    ? "border-border/40 bg-foreground/[0.04] text-muted-foreground"
+                    : state === "error"
+                      ? "border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive/20"
+                      : "border-primary/40 bg-primary/10 text-primary hover:bg-primary/20",
+                )}
+              >
+                {state === "applying"
+                  ? "Applying…"
+                  : state === "error"
+                    ? "Retry"
+                    : "Apply to ADO"}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="left" className="text-[11px]">
+              {parsed.ok
+                ? "Send this change to Azure DevOps — the case will be updated in place."
+                : "This edit block is malformed and can't be applied."}
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
+      </div>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full border-t border-border/30 bg-foreground/[0.02] px-2.5 py-1 text-left text-[10px] text-muted-foreground hover:text-foreground"
+      >
+        {expanded ? "Hide raw payload" : "Show raw payload"}
+      </button>
+      {expanded ? (
+        <pre className="max-h-40 overflow-auto border-t border-border/30 bg-background/40 px-2.5 py-2 font-mono text-[10.5px] leading-relaxed text-muted-foreground">
+          <code>{body}</code>
+        </pre>
+      ) : null}
+    </div>
+  );
+}
+
+function safeParse(
+  text: string,
+): { ok: true; value: unknown } | { ok: false; error: string } {
+  try {
+    return { ok: true, value: JSON.parse(text) };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "JSON parse failed",
+    };
+  }
+}
+
+function summarizeEdit(value: unknown): string {
+  if (!value || typeof value !== "object") return "Suggested edit";
+  const v = value as Record<string, unknown>;
+  const kind = typeof v.kind === "string" ? v.kind : "unknown";
+  const caseId = typeof v.caseId === "number" ? v.caseId : null;
+  if (kind === "rename" && typeof v.title === "string") {
+    return `Rename case ${caseId ? `#${caseId}` : ""} → "${truncate(v.title, 60)}"`;
+  }
+  if (kind === "rewrite-steps") {
+    const n = Array.isArray(v.steps) ? v.steps.length : 0;
+    return `Rewrite steps on ${caseId ? `case #${caseId}` : "a case"} (${n} step${n === 1 ? "" : "s"})`;
+  }
+  return `Suggested edit (${kind})`;
+}
+
+function truncate(s: string, max: number): string {
+  return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
 }
 
 function CodeBlock({ lang, body }: { lang: string | null; body: string }) {
