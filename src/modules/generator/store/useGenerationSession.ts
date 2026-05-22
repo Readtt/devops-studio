@@ -52,6 +52,12 @@ import {
 } from "../lib/history";
 import { entryToLabel, type ActivityEntry } from "../lib/activityLog";
 import { buildRefineUserPrompt } from "../lib/qaAnalystRefinePrompt";
+import {
+  runQaChat,
+  runQaChatClaude,
+  newChatMessageId,
+  type ChatMessage,
+} from "../lib/qaChatRun";
 
 export type GenerationMode = Mode;
 
@@ -231,6 +237,33 @@ export type SessionState = {
    *  Populated via the runner's onRunStart callback so cancel commands have
    *  a target to signal. Cleared when the run settles. */
   activeClaudeRunId: string | null;
+
+  // --- Review-phase chat ---
+  /** Messages in the floating Q&A chat over the current draft. Oldest first.
+   *  This is conversational — NOT the structured refine history. The user
+   *  asks "why is this a bug" / "do these cover X" and the model answers
+   *  with markdown. Never auto-edits the draft. */
+  chatMessages: ChatMessage[];
+  /** True while a chat response is in flight. */
+  chatBusy: boolean;
+  /** Last chat error surfaced inline in the chat panel. Cleared on the next
+   *  sendChatMessage. */
+  chatError: string | null;
+  /** Run id of the in-flight chat subprocess, when the engine is Claude
+   *  CLI. Lets a cancel button abort the round mid-stream. */
+  chatActiveClaudeRunId: string | null;
+  /** Send a question to the chat thread. Optimistically appends a user
+   *  message + a placeholder assistant message, then resolves the
+   *  assistant content when the model returns. */
+  sendChatMessage: (question: string) => Promise<void>;
+  /** Cancel the in-flight chat round (Claude CLI only). The user's message
+   *  stays in the thread; the assistant placeholder is dropped. */
+  cancelChat: () => void;
+  /** Wipe the chat thread for the current session. Used when starting fresh
+   *  on a new spec, or by the user explicitly clicking "clear chat". */
+  clearChat: () => void;
+  /** Drop the persistent chat error banner. */
+  dismissChatError: () => void;
   /** Restore the most recent refine snapshot. No-op if none. */
   undoRefine: () => void;
   /** Clear the lingering refine error banner. */
@@ -294,6 +327,10 @@ const initialState: Omit<
   | "setBugReproSteps"
   | "publish"
   | "setPublishLogTitle"
+  | "sendChatMessage"
+  | "cancelChat"
+  | "clearChat"
+  | "dismissChatError"
   | "reset"
   | "startNew"
   | "loadDraft"
@@ -333,6 +370,10 @@ const initialState: Omit<
   refineError: null,
   refineHistory: [],
   refineRounds: [],
+  chatMessages: [],
+  chatBusy: false,
+  chatError: null,
+  chatActiveClaudeRunId: null,
 };
 
 const REFINE_HISTORY_MAX = 12;
@@ -1341,6 +1382,109 @@ export function createGenerationSessionStore(): GenerationSessionStore {
   },
 
   dismissRefineError: () => set({ refineError: null }),
+
+  sendChatMessage: async (question: string) => {
+    const text = question.trim();
+    if (!text) return;
+    const s = get();
+    if (s.chatBusy) return;
+    const userMsg: ChatMessage = {
+      id: newChatMessageId(),
+      role: "user",
+      content: text,
+      timestamp: newTimestamp(),
+    };
+    const priorHistory = s.chatMessages;
+    set({
+      chatBusy: true,
+      chatError: null,
+      chatMessages: [...priorHistory, userMsg],
+    });
+
+    const chat = useChatStore.getState();
+    const keys = chat.apiKeys;
+    const modelId = s.overrideModelId ?? chat.selectedModelId;
+    const prefs = usePreferencesStore.getState();
+    const engineSel = selectEngine(modelId);
+
+    try {
+      let assistantText: string;
+      if (engineSel.engine === "claude-agent-sdk" && engineSel.active) {
+        const runId = `chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        set({ chatActiveClaudeRunId: runId });
+        const res = await runQaChatClaude({
+          runId,
+          requirements: s.requirements,
+          changesets: s.changesets,
+          attachments: s.attachments,
+          cases: s.cases,
+          bugs: s.bugs,
+          targetContext: null,
+          history: priorHistory,
+          newQuestion: text,
+          modelId: resolveClaudeModelId(modelId) as typeof modelId,
+          sourceRoot: s.allowCodeSearch ? prefs.sourceRoot : null,
+          authMode: engineSel.authMode ?? "api-key",
+          bareMode: prefs.claudeBareMode,
+        });
+        assistantText = res.text;
+      } else {
+        const res = await runQaChat({
+          requirements: s.requirements,
+          changesets: s.changesets,
+          attachments: s.attachments,
+          cases: s.cases,
+          bugs: s.bugs,
+          targetContext: null,
+          history: priorHistory,
+          newQuestion: text,
+          keys,
+          modelId,
+        });
+        assistantText = res.text;
+      }
+      const assistantMsg: ChatMessage = {
+        id: newChatMessageId(),
+        role: "assistant",
+        content: assistantText || "(empty response)",
+        timestamp: newTimestamp(),
+      };
+      set((curr) => ({
+        chatBusy: false,
+        chatActiveClaudeRunId: null,
+        chatMessages: [...curr.chatMessages, assistantMsg],
+      }));
+    } catch (e) {
+      const cancelled =
+        typeof e === "object" &&
+        e !== null &&
+        (e as { kind?: string }).kind === "cancelled";
+      if (!cancelled) console.error("[generator] chat failed:", e);
+      set({
+        chatBusy: false,
+        chatActiveClaudeRunId: null,
+        chatError: cancelled ? null : errToString(e),
+      });
+    }
+  },
+
+  cancelChat: () => {
+    const { chatActiveClaudeRunId, chatBusy } = get();
+    if (!chatBusy) return;
+    if (chatActiveClaudeRunId) {
+      void cancelClaudeRun(chatActiveClaudeRunId).catch(() => {
+        set({ chatBusy: false, chatActiveClaudeRunId: null });
+      });
+    } else {
+      // No subprocess to kill (Vercel SDK path). The promise will still
+      // resolve; the result handler runs but chatBusy is already false.
+      set({ chatBusy: false });
+    }
+  },
+
+  clearChat: () => set({ chatMessages: [], chatError: null }),
+
+  dismissChatError: () => set({ chatError: null }),
 
   goToInput: () => {
     const phase = get().phase;

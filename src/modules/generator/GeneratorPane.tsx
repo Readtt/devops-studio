@@ -57,6 +57,7 @@ import { AnalyzeActivityLog } from "./components/AnalyzeActivityLog";
 import { AttachmentList } from "./components/AttachmentList";
 import { EditableText } from "./components/EditableText";
 import { RefineComposer } from "./components/RefineComposer";
+import { ReviewChat } from "./components/ReviewChat";
 import { TargetContextChip } from "./components/TargetContextChip";
 import { BugCaseLinkPicker } from "./components/BugCaseLinkPicker";
 import { CopyableSectionHeader } from "@/components/CopyableSectionHeader";
@@ -1810,6 +1811,12 @@ function ReviewPhase({
       <div className="mt-3 border-t border-dashed border-border/40 pt-3">
         <RefineComposer isRefining={isRefining} />
       </div>
+
+      {/* Floating Q&A — anchored to the viewport's bottom-right so it sits
+          over the review content without competing for layout space. The
+          chat is purely informational; refine remains the way to push
+          changes into the draft. */}
+      <ReviewChat />
     </div>
   );
 }
