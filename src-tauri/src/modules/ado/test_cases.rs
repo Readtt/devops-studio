@@ -295,6 +295,33 @@ pub async fn update_description(
     Ok(())
 }
 
+/// Replace the Microsoft.VSTS.TCM.Steps XML on a case. Reuses the same
+/// build_steps_xml the create path uses so the wire shape is identical.
+/// Rejects empty step lists — ADO accepts them but the UI treats steps as
+/// the heart of a case, so an accidental empty rewrite is almost always a
+/// bug, not the user's intent.
+pub async fn update_case_steps(
+    state: &AdoState,
+    case_id: i64,
+    steps: &[TestStep],
+) -> AdoResult<()> {
+    if steps.is_empty() {
+        return Err(AdoError::Local {
+            message: "A case must have at least one step.".into(),
+        });
+    }
+    let (conn, _) = state.snapshot();
+    let conn = conn.ok_or(AdoError::NotConfigured)?;
+    let url = project_api(&conn, &format!("wit/workitems/{case_id}"));
+    let ops = vec![JsonPatchOp {
+        op: "add",
+        path: "/fields/Microsoft.VSTS.TCM.Steps".into(),
+        value: Value::String(build_steps_xml(steps)),
+    }];
+    let _: Value = patch_json_patch(state, &url, &ops, "update steps").await?;
+    Ok(())
+}
+
 /// Replace the System.Title of any work item — used by the in-app rename
 /// affordance on the case / bug detail panes. ADO doesn't distinguish work
 /// item types here; the same patch works for a Test Case, Bug, or anything

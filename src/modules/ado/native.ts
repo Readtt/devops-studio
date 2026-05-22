@@ -241,6 +241,19 @@ export async function updateWorkItemTitle(
   });
 }
 
+/** Replace the full step list on a test case. The Rust side rebuilds
+ *  Microsoft.VSTS.TCM.Steps XML via the same path the create flow uses.
+ *  Empty step lists are rejected — ADO accepts them but the UI treats it
+ *  as an almost-certain bug rather than intent. */
+export async function updateCaseSteps(
+  caseId: number,
+  steps: { index: number; action: string; expected: string }[],
+): Promise<void> {
+  await invoke("ado_update_case_steps", {
+    input: { caseId, steps },
+  });
+}
+
 export async function addTag(workItemId: number, tag: string): Promise<void> {
   await invoke("ado_add_tag", { input: { workItemId, tag } });
 }

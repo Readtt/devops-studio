@@ -495,6 +495,7 @@ pub fn run() {
             ado::ado_link_bug_to_case,
             ado::ado_update_case_description,
             ado::ado_update_work_item_title,
+            ado::ado_update_case_steps,
             ado::ado_add_tag,
             ado::ado_remove_tag,
             ado::ado_list_repos,

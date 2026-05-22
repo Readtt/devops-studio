@@ -7,13 +7,15 @@ import {
   getCase,
   getConnection,
   toAdoError,
+  updateCaseSteps,
   updateWorkItemTitle,
   type AdoError,
   type ConnectionStatus,
   type TestCase,
+  type TestStep,
 } from "@/modules/ado";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseSourceLinks } from "./lib/sourceLinksParser";
 import { StepsTable } from "./lib/stepsRenderer";
 import {
@@ -39,6 +41,8 @@ export function TestCasePane({ caseId }: Props) {
   const [error, setError] = useState<AdoError | null>(null);
   const [titleSaveError, setTitleSaveError] = useState<string | null>(null);
   const [savingTitle, setSavingTitle] = useState(false);
+  const [stepsSaveError, setStepsSaveError] = useState<string | null>(null);
+  const [savingSteps, setSavingSteps] = useState(false);
 
   // Optimistic title commit: update local state first so the UI feels live,
   // revert on a wire-level failure. ADO's response carries the new System.Title
@@ -59,6 +63,35 @@ export function TestCasePane({ caseId }: Props) {
     } finally {
       setSavingTitle(false);
     }
+  }
+
+  // Steps editing: we replace the whole step list in one PATCH (ADO stores
+  // steps as a single XML blob). Optimistic update + revert on failure
+  // mirrors the title path. A short cooldown blocks the save spam if the
+  // user adds + edits + removes rapidly — only the latest commit hits ADO.
+  const stepsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  async function commitSteps(next: TestStep[]): Promise<void> {
+    if (!tc) return;
+    if (next.length === 0) return; // safety; UI also blocks removing the last
+    const previous = tc.steps;
+    setTc({ ...tc, steps: next });
+    setStepsSaveError(null);
+    if (stepsSaveTimer.current) clearTimeout(stepsSaveTimer.current);
+    stepsSaveTimer.current = setTimeout(() => {
+      void (async () => {
+        setSavingSteps(true);
+        try {
+          await updateCaseSteps(tc.id, next);
+        } catch (e) {
+          setTc((curr) => (curr ? { ...curr, steps: previous } : curr));
+          setStepsSaveError(
+            adoErrorMessage(toAdoError(e)) || "Failed to save steps.",
+          );
+        } finally {
+          setSavingSteps(false);
+        }
+      })();
+    }, 250);
   }
 
   useEffect(() => {
@@ -228,7 +261,16 @@ export function TestCasePane({ caseId }: Props) {
         ) : null}
 
         <Section title="Steps">
-          <StepsTable steps={tc.steps} />
+          <StepsTable
+            steps={tc.steps}
+            onChange={(next) => void commitSteps(next)}
+            disabled={savingSteps}
+          />
+          {stepsSaveError ? (
+            <p className="mt-1 rounded-sm border border-destructive/30 bg-destructive/[0.06] px-2 py-1 text-[10.5px] text-destructive">
+              Couldn&apos;t save steps: {stepsSaveError}
+            </p>
+          ) : null}
         </Section>
 
         {tc.linkedWorkItems.length > 0 ? (

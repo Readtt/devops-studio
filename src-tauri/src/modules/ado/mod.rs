@@ -395,6 +395,21 @@ pub async fn ado_update_work_item_title(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UpdateStepsInput {
+    pub case_id: i64,
+    pub steps: Vec<crate::modules::ado::types::TestStep>,
+}
+
+#[tauri::command]
+pub async fn ado_update_case_steps(
+    state: State<'_, AdoState>,
+    input: UpdateStepsInput,
+) -> Result<(), AdoError> {
+    test_cases::update_case_steps(&state, input.case_id, &input.steps).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TagInput {
     pub work_item_id: i64,
     pub tag: String,
