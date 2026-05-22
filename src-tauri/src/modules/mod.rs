@@ -1,4 +1,5 @@
 pub mod ado;
+pub mod chat_threads;
 pub mod claude;
 pub mod fs;
 pub mod git;

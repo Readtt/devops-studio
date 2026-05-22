@@ -28,6 +28,11 @@ import {
   streamSuiteChatClaude,
   type SuiteChatMessage,
 } from "../lib/runSuiteChat";
+import {
+  deleteChatThread,
+  getChatThread,
+  saveChatThread,
+} from "../lib/chatThreadsApi";
 
 /** Cap on the number of cases we'll embed in a single chat prompt. Past
  *  this size the system prompt overwhelms most context windows AND the
@@ -63,6 +68,10 @@ export type SuiteChatState = {
    *  can run one chat on Sonnet for code-grounded review and another on
    *  Haiku for quick lookups without flipping the global picker. */
   modelId: ModelId | null;
+  /** True once the persisted thread (if any) has been loaded from SQLite,
+   *  so we don't overwrite an in-memory thread with stale on-disk content
+   *  on a re-mount. */
+  hydrated: boolean;
 };
 
 const initialChatState = (): SuiteChatState => ({
@@ -79,6 +88,7 @@ const initialChatState = (): SuiteChatState => ({
   error: null,
   activeClaudeRunId: null,
   modelId: null,
+  hydrated: false,
 });
 
 type Store = {
@@ -116,19 +126,96 @@ function patch(
   });
 }
 
+/** One-shot async hydrate from SQLite. Marks the slice as hydrated even
+ *  when no on-disk row exists so we don't re-attempt the fetch on every
+ *  re-render. Failures are swallowed — chat still works in-memory. */
+async function hydrateFromDisk(
+  planId: number,
+  suiteId: number,
+  set: (fn: (s: Store) => Partial<Store> | Store) => void,
+  get: () => Store,
+) {
+  try {
+    const stored = await getChatThread({ planId, suiteId });
+    const k = key(planId, suiteId);
+    const curr = get().byKey.get(k);
+    // Skip the restore if a message has already been added in-memory
+    // between ensure() and the async fetch resolving — the in-memory
+    // thread takes precedence so we don't clobber an edit-in-flight.
+    if (curr && curr.messages.length > 0) {
+      patch(set, planId, suiteId, { hydrated: true });
+      return;
+    }
+    if (stored) {
+      patch(set, planId, suiteId, {
+        hydrated: true,
+        messages: stored.messages,
+        modelId: stored.modelId,
+      });
+    } else {
+      patch(set, planId, suiteId, { hydrated: true });
+    }
+  } catch {
+    // Hydration is best-effort; chat continues in memory-only mode.
+    patch(set, planId, suiteId, { hydrated: true });
+  }
+}
+
+/** Snapshot the current slice and persist. Throttled per (planId,suiteId)
+ *  so a streaming response that mutates the assistant message on every
+ *  chunk doesn't fire dozens of IO writes a second — the latest snapshot
+ *  always wins within the throttle window. */
+const persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
+function schedulePersist(
+  planId: number,
+  suiteId: number,
+  get: () => Store,
+  delay = 300,
+) {
+  const k = key(planId, suiteId);
+  const existing = persistTimers.get(k);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    persistTimers.delete(k);
+    const slice = get().byKey.get(k);
+    if (!slice) return;
+    // Empty + no-model rows aren't worth persisting — saves disk on
+    // ephemeral panes the user opens and never sends a message in.
+    if (slice.messages.length === 0 && slice.modelId === null) return;
+    void saveChatThread({
+      planId,
+      suiteId,
+      modelId: slice.modelId,
+      messages: slice.messages,
+    }).catch(() => {
+      // Best-effort persistence — failures are silent so the chat itself
+      // keeps working. A real disk error would surface on the next read.
+    });
+  }, delay);
+  persistTimers.set(k, timer);
+}
+
 export const useSuiteChat = create<Store>((set, get) => ({
   byKey: new Map(),
 
   ensure: (planId, suiteId) => {
     const k = key(planId, suiteId);
     const existing = get().byKey.get(k);
-    if (existing) return existing;
+    if (existing) {
+      // Lazy hydrate: re-mounting the same pane shouldn't refetch from
+      // disk, but a fresh slice should pull the persisted thread once.
+      if (!existing.hydrated) {
+        void hydrateFromDisk(planId, suiteId, set, get);
+      }
+      return existing;
+    }
     const fresh = initialChatState();
     set((s) => {
       const next = new Map(s.byKey);
       next.set(k, fresh);
       return { byKey: next };
     });
+    void hydrateFromDisk(planId, suiteId, set, get);
     return fresh;
   },
 
@@ -246,7 +333,14 @@ export const useSuiteChat = create<Store>((set, get) => ({
         next.set(k, { ...slice, messages });
         return { byKey: next };
       });
+      // Persist progressively while the stream runs. Throttled so a
+      // chunk-per-token CLI doesn't hammer SQLite.
+      schedulePersist(planId, suiteId, get);
     };
+
+    // Persist the user message right away so a crash mid-response doesn't
+    // lose what the user typed. The streaming throttle handles updates.
+    schedulePersist(planId, suiteId, get, 50);
 
     const chat = useChatStore.getState();
     const keys = chat.apiKeys;
@@ -309,6 +403,9 @@ export const useSuiteChat = create<Store>((set, get) => ({
         next.set(k, { ...slice, messages, busy: false, activeClaudeRunId: null });
         return { byKey: next };
       });
+      // Final persist on stream complete — guarantees the latest content
+      // hits disk even if the throttle was holding pending writes.
+      schedulePersist(planId, suiteId, get, 50);
     } catch (e) {
       const cancelled =
         typeof e === "object" &&
@@ -344,6 +441,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
 
   setModel: (planId, suiteId, modelId) => {
     patch(set, planId, suiteId, { modelId });
+    schedulePersist(planId, suiteId, get, 50);
   },
 
   cancel: (planId, suiteId) => {
@@ -363,6 +461,10 @@ export const useSuiteChat = create<Store>((set, get) => ({
 
   clearMessages: (planId, suiteId) => {
     patch(set, planId, suiteId, { messages: [], error: null });
+    // Hard-delete the persisted row when the user clears — leaving an
+    // empty row behind would just bloat the table and show up in any
+    // future "recent threads" view as a ghost entry.
+    void deleteChatThread({ planId, suiteId }).catch(() => {});
   },
 
   dismissError: (planId, suiteId) => {

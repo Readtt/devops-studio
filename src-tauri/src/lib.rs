@@ -1,6 +1,6 @@
 mod modules;
 
-use modules::{ado, claude, fs, git, history, net, secrets, staleness, workspace};
+use modules::{ado, chat_threads, claude, fs, git, history, net, secrets, staleness, workspace};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::sync::Mutex;
@@ -432,6 +432,7 @@ pub fn run() {
         .manage(claude::ClaudeState::default())
         .manage(ado::client::AdoState::default())
         .manage(staleness::StalenessState::default())
+        .manage(chat_threads::ChatThreadsState::default())
         .setup(|app| {
             // Hydrate the in-memory ADO connection state from disk + keychain.
             // Non-blocking; failures (e.g. first run with no settings) are
@@ -506,6 +507,11 @@ pub fn run() {
             staleness::ado_acknowledge_case,
             staleness::ado_mark_for_review,
             staleness::ado_index_case_links,
+            // --- Chat threads (suite chat persistence) ---
+            chat_threads::chat_threads_save,
+            chat_threads::chat_threads_get,
+            chat_threads::chat_threads_delete,
+            chat_threads::chat_threads_list,
             // --- Generation history ---
             history::history_save_run,
             history::history_list_runs,
