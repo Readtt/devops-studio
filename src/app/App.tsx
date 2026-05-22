@@ -22,6 +22,7 @@ import {
 } from "@/modules/settings/store";
 import {
   BugStack,
+  SuiteChatStack,
   StaleQueuePanel,
   TestCaseStack,
   TestPlansPanel,
@@ -158,6 +159,13 @@ type AppTab =
       kind: "bug";
       title: string;
       bugId: number;
+    }
+  | {
+      id: number;
+      kind: "suite-chat";
+      title: string;
+      planId: number;
+      suiteId: number;
     };
 
 export default function App() {
@@ -324,6 +332,44 @@ export default function App() {
         return [
           ...curr,
           { id, kind: "bug", title: input.title, bugId: input.bugId },
+        ];
+      });
+      if (target !== null) setActiveId(target);
+      return target as number | null;
+    },
+    [],
+  );
+
+  const openSuiteChatTab = useCallback(
+    (input: { planId: number; suiteId: number; title: string }) => {
+      let target: number | null = null;
+      setTabs((curr) => {
+        // Dedup by (planId, suiteId) so a second right-click → "Chat with
+        // cases" on the same suite activates the existing thread instead
+        // of spinning up a parallel one.
+        const existing = curr.find(
+          (t) =>
+            t.kind === "suite-chat" &&
+            t.planId === input.planId &&
+            t.suiteId === input.suiteId,
+        );
+        if (existing) {
+          target = existing.id;
+          return curr.map((t) =>
+            t.id === existing.id ? { ...t, title: input.title } : t,
+          );
+        }
+        const id = nextIdRef.current++;
+        target = id;
+        return [
+          ...curr,
+          {
+            id,
+            kind: "suite-chat",
+            title: input.title,
+            planId: input.planId,
+            suiteId: input.suiteId,
+          },
         ];
       });
       if (target !== null) setActiveId(target);
@@ -884,6 +930,14 @@ export default function App() {
                       <TestPlansPanel
                         onOpenCase={openTestCaseTab}
                         onStartGenerator={openGeneratorTab}
+                        onChatWithSuite={(input) => {
+                          const title = `Chat: ${input.suiteName ?? `#${input.suiteId}`}`;
+                          openSuiteChatTab({
+                            planId: input.planId,
+                            suiteId: input.suiteId,
+                            title,
+                          });
+                        }}
                         activeCaseId={activeCaseId}
                       />
                     </div>
@@ -1008,6 +1062,12 @@ export default function App() {
                           tabs={compatTabs}
                           activeId={activeId ?? -1}
                           sourceRoot={sourceRoot}
+                        />
+                      </div>
+                      <div className="pointer-events-none absolute inset-0">
+                        <SuiteChatStack
+                          tabs={compatTabs}
+                          activeId={activeId ?? -1}
                         />
                       </div>
                     </>

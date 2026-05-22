@@ -45,9 +45,18 @@ export type GenerationHistoryTab = {
   runId: string;
 };
 
+export type SuiteChatTab = {
+  id: number;
+  kind: "suite-chat";
+  title: string;
+  planId: number;
+  suiteId: number;
+};
+
 export type Tab =
   | TestCaseTab
   | GeneratorTab
   | BugTab
   | CodeViewerTab
-  | GenerationHistoryTab;
+  | GenerationHistoryTab
+  | SuiteChatTab;

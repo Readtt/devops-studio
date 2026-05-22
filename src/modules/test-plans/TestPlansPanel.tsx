@@ -25,6 +25,7 @@ import { useWorkItemTitles } from "@/modules/ado/hooks/useWorkItemTitles";
 import { useTestPlans, type CaseDetailsState, type SuiteLoad } from "./hooks/useTestPlans";
 import { NewSuiteDialog } from "./NewSuiteDialog";
 import {
+  AiBrain01Icon,
   ArrowDown01Icon,
   ArrowRight01Icon,
   Bug01Icon,
@@ -50,6 +51,14 @@ type Props = {
   onStartGenerator: (input?: {
     planId?: number | null;
     suiteId?: number | null;
+  }) => void;
+  /** Open a suite-chat tab anchored to this suite. Receives the resolved
+   *  suite name so the tab title reads "Chat: <name>" instead of
+   *  "Chat: #1234". */
+  onChatWithSuite?: (input: {
+    planId: number;
+    suiteId: number;
+    suiteName: string | null;
   }) => void;
   /** Case id currently shown in the workspace, so its row can be highlighted. */
   activeCaseId?: number | null;
@@ -137,7 +146,7 @@ type NewSuiteRequest =
       parentSuiteName: string | null;
     };
 
-export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: Props) {
+export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, activeCaseId }: Props) {
   const {
     initialized,
     configured,
@@ -460,6 +469,7 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, activeCaseId }: P
               isRenaming={renamingPlanId === p.id}
               onStartRenamePlan={() => setRenamingPlanId(p.id)}
               onCancelRenamePlan={() => setRenamingPlanId(null)}
+              onChatWithSuite={onChatWithSuite}
             />
           ))}
         </ul>
@@ -538,6 +548,7 @@ type PlanRowProps = {
   isRenaming: boolean;
   onStartRenamePlan: () => void;
   onCancelRenamePlan: () => void;
+  onChatWithSuite?: Props["onChatWithSuite"];
 };
 
 function PlanRow({
@@ -565,6 +576,7 @@ function PlanRow({
   isRenaming,
   onStartRenamePlan,
   onCancelRenamePlan,
+  onChatWithSuite,
 }: PlanRowProps) {
   const data = bySuite.get(plan.id);
   const planWebUrl = conn
@@ -710,6 +722,7 @@ function PlanRow({
                 renamingSuiteId={renamingSuiteId}
                 onStartRename={onStartRename}
                 onCancelRename={onCancelRename}
+                onChatWithSuite={onChatWithSuite}
               />
             ))}
         </ul>
@@ -843,6 +856,7 @@ type SuiteRowProps = {
   renamingSuiteId: number | null;
   onStartRename: (suiteId: number) => void;
   onCancelRename: () => void;
+  onChatWithSuite?: Props["onChatWithSuite"];
 };
 
 function SuiteRow({
@@ -864,6 +878,7 @@ function SuiteRow({
   renamingSuiteId,
   onStartRename,
   onCancelRename,
+  onChatWithSuite,
 }: SuiteRowProps) {
   const { suite, children } = node;
   const expanded = forceExpand || expandedSuites.has(suite.id);
@@ -966,6 +981,24 @@ function SuiteRow({
             <HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={1.75} />
             Generate cases for suite
           </ContextMenuItem>
+          {onChatWithSuite ? (
+            <ContextMenuItem
+              onSelect={() =>
+                onChatWithSuite({
+                  planId,
+                  suiteId: suite.id,
+                  suiteName: suite.name,
+                })
+              }
+            >
+              <HugeiconsIcon
+                icon={AiBrain01Icon}
+                size={12}
+                strokeWidth={1.75}
+              />
+              Chat with cases
+            </ContextMenuItem>
+          ) : null}
           <ContextMenuSeparator />
           <ContextMenuItem
             disabled={!suiteWebUrl}
@@ -1017,6 +1050,7 @@ function SuiteRow({
                 renamingSuiteId={renamingSuiteId}
                 onStartRename={onStartRename}
                 onCancelRename={onCancelRename}
+                onChatWithSuite={onChatWithSuite}
               />
             ))}
           {loading ? (
