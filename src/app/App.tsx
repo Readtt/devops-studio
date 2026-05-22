@@ -925,6 +925,28 @@ export default function App() {
                             runId: run.id,
                           });
                         }}
+                        onOpenPublished={(run) => {
+                          // Same dedup as draft re-open. If the user has the
+                          // session for this run already open, just activate
+                          // it instead of spinning up a parallel done-view.
+                          const existing = tabs.find(
+                            (t) =>
+                              t.kind === "generator" && t.runId === run.id,
+                          );
+                          if (existing) {
+                            setActiveId(existing.id);
+                            return;
+                          }
+                          const store = createGenerationSessionStore();
+                          const ok = store.getState().loadPublishedRun(run);
+                          if (!ok) return;
+                          openGeneratorTab({
+                            planId: run.planId,
+                            suiteId: run.suiteId,
+                            hydrateFrom: store,
+                            runId: run.id,
+                          });
+                        }}
                       />
                     </div>
                   </div>

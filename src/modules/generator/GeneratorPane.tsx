@@ -25,6 +25,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type GenerationMode,
+  type PublishLogEntry,
   type SessionState,
   useGenerationSession,
   useGenerationSessionStore,
@@ -1224,6 +1225,7 @@ function ReviewPhase({
   const startNew = useGenerationSession((s) => s.startNew);
   const durationMs = useGenerationSession((s) => s.durationMs);
   const isRefining = useGenerationSession((s) => s.isRefining);
+  const publishLog = useGenerationSession((s) => s.publishLog);
 
   const kept = useMemo(
     () => cases.filter((c) => c.decision === "keep").length,
@@ -1233,6 +1235,30 @@ function ReviewPhase({
     () => bugs.filter((b) => b.decision === "keep").length,
     [bugs],
   );
+  // Map of uid → publish result so individual rows can render a "Published"
+  // chip and the Publish button can show count-of-unpublished. Populated
+  // when the user navigates Done → Review (the publishLog persists across
+  // the phase swap) so we know which draft items already exist in ADO.
+  const publishedByUid = useMemo(() => {
+    const map = new Map<string, PublishLogEntry>();
+    for (const l of publishLog) {
+      if (l.status === "ok") map.set(l.uid, l);
+    }
+    return map;
+  }, [publishLog]);
+  const keptCasesUnpublished = useMemo(
+    () =>
+      cases.filter((c) => c.decision === "keep" && !publishedByUid.has(c.uid))
+        .length,
+    [cases, publishedByUid],
+  );
+  const keptBugsUnpublished = useMemo(
+    () =>
+      bugs.filter((b) => b.decision === "keep" && !publishedByUid.has(b.uid))
+        .length,
+    [bugs, publishedByUid],
+  );
+  const hasAnyPublished = publishedByUid.size > 0;
 
   // Keyboard nav: j/k step through the full list (cases first, then bugs).
   // Indices in [0, cases.length) target cases via [data-case-row=…]; indices
@@ -1352,8 +1378,29 @@ function ReviewPhase({
     );
   }
 
+  const publishCount =
+    keptCasesUnpublished +
+    (keptBugsUnpublished > 0 ? keptBugsUnpublished : 0);
+
   return (
     <div className="flex flex-col gap-3">
+      {hasAnyPublished ? (
+        <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/[0.06] px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
+          <HugeiconsIcon
+            icon={AlertCircleIcon}
+            size={12}
+            strokeWidth={1.75}
+            className="mt-0.5 shrink-0"
+          />
+          <p className="leading-relaxed">
+            {publishedByUid.size} item{publishedByUid.size === 1 ? "" : "s"}{" "}
+            already published. Edits here only change the draft —{" "}
+            <span className="font-medium">use the test case / bug pane</span>{" "}
+            to sync title changes back to ADO. Clicking Publish skips
+            already-published rows so duplicates aren&apos;t created.
+          </p>
+        </div>
+      ) : null}
       <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-card/40 px-3 py-2">
         <p className="text-[11px] text-muted-foreground">
           <span className="font-medium text-foreground">{cases.length}</span>{" "}
@@ -1366,9 +1413,19 @@ function ReviewPhase({
             j/k to nav cases &amp; bugs · space to toggle · p to publish
           </span>
         </p>
-        <Button onClick={() => void publish()} disabled={kept === 0}>
-          Publish {kept} case{kept === 1 ? "" : "s"}
-          {keptBugs > 0 ? ` + ${keptBugs} bug${keptBugs === 1 ? "" : "s"}` : ""}
+        <Button
+          onClick={() => void publish()}
+          disabled={publishCount === 0}
+        >
+          {hasAnyPublished
+            ? publishCount === 0
+              ? "All kept items published"
+              : `Publish ${publishCount} new`
+            : `Publish ${kept} case${kept === 1 ? "" : "s"}${
+                keptBugs > 0
+                  ? ` + ${keptBugs} bug${keptBugs === 1 ? "" : "s"}`
+                  : ""
+              }`}
         </Button>
       </div>
 

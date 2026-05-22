@@ -247,6 +247,13 @@ export type SessionState = {
    *  open-in-review action actually worked). Returns false for legacy rows
    *  that only persisted titles — those can't be restored to review. */
   loadDraft: (run: GenerationRun) => boolean;
+  /** Reopen a published run in the done phase. Reconstructs publishLog
+   *  result objects from the row's persisted cases/bugs arrays (matched by
+   *  kind+order) so the success screen can still link out to ADO and back
+   *  into the app's case/bug detail panes. The draft body is restored when
+   *  the row carries one — otherwise review is locked out (no draft to
+   *  navigate to). Returns true when at least the done screen is renderable. */
+  loadPublishedRun: (run: GenerationRun) => boolean;
 };
 
 let uidCounter = 0;
@@ -281,6 +288,7 @@ const initialState: Omit<
   | "reset"
   | "startNew"
   | "loadDraft"
+  | "loadPublishedRun"
   | "refine"
   | "cancelRefine"
   | "undoRefine"
@@ -820,23 +828,39 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     }
     const keptCases = cases.filter((c) => c.decision === "keep");
     const keptBugs = bugs.filter((b) => b.decision === "keep");
+
+    // Idempotent publish: if the user re-enters review after a successful
+    // publish and clicks Publish again, we should NOT create duplicate work
+    // items in ADO. Preserve the prior "ok" entries so the loops below skip
+    // those uids, while still queuing fresh "pending" rows for anything
+    // that hasn't been pushed yet (newly-added cases, retried failures).
+    const prevLog = get().publishLog;
+    const okByUid = new Map(
+      prevLog.filter((l) => l.status === "ok").map((l) => [l.uid, l] as const),
+    );
+
     const log: PublishLogEntry[] = [
-      ...keptCases.map<PublishLogEntry>((c) => ({
-        uid: c.uid,
-        kind: "case",
-        title: c.title,
-        status: "pending",
-      })),
-      ...keptBugs.map<PublishLogEntry>((b) => ({
-        uid: b.uid,
-        kind: "bug",
-        title: b.title,
-        status: "pending",
-      })),
+      ...keptCases.map<PublishLogEntry>((c) => {
+        const prior = okByUid.get(c.uid);
+        if (prior) return prior; // already published — keep the row as-is
+        return { uid: c.uid, kind: "case", title: c.title, status: "pending" };
+      }),
+      ...keptBugs.map<PublishLogEntry>((b) => {
+        const prior = okByUid.get(b.uid);
+        if (prior) return prior;
+        return { uid: b.uid, kind: "bug", title: b.title, status: "pending" };
+      }),
     ];
     set({ phase: "publishing", publishLog: log });
 
     const caseIdByDraftUid = new Map<string, number>();
+    // Seed the case-id map with anything already published so bugs created
+    // in this re-publish can link to their parent cases without re-creating
+    // those cases. Result objects survive in publishLog from the prior run.
+    for (const c of keptCases) {
+      const prior = okByUid.get(c.uid);
+      if (prior?.result?.id) caseIdByDraftUid.set(c.uid, prior.result.id);
+    }
     // Pull the default tracking branch once for staleness baselines. If the
     // user configured `$current`, resolve to the live source-dir branch so
     // each generation is indexed on the branch the user is actually working
@@ -869,6 +893,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     }
 
     for (const c of keptCases) {
+      // Skip cases that were already published successfully — re-running
+      // publish would create a duplicate work item in ADO. The row stays
+      // visible in the log with its original "ok" status + result link.
+      if (okByUid.has(c.uid)) continue;
       try {
         const sourceLinksBlock = renderSourceLinksBlock(
           c.sourceLinks,
@@ -928,6 +956,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     }
 
     for (const b of keptBugs) {
+      // Same idempotence guard: don't re-create bugs that already landed.
+      if (okByUid.has(b.uid)) continue;
       const target =
         b.linkedDraftCaseIndex !== undefined &&
         b.linkedDraftCaseIndex !== null
@@ -1003,6 +1033,22 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           error: l.error ?? null,
         })),
         status: "published",
+        // Persist the full draft body even on publish so a reopened run can
+        // navigate Done → Review and re-publish edits. Without this, opening
+        // a finished run only shows the publish summary and the review/input
+        // breadcrumbs are stranded.
+        draftPayload: {
+          requirements: s.requirements,
+          mode: s.mode,
+          cases: s.cases,
+          bugs: s.bugs,
+          rawText: s.rawText,
+          planId: s.planId,
+          planName: s.planName,
+          suiteId: s.suiteId,
+          suiteName: s.suiteName,
+          refineRounds: s.refineRounds,
+        },
       };
       void saveRun(run);
     } catch {
@@ -1352,6 +1398,70 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       runId: run.id,
       refineRounds: rounds,
       refineHistory: refineHistoryFromRounds,
+    });
+    return true;
+  },
+
+  loadPublishedRun: (run) => {
+    if (run.publishLog.length === 0) return false;
+    // The persisted publish-log entry doesn't carry the CreatedWorkItem
+    // result — only kind/uid/status/title. Reconstruct each row's `result`
+    // by walking publishLog in order and zipping the OK rows against
+    // run.cases / run.bugs (which are stored in publish order, kept rows
+    // only). Failed rows keep result=undefined, which matches what the
+    // live publish path produces.
+    const caseSummaries = run.cases;
+    const bugSummaries = run.bugs;
+    let caseI = 0;
+    let bugI = 0;
+    const reconstructedLog: PublishLogEntry[] = run.publishLog.map((e) => {
+      let result: CreatedWorkItem | undefined;
+      if (e.kind === "case") {
+        const cs = caseSummaries[caseI++];
+        if (e.status === "ok" && cs && cs.adoId && cs.webUrl) {
+          result = { id: cs.adoId, url: cs.webUrl, webUrl: cs.webUrl };
+        }
+      } else {
+        const bs = bugSummaries[bugI++];
+        if (e.status === "ok" && bs && bs.adoId && bs.webUrl) {
+          result = { id: bs.adoId, url: bs.webUrl, webUrl: bs.webUrl };
+        }
+      }
+      return {
+        uid: e.uid,
+        kind: e.kind,
+        title: e.title,
+        // "skipped" is a persisted-only status (we drop pending writes to
+        // "skipped" on save). For a reopened published run we map it back
+        // to "failed" since that's how the done view groups error rows.
+        status: e.status === "skipped" ? "failed" : e.status,
+        result,
+        error: e.error ?? undefined,
+      };
+    });
+
+    // If the row also carries a draft payload (we now always persist this
+    // on publish so re-publishing edits is possible — see publish() below),
+    // restore cases + bugs so the review breadcrumb is reachable. Older
+    // rows without a payload land on done-only.
+    const payload = run.draftPayload;
+    const rounds = payload?.refineRounds ?? [];
+
+    set({
+      ...initialState,
+      phase: "done",
+      publishLog: reconstructedLog,
+      runId: run.id,
+      planId: payload?.planId ?? run.planId ?? null,
+      suiteId: payload?.suiteId ?? run.suiteId ?? null,
+      planName: payload?.planName ?? run.planName ?? null,
+      suiteName: payload?.suiteName ?? run.suiteName ?? null,
+      requirements: payload?.requirements ?? "",
+      mode: payload?.mode ?? "thorough",
+      cases: payload?.cases ?? [],
+      bugs: payload?.bugs ?? [],
+      rawText: payload?.rawText ?? "",
+      refineRounds: rounds,
     });
     return true;
   },

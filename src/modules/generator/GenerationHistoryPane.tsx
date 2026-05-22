@@ -32,6 +32,10 @@ type Props = {
   /** Open a saved draft back into the Generator's review phase. Only fired
    *  for rows that carry a restorable payload (i.e. modern drafts). */
   onOpenDraft?: (run: GenerationRun) => void;
+  /** Reopen a published run in the Generator's Done view (publish summary).
+   *  Lets the user navigate Done ↔ Review ↔ Input via the same breadcrumbs
+   *  the live publish flow uses. */
+  onOpenPublished?: (run: GenerationRun) => void;
 };
 
 /**
@@ -43,6 +47,7 @@ export function GenerationHistoryPane({
   onOpenCase,
   onOpenBug,
   onOpenDraft,
+  onOpenPublished,
 }: Props) {
   const [runs, setRuns] = useState<GenerationRun[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -234,6 +239,7 @@ export function GenerationHistoryPane({
               onOpenCase={onOpenCase}
               onOpenBug={onOpenBug}
               onOpenDraft={onOpenDraft}
+              onOpenPublished={onOpenPublished}
               onDelete={() => void onDelete(r.id)}
             />
           ))}
@@ -248,12 +254,14 @@ function RunCard({
   onOpenCase,
   onOpenBug,
   onOpenDraft,
+  onOpenPublished,
   onDelete,
 }: {
   run: GenerationRun;
   onOpenCase: Props["onOpenCase"];
   onOpenBug?: Props["onOpenBug"];
   onOpenDraft?: Props["onOpenDraft"];
+  onOpenPublished?: Props["onOpenPublished"];
   onDelete: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -262,6 +270,12 @@ function RunCard({
   const hasFailures = failCount > 0;
   const isDraft = (run.status ?? "published") === "draft";
   const canRestoreDraft = isDraft && !!run.draftPayload?.cases;
+  // Published rows always have a publishLog — that's enough to reopen them
+  // in the Done view. The draft payload may or may not be present (new
+  // rows persist it on publish; older rows don't). Either way the done
+  // screen renders, and the breadcrumb just won't reach Review when the
+  // payload is missing.
+  const canOpenPublished = !isDraft && run.publishLog.length > 0;
 
   // Resolve plan + suite names from the shared cache when the saved row
   // only carries ids. Old runs (pre-name-capture) and any row that lost
@@ -327,6 +341,27 @@ function RunCard({
               </TooltipContent>
             </Tooltip>
           ) : null}
+          {canOpenPublished && onOpenPublished ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Reopen this run in the publish summary"
+                  onClick={() => onOpenPublished(run)}
+                  className="grid size-5 place-items-center rounded text-muted-foreground hover:bg-primary/15 hover:text-primary"
+                >
+                  <HugeiconsIcon
+                    icon={ExternalLink}
+                    size={10}
+                    strokeWidth={1.75}
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-[11px]">
+                Reopen publish summary
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
           <button
             type="button"
             aria-label="Delete this run"
@@ -358,6 +393,28 @@ function RunCard({
                   strokeWidth={1.75}
                 />
                 Open in review
+              </button>
+            </div>
+          ) : canOpenPublished && onOpenPublished ? (
+            <div className="mb-2 flex items-center justify-between gap-2 rounded-sm border border-primary/30 bg-primary/[0.04] px-2 py-1">
+              <span className="min-w-0 flex-1 text-[10.5px] text-muted-foreground">
+                Reopen the publish summary — drill into input, review, or
+                done from the breadcrumb.
+              </span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenPublished(run);
+                }}
+                className="inline-flex h-5 shrink-0 items-center gap-1 whitespace-nowrap rounded-sm border border-primary/40 bg-primary/10 px-1.5 text-[10px] font-medium text-primary transition-colors hover:bg-primary/20"
+              >
+                <HugeiconsIcon
+                  icon={ExternalLink}
+                  size={9}
+                  strokeWidth={1.75}
+                />
+                Open in done
               </button>
             </div>
           ) : isDraft && !canRestoreDraft ? (
