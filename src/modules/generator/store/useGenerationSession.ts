@@ -18,7 +18,7 @@ import {
   type TestPlanRef,
 } from "@/modules/ado";
 import { useChatStore } from "@/modules/ai/store/chatStore";
-import { claudeErrorMessage } from "@/modules/ai/lib/claude";
+import { cancelClaudeRun, claudeErrorMessage } from "@/modules/ai/lib/claude";
 import {
   type GenerationMode as Mode,
   type RunResult,
@@ -215,6 +215,13 @@ export type SessionState = {
    *  Replaces cases/bugs on success and stashes the previous state for
    *  undoRefine(). Errors are surfaced via refineError without leaving review. */
   refine: (instruction: string) => Promise<void>;
+  /** Kill the in-flight refine subprocess and return the UI to the composer.
+   *  ESC during refine wires here. Tolerated when nothing is running. */
+  cancelRefine: () => void;
+  /** Run id of the active claude subprocess (analyze or refine), if any.
+   *  Populated via the runner's onRunStart callback so cancel commands have
+   *  a target to signal. Cleared when the run settles. */
+  activeClaudeRunId: string | null;
   /** Restore the most recent refine snapshot. No-op if none. */
   undoRefine: () => void;
   /** Clear the lingering refine error banner. */
@@ -269,6 +276,7 @@ const initialState: Omit<
   | "startNew"
   | "loadDraft"
   | "refine"
+  | "cancelRefine"
   | "undoRefine"
   | "dismissRefineError"
   | "goToInput"
@@ -295,6 +303,7 @@ const initialState: Omit<
   error: null,
   errorPhase: null,
   isRefining: false,
+  activeClaudeRunId: null,
   refineUndoSnapshot: null,
   refineError: null,
   refineHistory: [],
@@ -535,7 +544,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           // cwd and can only reason from the spec + any inline attachments.
           sourceRoot: allowCodeSearch ? prefs.sourceRoot : null,
           authMode: engineSel.authMode ?? "api-key",
+          bareMode: prefs.claudeBareMode,
           onActivity,
+          onRunStart: (rid) => set({ activeClaudeRunId: rid }),
         });
       } else {
         result = await runQaAnalyst({
@@ -1076,8 +1087,14 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           modelId: resolveClaudeModelId(modelId) as typeof modelId,
           sourceRoot: s.allowCodeSearch ? prefs.sourceRoot : null,
           authMode: engineSel.authMode ?? "api-key",
+          bareMode: prefs.claudeBareMode,
           onActivity,
           userPromptOverride: userPrompt,
+          // Hand the runId up to the store so cancelRefine() has a target
+          // to signal. Without this an ESC press would only un-stick the UI
+          // — the subprocess would keep burning model tokens in the
+          // background until it finished on its own.
+          onRunStart: (rid) => set({ activeClaudeRunId: rid }),
         });
       } else {
         result = await runQaAnalyst({
@@ -1174,12 +1191,21 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       // the input screen would lose their draft, which is exactly what they
       // were trying to refine. Surface the error inline; the user can read
       // it, fix the underlying issue, and try again.
-      console.error("[generator] refine failed:", e);
-      const errorText = errToString(e);
+      const cancelled =
+        typeof e === "object" &&
+        e !== null &&
+        (e as { kind?: string }).kind === "cancelled";
+      if (!cancelled) {
+        console.error("[generator] refine failed:", e);
+      }
+      const errorText = cancelled ? "" : errToString(e);
       set((curr) => ({
         isRefining: false,
+        activeClaudeRunId: null,
         stepLabel: "",
-        refineError: errorText,
+        // Cancelled runs don't leave a banner — the user asked to abort, so
+        // showing them an error after they pressed ESC is hostile UX.
+        refineError: cancelled ? null : errorText,
         refineRounds: [
           ...curr.refineRounds,
           {
@@ -1190,12 +1216,35 @@ export function createGenerationSessionStore(): GenerationSessionStore {
             afterCases: beforeCases,
             beforeBugs,
             afterBugs: beforeBugs,
-            outcome: "failed",
-            error: errorText,
+            outcome: cancelled ? "empty" : "failed",
+            error: cancelled ? "Cancelled before completion." : errorText,
           },
         ],
       }));
       schedulePersistDraft();
+    } finally {
+      set({ activeClaudeRunId: null });
+    }
+  },
+
+  cancelRefine: () => {
+    const { activeClaudeRunId, isRefining } = get();
+    if (!isRefining) return;
+    if (activeClaudeRunId) {
+      // Fire-and-forget — the Rust side notifies the run task, which kills
+      // the child and resolves the in-flight runQaAnalystClaude promise
+      // with a Cancelled error. Our catch above handles the rest.
+      void cancelClaudeRun(activeClaudeRunId).catch(() => {
+        // Even if the IPC fails, the local catch path will eventually
+        // settle the run; flipping isRefining here is a safety net so the
+        // UI doesn't appear stuck.
+        set({ isRefining: false, activeClaudeRunId: null, stepLabel: "" });
+      });
+    } else {
+      // No subprocess to kill (e.g. Vercel SDK path mid-flight) — just
+      // un-stick the UI; the in-flight promise will still complete but its
+      // result handler is guarded by isRefining checks downstream.
+      set({ isRefining: false, stepLabel: "" });
     }
   },
 

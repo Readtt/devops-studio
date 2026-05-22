@@ -17,6 +17,7 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   setAiEngine,
   setClaudeAuthMode,
+  setClaudeBareMode,
   type AiEngine,
   type ClaudeAuthMode,
 } from "@/modules/settings/store";
@@ -41,6 +42,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 export function AiEngineSection() {
   const engine = usePreferencesStore((s) => s.aiEngine);
   const authMode = usePreferencesStore((s) => s.claudeAuthMode);
+  const bareMode = usePreferencesStore((s) => s.claudeBareMode);
 
   const [probe, setProbe] = useState<ClaudeProbe | null | undefined>(undefined);
   const [probeError, setProbeError] = useState<string | null>(null);
@@ -229,6 +231,7 @@ export function AiEngineSection() {
                 onPick={() => void setClaudeAuthMode("api-key")}
               />
             </div>
+
             {authMode === "max-oauth" ? (
               <div className="mt-2 flex flex-col gap-1.5">
                 <div className="flex flex-wrap items-center gap-2">
@@ -298,12 +301,147 @@ export function AiEngineSection() {
                 ) : null}
               </div>
             ) : null}
+
+            {/* Bare-mode is an escape hatch most users will never touch.
+                Tucked into a slim disclosure at the bottom of the Claude
+                section so it stops dominating the page — surfaces by name
+                in the error message when a code-1 actually happens. */}
+            <BareModeDisclosure
+              bareMode={bareMode}
+              authMode={authMode}
+              onChange={(v) => void setClaudeBareMode(v)}
+            />
           </div>
         </div>
       ) : null}
     </div>
   );
 }
+
+/**
+ * Collapsed-by-default disclosure for the `--bare` runtime toggle. Lives at
+ * the bottom of the Claude Code section because:
+ *   - Default behavior already does the right thing for most users.
+ *   - On Max OAuth the toggle is ignored at runtime, so an always-visible
+ *     control would be misleading.
+ *   - The code-1 error message references "Run Claude in isolation" by
+ *     name, so users who actually need it can still find it.
+ *
+ * Open state persists in `localStorage` so a user who turned it on doesn't
+ * have to expand the disclosure every settings visit to see what they set.
+ */
+function BareModeDisclosure({
+  bareMode,
+  authMode,
+  onChange,
+}: {
+  bareMode: boolean;
+  authMode: ClaudeAuthMode;
+  onChange: (v: boolean) => void;
+}) {
+  const [open, setOpen] = useState(() => {
+    try {
+      const stored = window.localStorage.getItem(BARE_DISCLOSURE_KEY);
+      // Auto-open when the toggle is non-default — users should see what
+      // they enabled at a glance. localStorage wins when present.
+      if (stored === "1") return true;
+      if (stored === "0") return false;
+    } catch {
+      // ignore
+    }
+    return bareMode === true;
+  });
+  const persist = (next: boolean) => {
+    setOpen(next);
+    try {
+      window.localStorage.setItem(BARE_DISCLOSURE_KEY, next ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  };
+
+  const oauthIgnored = authMode === "max-oauth";
+
+  return (
+    <details
+      open={open}
+      onToggle={(e) => persist((e.currentTarget as HTMLDetailsElement).open)}
+      className="group/adv mt-2 rounded-md border border-border/40 bg-card/30"
+    >
+      <summary
+        className={cn(
+          "flex cursor-pointer list-none items-center gap-2 rounded-md px-2.5 py-1.5 text-[10.5px] transition-colors",
+          "hover:bg-foreground/[0.03]",
+        )}
+      >
+        <span
+          aria-hidden
+          className="font-mono text-[10px] text-muted-foreground/60 transition-transform group-open/adv:rotate-90"
+        >
+          ›
+        </span>
+        <span className="font-mono uppercase tracking-wider text-muted-foreground/85">
+          advanced runtime
+        </span>
+        <span className="font-mono text-[9.5px] text-muted-foreground/50">
+          · 1 setting
+        </span>
+        {/* Right-aligned status: tells you at a glance whether the toggle
+            is non-default and whether it actually applies right now. */}
+        <span className="ml-auto flex items-center gap-1.5">
+          {bareMode ? (
+            <span
+              className={cn(
+                "rounded-sm px-1.5 py-px font-mono text-[9px] uppercase tracking-wide",
+                oauthIgnored
+                  ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                  : "bg-primary/15 text-primary",
+              )}
+            >
+              {oauthIgnored ? "ignored on oauth" : "isolation on"}
+            </span>
+          ) : null}
+        </span>
+      </summary>
+
+      <div className="border-t border-border/40 px-3 py-2.5">
+        <label className="flex cursor-pointer items-start gap-2.5">
+          <input
+            type="checkbox"
+            checked={bareMode}
+            onChange={(e) => onChange(e.target.checked)}
+            className="mt-0.5 size-3.5 cursor-pointer accent-[color:var(--primary)]"
+          />
+          <span className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-[11.5px] font-medium">
+              Run Claude in isolation (<code className="font-mono text-foreground/80">--bare</code>)
+            </span>
+            <span className="text-[10.5px] leading-relaxed text-muted-foreground">
+              Skips your <code className="font-mono text-foreground/80">~/.claude</code> hooks,
+              plugins, MCP servers, and{" "}
+              <code className="font-mono text-foreground/80">CLAUDE.md</code>. Built-in{" "}
+              <code className="font-mono text-foreground/80">Read</code>/
+              <code className="font-mono text-foreground/80">Glob</code>/
+              <code className="font-mono text-foreground/80">Grep</code> still work. Flip this on
+              only if a failing <code className="font-mono text-foreground/80">SessionStart</code>{" "}
+              hook is killing every run with a silent code 1.
+            </span>
+            {oauthIgnored && bareMode ? (
+              <span className="mt-1 text-[10.5px] leading-relaxed text-amber-700 dark:text-amber-300">
+                <code className="font-mono">--bare</code> also skips the keychain read, so it can't
+                actually apply on Max OAuth. Switch to{" "}
+                <span className="font-medium">Anthropic API key</span> above if you want this in
+                effect.
+              </span>
+            ) : null}
+          </span>
+        </label>
+      </div>
+    </details>
+  );
+}
+
+const BARE_DISCLOSURE_KEY = "devops-studio.settings.bare-disclosure-open";
 
 function EngineCard({
   id: _id,

@@ -12,6 +12,17 @@ import type { ActivityEntry } from "../lib/activityLog";
 type Props = {
   entries: ActivityEntry[];
   className?: string;
+  /** Tighter vertical bound for embedded contexts (refine rounds history
+   *  shows the log inside a scrollable dialog already). Defaults to `max-h-72`. */
+  maxHeightClass?: string;
+  /** When true, long tool call lines wrap to multiple lines instead of
+   *  getting a per-cell horizontal scrollbar. Used inside the rounds
+   *  history dialog where a) the dialog's own ScrollArea fights nested
+   *  wheel events, and b) the user is reviewing past activity at a slower
+   *  pace and readability beats terminal-strict layout. The live composer
+   *  keeps the default (nowrap + scroll) since rows are appearing fast
+   *  and a multi-line wrap would jitter the layout on every new step. */
+  wrap?: boolean;
 };
 
 /** Streaming log of what the analyst agent is doing — modeled after a build
@@ -21,7 +32,12 @@ type Props = {
  *  file into the CodeViewer (via the existing devops-studio:open-code-viewer
  *  side-channel event). Auto-scrolls to newest entry while the user hasn't
  *  scrolled away. */
-export function AnalyzeActivityLog({ entries, className }: Props) {
+export function AnalyzeActivityLog({
+  entries,
+  className,
+  maxHeightClass = "max-h-72",
+  wrap = false,
+}: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const pinnedToBottomRef = useRef(true);
 
@@ -71,7 +87,16 @@ export function AnalyzeActivityLog({ entries, className }: Props) {
       <div
         ref={containerRef}
         onScroll={onScroll}
-        className="max-h-72 w-full min-w-0 overflow-y-auto"
+        // Vertical-only scroll on the outer container — horizontal scroll
+        // happens INSIDE each row's content cell so the row layout
+        // (gutter, expand button, timestamp on the right) stays anchored.
+        // The previous "whole-log scrolls horizontally" idea sounded nice
+        // but broke the right-rail pinning AND silently failed inside the
+        // dialog's nested min-w-0 chain.
+        className={cn(
+          "w-full min-w-0 overflow-y-auto",
+          maxHeightClass,
+        )}
       >
         <ol className="flex w-full min-w-0 flex-col">
           {entries.map((entry, i) => (
@@ -80,6 +105,7 @@ export function AnalyzeActivityLog({ entries, className }: Props) {
               entry={entry}
               index={i + 1}
               isLast={i === entries.length - 1}
+              wrap={wrap}
             />
           ))}
         </ol>
@@ -115,10 +141,12 @@ function ActivityRow({
   entry,
   index,
   isLast,
+  wrap,
 }: {
   entry: ActivityEntry;
   index: number;
   isLast: boolean;
+  wrap: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const hasExpandable =
@@ -178,33 +206,68 @@ function ActivityRow({
           )}
         </button>
 
-        {/* The "code line" — formatted like a function call so the eye can
-            scan tool + argument fast. */}
-        <div className="min-w-0 flex-1">
+        {/* Content cell — flex-1 fills the available width between gutter
+            and right rail. In SCROLL mode (live composer) the cell gets a
+            slim horizontal scrollbar via the activity-cell global rules
+            and content stays single-line. In WRAP mode (rounds history
+            dialog) the cell grows vertically and content wraps; this
+            mode wins inside dialogs because shadcn's ScrollArea fights
+            nested horizontal wheel events. */}
+        <div
+          className={cn(
+            "min-w-0 flex-1",
+            wrap ? "" : "activity-cell overflow-x-auto",
+          )}
+        >
           {isThinking ? (
-            <p className="italic leading-snug text-muted-foreground/85">
+            <p
+              className={cn(
+                "italic leading-snug text-muted-foreground/85",
+                wrap ? "break-words" : "whitespace-nowrap",
+              )}
+            >
               <span className="mr-1.5 text-muted-foreground/40">∴</span>
               {entry.inputSummary || "thinking…"}
             </p>
           ) : (
-            <ToolCallLine entry={entry} fileTarget={fileTarget} />
+            <ToolCallLine entry={entry} fileTarget={fileTarget} wrap={wrap} />
           )}
 
           {!open && entry.outputSummary ? (
-            <p className="mt-0.5 w-full min-w-0 truncate text-[10.5px] text-muted-foreground/70">
+            <p
+              className={cn(
+                "mt-0.5 text-[10.5px] text-muted-foreground/70",
+                wrap ? "break-words" : "whitespace-nowrap",
+              )}
+            >
               <span className="mr-1 text-muted-foreground/40">↳</span>
               {entry.outputSummary}
             </p>
           ) : null}
 
           {open && entry.outputFull ? (
-            <pre className="mt-1 max-h-56 w-full min-w-0 overflow-y-auto whitespace-pre-wrap break-words rounded-sm border border-border/40 bg-foreground/[0.04] px-2 py-1.5 text-[10.5px] leading-relaxed text-foreground/85">
+            <pre
+              className={cn(
+                "mt-1 max-h-56 rounded-sm border border-border/40 bg-foreground/[0.04] px-2 py-1.5 text-[10.5px] leading-relaxed text-foreground/85",
+                // Output blobs stay scrollable either way — they're
+                // formatted code, not prose, and forcing them to wrap
+                // produces unreadable salad. In wrap mode the outer cell
+                // is wide enough that this pre simply uses its own
+                // scrollbar without competing with anything.
+                "overflow-auto whitespace-pre",
+              )}
+            >
               {entry.outputFull}
             </pre>
           ) : null}
 
           {entry.error && !open ? (
-            <p className="mt-0.5 w-full min-w-0 truncate text-[10.5px] text-destructive/85">
+            <p
+              className={cn(
+                "mt-0.5 text-[10.5px] text-destructive/85",
+                wrap ? "break-words" : "whitespace-nowrap",
+              )}
+            >
               <span className="mr-1 text-destructive/55">✗</span>
               {entry.error}
             </p>
@@ -251,18 +314,23 @@ function ActivityRow({
 function ToolCallLine({
   entry,
   fileTarget,
+  wrap,
 }: {
   entry: ActivityEntry;
   fileTarget: FileTarget | null;
+  wrap: boolean;
 }) {
   const toolName = entry.toolName ?? "step";
   const lower = toolName.toLowerCase();
   const arg = entry.inputSummary ?? "";
+  // In wrap mode every paragraph also gets break-all so a long single
+  // token (file path, regex) doesn't push the row past the dialog edge.
+  const lineCls = wrap ? "leading-snug break-all" : "leading-snug whitespace-nowrap";
 
   // Read("path") — make the path itself clickable when we have a target.
   if (fileTarget) {
     return (
-      <p className="min-w-0 break-all leading-snug">
+      <p className={lineCls}>
         <span className="font-semibold text-primary">{toolName}</span>
         <span className="text-muted-foreground/60">(</span>
         <button
@@ -271,7 +339,7 @@ function ToolCallLine({
             e.stopPropagation();
             openInCodeViewer(fileTarget);
           }}
-          className="break-all text-left text-amber-700 underline-offset-2 hover:underline dark:text-amber-300"
+          className="text-left text-amber-700 underline-offset-2 hover:underline dark:text-amber-300"
           title="Open in code viewer"
         >
           <span className="text-muted-foreground/55">&quot;</span>
@@ -295,7 +363,7 @@ function ToolCallLine({
   if (lower === "grep") {
     const { pattern, scope } = splitGrepArg(arg);
     return (
-      <p className="min-w-0 break-all leading-snug">
+      <p className={lineCls}>
         <span className="font-semibold text-primary">{toolName}</span>
         <span className="text-muted-foreground/60">(</span>
         <span className="text-amber-700 dark:text-amber-300">
@@ -317,7 +385,7 @@ function ToolCallLine({
   // Glob("pattern") — pattern reads as a glob token.
   if (lower === "glob") {
     return (
-      <p className="min-w-0 break-all leading-snug">
+      <p className={lineCls}>
         <span className="font-semibold text-primary">{toolName}</span>
         <span className="text-muted-foreground/60">(</span>
         <span className="text-violet-700 dark:text-violet-300">
@@ -332,7 +400,7 @@ function ToolCallLine({
 
   // Generic fallback — tool(arg-as-string).
   return (
-    <p className="min-w-0 break-words leading-snug">
+    <p className="leading-snug">
       <span className="font-semibold text-primary">{toolName}</span>
       {arg ? (
         <>

@@ -510,6 +510,7 @@ pub fn run() {
             // --- Claude Code CLI driver ---
             claude::claude_probe,
             claude::claude_run_query,
+            claude::claude_cancel_run,
             claude::claude_setup_token,
             claude::claude_cancel_setup_token,
             claude::claude_check_auth,

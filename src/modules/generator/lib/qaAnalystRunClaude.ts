@@ -46,12 +46,21 @@ export type RunClaudeInput = {
   /** "max-oauth" → rely on the CLI's own stored token. "api-key" → load the
    *  Anthropic key from the keyring and pass it via env. */
   authMode: ClaudeAuthMode;
+  /** When true, pass `--bare` to the CLI: skip user-installed hooks, plugins,
+   *  MCP servers, and CLAUDE.md auto-discovery. Surfaces in Settings → Models
+   *  as an escape hatch for users whose `~/.claude/settings.json` has a hook
+   *  that silently aborts every run with code 1. */
+  bareMode?: boolean;
   /** Structured per-step activity for the streaming log UI. */
   onActivity?: (entry: ActivityEntry) => void;
   /** Pre-built user prompt that replaces the auto-generated one. Used by
    *  refine() so the model sees a "follow-up against this draft" framing
    *  instead of "start from scratch". */
   userPromptOverride?: string;
+  /** Called once with the run id the moment we have one. The store stashes
+   *  it so an ESC press can call cancelClaudeRun(runId) and abort the
+   *  in-flight subprocess instead of waiting for the model to finish. */
+  onRunStart?: (runId: string) => void;
 };
 
 export async function runQaAnalystClaude(
@@ -67,6 +76,10 @@ export async function runQaAnalystClaude(
   const userPrompt = input.userPromptOverride ?? buildUserPrompt(input);
   const start = Date.now();
   const tracker = new ActivityTracker(start, input.onActivity);
+  // Hand the runId back to the caller before we await — that's the only
+  // way ESC can race the subprocess. After this point, the store can call
+  // cancelClaudeRun(runId) and the Rust side will kill the child.
+  input.onRunStart?.(runId);
 
   const result = await runClaudeQuery(
     {
@@ -87,14 +100,13 @@ export async function runQaAnalystClaude(
       // contains a mutating tool, so a typo can't quietly re-open the
       // surface.
       //
-      // We deliberately do NOT pass `--bare` here even though Anthropic's
-      // headless docs recommend it for scripted calls: bare mode strips the
-      // built-in tool set down to Bash / Edit / PowerShell / Read, which
-      // removes Glob and Grep — the two tools the analyst needs to ground
-      // cases in actual code paths. Hook-induced failures from the user's
-      // `~/.claude` are still possible, but at least the streaming activity
-      // log now surfaces the failing `hook_response` event so the user can
-      // diagnose instead of staring at a bare "code 1".
+      // `--bare` skips user hooks / plugins / MCP / CLAUDE.md AND skips
+      // the CLI's keychain reads — so it requires API-key auth to find an
+      // Anthropic key. If the user is on Max OAuth, we silently fall back
+      // to non-bare regardless of the toggle (the UI flags this conflict
+      // separately so they're not surprised). On API-key auth, the toggle
+      // controls bare mode directly.
+      bare: input.bareMode === true && input.authMode === "api-key",
       permissionMode: "bypassPermissions",
       allowedTools: ["Read", "Glob", "Grep"],
       env: Object.keys(env).length > 0 ? env : undefined,

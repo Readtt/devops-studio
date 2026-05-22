@@ -24,6 +24,7 @@ import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   emitKeysChanged,
+  onGenerationBusy,
   setDefaultModel,
   setLmstudioBaseURL,
   setLmstudioModelId,
@@ -34,6 +35,7 @@ import {
   setOpenaiCompatibleBaseURL,
   setOpenaiCompatibleContextLimit,
   setOpenaiCompatibleModelId,
+  type GenerationBusyState,
 } from "@/modules/settings/store";
 import { AiEngineSection } from "../components/AiEngineSection";
 import {
@@ -377,6 +379,31 @@ function DefaultModelBlock({
   const current = getModel(defaultModel);
   const totalModels = MODELS.length;
   const lockedCount = totalModels - availability.available.size;
+  // Subscribe to the main window's generation-busy broadcast so we lock the
+  // picker mid-run / mid-draft, same as the status-bar picker does locally.
+  // Without this the user could swap the default model mid-refine and the
+  // already-in-flight call would still use the OLD model — confusing.
+  const [busy, setBusy] = useState<GenerationBusyState>({
+    busy: false,
+    reason: "idle",
+  });
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    void onGenerationBusy((state) => setBusy(state)).then((u) => {
+      unlisten = u;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+  const lockReason =
+    busy.reason === "running"
+      ? "A generation is running — model swap takes effect on the next run."
+      : busy.reason === "refining"
+        ? "Refining a draft — the model is locked for this thread."
+        : busy.reason === "in-draft"
+          ? "A draft is open in the generator. Start a new session to switch models."
+          : "";
   const engineHint =
     engine === "claude-agent-sdk"
       ? "Claude Code drives Anthropic models only. Pick the one the generator and chat should default to."
@@ -399,6 +426,8 @@ function DefaultModelBlock({
           filter={availability.isAvailable}
           side="bottom"
           align="start"
+          disabled={busy.busy}
+          disabledReason={lockReason}
           emptyMessage={
             engine === "claude-agent-sdk" ? (
               <>
@@ -429,14 +458,18 @@ function DefaultModelBlock({
               </div>
             ) : undefined
           }
-          trigger={({ provider }) => (
+          trigger={({ provider, disabled }) => (
             <span
               className={cn(
-                "flex h-9 w-full items-center justify-between gap-2 rounded-md border bg-card px-3 text-[12px] transition-colors hover:border-primary/60",
-                defaultUnavailable
+                "flex h-9 w-full items-center justify-between gap-2 rounded-md border bg-card px-3 text-[12px] transition-colors",
+                disabled
+                  ? "cursor-not-allowed border-border/40 opacity-60"
+                  : "hover:border-primary/60",
+                defaultUnavailable && !disabled
                   ? "border-amber-500/40 bg-amber-500/[0.04]"
                   : "border-border/60",
               )}
+              title={disabled ? lockReason : undefined}
             >
               <span className="flex min-w-0 items-center gap-2">
                 <ProviderIcon provider={provider} size={13} />
@@ -454,6 +487,19 @@ function DefaultModelBlock({
             </span>
           )}
         />
+        {busy.busy ? (
+          <p className="flex items-center gap-1.5 rounded-sm border border-amber-500/30 bg-amber-500/[0.05] px-2 py-1 text-[10.5px] text-amber-700 dark:text-amber-300">
+            <span
+              aria-hidden
+              className="inline-block size-1.5 animate-pulse rounded-full bg-amber-500"
+            />
+            <span className="font-mono uppercase tracking-wider text-[9.5px]">
+              locked
+            </span>
+            <span className="opacity-50">·</span>
+            <span>{lockReason}</span>
+          </p>
+        ) : null}
         <p className="text-[10.5px] leading-relaxed text-muted-foreground">
           {engineHint}
         </p>

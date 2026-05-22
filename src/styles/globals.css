@@ -250,6 +250,37 @@ html[data-chrome="borderless"] #settings-root {
 }
 
 /*
+ * Per-cell scrollbar for the analyst.log activity rows. Each row's content
+ * cell gets a horizontal scrollbar when the tool call line (file path /
+ * grep pattern) is wider than the cell. The default WebKit scrollbar is
+ * ~15px tall and looks like a Windows 95 widget inside an 18px row —
+ * thin it down to a 4px sliver that only shows on hover.
+ */
+.activity-cell {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.activity-cell:hover {
+  scrollbar-color: oklch(0.7 0.01 240 / 0.4) transparent;
+}
+.activity-cell::-webkit-scrollbar {
+  height: 4px;
+}
+.activity-cell::-webkit-scrollbar-track {
+  background: transparent;
+}
+.activity-cell::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 2px;
+}
+.activity-cell:hover::-webkit-scrollbar-thumb {
+  background: oklch(0.7 0.01 240 / 0.35);
+}
+.activity-cell:hover::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.6 0.015 240 / 0.55);
+}
+
+/*
  * Re-enable scrollbars inside the CodeViewer pane specifically.
  *
  * The blanket kill above hides scrollbars across every embedded CodeMirror

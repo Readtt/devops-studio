@@ -17,10 +17,11 @@
 
 use serde::{Deserialize, Serialize};
 use std::process::Stdio;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::Notify;
 
 /// Suppress the Windows console window that flashes when a subprocess is
 /// spawned from a GUI app. Without this every `claude --version`, every
@@ -55,6 +56,10 @@ pub struct ClaudeState {
 
 pub struct RunningHandle {
     pub run_id: String,
+    /// Notified when the renderer asks to cancel this run. The owning task
+    /// races `child.wait()` against `cancel.notified()` and kills the child
+    /// on the cancel branch — see `claude_run_query`.
+    pub cancel: Arc<Notify>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -75,6 +80,10 @@ pub struct ProbeResult {
 pub enum ClaudeError {
     /// `claude` isn't on PATH or `claude --version` failed.
     NotInstalled,
+    /// Renderer asked to cancel the run (ESC during refine, tab close).
+    /// Distinct from NonZeroExit so the UI doesn't show a scary "exited
+    /// with code N" message for a user-initiated abort.
+    Cancelled,
     /// Process started but exited non-zero. `stderr_excerpt` is the first
     /// ~2 KB of the child's stderr — usually enough to diagnose.
     NonZeroExit {
@@ -103,6 +112,7 @@ impl std::fmt::Display for ClaudeError {
             Self::NotInstalled => {
                 write!(f, "Claude Code CLI not found on PATH")
             }
+            Self::Cancelled => write!(f, "Run cancelled."),
             Self::NonZeroExit { code, stderr_excerpt } => write!(
                 f,
                 "claude exited with code {:?}: {}",
@@ -352,12 +362,15 @@ pub async fn claude_run_query(
         }
     });
 
-    // Register this run so we can list in-flight queries. Cancel is a
-    // follow-up; for now kill_on_drop handles cleanup when the future is
-    // dropped (e.g. window closed mid-run).
+    // Register this run so we can list in-flight queries AND signal cancel.
+    // The renderer calls `claude_cancel_run(run_id)` (ESC during refine, tab
+    // close mid-run, etc.) — that hits the Notify, which our select! below
+    // races against `child.wait()` and kills the child on the cancel branch.
+    let cancel = Arc::new(Notify::new());
     if let Ok(mut g) = state.running.lock() {
         g.push(RunningHandle {
             run_id: input.run_id.clone(),
+            cancel: cancel.clone(),
         });
     }
 
@@ -433,10 +446,25 @@ pub async fn claude_run_query(
         String::from_utf8_lossy(&buf).into_owned()
     });
 
-    let status = child
-        .wait()
-        .await
-        .map_err(|e| ClaudeError::SpawnFailed { message: e.to_string() })?;
+    // Race the child against the cancel notify. On cancel we kill the child
+    // and surface ClaudeError::Cancelled so the renderer can distinguish a
+    // user-initiated abort from a real failure.
+    let mut was_cancelled = false;
+    let status = tokio::select! {
+        biased;
+        _ = cancel.notified() => {
+            was_cancelled = true;
+            let _ = child.start_kill();
+            // Reap so the OS doesn't leave a zombie. Best-effort.
+            child
+                .wait()
+                .await
+                .map_err(|e| ClaudeError::SpawnFailed { message: e.to_string() })?
+        }
+        s = child.wait() => {
+            s.map_err(|e| ClaudeError::SpawnFailed { message: e.to_string() })?
+        }
+    };
 
     // Drop the run from the registry once it finishes.
     if let Ok(mut g) = state.running.lock() {
@@ -450,6 +478,10 @@ pub async fn claude_run_query(
     // The stdin writer may still be flushing when the child exits early; await
     // it so the task doesn't leak and any partial-write error is observed.
     let _ = stdin_task.await;
+
+    if was_cancelled {
+        return Err(ClaudeError::Cancelled);
+    }
 
     if !status.success() {
         return Err(ClaudeError::NonZeroExit {
@@ -650,6 +682,28 @@ pub async fn claude_check_auth(_app: AppHandle) -> Result<AuthStatus, ClaudeErro
     };
 
     Ok(AuthStatus { authenticated, raw: combined })
+}
+
+/// Cancel an in-flight `claude_run_query` by its run_id. Notifies the run
+/// task's cancel channel, which races against `child.wait()` in the run loop
+/// and kills the child on the cancel branch. The renderer wires this to ESC
+/// during refine / analyze so the user can break out without waiting for the
+/// model to finish. Safe to call when the run_id is unknown — it's a no-op
+/// in that case (the run probably finished or never started).
+#[tauri::command]
+pub async fn claude_cancel_run(
+    state: tauri::State<'_, ClaudeState>,
+    run_id: String,
+) -> Result<(), String> {
+    let notify = state
+        .running
+        .lock()
+        .ok()
+        .and_then(|g| g.iter().find(|h| h.run_id == run_id).map(|h| h.cancel.clone()));
+    if let Some(n) = notify {
+        n.notify_waiters();
+    }
+    Ok(())
 }
 
 /// Send a kill signal to the in-flight `claude setup-token` process. Used by

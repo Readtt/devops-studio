@@ -269,13 +269,18 @@ function RunCard({
   const { planLabel, suiteLabel } = useResolvedTargetLabels(run);
 
   return (
-    <li className="rounded-md border border-border/40 bg-card/40">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-start gap-2 px-2 py-1.5 text-left text-[11.5px] hover:bg-foreground/[0.04]"
-      >
-        <div className="min-w-0 flex-1">
+    <li className="group/run rounded-md border border-border/40 bg-card/40 transition-colors hover:bg-foreground/[0.04]">
+      {/* Row container is a div so the toggle "card" doesn't wrap the
+          action buttons (button-in-button is invalid HTML and trips the
+          React hydration validator). The expand toggle and the icon
+          actions are sibling buttons sharing this flex row. */}
+      <div className="flex w-full items-start gap-2 px-2 py-1.5 text-[11.5px]">
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          className="min-w-0 flex-1 text-left"
+        >
           <div className="flex items-center gap-2">
             <span className="font-medium">{formatTimestamp(run.timestamp)}</span>
             <span className="text-[10.5px] text-muted-foreground">
@@ -298,7 +303,7 @@ function RunCard({
             {run.bugs.length} bug{run.bugs.length === 1 ? "" : "s"} ·{" "}
             {okCount} published
           </p>
-        </div>
+        </button>
         <div className="flex shrink-0 items-center gap-1">
           {canRestoreDraft && onOpenDraft ? (
             <Tooltip>
@@ -306,10 +311,7 @@ function RunCard({
                 <button
                   type="button"
                   aria-label="Open this draft in review"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onOpenDraft(run);
-                  }}
+                  onClick={() => onOpenDraft(run)}
                   className="grid size-5 place-items-center rounded text-muted-foreground hover:bg-primary/15 hover:text-primary"
                 >
                   <HugeiconsIcon
@@ -327,16 +329,13 @@ function RunCard({
           <button
             type="button"
             aria-label="Delete this run"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete();
-            }}
+            onClick={onDelete}
             className="grid size-5 place-items-center rounded text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
           >
             <HugeiconsIcon icon={Cancel01Icon} size={10} strokeWidth={2} />
           </button>
         </div>
-      </button>
+      </div>
       {expanded ? (
         <div className="border-t border-border/40 px-2 py-1.5">
           {canRestoreDraft && onOpenDraft ? (

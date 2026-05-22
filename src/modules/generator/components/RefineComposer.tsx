@@ -111,7 +111,9 @@ export function RefineComposer({ isRefining }: Props) {
   );
   const refineHistory = useGenerationSession((s) => s.refineHistory);
   const refineRounds = useGenerationSession((s) => s.refineRounds);
+  const cancelRefine = useGenerationSession((s) => s.cancelRefine);
   const [roundsOpen, setRoundsOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const [text, setText] = useState("");
   const [showHelp, setShowHelp] = useState(false);
@@ -124,6 +126,24 @@ export function RefineComposer({ isRefining }: Props) {
       textareaRef.current?.focus({ preventScroll: true });
     }
   }, [isRefining]);
+
+  // ESC during a refine kills the running claude subprocess and returns
+  // the user to the composer with their draft untouched. The handler lives
+  // at the window level so the user can press ESC without first clicking
+  // back into the pane — the running view doesn't keep focus on anything.
+  useEffect(() => {
+    if (!isRefining) return;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      // Don't fight a modal — if the rounds dialog is open, Radix already
+      // owns ESC for itself.
+      if (roundsOpen) return;
+      e.preventDefault();
+      cancelRefine();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [isRefining, roundsOpen, cancelRefine]);
 
   const keptCases = useMemo(
     () => cases.filter((c) => c.decision === "keep").length,
@@ -187,9 +207,24 @@ export function RefineComposer({ isRefining }: Props) {
             <span className="font-mono text-[11px] text-primary/90">
               {stepLabel || "Reading current draft…"}
             </span>
-            <span className="ml-auto font-mono text-[10px] text-muted-foreground/60">
-              refine in progress · esc cancels
-            </span>
+            <div className="ml-auto flex items-center gap-1.5">
+              <kbd className="select-none rounded-sm border border-border/50 bg-card px-1 font-mono text-[9.5px] text-muted-foreground/80">
+                esc
+              </kbd>
+              <Button
+                size="xs"
+                variant="ghost"
+                onClick={cancelRefine}
+                className="h-5 gap-1 px-1.5 font-mono text-[10px] uppercase tracking-wider text-destructive hover:bg-destructive/10 hover:text-destructive"
+              >
+                <HugeiconsIcon
+                  icon={Cancel01Icon}
+                  size={10}
+                  strokeWidth={2}
+                />
+                cancel
+              </Button>
+            </div>
           </div>
           <AnalyzeActivityLog entries={activityLog} />
         </div>
@@ -198,9 +233,121 @@ export function RefineComposer({ isRefining }: Props) {
   }
 
   // --- Idle composer -------------------------------------------------------
+  // Thinking & history live as tiny chips in the dock header's right slot —
+  // always visible, always one click away, never eating composer real estate.
+  // They render only when there's something to read so a fresh draft doesn't
+  // get empty stubs.
+  const headerExtras =
+    refineRounds.length > 0 || refineHistory.length > 0 ? (
+      <>
+        {refineRounds.length > 0 ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => setRoundsOpen(true)}
+                aria-label={`View ${refineRounds.length} past refine round${refineRounds.length === 1 ? "" : "s"} with thinking`}
+                className={cn(
+                  "group inline-flex h-5 items-center gap-1 rounded-sm border border-border/50 bg-card/70 pl-1 pr-1.5 font-mono text-[10px] text-muted-foreground transition-colors",
+                  "hover:border-primary/50 hover:bg-primary/[0.08] hover:text-primary",
+                )}
+              >
+                <HugeiconsIcon
+                  icon={AiBrain01Icon}
+                  size={11}
+                  strokeWidth={1.75}
+                  className="text-muted-foreground/70 transition-colors group-hover:text-primary"
+                />
+                <span className="uppercase tracking-wider">thinking</span>
+                <span className="rounded-sm bg-foreground/[0.08] px-1 text-[9px] tabular-nums text-foreground/85 transition-colors group-hover:bg-primary/15 group-hover:text-primary">
+                  {refineRounds.length}
+                </span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-[260px] text-[11px]">
+              See every past round — your follow-up, the tool calls the model
+              made, and how the draft changed.
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
+        {refineHistory.length > 0 ? (
+          <Popover open={historyOpen} onOpenChange={setHistoryOpen}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label={`Recall one of ${refineHistory.length} recent follow-up${refineHistory.length === 1 ? "" : "s"}`}
+                    className={cn(
+                      "group inline-flex h-5 items-center gap-1 rounded-sm border border-border/50 bg-card/70 pl-1 pr-1.5 font-mono text-[10px] text-muted-foreground transition-colors",
+                      "hover:border-primary/50 hover:bg-primary/[0.08] hover:text-primary",
+                    )}
+                  >
+                    <HugeiconsIcon
+                      icon={Clock01Icon}
+                      size={11}
+                      strokeWidth={1.75}
+                      className="text-muted-foreground/70 transition-colors group-hover:text-primary"
+                    />
+                    <span className="uppercase tracking-wider">history</span>
+                    <span className="rounded-sm bg-foreground/[0.08] px-1 text-[9px] tabular-nums text-foreground/85 transition-colors group-hover:bg-primary/15 group-hover:text-primary">
+                      {refineHistory.length}
+                    </span>
+                  </button>
+                </PopoverTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="text-[11px]">
+                Recall a recent follow-up
+              </TooltipContent>
+            </Tooltip>
+            <PopoverContent
+              align="end"
+              side="bottom"
+              sideOffset={6}
+              className="w-[360px] p-1"
+            >
+              <p className="px-2 pb-1 pt-1 font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
+                Recent follow-ups
+              </p>
+              <ul className="flex max-h-[260px] flex-col gap-px overflow-y-auto">
+                {refineHistory.map((prompt, i) => (
+                  <li key={`${i}-${prompt.slice(0, 20)}`}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setText(prompt);
+                        setHistoryOpen(false);
+                        requestAnimationFrame(() => {
+                          const el = textareaRef.current;
+                          if (!el) return;
+                          el.focus();
+                          el.setSelectionRange(
+                            el.value.length,
+                            el.value.length,
+                          );
+                        });
+                      }}
+                      className="block w-full rounded-sm px-2 py-1.5 text-left text-[11px] hover:bg-foreground/[0.05]"
+                    >
+                      <span className="mr-1.5 font-mono text-[9.5px] text-muted-foreground/55 tabular-nums">
+                        {String(i + 1).padStart(2, "0")}
+                      </span>
+                      <span className="line-clamp-2 text-foreground/85">
+                        {prompt}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </PopoverContent>
+          </Popover>
+        ) : null}
+      </>
+    ) : null;
+
   return (
     <section className="relative">
-      <DockHeader />
+      <DockHeader rightSlot={headerExtras} />
 
       {refineError ? (
         <div className="mb-2 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/[0.06] px-2.5 py-1.5">
@@ -297,100 +444,6 @@ export function RefineComposer({ isRefining }: Props) {
         >
           <HugeiconsIcon icon={HelpCircleIcon} size={11} strokeWidth={1.75} />
         </button>
-        {refineRounds.length > 0 ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={() => setRoundsOpen(true)}
-                aria-label="View past refine rounds with thinking"
-                className="inline-flex h-5 items-center gap-1 rounded-sm border border-border/50 bg-card px-1.5 font-mono text-[10px] text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/[0.08] hover:text-primary"
-              >
-                <HugeiconsIcon
-                  icon={AiBrain01Icon}
-                  size={10}
-                  strokeWidth={1.75}
-                />
-                thinking
-                <span className="rounded-sm bg-foreground/[0.08] px-1 text-[9px] tabular-nums">
-                  {refineRounds.length}
-                </span>
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="top" className="text-[11px]">
-              Read every past round — what you asked, the tool calls the model
-              made, and how the draft changed.
-            </TooltipContent>
-          </Tooltip>
-        ) : null}
-        {refineHistory.length > 0 ? (
-          <Popover>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <PopoverTrigger asChild>
-                  <button
-                    type="button"
-                    aria-label="Recent follow-ups"
-                    className="inline-flex h-5 items-center gap-1 rounded-sm border border-border/50 bg-card px-1.5 font-mono text-[10px] text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/[0.08] hover:text-primary"
-                  >
-                    <HugeiconsIcon
-                      icon={Clock01Icon}
-                      size={10}
-                      strokeWidth={1.75}
-                    />
-                    history
-                    <span className="rounded-sm bg-foreground/[0.08] px-1 text-[9px] tabular-nums">
-                      {refineHistory.length}
-                    </span>
-                  </button>
-                </PopoverTrigger>
-              </TooltipTrigger>
-              <TooltipContent side="top" className="text-[11px]">
-                Recall a recent follow-up
-              </TooltipContent>
-            </Tooltip>
-            <PopoverContent
-              align="start"
-              side="top"
-              sideOffset={6}
-              className="w-[360px] p-1"
-            >
-              <p className="px-2 pb-1 pt-1 font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
-                Recent follow-ups
-              </p>
-              <ul className="flex max-h-[260px] flex-col gap-px overflow-y-auto">
-                {refineHistory.map((prompt, i) => (
-                  <li key={`${i}-${prompt.slice(0, 20)}`}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setText(prompt);
-                        // Defer focus so the popover dismisses first.
-                        requestAnimationFrame(() => {
-                          const el = textareaRef.current;
-                          if (!el) return;
-                          el.focus();
-                          el.setSelectionRange(
-                            el.value.length,
-                            el.value.length,
-                          );
-                        });
-                      }}
-                      className="block w-full rounded-sm px-2 py-1.5 text-left text-[11px] hover:bg-foreground/[0.05]"
-                    >
-                      <span className="mr-1.5 font-mono text-[9.5px] text-muted-foreground/55 tabular-nums">
-                        {String(i + 1).padStart(2, "0")}
-                      </span>
-                      <span className="line-clamp-2 text-foreground/85">
-                        {prompt}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </PopoverContent>
-          </Popover>
-        ) : null}
       </div>
 
       {showHelp ? (
@@ -510,6 +563,11 @@ function RefineRoundsDialog({
   onOpenChange: (v: boolean) => void;
   rounds: SessionState["refineRounds"];
 }) {
+  // Render most-recent-first: the user almost always wants to see what the
+  // latest round did, and scrolling up to find it inside a 12-round history
+  // is hostile. Round numbers still count chronologically (#01 = first
+  // round) so the labels stay stable across refines.
+  const displayRounds = rounds.map((r, i) => ({ round: r, ordinal: i + 1 })).reverse();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {/* Constrain grid items to the container so expanding "thinking & tool
@@ -521,21 +579,21 @@ function RefineRoundsDialog({
         <DialogHeader className="min-w-0">
           <DialogTitle>Refine thinking history</DialogTitle>
           <DialogDescription>
-            Every follow-up sent on this draft, in order. The activity log
+            Every follow-up sent on this draft, newest first. The activity log
             shows the tool calls and thinking the model emitted on each round.
           </DialogDescription>
         </DialogHeader>
         <ScrollArea className="max-h-[70vh] min-h-0 w-full min-w-0 pr-2">
           <ol className="flex w-full min-w-0 flex-col gap-3">
-            {rounds.map((r, i) => (
+            {displayRounds.map(({ round: r, ordinal }) => (
               <li
-                key={`${r.timestamp}-${i}`}
+                key={`${r.timestamp}-${ordinal}`}
                 className="min-w-0 overflow-hidden rounded-md border border-border/60 bg-card/40 p-3"
               >
                 <header className="flex items-center justify-between gap-2 pb-2">
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-[9.5px] text-muted-foreground/70 tabular-nums">
-                      #{String(i + 1).padStart(2, "0")}
+                      #{String(ordinal).padStart(2, "0")}
                     </span>
                     <OutcomeBadge outcome={r.outcome} />
                     <span className="font-mono text-[10px] text-muted-foreground/70">
@@ -571,10 +629,16 @@ function RefineRoundsDialog({
                         ({r.activityLog.length})
                       </span>
                     </summary>
-                    <div className="mt-1.5 w-full min-w-0 overflow-hidden">
+                    <div className="mt-1.5 w-full min-w-0">
                       <AnalyzeActivityLog
                         entries={r.activityLog}
                         className="w-full"
+                        // Wrap mode in the dialog: long file paths and
+                        // grep patterns break onto multiple lines instead
+                        // of relying on per-cell horizontal scroll, which
+                        // gets eaten by the dialog's own ScrollArea
+                        // intercepting wheel events.
+                        wrap
                       />
                     </div>
                   </details>
@@ -634,8 +698,16 @@ function formatRoundTimestamp(iso: string): string {
 }
 
 /** Section header — lowercase mono in the project's "editor voice", with an
- *  optional running-state pulse so the user spots state changes at a glance. */
-function DockHeader({ running }: { running?: boolean }) {
+ *  optional running-state pulse so the user spots state changes at a glance.
+ *  When `rightSlot` is passed it replaces the static "no regenerate" tagline
+ *  — used by the idle composer to anchor the thinking / history chips. */
+function DockHeader({
+  running,
+  rightSlot,
+}: {
+  running?: boolean;
+  rightSlot?: React.ReactNode;
+}) {
   return (
     <div className="mb-1.5 flex items-center gap-2">
       <span
@@ -655,9 +727,13 @@ function DockHeader({ running }: { running?: boolean }) {
           · running
         </span>
       ) : null}
-      <span className="ml-auto font-mono text-[10px] text-muted-foreground/55">
-        no regenerate · keeps current decisions
-      </span>
+      {rightSlot ? (
+        <div className="ml-auto flex items-center gap-1">{rightSlot}</div>
+      ) : (
+        <span className="ml-auto font-mono text-[10px] text-muted-foreground/55">
+          no regenerate · keeps current decisions
+        </span>
+      )}
     </div>
   );
 }

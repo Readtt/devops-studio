@@ -4,6 +4,7 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { TooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { installContextMenuGuard } from "@/lib/contextMenuGuard";
 import { Button } from "@/components/ui/button";
 import { WindowControls } from "@/components/WindowControls";
 import { IS_MAC, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
@@ -13,7 +14,12 @@ import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { SidebarRail, type SidebarViewId } from "@/modules/sidebar";
 import { useGlobalShortcuts } from "@/modules/shortcuts";
-import { setSourceRoot, setTheme } from "@/modules/settings/store";
+import {
+  emitGenerationBusy,
+  setSourceRoot,
+  setTheme,
+  type GenerationBusyReason,
+} from "@/modules/settings/store";
 import {
   BugStack,
   StaleQueuePanel,
@@ -26,7 +32,7 @@ import { GeneratorStack, GenerationHistoryPane } from "@/modules/generator";
 import { CodeViewerStack } from "@/modules/code-viewer";
 import { resolveSourcePath } from "@/modules/code-viewer/resolveSourcePath";
 import { ThemeProvider } from "@/modules/theme";
-import { UpdaterDialog } from "@/modules/updater";
+import { UpdaterStatusPill, UpdaterToast, useUpdater } from "@/modules/updater";
 import {
   createGenerationSessionStore,
   type GenerationSessionStore,
@@ -57,6 +63,10 @@ const SIDEBAR_MIN_WIDTH = 220;
 const SIDEBAR_MAX_WIDTH = 480;
 const SIDEBAR_WIDTH_STORAGE_KEY = "devops-studio.sidebar.width";
 const SIDEBAR_VIEW_STORAGE_KEY = "devops-studio.sidebar.view";
+/** Remember the version of an update the user closed so we don't keep
+ *  re-popping the toast every launch. Cleared when the toast is re-opened
+ *  from the status-bar pill. */
+const UPDATER_DISMISS_KEY = "devops-studio.updater.dismissed-version";
 
 /** Derive a short, scannable tab title from the current generator session.
  *  Identifies the session by its target (plan / suite) rather than draft
@@ -655,6 +665,93 @@ export default function App() {
   // kinds we use is identical; we just don't have terminal/editor/etc here.
   const compatTabs = tabs as unknown as Tab[];
 
+  // Install the production-only right-click guard. Lives in a shared helper
+  // so settings/main.tsx can call the same thing.
+  useEffect(() => installContextMenuGuard(), []);
+
+  // Broadcast a "generation busy" signal to other windows (settings) so the
+  // default-model picker over there can lock while ANY generator tab is
+  // mid-run / has an open draft. The status-bar picker in this window does
+  // the same check locally via activeGenSessionInfo — the event is the
+  // cross-window equivalent.
+  useEffect(() => {
+    let busy = false;
+    let reason: GenerationBusyReason = "idle";
+    for (const info of Object.values(genSessionPhases)) {
+      if (!info) continue;
+      const running =
+        info.phase === "analyzing" || info.phase === "publishing";
+      const inDraft = info.phase === "review" || info.phase === "done";
+      if (running) {
+        busy = true;
+        reason = "running";
+        break; // strongest signal, no need to keep scanning
+      }
+      if (info.isRefining) {
+        busy = true;
+        if (reason === "idle") reason = "refining";
+      } else if (inDraft) {
+        busy = true;
+        if (reason === "idle") reason = "in-draft";
+      }
+    }
+    void emitGenerationBusy({ busy, reason });
+  }, [genSessionPhases]);
+
+  // ------ Updater wiring -----------------------------------------------
+  // Single useUpdater instance shared between the status-bar pill and the
+  // bottom-left toast. AboutSection keeps its own instance because manual
+  // checks from settings shouldn't trip a notification toast.
+  const updater = useUpdater();
+  const updaterAvailableVersion =
+    updater.status.kind === "available"
+      ? updater.status.update.version
+      : null;
+  // Per-version dismiss: closing the toast hides it for THIS release but
+  // keeps the status-bar pill so the user can find it again. When a newer
+  // release lands the toast comes back on its own.
+  const [dismissedVersion, setDismissedVersion] = useState<string | null>(
+    () => {
+      try {
+        return window.localStorage.getItem(UPDATER_DISMISS_KEY);
+      } catch {
+        return null;
+      }
+    },
+  );
+  const toastSuppressed =
+    updaterAvailableVersion !== null &&
+    dismissedVersion === updaterAvailableVersion;
+  const dismissToast = useCallback(() => {
+    if (!updaterAvailableVersion) {
+      updater.dismiss();
+      return;
+    }
+    try {
+      window.localStorage.setItem(UPDATER_DISMISS_KEY, updaterAvailableVersion);
+    } catch {
+      // ignore — falls back to in-memory dismissal for this session
+    }
+    setDismissedVersion(updaterAvailableVersion);
+  }, [updater, updaterAvailableVersion]);
+  const reopenToast = useCallback(() => {
+    // Clicking the pill un-dismisses the toast for the current version so
+    // the user can re-read the changelog without re-opening Settings.
+    if (updaterAvailableVersion) {
+      try {
+        window.localStorage.removeItem(UPDATER_DISMISS_KEY);
+      } catch {
+        // ignore
+      }
+      setDismissedVersion(null);
+    }
+  }, [updaterAvailableVersion]);
+  const showUpdaterToast =
+    !toastSuppressed &&
+    (updater.status.kind === "available" ||
+      updater.status.kind === "downloading" ||
+      updater.status.kind === "ready");
+
   return (
     <ThemeProvider>
       <TooltipProvider>
@@ -841,6 +938,13 @@ export default function App() {
               <ResizableHandle withHandle />
               <ResizablePanel id="workspace" defaultSize="78%" minSize="30%">
                 <div className="relative h-full min-h-0">
+                  {showUpdaterToast && (
+                    <UpdaterToast
+                      status={updater.status}
+                      onInstall={() => void updater.install()}
+                      onDismiss={dismissToast}
+                    />
+                  )}
                   {tabs.length === 0 ? (
                     <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
                       <p className="text-[13px] font-medium">Pick a test case or start a generation.</p>
@@ -897,6 +1001,10 @@ export default function App() {
             <StatusBarBranch sourceRoot={sourceRoot} onPick={() => void pickSourceDir()} />
             <div className="ml-auto flex items-center gap-2">
               <StatusBarModelPicker activeSession={activeGenSessionInfo} />
+              <UpdaterStatusPill
+                status={updater.status}
+                onReopenToast={reopenToast}
+              />
               {staleCount > 0 ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -958,7 +1066,6 @@ export default function App() {
             onOpenHistory={() => persistSidebarView("history")}
           />
 
-          <UpdaterDialog />
         </div>
       </TooltipProvider>
     </ThemeProvider>

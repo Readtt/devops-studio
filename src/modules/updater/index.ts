@@ -1,2 +1,3 @@
-export { UpdaterDialog } from "./UpdaterDialog";
-export { useUpdater } from "./useUpdater";
+export { UpdaterStatusPill } from "./UpdaterStatusPill";
+export { UpdaterToast } from "./UpdaterToast";
+export { useUpdater, type UpdaterStatus } from "./useUpdater";

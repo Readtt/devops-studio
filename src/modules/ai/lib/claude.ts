@@ -11,10 +11,10 @@ export type ClaudeProbe = {
 
 export type ClaudeError =
   | { kind: "not-installed" }
+  | { kind: "cancelled" }
   | { kind: "non-zero-exit"; code: number | null; stderrExcerpt: string }
   | { kind: "api-error"; message: string; httpStatus: number | null }
-  | { kind: "spawn-failed"; message: string }
-  | { kind: "cancelled" };
+  | { kind: "spawn-failed"; message: string };
 
 export type ClaudeQueryInput = {
   /** Stable id (e.g. UUID) the caller chooses. Used for the event channel
@@ -106,6 +106,22 @@ export async function cancelSetupClaudeToken(): Promise<void> {
   return invoke<void>("claude_cancel_setup_token");
 }
 
+/** Cancel an in-flight `runClaudeQuery` by its runId. The Rust side notifies
+ *  the run task, which kills the child and returns ClaudeError.kind ===
+ *  "cancelled". Safe to call even if the run already finished — no-op. */
+export async function cancelClaudeRun(runId: string): Promise<void> {
+  return invoke<void>("claude_cancel_run", { runId });
+}
+
+export function isCancelledError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "kind" in (err as Record<string, unknown>) &&
+    (err as { kind: unknown }).kind === "cancelled"
+  );
+}
+
 export type AuthStatus = {
   authenticated: boolean;
   /** Raw stdout/stderr from `claude auth status`, surfaced for diagnostics. */
@@ -159,9 +175,24 @@ export function claudeErrorMessage(err: unknown): string {
     case "non-zero-exit": {
       const code = e.code ?? "?";
       const detail = summarizeStderr(e.stderrExcerpt);
-      return detail
-        ? `Claude exited with code ${code}: ${detail}`
-        : `Claude exited with code ${code} (no stderr output captured — likely a failing SessionStart hook in ~/.claude or the source directory. Check the activity log for hook errors).`;
+      // Auth-related stderr — surface a targeted hint, since "not logged
+      // in" usually means bare-mode-on + OAuth (incompatible) rather than
+      // an actual auth problem the user needs to fix.
+      const lower = detail.toLowerCase();
+      if (
+        lower.includes("not logged in") ||
+        lower.includes("not authenticated") ||
+        lower.includes("invalid api key") ||
+        lower.includes("no api key")
+      ) {
+        return `Claude isn't picking up your credentials: ${detail}. If you're on Max OAuth, open Settings → Models and either switch to "Anthropic API key" or turn off "Run Claude in isolation" — isolation skips the CLI's keychain read, which Max OAuth depends on.`;
+      }
+      if (detail) return `Claude exited with code ${code}: ${detail}`;
+      // Empty stderr is the classic "something pre-flight crashed" signal:
+      // a SessionStart hook, an MCP server, or the CLI itself dying before
+      // it could write a diagnostic. The activity log usually has a
+      // hook:<name> red row when a hook is the culprit.
+      return `Claude exited with code ${code} with no stderr. Most common causes: (1) a failing SessionStart hook in ~/.claude — enable "Run Claude in isolation" in Settings → Models to bypass it (API-key auth only). (2) An MCP server or plugin crashing during startup. Check the activity log above for hook:<name> entries to find the culprit.`;
     }
     case "api-error": {
       const status = e.httpStatus != null ? ` (HTTP ${e.httpStatus})` : "";
