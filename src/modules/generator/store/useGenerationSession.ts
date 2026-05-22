@@ -93,6 +93,13 @@ export type SessionState = {
   phase: Phase;
   // Input phase
   requirements: string;
+  /** Optional changeset / scope notes the user pasted to narrow generation
+   *  scope. Commit summaries, PR descriptions, raw diff text, ADO changeset
+   *  links — anything that tells the analyst what actually changed so it
+   *  doesn't generate full coverage for a style-only edit. The analyst
+   *  prompt explicitly tells the model to treat this as POSSIBLY INCOMPLETE
+   *  so missing changesets still get coverage from the spec. */
+  changesets: string;
   attachments: Attachment[];
   planId: number | null;
   suiteId: number | null;
@@ -136,6 +143,7 @@ export type SessionState = {
   errorPhase: "analyze" | "publish" | "validation" | null;
 
   setRequirements: (s: string) => void;
+  setChangesets: (s: string) => void;
   setMode: (m: GenerationMode) => void;
   setTarget: (planId: number | null, suiteId: number | null) => void;
   /** Backfill plan/suite display names when they were missing from a
@@ -262,6 +270,7 @@ const uid = () => `u${Date.now().toString(36)}-${(uidCounter++).toString(36)}`;
 const initialState: Omit<
   SessionState,
   | "setRequirements"
+  | "setChangesets"
   | "setMode"
   | "setTarget"
   | "setPlanSuiteNames"
@@ -299,6 +308,7 @@ const initialState: Omit<
 > = {
   phase: "input",
   requirements: "",
+  changesets: "",
   attachments: [],
   planId: null,
   suiteId: null,
@@ -382,6 +392,7 @@ function makeSchedulePersistDraft(getter: () => SessionState) {
         status: "draft",
         draftPayload: {
           requirements: s.requirements,
+          changesets: s.changesets,
           mode: s.mode,
           cases: s.cases,
           bugs: s.bugs,
@@ -424,6 +435,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
   ...initialState,
 
   setRequirements: (s) => set({ requirements: s }),
+  setChangesets: (s) => set({ changesets: s }),
   setMode: (m) => set({ mode: m }),
   // Setting a target wipes the cached names — they'll be re-resolved at
   // analyze() time (or restored by loadDraft) so the tab title stays in
@@ -464,7 +476,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     })),
 
   analyze: async () => {
-    const { requirements, attachments, planId, suiteId, mode, allowCodeSearch, overrideModelId } = get();
+    const { requirements, changesets, attachments, planId, suiteId, mode, allowCodeSearch, overrideModelId } = get();
     if (!requirements.trim()) {
       set({
         phase: "error",
@@ -545,6 +557,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       if (engineSel.engine === "claude-agent-sdk" && engineSel.active) {
         result = await runQaAnalystClaude({
           requirements,
+          changesets,
           attachments,
           existingCaseTitles,
           relatedCases,
@@ -566,6 +579,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       } else {
         result = await runQaAnalyst({
           requirements,
+          changesets,
           attachments,
           existingCaseTitles,
           relatedCases,
@@ -636,6 +650,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           status: "draft",
           draftPayload: {
             requirements: s.requirements,
+            changesets: s.changesets,
             mode: s.mode,
             cases: s.cases,
             bugs: s.bugs,
@@ -1039,6 +1054,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         // breadcrumbs are stranded.
         draftPayload: {
           requirements: s.requirements,
+          changesets: s.changesets,
           mode: s.mode,
           cases: s.cases,
           bugs: s.bugs,
@@ -1132,6 +1148,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
 
     const userPrompt = buildRefineUserPrompt({
       requirements: s.requirements,
+      changesets: s.changesets,
       attachments: s.attachments,
       mode: s.mode,
       targetContext,
@@ -1385,6 +1402,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       ...initialState,
       phase: "review",
       requirements: payload.requirements ?? "",
+      changesets: payload.changesets ?? "",
       mode: payload.mode ?? "thorough",
       cases: payload.cases ?? [],
       bugs: payload.bugs ?? [],
@@ -1457,6 +1475,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       planName: payload?.planName ?? run.planName ?? null,
       suiteName: payload?.suiteName ?? run.suiteName ?? null,
       requirements: payload?.requirements ?? "",
+      changesets: payload?.changesets ?? "",
       mode: payload?.mode ?? "thorough",
       cases: payload?.cases ?? [],
       bugs: payload?.bugs ?? [],

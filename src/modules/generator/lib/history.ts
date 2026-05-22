@@ -40,6 +40,11 @@ export type RefineRound = {
  */
 export type DraftPayload = {
   requirements?: string;
+  /** Changeset / scope notes the user pasted at input time. Persisted so a
+   *  reopened draft still has the same scope context the model originally
+   *  saw — without this a refine after re-open would silently broaden
+   *  coverage back to the full spec. */
+  changesets?: string;
   mode?: GenerationMode;
   cases?: ReviewedCase[];
   bugs?: ReviewedBug[];

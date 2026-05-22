@@ -61,6 +61,11 @@ export type RunInput = {
   /** Plan/suite the generator will publish into. The runner embeds this in
    *  the user prompt so the model knows where these cases live. */
   targetContext?: TargetContext | null;
+  /** Optional changeset / scope notes the developer pasted into the input
+   *  form — commit messages, PR descriptions, ADO changeset links, etc.
+   *  Passed to the analyst as a scope hint to narrow coverage. See
+   *  SCOPING in QA_ANALYST_PROMPT. */
+  changesets?: string;
   mode: GenerationMode;
   /** Provider keys hydrated from the OS keychain (chatStore.apiKeys). */
   keys: ProviderKeys;
@@ -169,6 +174,7 @@ function buildUserPrompt(input: RunInput): string {
 
   const targetBlock = renderTargetContext(input.targetContext);
   const relatedBlock = renderRelatedCases(input.relatedCases ?? []);
+  const changesetsBlock = renderChangesetsBlock(input.changesets);
 
   return [
     modeLine,
@@ -180,6 +186,8 @@ function buildUserPrompt(input: RunInput): string {
     existing,
     relatedBlock ? "" : null,
     relatedBlock || null,
+    changesetsBlock ? "" : null,
+    changesetsBlock || null,
     attached,
     "",
     "Return ONLY the DraftBatch JSON. Schema:",
@@ -187,6 +195,21 @@ function buildUserPrompt(input: RunInput): string {
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
+}
+
+/** Render the CHANGESETS / SCOPE NOTES block. Empty when the user didn't
+ *  paste any — the prompt then proceeds without scoping guidance, which is
+ *  the right behavior for a "generate from spec alone" run. */
+export function renderChangesetsBlock(input?: string | null): string {
+  const trimmed = (input ?? "").trim();
+  if (trimmed.length === 0) return "";
+  return [
+    "CHANGESETS / SCOPE NOTES — the developer pasted these as a hint about",
+    "what actually changed. Use them to scope coverage per the SCOPING rule.",
+    "Treat them as POSSIBLY INCOMPLETE.",
+    "",
+    trimmed,
+  ].join("\n");
 }
 
 /** Build the TARGET CONTEXT block embedded near the top of the user prompt.

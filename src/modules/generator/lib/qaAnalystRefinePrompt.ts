@@ -12,6 +12,7 @@
 
 import type { ReviewedBug, ReviewedCase } from "./draftBatchSchema";
 import {
+  renderChangesetsBlock,
   renderTargetContext,
   formatAttachmentBlock,
   type GenerationMode,
@@ -36,6 +37,10 @@ export type RefinePromptInput = {
   skippedCases: ReviewedCase[];
   keptBugs: ReviewedBug[];
   skippedBugs: ReviewedBug[];
+  /** Same scope hint passed to the first-pass analyst. Stays in the refine
+   *  prompt so the model keeps narrowing instead of fanning back out into
+   *  full coverage on a follow-up. */
+  changesets?: string;
   /** What the user asked for, verbatim. */
   instruction: string;
 };
@@ -50,6 +55,7 @@ export function buildRefineUserPrompt(input: RefinePromptInput): string {
 
   const targetBlock = renderTargetContext(input.targetContext);
   const relatedBlock = renderRelatedCases(input.relatedCases ?? []);
+  const changesetsBlock = renderChangesetsBlock(input.changesets);
 
   const currentBatch = {
     cases: input.keptCases.map(stripUiOnly),
@@ -89,6 +95,8 @@ export function buildRefineUserPrompt(input: RefinePromptInput): string {
     "",
     relatedBlock || null,
     relatedBlock ? "" : null,
+    changesetsBlock || null,
+    changesetsBlock ? "" : null,
     "Current draft (kept by the user — your starting point):",
     "```json",
     JSON.stringify(currentBatch, null, 2),

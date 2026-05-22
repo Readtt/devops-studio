@@ -14,6 +14,7 @@ import type { ModelId } from "@/modules/ai/config";
 import type { TestCaseRef } from "@/modules/ado";
 import {
   formatAttachmentBlock,
+  renderChangesetsBlock,
   renderTargetContext,
   type GenerationMode,
   type RunAttachment,
@@ -37,6 +38,8 @@ export type RunClaudeInput = {
   relatedCases?: RelatedCase[];
   /** Plan/suite the generator will publish into — see qaAnalystRun.ts. */
   targetContext?: TargetContext | null;
+  /** Optional changeset / scope notes — see SCOPING in QA_ANALYST_PROMPT. */
+  changesets?: string;
   mode: GenerationMode;
   modelId: ModelId;
   /** Working directory for the CLI's built-in Read/Glob/Grep tools — the
@@ -336,6 +339,7 @@ function buildUserPrompt(input: RunClaudeInput): string {
 
   const targetBlock = renderTargetContext(input.targetContext);
   const relatedBlock = renderRelatedCases(input.relatedCases ?? []);
+  const changesetsBlock = renderChangesetsBlock(input.changesets);
 
   return [
     modeLine,
@@ -349,6 +353,8 @@ function buildUserPrompt(input: RunClaudeInput): string {
     existing,
     relatedBlock ? "" : null,
     relatedBlock || null,
+    changesetsBlock ? "" : null,
+    changesetsBlock || null,
     attached,
     "",
     "Return ONLY the DraftBatch JSON — no prose, no code fences. Schema:",
