@@ -4,7 +4,10 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { setZoomLevel } from "@/modules/settings/store";
 
 const ZOOM_STEP = 0.1;
-const MIN_ZOOM = 0.5;
+// 80% is the lower bound where the app's 11-12 px UI density still
+// reflows cleanly — anything tighter and the test-plan tree / generator
+// review grid start clipping. Upper bound is generous for accessibility.
+const MIN_ZOOM = 0.8;
 const MAX_ZOOM = 2.0;
 
 function clampZoom(z: number): number {
@@ -29,17 +32,32 @@ async function applyToWebview(z: number): Promise<void> {
   }
 }
 
-export function useZoom() {
+export type UseZoomOptions = {
+  /** When false, the hook only exposes the in/out/reset callbacks and
+   *  never calls setZoom on the current webview. Use this in the
+   *  Settings window so adjusting the slider doesn't rescale Settings
+   *  itself (which makes the slider jump under the cursor). */
+  apply?: boolean;
+};
+
+export function useZoom(options?: UseZoomOptions) {
+  const apply = options?.apply ?? true;
   const zoomLevel = usePreferencesStore((s) => s.zoomLevel);
   const hydrated = usePreferencesStore((s) => s.hydrated);
   const lastAppliedRef = useRef<number | null>(null);
 
   useEffect(() => {
+    if (!apply) return;
     if (!hydrated) return;
-    if (lastAppliedRef.current === zoomLevel) return;
-    lastAppliedRef.current = zoomLevel;
-    void applyToWebview(zoomLevel);
-  }, [hydrated, zoomLevel]);
+    const next = clampZoom(zoomLevel);
+    if (lastAppliedRef.current === next) return;
+    lastAppliedRef.current = next;
+    void applyToWebview(next);
+    // If the persisted value was outside the current bounds (e.g. an old
+    // 0.5 saved before we tightened the minimum), rewrite it so the
+    // slider position and the actual zoom stay in sync.
+    if (next !== zoomLevel) void setZoomLevel(next);
+  }, [apply, hydrated, zoomLevel]);
 
   const zoomIn = useCallback(() => {
     const current = usePreferencesStore.getState().zoomLevel;

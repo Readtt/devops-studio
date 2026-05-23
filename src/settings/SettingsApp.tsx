@@ -85,9 +85,11 @@ export function SettingsApp() {
   const init = usePreferencesStore((s) => s.init);
   const ActiveSection = TABS.find(t => t.id === active)?.component;
 
-  // Apply the user's persisted UI scale to this window too, and wire the
-  // zoom keybinds so the user can adjust without leaving Settings.
-  const { zoomIn, zoomOut, zoomReset } = useZoom();
+  // Settings deliberately does NOT zoom itself — adjusting the UI scale
+  // slider while the Settings window also rescaled was making the
+  // slider jump under the cursor. The keybinds still write to prefs so
+  // the main window scales live; Settings stays at 100%.
+  const { zoomIn, zoomOut, zoomReset } = useZoom({ apply: false });
   useGlobalShortcuts({
     "view.zoomIn": zoomIn,
     "view.zoomOut": zoomOut,

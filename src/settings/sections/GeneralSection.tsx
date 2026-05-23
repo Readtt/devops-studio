@@ -55,7 +55,9 @@ import { useEffect } from "react";
 import { SectionHeader } from "../components/SectionHeader";
 import { SettingRow } from "../components/SettingRow";
 
-const UI_ZOOM_MIN = 0.5;
+// Lower bound is 80% — below that, the app's 11-12 px UI density starts
+// clipping (test-plan tree, generator review grid). Mirrors lib/useZoom.ts.
+const UI_ZOOM_MIN = 0.8;
 const UI_ZOOM_MAX = 2.0;
 const UI_ZOOM_STEP = 0.1;
 
