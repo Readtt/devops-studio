@@ -6,6 +6,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Slider } from "@/components/ui/slider";
+import { Button } from "@/components/ui/button";
+import { Kbd, KbdGroup } from "@/components/ui/kbd";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type {
@@ -26,15 +34,30 @@ import {
   setEditorWordWrap,
   setExternalEditorCommand,
   setRestoreWindowState,
+  setZoomLevel,
 } from "@/modules/settings/store";
+import {
+  getPrimaryBinding,
+  getBindingTokens,
+} from "@/modules/shortcuts";
 import { Input } from "@/components/ui/input";
 import { useTheme } from "@/modules/theme";
-import { ComputerIcon, Moon02Icon, Sun03Icon } from "@hugeicons/core-free-icons";
+import {
+  ComputerIcon,
+  MinusSignIcon,
+  Moon02Icon,
+  PlusSignIcon,
+  Sun03Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { useEffect } from "react";
 import { SectionHeader } from "../components/SectionHeader";
 import { SettingRow } from "../components/SettingRow";
+
+const UI_ZOOM_MIN = 0.5;
+const UI_ZOOM_MAX = 2.0;
+const UI_ZOOM_STEP = 0.1;
 
 const APPEARANCE: {
   id: ThemePref;
@@ -61,6 +84,8 @@ export function GeneralSection() {
   const externalEditorCommand = usePreferencesStore(
     (s) => s.externalEditorCommand,
   );
+  const zoomLevel = usePreferencesStore((s) => s.zoomLevel);
+  const userShortcuts = usePreferencesStore((s) => s.shortcuts);
 
   // Reconcile autostart pref with the actual OS state on mount — the user may
   // have toggled it from System Settings.
@@ -115,6 +140,29 @@ export function GeneralSection() {
               <span className="text-[11.5px]">{o.label}</span>
             </button>
           ))}
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <Label>Display</Label>
+        <div className="flex flex-col gap-2">
+          <SettingRow
+            title="UI scale"
+            description="Scales the entire app — useful for accessibility or scaling up on high-DPI displays. Affects both windows."
+          >
+            <UiScaleControl
+              zoomLevel={zoomLevel}
+              zoomInBinding={getBindingTokens(
+                getPrimaryBinding("view.zoomIn", userShortcuts),
+              )}
+              zoomOutBinding={getBindingTokens(
+                getPrimaryBinding("view.zoomOut", userShortcuts),
+              )}
+              zoomResetBinding={getBindingTokens(
+                getPrimaryBinding("view.zoomReset", userShortcuts),
+              )}
+            />
+          </SettingRow>
         </div>
       </div>
 
@@ -331,5 +379,123 @@ function Label({ children }: { children: React.ReactNode }) {
     <span className="text-[11px] font-medium tracking-tight text-muted-foreground">
       {children}
     </span>
+  );
+}
+
+function UiScaleControl({
+  zoomLevel,
+  zoomInBinding,
+  zoomOutBinding,
+  zoomResetBinding,
+}: {
+  zoomLevel: number;
+  zoomInBinding: string[];
+  zoomOutBinding: string[];
+  zoomResetBinding: string[];
+}) {
+  const clamp = (n: number) =>
+    Math.round(Math.max(UI_ZOOM_MIN, Math.min(UI_ZOOM_MAX, n)) * 100) / 100;
+  const onDelta = (delta: number) => {
+    const next = clamp(zoomLevel + delta);
+    if (next !== zoomLevel) void setZoomLevel(next);
+  };
+  const onSlider = (vals: number[]) => {
+    const v = clamp((vals[0] ?? 100) / 100);
+    if (v !== zoomLevel) void setZoomLevel(v);
+  };
+  const percent = Math.round(zoomLevel * 100);
+  const isDefault = Math.abs(zoomLevel - 1) < 0.001;
+  return (
+    <div className="flex w-[320px] flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="icon"
+              variant="outline"
+              className="h-7 w-7"
+              onClick={() => onDelta(-UI_ZOOM_STEP)}
+              disabled={zoomLevel <= UI_ZOOM_MIN + 0.001}
+              aria-label="Decrease UI scale"
+            >
+              <HugeiconsIcon icon={MinusSignIcon} size={12} strokeWidth={2} />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="flex items-center gap-1.5 text-[11px]">
+            <span>Decrease</span>
+            {zoomOutBinding.length > 0 ? (
+              <KbdGroup>
+                {zoomOutBinding.map((t, i) => (
+                  <Kbd key={i}>{t}</Kbd>
+                ))}
+              </KbdGroup>
+            ) : null}
+          </TooltipContent>
+        </Tooltip>
+        <Slider
+          className="flex-1"
+          value={[percent]}
+          min={UI_ZOOM_MIN * 100}
+          max={UI_ZOOM_MAX * 100}
+          step={UI_ZOOM_STEP * 100}
+          onValueChange={onSlider}
+        />
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="icon"
+              variant="outline"
+              className="h-7 w-7"
+              onClick={() => onDelta(UI_ZOOM_STEP)}
+              disabled={zoomLevel >= UI_ZOOM_MAX - 0.001}
+              aria-label="Increase UI scale"
+            >
+              <HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={2} />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="flex items-center gap-1.5 text-[11px]">
+            <span>Increase</span>
+            {zoomInBinding.length > 0 ? (
+              <KbdGroup>
+                {zoomInBinding.map((t, i) => (
+                  <Kbd key={i}>{t}</Kbd>
+                ))}
+              </KbdGroup>
+            ) : null}
+          </TooltipContent>
+        </Tooltip>
+      </div>
+      <div className="flex items-center justify-between text-[10.5px] text-muted-foreground">
+        <span className="font-mono tabular-nums">{percent}%</span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={() => void setZoomLevel(1)}
+              disabled={isDefault}
+              className={cn(
+                "rounded-sm px-1.5 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:text-foreground",
+                isDefault && "cursor-default opacity-40 hover:text-muted-foreground",
+              )}
+            >
+              Reset to 100%
+            </button>
+          </TooltipTrigger>
+          {zoomResetBinding.length > 0 ? (
+            <TooltipContent
+              side="top"
+              className="flex items-center gap-1.5 text-[11px]"
+            >
+              <span>Reset</span>
+              <KbdGroup>
+                {zoomResetBinding.map((t, i) => (
+                  <Kbd key={i}>{t}</Kbd>
+                ))}
+              </KbdGroup>
+            </TooltipContent>
+          ) : null}
+        </Tooltip>
+      </div>
+    </div>
   );
 }

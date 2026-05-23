@@ -5,6 +5,7 @@ import {
 } from "@/components/ui/resizable";
 import { TooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { installContextMenuGuard } from "@/lib/contextMenuGuard";
+import { useZoom } from "@/lib/useZoom";
 import { Button } from "@/components/ui/button";
 import { WindowControls } from "@/components/WindowControls";
 import { IS_MAC, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
@@ -509,6 +510,8 @@ function AppShell() {
     }
   }, [sourceRoot]);
 
+  const { zoomIn, zoomOut, zoomReset } = useZoom();
+
   const [paletteOpen, setPaletteOpen] = useState(false);
   // Global keyboard shortcuts. Wired through useGlobalShortcuts so the
   // Settings → Shortcuts page can customize bindings — declaring them
@@ -598,6 +601,9 @@ function AppShell() {
       "pane.focusRight": () => useTabsStore.getState().focusDirection("right"),
       "pane.focusUp": () => useTabsStore.getState().focusDirection("up"),
       "pane.focusDown": () => useTabsStore.getState().focusDirection("down"),
+      "view.zoomIn": zoomIn,
+      "view.zoomOut": zoomOut,
+      "view.zoomReset": zoomReset,
     },
     {
       // Don't hijack keystrokes while the user is typing — but the global
@@ -773,7 +779,7 @@ function AppShell() {
   const paneTree = useTabsStore((s) => s.paneTree);
 
   return (
-    <div className="relative flex h-screen flex-col overflow-hidden bg-background text-foreground">
+    <div className="zoom-content relative flex h-screen flex-col overflow-hidden bg-background text-foreground">
           {/* Top bar: drag region + source dir + settings + window controls.
               Tabs moved into the workspace (per-leaf strips) in the
               tab/pane UX upgrade — gives each pane its own strip and

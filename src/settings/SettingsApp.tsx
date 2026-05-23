@@ -2,6 +2,8 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { WindowControls } from "@/components/WindowControls";
 import { AzureDevOpsLogo } from "@/components/AzureDevOpsLogo";
 import { IS_MAC, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
+import { useZoom } from "@/lib/useZoom";
+import { useGlobalShortcuts } from "@/modules/shortcuts";
 import type { SettingsTab } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
@@ -83,6 +85,15 @@ export function SettingsApp() {
   const init = usePreferencesStore((s) => s.init);
   const ActiveSection = TABS.find(t => t.id === active)?.component;
 
+  // Apply the user's persisted UI scale to this window too, and wire the
+  // zoom keybinds so the user can adjust without leaving Settings.
+  const { zoomIn, zoomOut, zoomReset } = useZoom();
+  useGlobalShortcuts({
+    "view.zoomIn": zoomIn,
+    "view.zoomOut": zoomOut,
+    "view.zoomReset": zoomReset,
+  });
+
   useEffect(() => {
     void init();
   }, [init]);
@@ -112,7 +123,7 @@ export function SettingsApp() {
   }, []);
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground select-none">
+    <div className="zoom-content flex h-screen flex-col overflow-hidden bg-background text-foreground select-none">
       <header
         data-tauri-drag-region
         className={`flex h-11 shrink-0 items-center border-b border-border/60 bg-card/60 ${IS_MAC ? "pr-3 pl-22" : "pr-0 pl-3"
