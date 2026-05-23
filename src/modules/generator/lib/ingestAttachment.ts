@@ -2,7 +2,7 @@
 // into the session's Attachment shape. Used by the requirements drag-drop
 // zone and the textarea paste handler.
 
-import type { Attachment } from "../store/useGenerationSession";
+import { newAttachmentId, type Attachment } from "../store/useGenerationSession";
 
 const TEXT_BYTE_CAP = 200 * 1024; // 200 KB
 const IMAGE_BYTE_CAP = 2 * 1024 * 1024; // 2 MB
@@ -96,6 +96,7 @@ export async function ingestFile(
     return {
       ok: true,
       attachment: {
+        id: newAttachmentId(),
         path: file.name,
         content: dataUrl,
         kind: "image",
@@ -119,6 +120,7 @@ export async function ingestFile(
     return {
       ok: true,
       attachment: {
+        id: newAttachmentId(),
         path: file.name,
         content: text,
         kind: "text",

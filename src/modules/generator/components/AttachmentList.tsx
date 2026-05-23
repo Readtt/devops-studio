@@ -29,8 +29,10 @@ type Props = {
   attachments: Attachment[];
   /** When omitted the list renders in read-only mode — no remove button on
    *  each chip. Used by the analyzing phase to surface what the model
-   *  received without offering edits mid-run. */
-  onRemove?: (path: string) => void;
+   *  received without offering edits mid-run. Receives the attachment's
+   *  stable `id` so identically-named files (two Windows screenshots
+   *  pasted in a row) can be removed independently. */
+  onRemove?: (id: string) => void;
   className?: string;
 };
 
@@ -49,7 +51,7 @@ export function AttachmentList({ attachments, onRemove, className }: Props) {
       <div className={cn("flex flex-wrap gap-1.5", className)}>
         {attachments.map((a) => (
           <AttachmentChip
-            key={a.path}
+            key={a.id}
             attachment={a}
             onRemove={onRemove}
             onPreview={() => setPreview(a)}
@@ -70,7 +72,7 @@ function AttachmentChip({
   onPreview,
 }: {
   attachment: Attachment;
-  onRemove?: (path: string) => void;
+  onRemove?: (id: string) => void;
   onPreview: () => void;
 }) {
   const isImage = attachment.kind === "image";
@@ -155,7 +157,7 @@ function AttachmentChip({
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                onRemove(attachment.path);
+                onRemove(attachment.id);
               }}
               className="ml-0.5 inline-flex size-4 items-center justify-center rounded text-muted-foreground/60 hover:bg-destructive/15 hover:text-destructive"
               aria-label={`Remove ${attachment.path}`}

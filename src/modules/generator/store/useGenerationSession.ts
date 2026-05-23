@@ -83,6 +83,11 @@ import type { ModelId } from "@/modules/ai/config";
 export type AttachmentKind = "text" | "image" | "binary";
 
 export type Attachment = {
+  /** Stable id assigned at ingest time. Used for dedup and remove
+   *  operations so two attachments with identical `path` (e.g. two
+   *  Windows screenshots both named "Screenshot 2026-05-23 12.34.56.png")
+   *  can coexist without one silently replacing the other. */
+  id: string;
   /** Display name. For dropped files this is the original filename; for
    *  clipboard images we synthesize "pasted-<timestamp>.<ext>". */
   path: string;
@@ -94,6 +99,16 @@ export type Attachment = {
   mime?: string;
   sizeBytes?: number;
 };
+
+/** Mint a fresh attachment id. crypto.randomUUID is available in every
+ *  modern browser context Tauri exposes; falls back to a timestamp-based
+ *  id for the very rare path where the Web Crypto API isn't present. */
+export function newAttachmentId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `att-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 export type SessionState = {
   phase: Phase;
@@ -491,11 +506,17 @@ export function createGenerationSessionStore(): GenerationSessionStore {
   setOverrideModelId: (id) => set({ overrideModelId: id }),
   addAttachment: (path, content) =>
     set((s) => {
-      if (s.attachments.some((a) => a.path === path)) return s;
+      // Path-keyed dedup for the text-only flow — callers using this entry
+      // point pass a stable filename for the same file (e.g. a Read tool
+      // result), so collapse re-adds rather than stacking duplicates.
+      if (s.attachments.some((a) => a.path === path && a.kind === "text")) {
+        return s;
+      }
       return {
         attachments: [
           ...s.attachments,
           {
+            id: newAttachmentId(),
             path,
             content,
             kind: "text",
@@ -506,14 +527,16 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     }),
   addRichAttachment: (attachment) =>
     set((s) => {
-      // Replace on duplicate path so re-pasting a file gets the latest copy
-      // instead of silently being ignored.
-      const without = s.attachments.filter((a) => a.path !== attachment.path);
+      // Dedup by id — two attachments with identical filenames keep their
+      // own slots. Without this, two Windows screenshots pasted in a row
+      // (both named "Screenshot 2026-05-23 12.34.56.png") would silently
+      // collapse into one.
+      const without = s.attachments.filter((a) => a.id !== attachment.id);
       return { attachments: [...without, attachment] };
     }),
-  removeAttachment: (path) =>
+  removeAttachment: (id) =>
     set((s) => ({
-      attachments: s.attachments.filter((a) => a.path !== path),
+      attachments: s.attachments.filter((a) => a.id !== id),
     })),
 
   analyze: async () => {
