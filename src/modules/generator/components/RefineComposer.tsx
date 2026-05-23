@@ -8,6 +8,7 @@ import {
 } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -208,9 +209,7 @@ export function RefineComposer({ isRefining }: Props) {
               {stepLabel || "Reading current draft…"}
             </span>
             <div className="ml-auto flex items-center gap-1.5">
-              <kbd className="select-none rounded-sm border border-border/50 bg-card px-1 font-mono text-[9.5px] text-muted-foreground/80">
-                esc
-              </kbd>
+              <Kbd>Esc</Kbd>
               <Button
                 size="xs"
                 variant="ghost"
@@ -533,9 +532,10 @@ export function RefineComposer({ isRefining }: Props) {
                 </TooltipContent>
               </Tooltip>
             ) : null}
-            <kbd className="hidden select-none rounded-sm border border-border/50 bg-card px-1 font-mono text-[9.5px] text-muted-foreground/70 sm:inline-block">
-              ⌘↵
-            </kbd>
+            <KbdGroup className="hidden sm:inline-flex">
+              <Kbd>⌘</Kbd>
+              <Kbd>↵</Kbd>
+            </KbdGroup>
             <Button
               size="sm"
               onClick={submit}

@@ -4,9 +4,9 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
-  ContextMenuShortcut,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowLeftRightIcon,
@@ -52,7 +52,7 @@ export const TabContextMenu = memo(function TabContextMenu({
           disabled={tab.pinned}
         >
           Close
-          <Kbd id="tab.close" />
+          <ShortcutKbd id="tab.close" />
         </ContextMenuItem>
         <ContextMenuItem
           icon={<HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />}
@@ -62,7 +62,7 @@ export const TabContextMenu = memo(function TabContextMenu({
           }}
         >
           Close others
-          <Kbd id="tab.closeOthers" />
+          <ShortcutKbd id="tab.closeOthers" />
         </ContextMenuItem>
         <ContextMenuItem
           icon={<HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />}
@@ -72,14 +72,14 @@ export const TabContextMenu = memo(function TabContextMenu({
           }}
         >
           Close to the right
-          <Kbd id="tab.closeToRight" />
+          <ShortcutKbd id="tab.closeToRight" />
         </ContextMenuItem>
         <ContextMenuItem
           icon={<HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />}
           onSelect={() => useTabsStore.getState().closeAll(leafId)}
         >
           Close all
-          <Kbd id="tab.closeAll" />
+          <ShortcutKbd id="tab.closeAll" />
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
@@ -93,14 +93,14 @@ export const TabContextMenu = memo(function TabContextMenu({
           onSelect={() => useTabsStore.getState().togglePin(tab.id)}
         >
           {tab.pinned ? "Unpin tab" : "Pin tab"}
-          <Kbd id="tab.pin" />
+          <ShortcutKbd id="tab.pin" />
         </ContextMenuItem>
         <ContextMenuItem
           icon={<HugeiconsIcon icon={Copy01Icon} size={12} strokeWidth={1.75} />}
           onSelect={() => useTabsStore.getState().duplicateTab(tab.id)}
         >
           Duplicate
-          <Kbd id="tab.duplicate" />
+          <ShortcutKbd id="tab.duplicate" />
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
@@ -114,7 +114,7 @@ export const TabContextMenu = memo(function TabContextMenu({
           }}
         >
           Split right
-          <Kbd id="pane.splitRight" />
+          <ShortcutKbd id="pane.splitRight" />
         </ContextMenuItem>
         <ContextMenuItem
           icon={
@@ -127,7 +127,7 @@ export const TabContextMenu = memo(function TabContextMenu({
           }}
         >
           Split down
-          <Kbd id="pane.splitDown" />
+          <ShortcutKbd id="pane.splitDown" />
         </ContextMenuItem>
         <ContextMenuItem
           icon={
@@ -140,17 +140,23 @@ export const TabContextMenu = memo(function TabContextMenu({
           onSelect={() => useTabsStore.getState().moveTabToNextPane(tab.id)}
         >
           Move to next pane
-          <Kbd id="tab.moveToNextPane" />
+          <ShortcutKbd id="tab.moveToNextPane" />
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   );
 });
 
-function Kbd({ id }: { id: ShortcutId }) {
+function ShortcutKbd({ id }: { id: ShortcutId }) {
   const userShortcuts = usePreferencesStore((s) => s.shortcuts);
   const b = getPrimaryBinding(id, userShortcuts);
   const tokens = getBindingTokens(b);
   if (tokens.length === 0) return null;
-  return <ContextMenuShortcut>{tokens.join(" ")}</ContextMenuShortcut>;
+  return (
+    <KbdGroup className="ml-auto">
+      {tokens.map((t, i) => (
+        <Kbd key={i}>{t}</Kbd>
+      ))}
+    </KbdGroup>
+  );
 }

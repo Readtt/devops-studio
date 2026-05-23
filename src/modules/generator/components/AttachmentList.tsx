@@ -9,6 +9,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { DialogClose } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Kbd } from "@/components/ui/kbd";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { cn } from "@/lib/utils";
 import {
@@ -267,9 +268,7 @@ function ImageLightbox({
                 </span>
               </span>
               <span className="flex items-center gap-1 text-muted-foreground/70">
-                <kbd className="rounded-sm border border-border/60 bg-card px-1 py-px text-[9px] uppercase tracking-wide">
-                  esc
-                </kbd>
+                <Kbd>Esc</Kbd>
                 <span>to close</span>
               </span>
             </div>
