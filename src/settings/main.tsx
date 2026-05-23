@@ -7,6 +7,7 @@ import "../styles/globals.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import ReactDOM from "react-dom/client";
 import { ThemeProvider } from "@/modules/theme";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
 import { installContextMenuGuard } from "@/lib/contextMenuGuard";
 import { SettingsApp } from "./SettingsApp";
@@ -23,7 +24,9 @@ ReactDOM.createRoot(
   document.getElementById("settings-root") as HTMLElement,
 ).render(
   <ThemeProvider>
-    <SettingsApp />
+    <TooltipProvider>
+      <SettingsApp />
+    </TooltipProvider>
   </ThemeProvider>,
 );
 
