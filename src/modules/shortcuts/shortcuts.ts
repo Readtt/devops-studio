@@ -17,13 +17,37 @@ export type ShortcutId =
   | "tab.close"
   | "tab.next"
   | "tab.prev"
+  | "tab.pin"
+  | "tab.duplicate"
+  | "tab.closeOthers"
+  | "tab.closeToRight"
+  | "tab.closeAll"
+  | "tab.reopenClosed"
+  | "tab.jumpTo1"
+  | "tab.jumpTo2"
+  | "tab.jumpTo3"
+  | "tab.jumpTo4"
+  | "tab.jumpTo5"
+  | "tab.jumpTo6"
+  | "tab.jumpTo7"
+  | "tab.jumpTo8"
+  | "tab.jumpTo9"
+  | "tab.moveToNextPane"
+  | "tab.moveToPrevPane"
+  | "pane.splitRight"
+  | "pane.splitDown"
+  | "pane.close"
+  | "pane.focusLeft"
+  | "pane.focusRight"
+  | "pane.focusUp"
+  | "pane.focusDown"
   | "stale.scan"
   | "generator.new"
   | "view.zoomIn"
   | "view.zoomOut"
   | "view.zoomReset";
 
-export type ShortcutGroup = "General" | "Tabs" | "View" | "ADO";
+export type ShortcutGroup = "General" | "Tabs" | "Panes" | "View" | "ADO";
 
 export type KeyBinding = {
   key: string;
@@ -40,6 +64,20 @@ export type Shortcut = {
   defaultBindings: KeyBinding[];
   allowRepeat?: boolean;
 };
+
+function buildJumpToShortcuts(): Shortcut[] {
+  const out: Shortcut[] = [];
+  for (let i = 1; i <= 9; i++) {
+    out.push({
+      id: `tab.jumpTo${i}` as ShortcutId,
+      label:
+        i === 9 ? "Jump to last tab in pane" : `Jump to tab ${i} in pane`,
+      group: "Tabs",
+      defaultBindings: [{ [MOD_PROP]: true, key: String(i) }],
+    });
+  }
+  return out;
+}
 
 export const SHORTCUTS: Shortcut[] = [
   {
@@ -64,7 +102,10 @@ export const SHORTCUTS: Shortcut[] = [
     id: "theme.cycle",
     label: "Cycle theme (System → Light → Dark)",
     group: "General",
-    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "t" }],
+    // Rebound from Ctrl+Shift+T → Ctrl+Shift+L so the universal
+    // "reopen closed tab" binding can take Ctrl+Shift+T. Users with a
+    // custom binding in preferences keep theirs.
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "l" }],
   },
   {
     id: "generator.new",
@@ -80,15 +121,108 @@ export const SHORTCUTS: Shortcut[] = [
   },
   {
     id: "tab.next",
-    label: "Next tab",
+    label: "Next tab (within focused pane)",
     group: "Tabs",
     defaultBindings: [{ ctrl: true, key: "Tab" }],
   },
   {
     id: "tab.prev",
-    label: "Previous tab",
+    label: "Previous tab (within focused pane)",
     group: "Tabs",
     defaultBindings: [{ ctrl: true, shift: true, key: "Tab" }],
+  },
+  {
+    id: "tab.pin",
+    label: "Pin / unpin active tab",
+    group: "Tabs",
+    defaultBindings: [{ [MOD_PROP]: true, alt: true, key: "p" }],
+  },
+  {
+    id: "tab.duplicate",
+    label: "Duplicate active tab",
+    group: "Tabs",
+    defaultBindings: [{ [MOD_PROP]: true, key: "d" }],
+  },
+  {
+    id: "tab.closeOthers",
+    label: "Close other tabs in pane",
+    group: "Tabs",
+    defaultBindings: [{ [MOD_PROP]: true, alt: true, key: "w" }],
+  },
+  {
+    id: "tab.closeToRight",
+    label: "Close tabs to the right",
+    group: "Tabs",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "w" }],
+  },
+  {
+    id: "tab.closeAll",
+    label: "Close all tabs in pane",
+    group: "Tabs",
+    defaultBindings: [
+      { [MOD_PROP]: true, alt: true, shift: true, key: "w" },
+    ],
+  },
+  {
+    id: "tab.reopenClosed",
+    label: "Reopen closed tab",
+    group: "Tabs",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "t" }],
+  },
+  ...buildJumpToShortcuts(),
+  {
+    id: "tab.moveToNextPane",
+    label: "Move active tab to next pane",
+    group: "Panes",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "]" }],
+  },
+  {
+    id: "tab.moveToPrevPane",
+    label: "Move active tab to previous pane",
+    group: "Panes",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "[" }],
+  },
+  {
+    id: "pane.splitRight",
+    label: "Split pane right",
+    group: "Panes",
+    defaultBindings: [{ [MOD_PROP]: true, key: "\\" }],
+  },
+  {
+    id: "pane.splitDown",
+    label: "Split pane down",
+    group: "Panes",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "\\" }],
+  },
+  {
+    id: "pane.close",
+    label: "Close pane",
+    group: "Panes",
+    defaultBindings: [{ [MOD_PROP]: true, alt: true, key: "q" }],
+  },
+  {
+    id: "pane.focusLeft",
+    label: "Focus pane to the left",
+    group: "Panes",
+    defaultBindings: [{ [MOD_PROP]: true, alt: true, key: "ArrowLeft" }],
+  },
+  {
+    id: "pane.focusRight",
+    label: "Focus pane to the right",
+    group: "Panes",
+    defaultBindings: [{ [MOD_PROP]: true, alt: true, key: "ArrowRight" }],
+  },
+  {
+    id: "pane.focusUp",
+    label: "Focus pane above",
+    group: "Panes",
+    defaultBindings: [{ [MOD_PROP]: true, alt: true, key: "ArrowUp" }],
+  },
+  {
+    id: "pane.focusDown",
+    label: "Focus pane below",
+    group: "Panes",
+    defaultBindings: [{ [MOD_PROP]: true, alt: true, key: "ArrowDown" }],
   },
   {
     id: "stale.scan",
@@ -124,7 +258,26 @@ export const SHORTCUTS: Shortcut[] = [
   },
 ];
 
-export const SHORTCUT_GROUPS: ShortcutGroup[] = ["General", "Tabs", "ADO", "View"];
+export const SHORTCUT_GROUPS: ShortcutGroup[] = [
+  "General",
+  "Tabs",
+  "Panes",
+  "ADO",
+  "View",
+];
+
+/** Look up the user's first binding for a shortcut id, falling back to the
+ *  first default binding. Used by UI elements (context menu, tooltips) that
+ *  want to display the live keyboard hint. */
+export function getPrimaryBinding(
+  id: ShortcutId,
+  userBindings?: Partial<Record<ShortcutId, KeyBinding[]>>,
+): KeyBinding | undefined {
+  const userList = userBindings?.[id];
+  if (userList && userList.length > 0) return userList[0];
+  const def = SHORTCUTS.find((s) => s.id === id);
+  return def?.defaultBindings[0];
+}
 
 /**
  * Matching logic: checks if a KeyboardEvent matches a KeyBinding.

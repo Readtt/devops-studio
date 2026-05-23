@@ -72,6 +72,7 @@ export const LeafPane = memo(function LeafPane({
           <TabStrip
             tabs={tabs}
             activeTabId={activeId}
+            leafId={leaf.id}
             focused={focused}
             onActivate={onActivate}
             onClose={onClose}

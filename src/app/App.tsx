@@ -55,7 +55,17 @@ import {
   useTabsArray,
   useTabsStore,
 } from "@/modules/tabs/store/useTabsStore";
+import { findLeaf } from "@/modules/tabs/store/paneTreeOps";
 import type { GenerationSessionStore } from "@/modules/generator/store/useGenerationSession";
+
+/** Read the active tab id of the currently-focused leaf without subscribing.
+ *  Lives at module scope so shortcut handlers can use it without grabbing
+ *  React state every call. */
+function focusedActiveId(): number | null {
+  const s = useTabsStore.getState();
+  const leaf = findLeaf(s.paneTree, s.focusedLeafId);
+  return leaf?.activeTabId ?? null;
+}
 import {
   AlertCircleIcon,
   FolderOpenIcon,
@@ -518,6 +528,42 @@ function AppShell() {
         void setTheme(next);
       },
       "generator.new": () => openGeneratorTab(),
+      "tab.close": () => {
+        const target = focusedActiveId();
+        if (target != null) useTabsStore.getState().closeTab(target);
+      },
+      "tab.next": () => useTabsStore.getState().nextTabInFocusedLeaf(),
+      "tab.prev": () => useTabsStore.getState().prevTabInFocusedLeaf(),
+      "tab.pin": () => {
+        const target = focusedActiveId();
+        if (target != null) useTabsStore.getState().togglePin(target);
+      },
+      "tab.duplicate": () => {
+        const target = focusedActiveId();
+        if (target != null) useTabsStore.getState().duplicateTab(target);
+      },
+      "tab.closeOthers": () =>
+        useTabsStore
+          .getState()
+          .closeOthers(useTabsStore.getState().focusedLeafId),
+      "tab.closeToRight": () =>
+        useTabsStore
+          .getState()
+          .closeToRight(useTabsStore.getState().focusedLeafId),
+      "tab.closeAll": () =>
+        useTabsStore
+          .getState()
+          .closeAll(useTabsStore.getState().focusedLeafId),
+      "tab.reopenClosed": () => useTabsStore.getState().reopenClosed(),
+      "tab.jumpTo1": () => useTabsStore.getState().jumpToTabInFocusedLeaf(1),
+      "tab.jumpTo2": () => useTabsStore.getState().jumpToTabInFocusedLeaf(2),
+      "tab.jumpTo3": () => useTabsStore.getState().jumpToTabInFocusedLeaf(3),
+      "tab.jumpTo4": () => useTabsStore.getState().jumpToTabInFocusedLeaf(4),
+      "tab.jumpTo5": () => useTabsStore.getState().jumpToTabInFocusedLeaf(5),
+      "tab.jumpTo6": () => useTabsStore.getState().jumpToTabInFocusedLeaf(6),
+      "tab.jumpTo7": () => useTabsStore.getState().jumpToTabInFocusedLeaf(7),
+      "tab.jumpTo8": () => useTabsStore.getState().jumpToTabInFocusedLeaf(8),
+      "tab.jumpTo9": () => useTabsStore.getState().jumpToTabInFocusedLeaf(9),
     },
     {
       // Don't hijack keystrokes while the user is typing — but the global
