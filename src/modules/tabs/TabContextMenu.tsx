@@ -34,9 +34,8 @@ type Props = {
 };
 
 /**
- * Right-click menu over a single tab chip. Items use the Linear-style
- * `icon` + `description` props (NOT nested Tooltip — radix portals would
- * fight inside ContextMenu) so right-clickers can preview each action.
+ * Right-click menu over a single tab chip. Minimal by design — labels
+ * carry the meaning, keybind hints sit on the right.
  */
 export const TabContextMenu = memo(function TabContextMenu({
   tab,
@@ -46,17 +45,10 @@ export const TabContextMenu = memo(function TabContextMenu({
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
-      <ContextMenuContent className="w-72">
+      <ContextMenuContent className="w-52">
         <ContextMenuItem
           icon={<HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />}
-          description={
-            tab.pinned
-              ? "Pinned tab — unpin first to close it."
-              : "Close this tab. Reopen with Ctrl+Shift+T."
-          }
-          onSelect={() =>
-            useTabsStore.getState().closeTab(tab.id)
-          }
+          onSelect={() => useTabsStore.getState().closeTab(tab.id)}
           disabled={tab.pinned}
         >
           Close
@@ -64,7 +56,6 @@ export const TabContextMenu = memo(function TabContextMenu({
         </ContextMenuItem>
         <ContextMenuItem
           icon={<HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />}
-          description="Close every tab in this pane except this one. Pinned tabs are kept."
           onSelect={() => {
             useTabsStore.getState().setActiveInLeaf(leafId, tab.id);
             useTabsStore.getState().closeOthers(leafId);
@@ -75,7 +66,6 @@ export const TabContextMenu = memo(function TabContextMenu({
         </ContextMenuItem>
         <ContextMenuItem
           icon={<HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />}
-          description="Close tabs to the right of this one in the pane. Pinned tabs are kept."
           onSelect={() => {
             useTabsStore.getState().setActiveInLeaf(leafId, tab.id);
             useTabsStore.getState().closeToRight(leafId);
@@ -86,7 +76,6 @@ export const TabContextMenu = memo(function TabContextMenu({
         </ContextMenuItem>
         <ContextMenuItem
           icon={<HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />}
-          description="Close every tab in this pane. Pinned tabs are kept."
           onSelect={() => useTabsStore.getState().closeAll(leafId)}
         >
           Close all
@@ -101,11 +90,6 @@ export const TabContextMenu = memo(function TabContextMenu({
               strokeWidth={1.75}
             />
           }
-          description={
-            tab.pinned
-              ? "Unpin this tab. It'll behave like a normal tab again."
-              : "Pin this tab. Pinned tabs stay at the left of the strip and survive Close All / Close Others."
-          }
           onSelect={() => useTabsStore.getState().togglePin(tab.id)}
         >
           {tab.pinned ? "Unpin tab" : "Pin tab"}
@@ -113,10 +97,9 @@ export const TabContextMenu = memo(function TabContextMenu({
         </ContextMenuItem>
         <ContextMenuItem
           icon={<HugeiconsIcon icon={Copy01Icon} size={12} strokeWidth={1.75} />}
-          description="Open a second copy of this tab. Generator tabs start fresh — drafts aren't duplicated."
           onSelect={() => useTabsStore.getState().duplicateTab(tab.id)}
         >
-          Duplicate tab
+          Duplicate
           <Kbd id="tab.duplicate" />
         </ContextMenuItem>
         <ContextMenuSeparator />
@@ -124,7 +107,6 @@ export const TabContextMenu = memo(function TabContextMenu({
           icon={
             <HugeiconsIcon icon={Tag01Icon} size={12} strokeWidth={1.75} />
           }
-          description="Split this pane horizontally and move this tab into the new pane to the right."
           onSelect={() => {
             useTabsStore
               .getState()
@@ -138,7 +120,6 @@ export const TabContextMenu = memo(function TabContextMenu({
           icon={
             <HugeiconsIcon icon={Tag01Icon} size={12} strokeWidth={1.75} />
           }
-          description="Split this pane vertically and move this tab into the new pane below."
           onSelect={() => {
             useTabsStore
               .getState()
@@ -156,7 +137,6 @@ export const TabContextMenu = memo(function TabContextMenu({
               strokeWidth={1.75}
             />
           }
-          description="Move this tab to the next pane in tree order. Only useful when more than one pane is open."
           onSelect={() => useTabsStore.getState().moveTabToNextPane(tab.id)}
         >
           Move to next pane
