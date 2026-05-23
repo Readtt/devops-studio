@@ -40,6 +40,7 @@ import { MODELS, type ModelId } from "@/modules/ai/config";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { useChatStore } from "@/modules/ai/store/chatStore";
+import { selectEngine } from "@/modules/ai/lib/engine";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
@@ -351,6 +352,16 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
   const sourceLabel = sourceRoot
     ? sourceRoot.split(/[\\/]/).filter(Boolean).slice(-1)[0] || sourceRoot
     : null;
+  // Real code grounding requires BOTH a source dir AND the Claude Agent
+  // SDK (it's the only engine wired to Read/Glob/Grep). BYOK (Vercel SDK)
+  // can't issue tool calls in this codebase, so even with a sourceRoot
+  // set, BYOK users only get spec-level review. The header chip used to
+  // claim grounding whenever sourceRoot was set — misleading for BYOK.
+  const codeGroundingActive = (() => {
+    if (!sourceRoot) return false;
+    const sel = selectEngine(activeModelId);
+    return sel.engine === "claude-agent-sdk" && sel.active;
+  })();
   const titleParts = [...suitePath, suiteName ?? `#${suiteId}`];
   // How many cases the model will actually see after the filter is applied —
   // gives the user instant feedback when they narrow scope on a big suite.
@@ -395,6 +406,7 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
         onFilterChange={(v) => setFilter(planId, suiteId, v)}
         sourceLabel={sourceLabel}
         sourceRoot={sourceRoot}
+        codeGroundingActive={codeGroundingActive}
         modelId={modelId}
         activeModel={activeModel}
         activeModelId={activeModelId}
@@ -504,6 +516,7 @@ function ChatHeader({
   onFilterChange,
   sourceLabel,
   sourceRoot,
+  codeGroundingActive,
   modelId,
   activeModel,
   activeModelId,
@@ -530,6 +543,7 @@ function ChatHeader({
   onFilterChange: (v: string) => void;
   sourceLabel: string | null;
   sourceRoot: string | null;
+  codeGroundingActive: boolean;
   modelId: ModelId | null;
   activeModel: { label: string } | undefined;
   activeModelId: ModelId;
@@ -751,25 +765,29 @@ function ChatHeader({
             <span
               className={cn(
                 "inline-flex items-center gap-1",
-                sourceLabel
+                codeGroundingActive
                   ? "text-foreground/85"
                   : "text-amber-700 dark:text-amber-300",
               )}
             >
-              {sourceLabel ? (
+              {codeGroundingActive ? (
                 <>
                   code grounding:{" "}
                   <span className="font-mono">{sourceLabel}</span>
                 </>
+              ) : sourceLabel ? (
+                "code grounding off (engine)"
               ) : (
                 "code grounding off"
               )}
             </span>
           </TooltipTrigger>
           <TooltipContent side="bottom" className="text-[11px]">
-            {sourceLabel
-              ? `Source directory set — the model can read code to verify cases.`
-              : `No source dir — pick one in Preferences to enable code-grounded answers.`}
+            {codeGroundingActive
+              ? `Claude Code is wired to Read/Glob/Grep against ${sourceLabel} — the model can verify cases against actual source.`
+              : sourceLabel
+                ? `Source directory is set but the active model uses the BYOK provider path, which doesn't expose filesystem tools. Pick a Claude model (and connect Claude Code) to enable code-grounded answers.`
+                : `No source dir — pick one in Preferences to enable code-grounded answers.`}
           </TooltipContent>
         </Tooltip>
         {!sourceRoot ? (
