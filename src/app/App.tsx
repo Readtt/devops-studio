@@ -276,7 +276,16 @@ function AppShell() {
   );
 
   const openSuiteChatTab = useCallback(
-    (input: { planId: number; suiteId: number; title: string }) => {
+    (input: {
+      planId: number;
+      suiteId: number;
+      title: string;
+      /** Optional: jump straight to a specific thread on this suite. When
+       *  absent the suite's last-active thread is kept (or the default
+       *  thread is created on first visit). Used by the chat-history
+       *  panel so clicking a row opens the right conversation. */
+      threadId?: string;
+    }) => {
       const id = useTabsStore.getState().openTab({
         kind: "suite-chat",
         planId: input.planId,
@@ -284,6 +293,19 @@ function AppShell() {
         title: input.title,
       });
       useTabsStore.getState().renameTab(id, input.title);
+      if (input.threadId) {
+        // Defer to next microtask so the SuiteChatPane has been mounted
+        // and its ensure() has registered the suite entry by then.
+        void Promise.resolve().then(() => {
+          void import("@/modules/test-plans/hooks/useSuiteChat").then(
+            ({ useSuiteChat }) => {
+              useSuiteChat
+                .getState()
+                .setActiveThread(input.planId, input.suiteId, input.threadId!);
+            },
+          );
+        });
+      }
       return id;
     },
     [],

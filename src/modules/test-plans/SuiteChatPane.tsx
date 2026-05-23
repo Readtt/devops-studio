@@ -16,6 +16,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ChatMarkdown } from "@/components/ChatMarkdown";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import type {
   AppliedEditRecord,
   ApplyEditResult,
@@ -72,16 +77,28 @@ const SUGGESTED_PROMPTS_NO_SOURCE = [
 ];
 
 export function SuiteChatPane({ planId, suiteId }: Props) {
-  const state = useSuiteChat((s) => s.byKey.get(`${planId}:${suiteId}`));
+  const suiteKey = `${planId}:${suiteId}`;
+  const suite = useSuiteChat((s) => s.bySuite.get(suiteKey));
+  const activeThreadId = useSuiteChat(
+    (s) => s.activeThreadBySuite.get(suiteKey) ?? "default",
+  );
+  const thread = useSuiteChat((s) =>
+    s.byThread.get(`${planId}:${suiteId}:${activeThreadId}`),
+  );
+  const threadList = useSuiteChat((s) => s.threadListBySuite.get(suiteKey));
   const ensure = useSuiteChat((s) => s.ensure);
   const loadCases = useSuiteChat((s) => s.loadCases);
   const sendMessage = useSuiteChat((s) => s.sendMessage);
   const cancel = useSuiteChat((s) => s.cancel);
-  const clearMessages = useSuiteChat((s) => s.clearMessages);
   const dismissError = useSuiteChat((s) => s.dismissError);
   const setModel = useSuiteChat((s) => s.setModel);
+  const setFilter = useSuiteChat((s) => s.setFilter);
   const markEditApplied = useSuiteChat((s) => s.markEditApplied);
   const clearEditApplied = useSuiteChat((s) => s.clearEditApplied);
+  const newThread = useSuiteChat((s) => s.newThread);
+  const setActiveThread = useSuiteChat((s) => s.setActiveThread);
+  const deleteThread = useSuiteChat((s) => s.deleteThread);
+  const renameThread = useSuiteChat((s) => s.renameThread);
   const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
   const globalModelId = useChatStore((s) => s.selectedModelId);
   const availability = useModelAvailability();
@@ -110,7 +127,7 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
     };
   }, [planId, suiteId]);
 
-  const cases = state?.cases ?? null;
+  const cases = suite?.cases ?? null;
 
   // Single lookup function used by every inline `#case` chip *and* by the
   // ApplyEditCard diff. Cheap O(N) — the suite's case list is capped at 50.
@@ -268,7 +285,7 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
     }
   }, [loadCases, planId, suiteId]);
 
-  if (!state) {
+  if (!suite || !thread) {
     return (
       <div className="flex h-full flex-col gap-3 p-6">
         <Skeleton className="h-6 w-1/3" />
@@ -285,11 +302,9 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
     truncated,
     suiteName,
     suitePath,
-    messages,
-    busy,
-    error,
-    modelId,
-  } = state;
+    filter,
+  } = suite;
+  const { messages, busy, error, modelId } = thread;
 
   const activeModelId = modelId ?? globalModelId;
   const activeModel = MODELS.find((m) => m.id === activeModelId);
@@ -297,6 +312,28 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
     ? sourceRoot.split(/[\\/]/).filter(Boolean).slice(-1)[0] || sourceRoot
     : null;
   const titleParts = [...suitePath, suiteName ?? `#${suiteId}`];
+  // How many cases the model will actually see after the filter is applied —
+  // gives the user instant feedback when they narrow scope on a big suite.
+  const scopedCount = (() => {
+    if (!cases) return 0;
+    const needle = filter.trim().toLowerCase();
+    if (!needle) return cases.length;
+    const idMatch = needle.match(/^#(\d+)$/);
+    if (idMatch) {
+      const id = Number(idMatch[1]);
+      return cases.filter((c) => c.id === id).length;
+    }
+    return cases.filter((c) => {
+      if (String(c.id).includes(needle)) return true;
+      if (c.title.toLowerCase().includes(needle)) return true;
+      if (c.tags.some((t) => t.toLowerCase().includes(needle))) return true;
+      return c.steps.some(
+        (s) =>
+          s.action.toLowerCase().includes(needle) ||
+          s.expected.toLowerCase().includes(needle),
+      );
+    }).length;
+  })();
 
   const submit = () => {
     const text = draft.trim();
@@ -313,6 +350,9 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
         casesLoading={casesLoading}
         totalCases={totalCases}
         truncated={truncated}
+        scopedCount={scopedCount}
+        filter={filter}
+        onFilterChange={(v) => setFilter(planId, suiteId, v)}
         sourceLabel={sourceLabel}
         sourceRoot={sourceRoot}
         modelId={modelId}
@@ -320,10 +360,19 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
         activeModelId={activeModelId}
         setModel={(id) => setModel(planId, suiteId, id)}
         availabilityFilter={availability.isAvailable}
-        onNewThread={() => clearMessages(planId, suiteId)}
+        onNewThread={() => {
+          newThread(planId, suiteId);
+          setDraft("");
+        }}
         onReloadCases={() => void loadCases(planId, suiteId, true)}
-        canNewThread={messages.length > 0 && !busy}
         canReload={!casesLoading}
+        threadList={threadList ?? []}
+        activeThreadId={activeThreadId}
+        onSwitchThread={(tid) => setActiveThread(planId, suiteId, tid)}
+        onDeleteThread={(tid) => void deleteThread(planId, suiteId, tid)}
+        onRenameThread={(tid, title) => renameThread(planId, suiteId, tid, title)}
+        currentThreadTitle={thread.title}
+        currentThreadMessageCount={messages.length}
       />
 
       {truncated ? (
@@ -410,6 +459,9 @@ function ChatHeader({
   casesLoading,
   totalCases,
   truncated,
+  scopedCount,
+  filter,
+  onFilterChange,
   sourceLabel,
   sourceRoot,
   modelId,
@@ -419,14 +471,23 @@ function ChatHeader({
   availabilityFilter,
   onNewThread,
   onReloadCases,
-  canNewThread,
   canReload,
+  threadList,
+  activeThreadId,
+  onSwitchThread,
+  onDeleteThread,
+  onRenameThread,
+  currentThreadTitle,
+  currentThreadMessageCount,
 }: {
   titleParts: string[];
   cases: { id: number }[] | null;
   casesLoading: boolean;
   totalCases: number;
   truncated: boolean;
+  scopedCount: number;
+  filter: string;
+  onFilterChange: (v: string) => void;
   sourceLabel: string | null;
   sourceRoot: string | null;
   modelId: ModelId | null;
@@ -436,8 +497,14 @@ function ChatHeader({
   availabilityFilter: (id: ModelId) => boolean;
   onNewThread: () => void;
   onReloadCases: () => void;
-  canNewThread: boolean;
   canReload: boolean;
+  threadList: { threadId: string; title: string | null; messageCount: number; updatedAt: string }[];
+  activeThreadId: string;
+  onSwitchThread: (threadId: string) => void;
+  onDeleteThread: (threadId: string) => void;
+  onRenameThread: (threadId: string, title: string) => void;
+  currentThreadTitle: string | null;
+  currentThreadMessageCount: number;
 }) {
   return (
     <header className="flex shrink-0 flex-col gap-1.5 border-b border-border/60 bg-card/30 px-5 py-3 backdrop-blur-sm">
@@ -511,6 +578,16 @@ function ChatHeader({
               ) : undefined
             }
           />
+          <ThreadSwitcher
+            threadList={threadList}
+            activeThreadId={activeThreadId}
+            currentThreadTitle={currentThreadTitle}
+            currentThreadMessageCount={currentThreadMessageCount}
+            onSwitchThread={onSwitchThread}
+            onNewThread={onNewThread}
+            onDeleteThread={onDeleteThread}
+            onRenameThread={onRenameThread}
+          />
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -518,7 +595,6 @@ function ChatHeader({
                 variant="ghost"
                 aria-label="New thread"
                 onClick={onNewThread}
-                disabled={!canNewThread}
               >
                 <HugeiconsIcon
                   icon={MessageAdd01Icon}
@@ -528,7 +604,8 @@ function ChatHeader({
               </Button>
             </TooltipTrigger>
             <TooltipContent side="bottom" className="text-[11px]">
-              Start a new thread (drops the current conversation; cases stay loaded)
+              Start a new thread on this suite — your current chat is kept
+              and reachable from the thread switcher.
             </TooltipContent>
           </Tooltip>
           <Tooltip>
@@ -562,14 +639,25 @@ function ChatHeader({
                 "Loading cases…"
               ) : cases ? (
                 <>
-                  <span className="font-medium text-foreground/85">
-                    {cases.length}
+                  <span
+                    className={cn(
+                      "font-medium",
+                      filter.trim() ? "text-primary" : "text-foreground/85",
+                    )}
+                  >
+                    {filter.trim() ? scopedCount : cases.length}
                   </span>{" "}
-                  case{cases.length === 1 ? "" : "s"}
+                  case{(filter.trim() ? scopedCount : cases.length) === 1 ? "" : "s"}
+                  {filter.trim() ? (
+                    <span className="text-muted-foreground/70">
+                      {" "}
+                      / {cases.length} scoped
+                    </span>
+                  ) : null}
                   {truncated ? (
                     <span className="text-amber-700 dark:text-amber-300">
                       {" "}
-                      of {totalCases}
+                      ({cases.length} of {totalCases} loaded)
                     </span>
                   ) : null}
                 </>
@@ -580,10 +668,44 @@ function ChatHeader({
           </TooltipTrigger>
           <TooltipContent side="bottom" className="text-[11px]">
             {truncated
-              ? `Loaded the first ${cases?.length ?? 0} of ${totalCases} cases — suite-wide questions may miss content beyond this window.`
-              : `Number of cases currently fed into the chat as context.`}
+              ? `Loaded the first ${cases?.length ?? 0} of ${totalCases} cases. Use the filter to narrow the prompt context for very large suites.`
+              : filter.trim()
+                ? `Filter "${filter.trim()}" narrows the prompt to ${scopedCount} of ${cases?.length ?? 0} loaded cases.`
+                : `Number of cases currently fed into the chat as context.`}
           </TooltipContent>
         </Tooltip>
+        {/* Inline filter — passes a tiny needle into the prompt builder so
+            big suites stay tractable. Matches id, title, tag, and step
+            text; `#123` does an exact id lookup. */}
+        {cases && cases.length > 0 ? (
+          <div className="relative inline-flex items-center">
+            <input
+              value={filter}
+              onChange={(e) => onFilterChange(e.target.value)}
+              placeholder="filter cases (#123, auth, totp…)"
+              className={cn(
+                "h-6 w-[200px] rounded-md border bg-background/60 px-2 pr-6 text-[10.5px] outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-ring/30",
+                filter.trim()
+                  ? "border-primary/40 bg-primary/[0.04] text-primary"
+                  : "border-border/60",
+              )}
+            />
+            {filter.trim() ? (
+              <button
+                type="button"
+                onClick={() => onFilterChange("")}
+                aria-label="Clear filter"
+                className="absolute right-1 grid size-4 place-items-center rounded-sm text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground"
+              >
+                <HugeiconsIcon
+                  icon={Cancel01Icon}
+                  size={9}
+                  strokeWidth={2}
+                />
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         <Tooltip>
           <TooltipTrigger asChild>
             <span
@@ -1135,6 +1257,267 @@ function Dot() {
       ·
     </span>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Thread switcher
+// ---------------------------------------------------------------------------
+
+/**
+ * Compact thread switcher chip. Shows the active thread's label (auto-
+ * derived from the first user message or a user-set title) plus a count
+ * pill. Clicking opens a popover with every other thread on this suite,
+ * each with rename / delete affordances. Adding a new thread is wired
+ * through the dedicated "+" icon next to this — keeping the popover
+ * focused on selection makes the action surface clearer.
+ */
+function ThreadSwitcher({
+  threadList,
+  activeThreadId,
+  currentThreadTitle,
+  currentThreadMessageCount,
+  onSwitchThread,
+  onNewThread,
+  onDeleteThread,
+  onRenameThread,
+}: {
+  threadList: { threadId: string; title: string | null; messageCount: number; updatedAt: string }[];
+  activeThreadId: string;
+  currentThreadTitle: string | null;
+  currentThreadMessageCount: number;
+  onSwitchThread: (threadId: string) => void;
+  onNewThread: () => void;
+  onDeleteThread: (threadId: string) => void;
+  onRenameThread: (threadId: string, title: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  // Build the rendered list. If we don't have the current thread in the
+  // store yet (e.g. brand-new thread that hasn't persisted), still show it
+  // at the top so the user can see "what I'm in right now".
+  const list = (() => {
+    const has = threadList.some((t) => t.threadId === activeThreadId);
+    if (has) return threadList;
+    return [
+      {
+        threadId: activeThreadId,
+        title: currentThreadTitle,
+        messageCount: currentThreadMessageCount,
+        updatedAt: new Date().toISOString(),
+      },
+      ...threadList,
+    ];
+  })();
+  const label =
+    currentThreadTitle ||
+    list.find((t) => t.threadId === activeThreadId)?.title ||
+    (currentThreadMessageCount === 0 ? "New chat" : "Untitled chat");
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex h-7 max-w-[200px] items-center gap-1.5 truncate rounded-md border border-border/60 bg-card/60 px-2 text-[11px] text-foreground/85 hover:bg-foreground/[0.04]"
+          title="Switch chat thread"
+        >
+          <HugeiconsIcon
+            icon={BubbleChatIcon}
+            size={11}
+            strokeWidth={1.75}
+            className="shrink-0 text-foreground/60"
+          />
+          <span className="truncate">{label}</span>
+          {list.length > 1 ? (
+            <span className="ml-0.5 rounded-sm bg-foreground/[0.08] px-1 py-px text-[9px] font-medium text-muted-foreground">
+              {list.length}
+            </span>
+          ) : null}
+          <HugeiconsIcon
+            icon={ArrowDown01Icon}
+            size={10}
+            strokeWidth={1.75}
+            className="shrink-0 text-muted-foreground/60"
+          />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        side="bottom"
+        className="w-[300px] p-0"
+      >
+        <div className="flex items-center justify-between border-b border-border/40 px-2.5 py-1.5">
+          <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+            Threads · {list.length}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              onNewThread();
+              setOpen(false);
+            }}
+            className="inline-flex items-center gap-1 rounded-sm border border-border/60 bg-card/80 px-1.5 py-0.5 text-[10px] text-foreground/85 hover:border-primary/40 hover:bg-primary/[0.06] hover:text-primary"
+          >
+            <HugeiconsIcon
+              icon={MessageAdd01Icon}
+              size={10}
+              strokeWidth={1.75}
+            />
+            New
+          </button>
+        </div>
+        <ul className="max-h-[280px] overflow-y-auto py-1">
+          {list.length === 0 ? (
+            <li className="px-2.5 py-2 text-[10.5px] text-muted-foreground">
+              No threads on this suite yet.
+            </li>
+          ) : null}
+          {list.map((t) => (
+            <ThreadRow
+              key={t.threadId}
+              thread={t}
+              active={t.threadId === activeThreadId}
+              canDelete={list.length > 1}
+              onSelect={() => {
+                onSwitchThread(t.threadId);
+                setOpen(false);
+              }}
+              onDelete={() => onDeleteThread(t.threadId)}
+              onRename={(title) => onRenameThread(t.threadId, title)}
+            />
+          ))}
+        </ul>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function ThreadRow({
+  thread,
+  active,
+  canDelete,
+  onSelect,
+  onDelete,
+  onRename,
+}: {
+  thread: { threadId: string; title: string | null; messageCount: number; updatedAt: string };
+  active: boolean;
+  canDelete: boolean;
+  onSelect: () => void;
+  onDelete: () => void;
+  onRename: (title: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(thread.title ?? "");
+  useEffect(() => {
+    if (!editing) setDraft(thread.title ?? "");
+  }, [editing, thread.title]);
+
+  return (
+    <li
+      className={cn(
+        "group flex items-center gap-1.5 px-2 py-1.5 transition-colors",
+        active
+          ? "bg-primary/[0.07]"
+          : "hover:bg-foreground/[0.04]",
+      )}
+    >
+      {editing ? (
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => {
+            if (draft.trim()) onRename(draft);
+            setEditing(false);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              if (draft.trim()) onRename(draft);
+              setEditing(false);
+            } else if (e.key === "Escape") {
+              setEditing(false);
+            }
+          }}
+          className="min-w-0 flex-1 rounded-sm border border-primary/50 bg-background/80 px-1.5 py-0.5 text-[11px] outline-none"
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={onSelect}
+          className="min-w-0 flex-1 text-left"
+        >
+          <div className="flex items-center gap-1.5">
+            <span
+              className={cn(
+                "truncate text-[11.5px]",
+                active ? "font-medium text-primary" : "text-foreground/90",
+                !thread.title && "italic text-muted-foreground/85",
+              )}
+            >
+              {thread.title || (thread.messageCount === 0 ? "New chat" : "Untitled chat")}
+            </span>
+            {active ? (
+              <span className="rounded-sm bg-primary/15 px-1 py-px text-[9px] font-medium text-primary">
+                active
+              </span>
+            ) : null}
+          </div>
+          <p className="mt-0.5 text-[9.5px] text-muted-foreground/80">
+            {thread.messageCount} message{thread.messageCount === 1 ? "" : "s"} ·{" "}
+            {formatThreadStamp(thread.updatedAt)}
+          </p>
+        </button>
+      )}
+      {!editing ? (
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setEditing(true);
+            }}
+            aria-label="Rename thread"
+            className="grid size-5 place-items-center rounded-sm text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground"
+          >
+            <HugeiconsIcon icon={FolderIcon} size={9} strokeWidth={1.75} />
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (!canDelete) return;
+              onDelete();
+            }}
+            disabled={!canDelete}
+            aria-label="Delete thread"
+            className="grid size-5 place-items-center rounded-sm text-muted-foreground hover:bg-destructive/15 hover:text-destructive disabled:opacity-30"
+          >
+            <HugeiconsIcon icon={Cancel01Icon} size={9} strokeWidth={2} />
+          </button>
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+function formatThreadStamp(iso: string): string {
+  try {
+    const d = new Date(iso);
+    const diff = Date.now() - d.getTime();
+    const m = Math.floor(diff / 60_000);
+    if (m < 1) return "just now";
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    const day = Math.floor(h / 24);
+    if (day < 7) return `${day}d ago`;
+    return d.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+    });
+  } catch {
+    return iso;
+  }
 }
 
 function Banner({

@@ -1,7 +1,8 @@
-// Per-suite chat thread + case cache. One store, keyed by `${planId}:${suiteId}`
-// so the user can have several suite-chat tabs open simultaneously without
-// them stomping each other's threads. Threads stay in memory only — closing
-// the tab keeps the thread until the page reloads or the user clicks "clear".
+// Per-suite chat threads + case cache. One store, keyed by
+// `${planId}:${suiteId}:${threadId}` so the user can have several parallel
+// threads on the same suite — "New thread" creates a brand-new thread id
+// rather than wiping the existing one. Cases (the prompt context) are
+// cached per (planId, suiteId) and shared across every thread on that suite.
 
 import { create } from "zustand";
 import {
@@ -29,9 +30,12 @@ import {
   type SuiteChatMessage,
 } from "../lib/runSuiteChat";
 import {
+  DEFAULT_THREAD_ID,
   deleteChatThread,
-  getChatThread,
+  listChatThreadsForSuite,
+  newThreadId,
   saveChatThread,
+  type StoredChatThread,
 } from "../lib/chatThreadsApi";
 
 /** Cap on the number of cases we'll embed in a single chat prompt. Past
@@ -40,41 +44,45 @@ import {
  *  the truncation explicitly so the user knows what got cut. */
 const PROMPT_CASE_CAP = 50;
 
-export type SuiteChatState = {
-  /** Full case objects fetched from ADO. Null = not loaded yet. */
+export type ThreadSummary = {
+  threadId: string;
+  title: string | null;
+  messageCount: number;
+  updatedAt: string;
+};
+
+/** Cases + suite metadata cached per (planId, suiteId). Shared by every
+ *  thread on that suite — the model sees the same case list regardless of
+ *  which thread the user happens to be typing in. */
+export type SuiteCaseState = {
   cases: TestCase[] | null;
   casesLoading: boolean;
   casesError: AdoError | null;
-  /** Honest count from ADO. May exceed cases.length when we hit PROMPT_CASE_CAP. */
   totalCases: number;
-  /** True when the case list was clamped to PROMPT_CASE_CAP so the chat
-   *  UI can surface a "X cases hidden from the model" banner. */
   truncated: boolean;
-  /** Resolved suite display name + parent path so the prompt + tab title
-   *  can render the breadcrumb without a separate fetch. */
   suiteName: string | null;
   suitePath: string[];
   planName: string | null;
+  /** Free-text filter applied client-side to the prompt's CASES IN SCOPE
+   *  block. Empty = include every loaded case. */
+  filter: string;
+};
 
+/** State for ONE thread. */
+export type ThreadState = {
+  threadId: string;
+  /** Optional human title — shown in the thread switcher. Auto-derived
+   *  from the first user message when null. */
+  title: string | null;
   messages: SuiteChatMessage[];
   busy: boolean;
-  /** Last chat error, surfaced inline. Cleared on the next send. */
   error: string | null;
-  /** Run id of the in-flight Claude CLI subprocess (or null on the Vercel
-   *  SDK path) so a cancel can target the right child. */
   activeClaudeRunId: string | null;
-  /** Per-chat model override. Null = inherit the user's current global
-   *  default (useChatStore.selectedModelId). Set this per-thread so a user
-   *  can run one chat on Sonnet for code-grounded review and another on
-   *  Haiku for quick lookups without flipping the global picker. */
   modelId: ModelId | null;
-  /** True once the persisted thread (if any) has been loaded from SQLite,
-   *  so we don't overwrite an in-memory thread with stale on-disk content
-   *  on a re-mount. */
   hydrated: boolean;
 };
 
-const initialChatState = (): SuiteChatState => ({
+const initialCaseState = (): SuiteCaseState => ({
   cases: null,
   casesLoading: false,
   casesError: null,
@@ -83,6 +91,12 @@ const initialChatState = (): SuiteChatState => ({
   suiteName: null,
   suitePath: [],
   planName: null,
+  filter: "",
+});
+
+const initialThreadState = (threadId: string): ThreadState => ({
+  threadId,
+  title: null,
   messages: [],
   busy: false,
   error: null,
@@ -92,151 +106,404 @@ const initialChatState = (): SuiteChatState => ({
 });
 
 type Store = {
-  byKey: Map<string, SuiteChatState>;
-  /** Subscribe to one suite's slice. Components call this with a selector
-   *  that reads `state.byKey.get(key)`; we always return a non-null
-   *  SuiteChatState so the selector never has to null-check. */
-  ensure: (planId: number, suiteId: number) => SuiteChatState;
+  /** Suite-level slice: case cache, filter, suite metadata. */
+  bySuite: Map<string, SuiteCaseState>;
+  /** Per-thread state. Keyed by `${planId}:${suiteId}:${threadId}`. */
+  byThread: Map<string, ThreadState>;
+  /** Active thread id selection per (planId, suiteId). Defaults to
+   *  DEFAULT_THREAD_ID until a fresh thread is created. */
+  activeThreadBySuite: Map<string, string>;
+  /** Known thread summaries per (planId, suiteId), most recently updated
+   *  first. Loaded from SQLite on first ensure() and refreshed when a
+   *  thread is created or deleted. */
+  threadListBySuite: Map<string, ThreadSummary[]>;
+
+  ensure: (planId: number, suiteId: number) => void;
+  /** Switch the active thread for a suite. If the thread isn't in
+   *  byThread yet, a fresh slice is created and hydrate runs in the
+   *  background. */
+  setActiveThread: (planId: number, suiteId: number, threadId: string) => void;
+  /** Create a fresh thread on this suite and switch to it. Returns the
+   *  new thread id. */
+  newThread: (planId: number, suiteId: number) => string;
+  /** Delete a thread (history + current state). If it was the active
+   *  thread, falls back to the most recent remaining one — or creates
+   *  a fresh default if none are left. */
+  deleteThread: (
+    planId: number,
+    suiteId: number,
+    threadId: string,
+  ) => Promise<void>;
+  /** Update a thread's human title. */
+  renameThread: (
+    planId: number,
+    suiteId: number,
+    threadId: string,
+    title: string,
+  ) => void;
+
   loadCases: (planId: number, suiteId: number, force?: boolean) => Promise<void>;
+  setFilter: (planId: number, suiteId: number, filter: string) => void;
+
   sendMessage: (planId: number, suiteId: number, q: string) => Promise<void>;
   cancel: (planId: number, suiteId: number) => void;
   clearMessages: (planId: number, suiteId: number) => void;
   dismissError: (planId: number, suiteId: number) => void;
-  /** Set the model used for this specific chat thread. `null` reverts to
-   *  inheriting the global default. */
   setModel: (planId: number, suiteId: number, modelId: ModelId | null) => void;
+
+  markEditApplied: (
+    planId: number,
+    suiteId: number,
+    messageId: string,
+    blockHash: string,
+    record: import("../lib/runSuiteChat").AppliedEditRecord,
+  ) => void;
+  clearEditApplied: (
+    planId: number,
+    suiteId: number,
+    messageId: string,
+    blockHash: string,
+  ) => void;
 };
 
-const key = (planId: number, suiteId: number) => `${planId}:${suiteId}`;
+const suiteKey = (planId: number, suiteId: number) => `${planId}:${suiteId}`;
+const threadKey = (planId: number, suiteId: number, threadId: string) =>
+  `${planId}:${suiteId}:${threadId}`;
 
-function patch(
-  set: (
-    fn: (s: Store) => Partial<Store> | Store,
-  ) => void,
+/** Mutate the bySuite slice for a (planId, suiteId). */
+function patchSuite(
+  set: (fn: (s: Store) => Partial<Store> | Store) => void,
   planId: number,
   suiteId: number,
-  partial: Partial<SuiteChatState>,
+  partial: Partial<SuiteCaseState>,
 ) {
   set((s) => {
-    const k = key(planId, suiteId);
-    const next = new Map(s.byKey);
-    const curr = next.get(k) ?? initialChatState();
+    const k = suiteKey(planId, suiteId);
+    const next = new Map(s.bySuite);
+    const curr = next.get(k) ?? initialCaseState();
     next.set(k, { ...curr, ...partial });
-    return { byKey: next };
+    return { bySuite: next };
   });
 }
 
-/** One-shot async hydrate from SQLite. Marks the slice as hydrated even
- *  when no on-disk row exists so we don't re-attempt the fetch on every
- *  re-render. Failures are swallowed — chat still works in-memory. */
-async function hydrateFromDisk(
+/** Mutate one thread slice. */
+function patchThread(
+  set: (fn: (s: Store) => Partial<Store> | Store) => void,
   planId: number,
   suiteId: number,
+  threadId: string,
+  partial: Partial<ThreadState>,
+) {
+  set((s) => {
+    const k = threadKey(planId, suiteId, threadId);
+    const next = new Map(s.byThread);
+    const curr = next.get(k) ?? initialThreadState(threadId);
+    next.set(k, { ...curr, ...partial });
+    return { byThread: next };
+  });
+}
+
+function summarize(thread: ThreadState | StoredChatThread): ThreadSummary {
+  const firstUser =
+    (thread as StoredChatThread).messages?.find?.((m) => m.role === "user") ??
+    (thread as ThreadState).messages.find((m) => m.role === "user");
+  const fallback = firstUser
+    ? firstUser.content.replace(/\s+/g, " ").trim().slice(0, 60)
+    : null;
+  const stored = thread as StoredChatThread;
+  return {
+    threadId: thread.threadId,
+    title: (thread as StoredChatThread).title ?? fallback,
+    messageCount: stored.messages?.length ?? (thread as ThreadState).messages.length,
+    updatedAt:
+      (stored.updatedAt as string | undefined) ?? new Date().toISOString(),
+  };
+}
+
+/** Refresh the thread summary list for a suite from SQLite. Used after
+ *  thread creation/deletion. */
+async function refreshThreadList(
+  planId: number,
+  suiteId: number,
+  set: (fn: (s: Store) => Partial<Store> | Store) => void,
+) {
+  try {
+    const list = await listChatThreadsForSuite({ planId, suiteId });
+    set((s) => {
+      const next = new Map(s.threadListBySuite);
+      next.set(
+        suiteKey(planId, suiteId),
+        list.map(summarize),
+      );
+      return { threadListBySuite: next };
+    });
+  } catch (e) {
+    console.warn("[suite-chat] thread list refresh failed:", e);
+  }
+}
+
+/** Hydrate one thread from SQLite. Marks hydrated even when no row exists
+ *  so we don't re-fetch on every re-render. Skips overwriting if there's
+ *  already an in-memory message (concurrent send in flight). */
+async function hydrateThread(
+  planId: number,
+  suiteId: number,
+  threadId: string,
   set: (fn: (s: Store) => Partial<Store> | Store) => void,
   get: () => Store,
 ) {
   try {
-    const stored = await getChatThread({ planId, suiteId });
-    const k = key(planId, suiteId);
-    const curr = get().byKey.get(k);
-    // Skip the restore if a message has already been added in-memory
-    // between ensure() and the async fetch resolving — the in-memory
-    // thread takes precedence so we don't clobber an edit-in-flight.
+    const { getChatThread } = await import("../lib/chatThreadsApi");
+    const stored = await getChatThread({ planId, suiteId, threadId });
+    const curr = get().byThread.get(threadKey(planId, suiteId, threadId));
     if (curr && curr.messages.length > 0) {
-      patch(set, planId, suiteId, { hydrated: true });
+      patchThread(set, planId, suiteId, threadId, { hydrated: true });
       return;
     }
     if (stored) {
-      patch(set, planId, suiteId, {
+      patchThread(set, planId, suiteId, threadId, {
         hydrated: true,
+        title: stored.title,
         messages: stored.messages,
         modelId: stored.modelId,
       });
     } else {
-      patch(set, planId, suiteId, { hydrated: true });
+      patchThread(set, planId, suiteId, threadId, { hydrated: true });
     }
-  } catch {
-    // Hydration is best-effort; chat continues in memory-only mode.
-    patch(set, planId, suiteId, { hydrated: true });
+  } catch (e) {
+    console.warn("[suite-chat] hydrate thread failed:", e);
+    patchThread(set, planId, suiteId, threadId, { hydrated: true });
   }
 }
 
-/** Snapshot the current slice and persist. Throttled per (planId,suiteId)
- *  so a streaming response that mutates the assistant message on every
- *  chunk doesn't fire dozens of IO writes a second — the latest snapshot
- *  always wins within the throttle window. */
+/** Throttle per (planId, suiteId, threadId) so a streaming response doesn't
+ *  fire dozens of IO writes a second. The latest snapshot always wins
+ *  within the throttle window. */
 const persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
 function schedulePersist(
   planId: number,
   suiteId: number,
+  threadId: string,
   get: () => Store,
   delay = 300,
 ) {
-  const k = key(planId, suiteId);
+  const k = threadKey(planId, suiteId, threadId);
   const existing = persistTimers.get(k);
   if (existing) clearTimeout(existing);
   const timer = setTimeout(() => {
     persistTimers.delete(k);
-    const slice = get().byKey.get(k);
+    const slice = get().byThread.get(k);
     if (!slice) return;
-    // Empty + no-model rows aren't worth persisting — saves disk on
-    // ephemeral panes the user opens and never sends a message in.
-    if (slice.messages.length === 0 && slice.modelId === null) return;
+    if (slice.messages.length === 0 && slice.modelId === null && !slice.title)
+      return;
     void saveChatThread({
       planId,
       suiteId,
+      threadId,
+      title: slice.title,
       modelId: slice.modelId,
       messages: slice.messages,
-    }).catch(() => {
-      // Best-effort persistence — failures are silent so the chat itself
-      // keeps working. A real disk error would surface on the next read.
+    }).catch((e) => {
+      console.warn("[suite-chat] persist failed:", e);
     });
   }, delay);
   persistTimers.set(k, timer);
 }
 
 export const useSuiteChat = create<Store>((set, get) => ({
-  byKey: new Map(),
+  bySuite: new Map(),
+  byThread: new Map(),
+  activeThreadBySuite: new Map(),
+  threadListBySuite: new Map(),
 
   ensure: (planId, suiteId) => {
-    const k = key(planId, suiteId);
-    const existing = get().byKey.get(k);
-    if (existing) {
-      // Lazy hydrate: re-mounting the same pane shouldn't refetch from
-      // disk, but a fresh slice should pull the persisted thread once.
-      if (!existing.hydrated) {
-        void hydrateFromDisk(planId, suiteId, set, get);
-      }
-      return existing;
+    const sk = suiteKey(planId, suiteId);
+    const s = get();
+    if (!s.bySuite.has(sk)) {
+      set((curr) => {
+        const next = new Map(curr.bySuite);
+        next.set(sk, initialCaseState());
+        return { bySuite: next };
+      });
     }
-    const fresh = initialChatState();
-    set((s) => {
-      const next = new Map(s.byKey);
-      next.set(k, fresh);
-      return { byKey: next };
+    // Pick an active thread:
+    //  - if we already chose one, keep it
+    //  - otherwise, see what's on disk; if there's a default thread,
+    //    use it; if there are other threads, pick the most-recent
+    //  - if nothing is on disk yet, start with the legacy "default" id so
+    //    new and migrated v1 stores both land in the same slot
+    if (!s.activeThreadBySuite.has(sk)) {
+      set((curr) => {
+        const next = new Map(curr.activeThreadBySuite);
+        next.set(sk, DEFAULT_THREAD_ID);
+        return { activeThreadBySuite: next };
+      });
+      // Async load the actual thread list; if there's a more recent
+      // thread than the default, switch to it once it's known.
+      void (async () => {
+        try {
+          const list = await listChatThreadsForSuite({ planId, suiteId });
+          set((curr) => {
+            const next = new Map(curr.threadListBySuite);
+            next.set(sk, list.map(summarize));
+            return { threadListBySuite: next };
+          });
+          const top = list[0];
+          if (top && top.threadId !== DEFAULT_THREAD_ID) {
+            // Only switch automatically when the default has nothing in it
+            // — otherwise respect the user's most recent active thread.
+            const defaultExists = list.some(
+              (t) => t.threadId === DEFAULT_THREAD_ID && t.messages.length > 0,
+            );
+            if (!defaultExists) {
+              set((curr) => {
+                const next = new Map(curr.activeThreadBySuite);
+                next.set(sk, top.threadId);
+                return { activeThreadBySuite: next };
+              });
+            }
+          }
+        } catch (e) {
+          console.warn("[suite-chat] initial thread-list fetch failed:", e);
+        }
+      })();
+    }
+    // Hydrate the currently-active thread.
+    const active = get().activeThreadBySuite.get(sk) ?? DEFAULT_THREAD_ID;
+    const tk = threadKey(planId, suiteId, active);
+    const existingThread = get().byThread.get(tk);
+    if (!existingThread) {
+      set((curr) => {
+        const next = new Map(curr.byThread);
+        next.set(tk, initialThreadState(active));
+        return { byThread: next };
+      });
+      void hydrateThread(planId, suiteId, active, set, get);
+    } else if (!existingThread.hydrated) {
+      void hydrateThread(planId, suiteId, active, set, get);
+    }
+  },
+
+  setActiveThread: (planId, suiteId, threadId) => {
+    const sk = suiteKey(planId, suiteId);
+    set((curr) => {
+      const next = new Map(curr.activeThreadBySuite);
+      next.set(sk, threadId);
+      return { activeThreadBySuite: next };
     });
-    void hydrateFromDisk(planId, suiteId, set, get);
-    return fresh;
+    const tk = threadKey(planId, suiteId, threadId);
+    if (!get().byThread.get(tk)) {
+      set((curr) => {
+        const next = new Map(curr.byThread);
+        next.set(tk, initialThreadState(threadId));
+        return { byThread: next };
+      });
+      void hydrateThread(planId, suiteId, threadId, set, get);
+    } else if (!get().byThread.get(tk)!.hydrated) {
+      void hydrateThread(planId, suiteId, threadId, set, get);
+    }
+  },
+
+  newThread: (planId, suiteId) => {
+    const id = newThreadId();
+    const sk = suiteKey(planId, suiteId);
+    const tk = threadKey(planId, suiteId, id);
+    set((curr) => {
+      const nextByThread = new Map(curr.byThread);
+      nextByThread.set(tk, {
+        ...initialThreadState(id),
+        hydrated: true, // brand new — nothing to hydrate
+      });
+      const nextActive = new Map(curr.activeThreadBySuite);
+      nextActive.set(sk, id);
+      const nextList = new Map(curr.threadListBySuite);
+      const prior = nextList.get(sk) ?? [];
+      nextList.set(sk, [
+        {
+          threadId: id,
+          title: null,
+          messageCount: 0,
+          updatedAt: new Date().toISOString(),
+        },
+        ...prior,
+      ]);
+      return {
+        byThread: nextByThread,
+        activeThreadBySuite: nextActive,
+        threadListBySuite: nextList,
+      };
+    });
+    return id;
+  },
+
+  deleteThread: async (planId, suiteId, threadId) => {
+    const sk = suiteKey(planId, suiteId);
+    const tk = threadKey(planId, suiteId, threadId);
+    try {
+      await deleteChatThread({ planId, suiteId, threadId });
+    } catch (e) {
+      console.warn("[suite-chat] delete thread failed:", e);
+    }
+    set((curr) => {
+      const nextByThread = new Map(curr.byThread);
+      nextByThread.delete(tk);
+      const nextList = new Map(curr.threadListBySuite);
+      const prior = (nextList.get(sk) ?? []).filter(
+        (t) => t.threadId !== threadId,
+      );
+      nextList.set(sk, prior);
+      const nextActive = new Map(curr.activeThreadBySuite);
+      const currentActive = nextActive.get(sk);
+      if (currentActive === threadId) {
+        // Fall back to the newest remaining thread, or a fresh default.
+        const next = prior[0]?.threadId ?? DEFAULT_THREAD_ID;
+        nextActive.set(sk, next);
+      }
+      return {
+        byThread: nextByThread,
+        threadListBySuite: nextList,
+        activeThreadBySuite: nextActive,
+      };
+    });
+    void refreshThreadList(planId, suiteId, set);
+  },
+
+  renameThread: (planId, suiteId, threadId, title) => {
+    const trimmed = title.trim().slice(0, 120) || null;
+    patchThread(set, planId, suiteId, threadId, { title: trimmed });
+    // Reflect in the summary list so the switcher updates immediately.
+    set((curr) => {
+      const next = new Map(curr.threadListBySuite);
+      const sk = suiteKey(planId, suiteId);
+      const prior = next.get(sk);
+      if (prior) {
+        next.set(
+          sk,
+          prior.map((t) =>
+            t.threadId === threadId ? { ...t, title: trimmed } : t,
+          ),
+        );
+      }
+      return { threadListBySuite: next };
+    });
+    schedulePersist(planId, suiteId, threadId, get, 50);
   },
 
   loadCases: async (planId, suiteId, force = false) => {
-    const curr = get().byKey.get(key(planId, suiteId));
+    const sk = suiteKey(planId, suiteId);
+    const curr = get().bySuite.get(sk);
     if (curr?.casesLoading) return;
     if (!force && curr?.cases && !curr.casesError) return;
 
-    patch(set, planId, suiteId, { casesLoading: true, casesError: null });
+    patchSuite(set, planId, suiteId, { casesLoading: true, casesError: null });
 
     try {
       const [refs, suites] = await Promise.all([
         listSuiteCases(planId, suiteId),
-        // listSuites is cheap and lets us reconstruct the breadcrumb path
-        // for the prompt + tab title without a separate fetch elsewhere.
         listSuites(planId).catch<SuiteRef[]>(() => []),
       ]);
       const total = refs.length;
       const trimmed = refs.slice(0, PROMPT_CASE_CAP);
-      // Fetch case bodies in parallel. Each getCase is a single ADO call;
-      // 50 in parallel is fine — well under any reasonable rate limit.
       const cases: TestCase[] = [];
       const results = await Promise.allSettled(
         trimmed.map((r) => getCase(r.id)),
@@ -245,8 +512,6 @@ export const useSuiteChat = create<Store>((set, get) => ({
         if (r.status === "fulfilled") cases.push(r.value);
       }
 
-      // Resolve suite breadcrumb path from the flat list — same approach
-      // the generator's buildTargetContext uses.
       const byId = new Map(suites.map((s) => [s.id, s]));
       const suite = byId.get(suiteId) ?? null;
       const path: string[] = [];
@@ -255,14 +520,12 @@ export const useSuiteChat = create<Store>((set, get) => ({
       while (cursor != null && guard++ < 64) {
         const parent = byId.get(cursor);
         if (!parent) break;
-        // The root suite name is the plan name — we hide it in the tree UI
-        // and we hide it here too so the breadcrumb reads cleanly.
         if (parent.parentSuiteId == null) break;
         path.unshift(parent.name);
         cursor = parent.parentSuiteId ?? null;
       }
 
-      patch(set, planId, suiteId, {
+      patchSuite(set, planId, suiteId, {
         cases,
         casesLoading: false,
         casesError: null,
@@ -270,29 +533,38 @@ export const useSuiteChat = create<Store>((set, get) => ({
         truncated: total > PROMPT_CASE_CAP,
         suiteName: suite?.name ?? null,
         suitePath: path,
-        // planName resolution is best-effort — leaving null is fine; the
-        // pane header reads from the active tab's title when missing.
       });
     } catch (e) {
-      patch(set, planId, suiteId, {
+      patchSuite(set, planId, suiteId, {
         casesLoading: false,
         casesError: toAdoError(e),
       });
     }
   },
 
+  setFilter: (planId, suiteId, filter) => {
+    patchSuite(set, planId, suiteId, { filter });
+  },
+
   sendMessage: async (planId, suiteId, q) => {
     const text = q.trim();
     if (!text) return;
-    const curr = get().byKey.get(key(planId, suiteId));
+    const sk = suiteKey(planId, suiteId);
+    const suite = get().bySuite.get(sk);
+    if (!suite) return;
+    if (!suite.cases) return;
+
+    const threadId = get().activeThreadBySuite.get(sk) ?? DEFAULT_THREAD_ID;
+    const tk = threadKey(planId, suiteId, threadId);
+    const curr = get().byThread.get(tk);
     if (!curr) return;
     if (curr.busy) return;
-    if (!curr.cases) return; // refuse to chat without loaded cases
 
-    // Push the user message AND an empty assistant message in the same
-    // commit. The empty one is the streaming buffer — we append chunks to
-    // it as the model produces text so the UI renders incrementally
-    // instead of waiting for the full reply.
+    // Apply the client-side filter to the prompt context. Bug-shaped
+    // filters ("auth", "#123", "totp") narrow what the model sees so
+    // suites with hundreds of cases stay tractable.
+    const promptCases = applyCaseFilter(suite.cases, suite.filter);
+
     const userMsg: SuiteChatMessage = {
       id: newSuiteChatMessageId(),
       role: "user",
@@ -306,22 +578,24 @@ export const useSuiteChat = create<Store>((set, get) => ({
       content: "",
       timestamp: new Date().toISOString(),
     };
-    patch(set, planId, suiteId, {
+    // First user message? Use it as the auto-title.
+    const autoTitle =
+      curr.messages.length === 0 && !curr.title
+        ? text.replace(/\s+/g, " ").trim().slice(0, 60)
+        : curr.title;
+
+    patchThread(set, planId, suiteId, threadId, {
       busy: true,
       error: null,
+      title: autoTitle,
       messages: [...curr.messages, userMsg, assistantMsg],
     });
 
-    // Appends a chunk to whichever message in the slice has id===assistantId.
-    // Re-reading from get() each call lets concurrent patches (cancel,
-    // clear) survive: if the assistant message was removed (e.g. user
-    // cleared mid-stream), we silently drop the chunk.
     const appendDelta = (delta: string) => {
       if (!delta) return;
       set((s) => {
-        const k = key(planId, suiteId);
-        const next = new Map(s.byKey);
-        const slice = next.get(k);
+        const next = new Map(s.byThread);
+        const slice = next.get(tk);
         if (!slice) return s;
         let found = false;
         const messages = slice.messages.map((m) => {
@@ -330,42 +604,44 @@ export const useSuiteChat = create<Store>((set, get) => ({
           return { ...m, content: m.content + delta };
         });
         if (!found) return s;
-        next.set(k, { ...slice, messages });
-        return { byKey: next };
+        next.set(tk, { ...slice, messages });
+        return { byThread: next };
       });
-      // Persist progressively while the stream runs. Throttled so a
-      // chunk-per-token CLI doesn't hammer SQLite.
-      schedulePersist(planId, suiteId, get);
+      schedulePersist(planId, suiteId, threadId, get);
     };
 
-    // Persist the user message right away so a crash mid-response doesn't
-    // lose what the user typed. The streaming throttle handles updates.
-    schedulePersist(planId, suiteId, get, 50);
+    // Persist the user message IMMEDIATELY so a quick cancel can't drop it.
+    void saveChatThread({
+      planId,
+      suiteId,
+      threadId,
+      title: autoTitle,
+      modelId: curr.modelId,
+      messages: [...curr.messages, userMsg, assistantMsg],
+    }).catch((e) => {
+      console.warn("[suite-chat] initial-send persist failed:", e);
+    });
 
     const chat = useChatStore.getState();
     const keys = chat.apiKeys;
-    // Per-thread model override wins over the user's global pick. Lets a
-    // user run different chats on different models without churning the
-    // status-bar picker.
     const modelId = curr.modelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
     const engineSel = selectEngine(modelId);
     const sourceRoot = prefs.sourceRoot ?? null;
-    // Snapshot messages WITHOUT the newly-pushed user + placeholder
-    // assistant — the runner builds the prompt from "history + newQuestion"
-    // and we don't want the placeholder feeding back into the prompt.
     const priorMessages = curr.messages;
 
     try {
       if (engineSel.engine === "claude-agent-sdk" && engineSel.active) {
         const runId = `sc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-        patch(set, planId, suiteId, { activeClaudeRunId: runId });
+        patchThread(set, planId, suiteId, threadId, {
+          activeClaudeRunId: runId,
+        });
         await streamSuiteChatClaude({
           runId,
-          suiteName: curr.suiteName,
-          suitePath: curr.suitePath,
-          planName: curr.planName,
-          cases: curr.cases,
+          suiteName: suite.suiteName,
+          suitePath: suite.suitePath,
+          planName: suite.planName,
+          cases: promptCases,
           history: priorMessages,
           newQuestion: text,
           modelId: resolveClaudeModelId(modelId) as typeof modelId,
@@ -376,10 +652,10 @@ export const useSuiteChat = create<Store>((set, get) => ({
         });
       } else {
         await streamSuiteChat({
-          suiteName: curr.suiteName,
-          suitePath: curr.suitePath,
-          planName: curr.planName,
-          cases: curr.cases,
+          suiteName: suite.suiteName,
+          suitePath: suite.suitePath,
+          planName: suite.planName,
+          cases: promptCases,
           history: priorMessages,
           newQuestion: text,
           keys,
@@ -388,40 +664,38 @@ export const useSuiteChat = create<Store>((set, get) => ({
           onText: appendDelta,
         });
       }
-      // Empty-stream guard: if the model returned nothing, leave a clear
-      // placeholder rather than a blank bubble.
       set((s) => {
-        const k = key(planId, suiteId);
-        const next = new Map(s.byKey);
-        const slice = next.get(k);
+        const next = new Map(s.byThread);
+        const slice = next.get(tk);
         if (!slice) return s;
         const messages = slice.messages.map((m) =>
           m.id === assistantId && m.content.length === 0
             ? { ...m, content: "(empty response)" }
             : m,
         );
-        next.set(k, { ...slice, messages, busy: false, activeClaudeRunId: null });
-        return { byKey: next };
+        next.set(tk, {
+          ...slice,
+          messages,
+          busy: false,
+          activeClaudeRunId: null,
+        });
+        return { byThread: next };
       });
-      // Final persist on stream complete — guarantees the latest content
-      // hits disk even if the throttle was holding pending writes.
-      schedulePersist(planId, suiteId, get, 50);
+      schedulePersist(planId, suiteId, threadId, get, 50);
+      // Bump this thread to the top of the switcher list.
+      void refreshThreadList(planId, suiteId, set);
     } catch (e) {
       const cancelled =
         typeof e === "object" &&
         e !== null &&
         (e as { kind?: string }).kind === "cancelled";
       if (!cancelled) console.error("[suite-chat] failed:", e);
-      // On error: drop the placeholder assistant message and surface the
-      // error banner so the user can resend after fixing the cause. The
-      // user's message stays in the thread.
       set((s) => {
-        const k = key(planId, suiteId);
-        const next = new Map(s.byKey);
-        const slice = next.get(k);
+        const next = new Map(s.byThread);
+        const slice = next.get(tk);
         if (!slice) return s;
         const messages = slice.messages.filter((m) => m.id !== assistantId);
-        next.set(k, {
+        next.set(tk, {
           ...slice,
           messages,
           busy: false,
@@ -434,40 +708,138 @@ export const useSuiteChat = create<Store>((set, get) => ({
               ? claudeErrorMessage(e) || adoErrorMessage(toAdoError(e))
               : String(e),
         });
-        return { byKey: next };
+        return { byThread: next };
       });
     }
   },
 
   setModel: (planId, suiteId, modelId) => {
-    patch(set, planId, suiteId, { modelId });
-    schedulePersist(planId, suiteId, get, 50);
+    const threadId =
+      get().activeThreadBySuite.get(suiteKey(planId, suiteId)) ??
+      DEFAULT_THREAD_ID;
+    patchThread(set, planId, suiteId, threadId, { modelId });
+    schedulePersist(planId, suiteId, threadId, get, 50);
+  },
+
+  markEditApplied: (planId, suiteId, messageId, blockHash, record) => {
+    const threadId =
+      get().activeThreadBySuite.get(suiteKey(planId, suiteId)) ??
+      DEFAULT_THREAD_ID;
+    const tk = threadKey(planId, suiteId, threadId);
+    set((s) => {
+      const next = new Map(s.byThread);
+      const slice = next.get(tk);
+      if (!slice) return s;
+      let touched = false;
+      const messages = slice.messages.map((m) => {
+        if (m.id !== messageId) return m;
+        touched = true;
+        const prior = m.appliedEdits ?? {};
+        return {
+          ...m,
+          appliedEdits: { ...prior, [blockHash]: record },
+        };
+      });
+      if (!touched) return s;
+      next.set(tk, { ...slice, messages });
+      return { byThread: next };
+    });
+    schedulePersist(planId, suiteId, threadId, get, 50);
+  },
+
+  clearEditApplied: (planId, suiteId, messageId, blockHash) => {
+    const threadId =
+      get().activeThreadBySuite.get(suiteKey(planId, suiteId)) ??
+      DEFAULT_THREAD_ID;
+    const tk = threadKey(planId, suiteId, threadId);
+    set((s) => {
+      const next = new Map(s.byThread);
+      const slice = next.get(tk);
+      if (!slice) return s;
+      let touched = false;
+      const messages = slice.messages.map((m) => {
+        if (m.id !== messageId) return m;
+        const prior = m.appliedEdits;
+        if (!prior || !(blockHash in prior)) return m;
+        touched = true;
+        const updated = { ...prior };
+        delete updated[blockHash];
+        const isEmpty = Object.keys(updated).length === 0;
+        return {
+          ...m,
+          appliedEdits: isEmpty ? undefined : updated,
+        };
+      });
+      if (!touched) return s;
+      next.set(tk, { ...slice, messages });
+      return { byThread: next };
+    });
+    schedulePersist(planId, suiteId, threadId, get, 50);
   },
 
   cancel: (planId, suiteId) => {
-    const curr = get().byKey.get(key(planId, suiteId));
+    const threadId =
+      get().activeThreadBySuite.get(suiteKey(planId, suiteId)) ??
+      DEFAULT_THREAD_ID;
+    const curr = get().byThread.get(threadKey(planId, suiteId, threadId));
     if (!curr?.busy) return;
     if (curr.activeClaudeRunId) {
       void cancelClaudeRun(curr.activeClaudeRunId).catch(() => {
-        patch(set, planId, suiteId, { busy: false, activeClaudeRunId: null });
+        patchThread(set, planId, suiteId, threadId, {
+          busy: false,
+          activeClaudeRunId: null,
+        });
       });
     } else {
-      // Vercel SDK path can't be cancelled cleanly; flip the UI back so the
-      // user can compose another message while the in-flight promise
-      // settles harmlessly in the background.
-      patch(set, planId, suiteId, { busy: false });
+      patchThread(set, planId, suiteId, threadId, { busy: false });
     }
   },
 
   clearMessages: (planId, suiteId) => {
-    patch(set, planId, suiteId, { messages: [], error: null });
-    // Hard-delete the persisted row when the user clears — leaving an
-    // empty row behind would just bloat the table and show up in any
-    // future "recent threads" view as a ghost entry.
-    void deleteChatThread({ planId, suiteId }).catch(() => {});
+    // "Clear" the active thread — wipes its messages but keeps the slot.
+    // The "New thread" button (newThread) is the right call when the user
+    // wants to preserve history. This path is left for explicit clears.
+    const threadId =
+      get().activeThreadBySuite.get(suiteKey(planId, suiteId)) ??
+      DEFAULT_THREAD_ID;
+    patchThread(set, planId, suiteId, threadId, {
+      messages: [],
+      error: null,
+      title: null,
+    });
+    void deleteChatThread({ planId, suiteId, threadId }).catch(() => {});
+    void refreshThreadList(planId, suiteId, set);
   },
 
   dismissError: (planId, suiteId) => {
-    patch(set, planId, suiteId, { error: null });
+    const threadId =
+      get().activeThreadBySuite.get(suiteKey(planId, suiteId)) ??
+      DEFAULT_THREAD_ID;
+    patchThread(set, planId, suiteId, threadId, { error: null });
   },
 }));
+
+/** Apply the suite's free-text filter to the case list before it's
+ *  serialized into the prompt. Matches against id, title, tags, and step
+ *  text so users can scope to "auth" or "#15310" or "rate-limit". Empty
+ *  filter = pass through unchanged. */
+function applyCaseFilter(cases: TestCase[], filter: string): TestCase[] {
+  const needle = filter.trim().toLowerCase();
+  if (!needle) return cases;
+  // Support `#123` as a hard id match.
+  const idMatch = needle.match(/^#(\d+)$/);
+  if (idMatch) {
+    const id = Number(idMatch[1]);
+    return cases.filter((c) => c.id === id);
+  }
+  return cases.filter((c) => {
+    if (String(c.id).includes(needle)) return true;
+    if (c.title.toLowerCase().includes(needle)) return true;
+    if (c.tags.some((t) => t.toLowerCase().includes(needle))) return true;
+    for (const step of c.steps) {
+      if (step.action.toLowerCase().includes(needle)) return true;
+      if (step.expected.toLowerCase().includes(needle)) return true;
+    }
+    return false;
+  });
+}

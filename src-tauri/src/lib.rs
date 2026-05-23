@@ -511,7 +511,9 @@ pub fn run() {
             chat_threads::chat_threads_save,
             chat_threads::chat_threads_get,
             chat_threads::chat_threads_delete,
+            chat_threads::chat_threads_delete_suite,
             chat_threads::chat_threads_list,
+            chat_threads::chat_threads_list_for_suite,
             // --- Generation history ---
             history::history_save_run,
             history::history_list_runs,

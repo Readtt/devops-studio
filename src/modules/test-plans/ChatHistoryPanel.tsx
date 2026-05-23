@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
-  AiBrain01Icon,
+  BubbleChatIcon,
   Cancel01Icon,
   FolderIcon,
   RefreshIcon,
@@ -22,20 +22,23 @@ import {
 import { useTestPlans } from "./hooks/useTestPlans";
 
 type Props = {
-  /** Opens (or focuses) a suite-chat tab for the given (planId, suiteId). */
+  /** Opens (or focuses) a suite-chat tab for the given (planId, suiteId).
+   *  The optional `threadId` selects which thread to make active; absent
+   *  threadId opens whatever thread is already active on that suite. */
   onOpenChat: (input: {
     planId: number;
     suiteId: number;
+    threadId?: string;
     title: string;
   }) => void;
 };
 
 /**
- * Persistent chat thread browser. Lists every (plan, suite) pair the user
- * has chatted about, newest-updated first. Threads resolve their plan +
- * suite names from the useTestPlans cache so we don't have to fan out an
- * ADO fetch per row — falls back to "#id" labels for threads whose plan
- * hasn't been browsed yet this session.
+ * Persistent chat thread browser. Lists every saved thread, newest-updated
+ * first. Since a suite can now host multiple parallel threads, each thread
+ * gets its own row (instead of one row per suite as in v1). The thread's
+ * title (auto-derived from the first user message or set explicitly in the
+ * chat pane) is the primary label; the suite/plan path is the subtitle.
  */
 export function ChatHistoryPanel({ onOpenChat }: Props) {
   const [threads, setThreads] = useState<StoredChatThread[] | null>(null);
@@ -80,15 +83,16 @@ export function ChatHistoryPanel({ onOpenChat }: Props) {
       return (
         row.planLabel.toLowerCase().includes(needle) ||
         row.suiteLabel.toLowerCase().includes(needle) ||
+        row.threadLabel.toLowerCase().includes(needle) ||
         row.preview.toLowerCase().includes(needle)
       );
     });
   }, [threads, planNameLookup, suiteNameLookup, needle]);
 
   const onDelete = useCallback(
-    async (planId: number, suiteId: number) => {
+    async (planId: number, suiteId: number, threadId: string) => {
       try {
-        await deleteChatThread({ planId, suiteId });
+        await deleteChatThread({ planId, suiteId, threadId });
         await refresh();
       } catch {
         // best-effort
@@ -152,10 +156,13 @@ export function ChatHistoryPanel({ onOpenChat }: Props) {
                     onOpenChat({
                       planId: row.planId,
                       suiteId: row.suiteId,
-                      title: `Chat: ${row.suiteLabel}`,
+                      threadId: row.threadId,
+                      title: `Chat: ${row.threadLabel}`,
                     })
                   }
-                  onDelete={() => void onDelete(row.planId, row.suiteId)}
+                  onDelete={() =>
+                    void onDelete(row.planId, row.suiteId, row.threadId)
+                  }
                 />
               </li>
             ))}
@@ -170,8 +177,12 @@ type LabeledRow = {
   key: string;
   planId: number;
   suiteId: number;
+  threadId: string;
   planLabel: string;
   suiteLabel: string;
+  /** Auto-derived label for the THREAD itself — first user message or
+   *  explicit title. Falls back to "Untitled chat" when nothing's stored. */
+  threadLabel: string;
   messageCount: number;
   preview: string;
   updatedAt: string;
@@ -190,12 +201,19 @@ function labelOf(
   const preview = firstUser
     ? firstUser.content.replace(/\s+/g, " ").trim()
     : "(no messages yet)";
+  const threadLabel =
+    t.title?.trim() ||
+    (firstUser
+      ? firstUser.content.replace(/\s+/g, " ").trim().slice(0, 60)
+      : "Untitled chat");
   return {
-    key: `${t.planId}:${t.suiteId}`,
+    key: `${t.planId}:${t.suiteId}:${t.threadId}`,
     planId: t.planId,
     suiteId: t.suiteId,
+    threadId: t.threadId,
     planLabel,
     suiteLabel,
+    threadLabel,
     messageCount: t.messages.length,
     preview,
     updatedAt: t.updatedAt,
@@ -221,18 +239,25 @@ function ThreadRow({
       >
         <div className="flex items-center gap-1.5 text-[11.5px] font-medium">
           <HugeiconsIcon
-            icon={FolderIcon}
+            icon={BubbleChatIcon}
             size={11}
             strokeWidth={1.75}
             className="shrink-0 text-foreground/70"
           />
-          <span className="truncate">{row.suiteLabel}</span>
+          <span className="truncate">{row.threadLabel}</span>
         </div>
-        <p className="mt-0.5 truncate text-[10.5px] text-muted-foreground">
-          {row.planLabel} · {row.messageCount} message
-          {row.messageCount === 1 ? "" : "s"}
-          {" · "}
-          {formatRelative(row.updatedAt)}
+        <p className="mt-0.5 flex items-center gap-1 truncate text-[10.5px] text-muted-foreground">
+          <HugeiconsIcon
+            icon={FolderIcon}
+            size={9}
+            strokeWidth={1.75}
+            className="shrink-0 opacity-60"
+          />
+          <span className="truncate">{row.suiteLabel}</span>
+          <span className="text-muted-foreground/55">·</span>
+          <span>{row.messageCount} msg{row.messageCount === 1 ? "" : "s"}</span>
+          <span className="text-muted-foreground/55">·</span>
+          <span>{formatRelative(row.updatedAt)}</span>
         </p>
         {row.preview ? (
           <p
@@ -271,7 +296,7 @@ function EmptyState() {
     <div className="flex flex-col items-center gap-2 px-4 py-8 text-center">
       <span className="inline-flex size-9 items-center justify-center rounded-full bg-foreground/[0.05] text-muted-foreground">
         <HugeiconsIcon
-          icon={AiBrain01Icon}
+          icon={BubbleChatIcon}
           size={16}
           strokeWidth={1.75}
         />
