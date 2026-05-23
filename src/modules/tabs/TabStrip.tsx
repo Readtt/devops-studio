@@ -1,10 +1,16 @@
-import { memo, useCallback, useRef } from "react";
+import { memo, useCallback, useMemo, useRef } from "react";
 import type { CSSProperties } from "react";
 import {
   Cancel01Icon,
   PinIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  useSortable,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import {
   Tooltip,
   TooltipContent,
@@ -13,6 +19,7 @@ import {
 import { cn } from "@/lib/utils";
 import type { AppTab, TabKind } from "./store/types";
 import { TabContextMenu } from "./TabContextMenu";
+import { tabDragId } from "./dnd/dndIds";
 
 type Props = {
   /** Tabs to render, in display order. Pinned-first sorting is the
@@ -34,9 +41,8 @@ type Props = {
 };
 
 /**
- * Horizontal strip of tab chips per leaf. Includes per-chip context menu,
- * pin icon, kind dot, middle-click close, and hover tooltip. No dnd yet
- * — Step 5 layers SortableContext on top.
+ * Horizontal strip of tab chips. Each chip is a dnd-kit sortable item.
+ * Cross-leaf drops are handled by the top-level DndProvider.
  */
 export const TabStrip = memo(function TabStrip({
   tabs,
@@ -49,7 +55,6 @@ export const TabStrip = memo(function TabStrip({
   onFocus,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const activeChipRef = useRef<HTMLDivElement | null>(null);
 
   const onWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
     const el = scrollRef.current;
@@ -59,15 +64,12 @@ export const TabStrip = memo(function TabStrip({
     el.scrollLeft += e.deltaY;
   }, []);
 
-  // Keep the active tab visible when it changes (cycling shortcuts can
-  // land on an offscreen chip).
-  const setActiveChipRef = useCallback((el: HTMLDivElement | null) => {
-    activeChipRef.current = el;
-    if (!el) return;
-    requestAnimationFrame(() => {
-      el.scrollIntoView({ inline: "nearest", block: "nearest" });
-    });
-  }, []);
+  // SortableContext expects a stable array of dnd ids. Encode "tab + leaf"
+  // so identical tab ids across leaves stay disambiguated.
+  const sortableIds = useMemo(
+    () => tabs.map((t) => tabDragId(t.id, leafId)),
+    [tabs, leafId],
+  );
 
   return (
     <div
@@ -77,23 +79,25 @@ export const TabStrip = memo(function TabStrip({
       className="tabs-scroll flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
     >
       {tabs.length === 0 ? (
-        <span className="px-2 text-[11px] text-muted-foreground">
-          No tabs
-        </span>
+        <span className="px-2 text-[11px] text-muted-foreground">No tabs</span>
       ) : (
-        tabs.map((t) => (
-          <TabChip
-            key={t.id}
-            tab={t}
-            leafId={leafId}
-            active={t.id === activeTabId}
-            focused={focused}
-            chipRefCallback={t.id === activeTabId ? setActiveChipRef : undefined}
-            onActivate={onActivate}
-            onClose={onClose}
-            onMiddleClick={onMiddleClick}
-          />
-        ))
+        <SortableContext
+          items={sortableIds}
+          strategy={horizontalListSortingStrategy}
+        >
+          {tabs.map((t) => (
+            <SortableTabChip
+              key={t.id}
+              tab={t}
+              leafId={leafId}
+              active={t.id === activeTabId}
+              focused={focused}
+              onActivate={onActivate}
+              onClose={onClose}
+              onMiddleClick={onMiddleClick}
+            />
+          ))}
+        </SortableContext>
       )}
     </div>
   );
@@ -104,58 +108,64 @@ type ChipProps = {
   leafId: string;
   active: boolean;
   focused: boolean;
-  chipRefCallback?: (el: HTMLDivElement | null) => void;
   onActivate: (tabId: number) => void;
   onClose: (tabId: number) => void;
   onMiddleClick?: (tabId: number) => void;
 };
 
-const TabChip = memo(function TabChip({
-  tab,
-  leafId,
-  active,
-  focused,
-  chipRefCallback,
-  onActivate,
-  onClose,
-  onMiddleClick,
-}: ChipProps) {
-  const onAuxClick = useCallback(
-    (e: React.MouseEvent) => {
-      if (e.button !== 1) return;
-      e.preventDefault();
-      if (tab.pinned) return; // middle-click skips pinned, matching browsers
-      onMiddleClick?.(tab.id);
-    },
-    [onMiddleClick, tab.id, tab.pinned],
-  );
+function SortableTabChip(props: ChipProps) {
+  const id = tabDragId(props.tab.id, props.leafId);
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id });
+
+  const style: CSSProperties = {
+    transform: CSS.Translate.toString(transform),
+    transition,
+    WebkitUserSelect: "none",
+    // Hide the sortable-source chip while it follows the cursor in the
+    // DragOverlay — feels nicer than two clones onscreen.
+    opacity: isDragging ? 0.35 : undefined,
+  };
 
   return (
-    <TabContextMenu tab={tab} leafId={leafId}>
+    <TabContextMenu tab={props.tab} leafId={props.leafId}>
       <Tooltip>
         <TooltipTrigger asChild>
           <div
-            ref={chipRefCallback}
-            onAuxClick={onAuxClick}
-            onClick={() => onActivate(tab.id)}
+            ref={setNodeRef}
+            style={style}
+            {...attributes}
+            {...listeners}
+            onAuxClick={(e) => {
+              if (e.button !== 1) return;
+              e.preventDefault();
+              if (props.tab.pinned) return;
+              props.onMiddleClick?.(props.tab.id);
+            }}
+            onClick={() => props.onActivate(props.tab.id)}
             className={cn(
               "group flex h-7 min-w-0 shrink-0 cursor-default items-center gap-1 rounded-md px-2 text-[11.5px] transition-colors",
-              active && focused
+              props.active && props.focused
                 ? "bg-foreground/[0.08] text-foreground"
-                : active
+                : props.active
                   ? "bg-foreground/[0.04] text-foreground"
                   : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground",
             )}
-            style={{ WebkitUserSelect: "none" } satisfies CSSProperties}
           >
             <span
               aria-hidden
               className={cn(
                 "h-[5px] w-[5px] shrink-0 rounded-full",
-                kindDotClass(tab.kind),
+                kindDotClass(props.tab.kind),
               )}
             />
-            {tab.pinned ? (
+            {props.tab.pinned ? (
               <HugeiconsIcon
                 icon={PinIcon}
                 size={9}
@@ -163,16 +173,27 @@ const TabChip = memo(function TabChip({
                 className="shrink-0 text-foreground/70"
               />
             ) : null}
-            <span className={cn("truncate", tab.pinned ? "max-w-[150px]" : "max-w-[220px]")}>
-              {tab.title}
+            <span
+              className={cn(
+                "truncate",
+                props.tab.pinned ? "max-w-[150px]" : "max-w-[220px]",
+              )}
+            >
+              {props.tab.title}
             </span>
-            {!tab.pinned ? (
+            {!props.tab.pinned ? (
               <button
                 type="button"
                 aria-label="Close tab"
+                onPointerDown={(e) => {
+                  // Stop the sortable's drag-listener from grabbing this
+                  // pointerdown — otherwise the close button is unclickable
+                  // because the chip starts dragging the moment you press.
+                  e.stopPropagation();
+                }}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onClose(tab.id);
+                  props.onClose(props.tab.id);
                 }}
                 className="ml-1 inline-flex size-4 items-center justify-center rounded text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
               >
@@ -182,12 +203,16 @@ const TabChip = memo(function TabChip({
           </div>
         </TooltipTrigger>
         <TooltipContent side="bottom" className="max-w-[420px] text-[11px]">
-          {describeTab(tab)}
+          {describeTab(props.tab)}
         </TooltipContent>
       </Tooltip>
     </TabContextMenu>
   );
-});
+}
+
+// Memoize the sortable chip so unrelated tabs don't re-render on every drag tick.
+const MemoizedChip = memo(SortableTabChip);
+export { MemoizedChip as TabChip };
 
 /**
  * 5px dot to the left of the title, color-coded by kind for at-a-glance

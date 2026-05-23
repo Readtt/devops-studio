@@ -34,6 +34,7 @@ import {
 } from "@/modules/generator";
 import { GeneratorCallbacksProvider } from "@/modules/generator/callbacksContext";
 import { PaneTreeRenderer } from "@/modules/tabs/PaneTreeRenderer";
+import { DndProvider as TabsDndProvider } from "@/modules/tabs/dnd/DndProvider";
 import { resolveSourcePath } from "@/modules/code-viewer/resolveSourcePath";
 import { ThemeProvider } from "@/modules/theme";
 import { UpdaterStatusPill, UpdaterToast, useUpdater } from "@/modules/updater";
@@ -937,11 +938,13 @@ function AppShell() {
                     />
                   )}
                   <GeneratorCallbacksProvider value={generatorCallbacks}>
-                    <PaneTreeRenderer
-                      node={paneTree}
-                      sourceRoot={sourceRoot}
-                      emptyState={workspaceEmptyState}
-                    />
+                    <TabsDndProvider>
+                      <PaneTreeRenderer
+                        node={paneTree}
+                        sourceRoot={sourceRoot}
+                        emptyState={workspaceEmptyState}
+                      />
+                    </TabsDndProvider>
                   </GeneratorCallbacksProvider>
                 </div>
               </ResizablePanel>
