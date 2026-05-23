@@ -6,11 +6,10 @@ import { useGenerationSession } from "../store/useGenerationSession";
 import { ChatMarkdown } from "@/components/ChatMarkdown";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  AiBrain01Icon,
+  ArrowUp01Icon,
+  BubbleChatIcon,
   Cancel01Icon,
-  MessageAdd01Icon,
   RefreshIcon,
-  SentIcon,
 } from "@hugeicons/core-free-icons";
 
 /**
@@ -66,19 +65,22 @@ export function ReviewChat() {
   };
 
   return (
-    <div className="pointer-events-none fixed bottom-4 right-4 z-40 flex flex-col items-end gap-2">
+    // Sits ABOVE the 28px bottom status bar — without this lift the FAB and
+    // the expanded panel cover the status bar (branch + ADO connection chip)
+    // making it unclickable. 44px = status bar (28px) + breathing room.
+    <div className="pointer-events-none fixed bottom-11 right-4 z-40 flex flex-col items-end gap-2">
       {open ? (
-        <div className="pointer-events-auto flex h-[460px] w-[360px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-lg border border-border/60 bg-card/95 shadow-2xl backdrop-blur-md">
+        <div className="pointer-events-auto flex h-[520px] w-[440px] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-6rem)] flex-col overflow-hidden rounded-lg border border-border/60 bg-card/95 shadow-2xl backdrop-blur-md">
           <header className="flex items-center gap-2 border-b border-border/40 bg-foreground/[0.03] px-3 py-2">
-            <span className="inline-flex size-6 items-center justify-center rounded-md bg-primary/15 text-primary">
-              <HugeiconsIcon icon={AiBrain01Icon} size={13} strokeWidth={1.75} />
+            <span className="inline-flex size-6 items-center justify-center rounded-md border border-border/60 bg-card/80 text-foreground/70">
+              <HugeiconsIcon icon={BubbleChatIcon} size={12} strokeWidth={1.75} />
             </span>
             <div className="min-w-0 flex-1">
               <p className="text-[11.5px] font-medium leading-none">
-                Ask the analyst
+                Ask about this draft
               </p>
               <p className="mt-0.5 text-[10px] text-muted-foreground">
-                Q&amp;A over this draft — won&apos;t edit anything.
+                Read-only — use Refine to actually change cases.
               </p>
             </div>
             <Tooltip>
@@ -221,7 +223,7 @@ export function ReviewChat() {
                     : "bg-foreground/[0.06] text-muted-foreground/55",
                 )}
               >
-                <HugeiconsIcon icon={SentIcon} size={11} strokeWidth={1.75} />
+                <HugeiconsIcon icon={ArrowUp01Icon} size={12} strokeWidth={2} />
               </button>
             </div>
           </div>
@@ -232,19 +234,17 @@ export function ReviewChat() {
         <TooltipTrigger asChild>
           <Button
             size="sm"
+            variant={open ? "outline" : "default"}
             onClick={() => setOpen((v) => !v)}
-            aria-label="Open analyst chat"
-            className={cn(
-              "pointer-events-auto h-9 gap-1.5 rounded-full px-3 shadow-lg transition-transform hover:scale-105",
-              open && "scale-95",
-            )}
+            aria-label={open ? "Hide ask panel" : "Ask about this draft"}
+            className="pointer-events-auto h-8 gap-1.5 rounded-md px-2.5 text-[11.5px] shadow-lg"
           >
             <HugeiconsIcon
-              icon={open ? Cancel01Icon : MessageAdd01Icon}
-              size={13}
+              icon={open ? Cancel01Icon : BubbleChatIcon}
+              size={12}
               strokeWidth={1.75}
             />
-            {open ? "" : "Ask"}
+            {open ? "Hide" : "Ask"}
           </Button>
         </TooltipTrigger>
         <TooltipContent side="left" className="text-[11px]">

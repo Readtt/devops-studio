@@ -39,15 +39,14 @@ import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  AiBrain01Icon,
   ArrowDown01Icon,
+  ArrowUp01Icon,
+  BubbleChatIcon,
   Cancel01Icon,
   Copy01Icon,
   FolderIcon,
-  GitBranchIcon,
   MessageAdd01Icon,
   RefreshIcon,
-  SentIcon,
   Settings01Icon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
@@ -357,6 +356,7 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
         }
         hasSource={!!sourceRoot}
         onPick={setDraft}
+        assistantProvider={activeModel?.provider ?? null}
       />
 
       {error ? (
@@ -443,23 +443,12 @@ function ChatHeader({
     <header className="flex shrink-0 flex-col gap-1.5 border-b border-border/60 bg-card/30 px-5 py-3 backdrop-blur-sm">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
-            <HugeiconsIcon
-              icon={AiBrain01Icon}
-              size={11}
-              strokeWidth={1.75}
-              className="text-primary"
-            />
-            <span className="font-mono uppercase tracking-wider">
-              suite chat
-            </span>
-          </div>
-          <h1 className="mt-0.5 flex items-baseline gap-1.5 text-[13px] font-semibold tracking-tight">
+          <h1 className="flex items-center gap-1.5 text-[13px] font-semibold tracking-tight">
             <HugeiconsIcon
               icon={FolderIcon}
               size={13}
               strokeWidth={1.75}
-              className="translate-y-0.5 shrink-0 text-foreground/70"
+              className="shrink-0 text-foreground/70"
             />
             <span className="min-w-0 truncate">
               {titleParts.map((p, i) => (
@@ -605,25 +594,20 @@ function ChatHeader({
                   : "text-amber-700 dark:text-amber-300",
               )}
             >
-              <HugeiconsIcon
-                icon={GitBranchIcon}
-                size={10}
-                strokeWidth={1.75}
-              />
               {sourceLabel ? (
                 <>
-                  source:{" "}
+                  code grounding:{" "}
                   <span className="font-mono">{sourceLabel}</span>
                 </>
               ) : (
-                "no source dir"
+                "code grounding off"
               )}
             </span>
           </TooltipTrigger>
           <TooltipContent side="bottom" className="text-[11px]">
             {sourceLabel
-              ? `Read/Glob/Grep available against this directory — the model can verify cases against actual code.`
-              : `Pick a source dir in Preferences to let the model verify cases against real code.`}
+              ? `Source directory set — the model can read code to verify cases.`
+              : `No source dir — pick one in Preferences to enable code-grounded answers.`}
           </TooltipContent>
         </Tooltip>
         {!sourceRoot ? (
@@ -677,6 +661,7 @@ function ChatThread({
   onEditUndone,
   hasSource,
   onPick,
+  assistantProvider,
 }: {
   casesLoading: boolean;
   cases: { id: number }[] | null;
@@ -694,6 +679,7 @@ function ChatThread({
   onEditUndone: (messageId: string, blockHash: string) => void;
   hasSource: boolean;
   onPick: (prompt: string) => void;
+  assistantProvider: import("@/modules/ai/config").ProviderId | null;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -824,6 +810,7 @@ function ChatThread({
             }
             onUndoEdit={onUndoEdit}
             onEditUndone={(blockHash) => onEditUndone(m.id, blockHash)}
+            assistantProvider={assistantProvider}
           />
         ))}
         <div ref={sentinelRef} aria-hidden className="h-1 w-full" />
@@ -865,6 +852,7 @@ function MessageBubble({
   onEditApplied,
   onUndoEdit,
   onEditUndone,
+  assistantProvider,
 }: {
   role: "user" | "assistant";
   content: string;
@@ -875,6 +863,7 @@ function MessageBubble({
   onEditApplied: (blockHash: string, record: AppliedEditRecord) => void;
   onUndoEdit: UndoEditHandler;
   onEditUndone: (blockHash: string) => void;
+  assistantProvider: import("@/modules/ai/config").ProviderId | null;
 }) {
   const [copied, setCopied] = useState(false);
   const onCopy = async () => {
@@ -902,13 +891,16 @@ function MessageBubble({
 
   return (
     <div className="flex items-start gap-2.5">
-      <div className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-full border border-primary/30 bg-primary/[0.08]">
-        <HugeiconsIcon
-          icon={AiBrain01Icon}
-          size={11}
-          strokeWidth={1.75}
-          className="text-primary"
-        />
+      <div className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-full border border-border/60 bg-card/80 text-foreground/70">
+        {assistantProvider ? (
+          <ProviderIcon provider={assistantProvider} size={11} />
+        ) : (
+          <HugeiconsIcon
+            icon={BubbleChatIcon}
+            size={11}
+            strokeWidth={1.75}
+          />
+        )}
       </div>
       <div className="group/msg relative min-w-0 flex-1 rounded-2xl rounded-tl-sm border border-border/45 bg-card/55 px-3.5 py-2.5">
         {content ? (
@@ -1073,9 +1065,9 @@ function Composer({
                   className="shrink-0"
                 >
                   <HugeiconsIcon
-                    icon={SentIcon}
-                    size={12}
-                    strokeWidth={1.75}
+                    icon={ArrowUp01Icon}
+                    size={13}
+                    strokeWidth={2}
                   />
                 </Button>
               </TooltipTrigger>
@@ -1120,12 +1112,7 @@ function Composer({
             <>
               <Dot />
               <span className="inline-flex items-center gap-1 truncate">
-                <HugeiconsIcon
-                  icon={GitBranchIcon}
-                  size={9}
-                  strokeWidth={1.75}
-                  className="shrink-0"
-                />
+                <span className="text-muted-foreground/70">code:</span>
                 <span className="truncate font-mono text-foreground/70">
                   {sourceLabel}
                 </span>
@@ -1208,22 +1195,14 @@ function Onboarding({
     ? SUGGESTED_PROMPTS_WITH_SOURCE
     : SUGGESTED_PROMPTS_NO_SOURCE;
   return (
-    <div className="rounded-xl border border-border/50 bg-gradient-to-br from-primary/[0.04] via-card/40 to-card/40 px-4 py-4">
-      <div className="flex items-center gap-2">
-        <HugeiconsIcon
-          icon={AiBrain01Icon}
-          size={14}
-          strokeWidth={1.75}
-          className="text-primary"
-        />
-        <p className="text-[13px] font-medium text-foreground/90">
-          Ask the analyst about this suite.
-        </p>
-      </div>
+    <div className="rounded-xl border border-border/50 bg-card/40 px-4 py-4">
+      <p className="text-[13px] font-medium text-foreground/90">
+        Ask about this suite.
+      </p>
       <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">
         The full case list is in scope.
         {hasSource
-          ? " Source directory is set — answers can reference real code via Read/Glob/Grep."
+          ? " Source directory is set — answers can reference real code."
           : " No source dir yet — answers will be limited to case-definition review."}
       </p>
       <div className="mt-2.5 flex flex-wrap gap-1.5">
