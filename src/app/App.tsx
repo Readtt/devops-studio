@@ -565,6 +565,36 @@ function AppShell() {
       "tab.jumpTo7": () => useTabsStore.getState().jumpToTabInFocusedLeaf(7),
       "tab.jumpTo8": () => useTabsStore.getState().jumpToTabInFocusedLeaf(8),
       "tab.jumpTo9": () => useTabsStore.getState().jumpToTabInFocusedLeaf(9),
+      "tab.moveToNextPane": () => {
+        const target = focusedActiveId();
+        if (target != null) useTabsStore.getState().moveTabToNextPane(target);
+      },
+      "tab.moveToPrevPane": () => {
+        const target = focusedActiveId();
+        if (target != null) useTabsStore.getState().moveTabToPrevPane(target);
+      },
+      "pane.splitRight": () => {
+        const focusedLeaf = useTabsStore.getState().focusedLeafId;
+        const target = focusedActiveId();
+        useTabsStore
+          .getState()
+          .splitLeaf(focusedLeaf, "horizontal", "after", target ?? undefined);
+      },
+      "pane.splitDown": () => {
+        const focusedLeaf = useTabsStore.getState().focusedLeafId;
+        const target = focusedActiveId();
+        useTabsStore
+          .getState()
+          .splitLeaf(focusedLeaf, "vertical", "after", target ?? undefined);
+      },
+      "pane.close": () =>
+        useTabsStore
+          .getState()
+          .closeLeaf(useTabsStore.getState().focusedLeafId),
+      "pane.focusLeft": () => useTabsStore.getState().focusDirection("left"),
+      "pane.focusRight": () => useTabsStore.getState().focusDirection("right"),
+      "pane.focusUp": () => useTabsStore.getState().focusDirection("up"),
+      "pane.focusDown": () => useTabsStore.getState().focusDirection("down"),
     },
     {
       // Don't hijack keystrokes while the user is typing — but the global

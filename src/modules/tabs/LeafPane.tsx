@@ -1,4 +1,5 @@
 import { memo, useCallback } from "react";
+import { useDroppable } from "@dnd-kit/core";
 import { cn } from "@/lib/utils";
 import {
   useFocusedLeafId,
@@ -8,6 +9,7 @@ import {
 import type { LeafNode } from "./store/types";
 import { TabStrip } from "./TabStrip";
 import { TabContent } from "./TabContent";
+import { leafCenterDropId } from "./dnd/dndIds";
 
 type Props = {
   leaf: LeafNode;
@@ -54,6 +56,13 @@ export const LeafPane = memo(function LeafPane({
     useTabsStore.getState().focusLeaf(leaf.id);
   }, [focusedLeafId, leaf.id]);
 
+  // Body-level droppable. When a tab is dragged from another leaf and the
+  // pointer ends over this leaf's body (not over any chip), the tab is
+  // appended to this leaf. isOver gives a subtle visual confirmation.
+  const { setNodeRef: setBodyRef, isOver: bodyOver } = useDroppable({
+    id: leafCenterDropId(leaf.id),
+  });
+
   return (
     <div
       className={cn(
@@ -82,7 +91,14 @@ export const LeafPane = memo(function LeafPane({
         </div>
       ) : null}
 
-      <div className="relative min-h-0 flex-1">
+      <div
+        ref={setBodyRef}
+        className={cn(
+          "relative min-h-0 flex-1",
+          bodyOver &&
+            "ring-2 ring-primary/40 ring-inset rounded-sm transition-shadow",
+        )}
+      >
         {tabs.length === 0
           ? emptyState
           : tabs.map((t) => {

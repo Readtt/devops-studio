@@ -11,7 +11,7 @@ import {
 } from "@dnd-kit/core";
 import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { useTabsStore } from "../store/useTabsStore";
-import { parseTabDragId } from "./dndIds";
+import { parseLeafCenterId, parseTabDragId } from "./dndIds";
 import type { AppTab } from "../store/types";
 import { findLeafByTab } from "../store/paneTreeOps";
 import { TabDragGhost } from "./TabDragGhost";
@@ -65,14 +65,23 @@ export function DndProvider({ children }: Props) {
         useTabsStore.getState().reorderInLeaf(srcLeaf.id, from, to);
         return;
       }
-      // Cross-leaf move — wired here so step 6's keyboard-created splits
-      // can already accept drags. Insert at the destination tab's index.
+      // Cross-leaf move. Insert at the destination tab's index.
       const dstLeaf = findLeafByTab(tree, dst.tabId);
       if (!dstLeaf) return;
       const insertAt = dstLeaf.tabIds.indexOf(dst.tabId);
       useTabsStore
         .getState()
         .moveTabToLeaf(src.tabId, dstLeaf.id, insertAt < 0 ? undefined : insertAt);
+      return;
+    }
+
+    // Drop into the body of a leaf (no specific tab as target) — append.
+    const centerLeafId = parseLeafCenterId(overId);
+    if (centerLeafId) {
+      const tree = useTabsStore.getState().paneTree;
+      const srcLeaf = findLeafByTab(tree, src.tabId);
+      if (!srcLeaf || srcLeaf.id === centerLeafId) return;
+      useTabsStore.getState().moveTabToLeaf(src.tabId, centerLeafId);
       return;
     }
   }, []);
