@@ -21,22 +21,19 @@ import {
   type GenerationBusyReason,
 } from "@/modules/settings/store";
 import {
-  BugStack,
   ChatHistoryPanel,
-  SuiteChatStack,
   StaleQueuePanel,
-  TestCaseStack,
   TestPlansPanel,
   useStaleCases,
 } from "@/modules/test-plans";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
-  GeneratorStack,
   GeneratorStoresProvider,
   GenerationHistoryPane,
   useGeneratorStoresApi,
 } from "@/modules/generator";
-import { CodeViewerStack } from "@/modules/code-viewer";
+import { GeneratorCallbacksProvider } from "@/modules/generator/callbacksContext";
+import { PaneTreeRenderer } from "@/modules/tabs/PaneTreeRenderer";
 import { resolveSourcePath } from "@/modules/code-viewer/resolveSourcePath";
 import { ThemeProvider } from "@/modules/theme";
 import { UpdaterStatusPill, UpdaterToast, useUpdater } from "@/modules/updater";
@@ -52,7 +49,6 @@ import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { getModel } from "@/modules/ai/config";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
-import type { Tab } from "@/modules/tabs/lib/useTabs";
 import {
   ROOT_LEAF_ID,
   useFocusedActiveTabId,
@@ -62,7 +58,6 @@ import {
 import type { GenerationSessionStore } from "@/modules/generator/store/useGenerationSession";
 import {
   AlertCircleIcon,
-  Cancel01Icon,
   FolderOpenIcon,
   GitBranchIcon,
   Settings01Icon,
@@ -167,27 +162,8 @@ function AppShell() {
   const tabs = useTabsArray();
   const activeId = useFocusedActiveTabId();
   const genStoresApi = useGeneratorStoresApi();
-  const genStoresRef = genStoresApi.ref;
   const setActiveId = useCallback((id: number | null) => {
     useTabsStore.getState().setActiveInLeaf(ROOT_LEAF_ID, id);
-  }, []);
-
-  // Tab strip horizontal scroll: the scrollbar is hidden because the strip
-  // shares its container with the window-drag region, and a visible bar
-  // there grabbed window-drag events instead of scrolling. Wheel scroll
-  // is translated to horizontal here so the user can still browse a long
-  // tab list with the trackpad / mouse.
-  const tabsScrollRef = useRef<HTMLDivElement | null>(null);
-  const activeTabRef = useRef<HTMLDivElement | null>(null);
-  const onTabsWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
-    const el = tabsScrollRef.current;
-    if (!el) return;
-    // Don't intercept already-horizontal wheels (shift+wheel on most
-    // mice, or trackpad two-finger horizontal swipes) — those are
-    // already going where the user expects.
-    if (e.deltaX !== 0) return;
-    if (e.deltaY === 0) return;
-    el.scrollLeft += e.deltaY;
   }, []);
 
   // Per-generator-tab Zustand stores. Each generator tab owns its own
@@ -237,20 +213,25 @@ function AppShell() {
     useTabsStore.getState().renameTab(tabId, title);
   }, []);
 
-  const closeTab = useCallback(
-    (id: number) => {
-      useTabsStore.getState().closeTab(id);
-      // GeneratorStoresProvider GCs the generator-tab store via a tabs-store
-      // subscriber; we just need to clear the local phase mirror.
+  // Clear the local phase mirror whenever a tab disappears from the store.
+  // The store itself does the actual close; this just keeps the auxiliary
+  // status-bar phase map from leaking entries for closed tabs.
+  useEffect(() => {
+    const unsub = useTabsStore.subscribe((state, prev) => {
+      if (state.tabs === prev.tabs) return;
       setGenSessionPhases((curr) => {
-        if (!(id in curr)) return curr;
-        const next = { ...curr };
-        delete next[id];
-        return next;
+        let mutated = false;
+        const next: typeof curr = {};
+        for (const [k, v] of Object.entries(curr)) {
+          const id = Number(k);
+          if (state.tabs[id]) next[id] = v;
+          else mutated = true;
+        }
+        return mutated ? next : curr;
       });
-    },
-    [],
-  );
+    });
+    return unsub;
+  }, []);
 
   const openTestCaseTab = useCallback(
     (input: { caseId: number; title: string }) => {
@@ -565,15 +546,8 @@ function AppShell() {
     return t && t.kind === "test-case" ? t.caseId : null;
   }, [activeId, tabs]);
 
-  // Keep the active tab in view as the user opens / closes tabs or
-  // cycles via shortcuts. Without this, the activated tab can sit
-  // offscreen when the strip overflows and the user has no visible
-  // scrollbar to find it with.
-  useEffect(() => {
-    const el = activeTabRef.current;
-    if (!el) return;
-    el.scrollIntoView({ inline: "nearest", block: "nearest" });
-  }, [activeId]);
+  // Keep-in-view of the active tab is handled inside TabStrip now (each
+  // leaf scrolls its own active chip into view on change).
 
   // What the active generator tab is doing right now (if the active tab IS
   // a generator). Used by StatusBarModelPicker to lock the model when the
@@ -604,11 +578,6 @@ function AppShell() {
       window.clearInterval(id);
     };
   }, []);
-
-  // Adapt the inline tab shape to the legacy `Tab` union so we can hand it
-  // to TestCaseStack / GeneratorStack unchanged. The structural shape on the
-  // kinds we use is identical; we just don't have terminal/editor/etc here.
-  const compatTabs = tabs as unknown as Tab[];
 
   // Install the production-only right-click guard. Lives in a shared helper
   // so settings/main.tsx can call the same thing.
@@ -697,9 +666,43 @@ function AppShell() {
       updater.status.kind === "downloading" ||
       updater.status.kind === "ready");
 
+  // Tab strip per-leaf now lives inside the workspace area; the header
+  // shrinks to drag region + source-dir + settings + window controls.
+  // Generator pane callbacks live in a context so TabContent can find them
+  // without prop-drilling through the recursive renderer.
+  const generatorCallbacks = useMemo(
+    () => ({
+      onOpenCase: openTestCaseTab,
+      onRenameTab: renameGeneratorTab,
+      onReportSession: reportGenSession,
+    }),
+    [openTestCaseTab, renameGeneratorTab, reportGenSession],
+  );
+
+  const workspaceEmptyState = useMemo(
+    () => (
+      <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+        <p className="text-[13px] font-medium">
+          Pick a test case or start a generation.
+        </p>
+        <p className="max-w-md text-[11.5px] text-muted-foreground">
+          Open a case from the Plans tree on the left, or click{" "}
+          <em>Generate</em> at the top of the panel to draft new cases from
+          your spec.
+        </p>
+      </div>
+    ),
+    [],
+  );
+
+  const paneTree = useTabsStore((s) => s.paneTree);
+
   return (
     <div className="relative flex h-screen flex-col overflow-hidden bg-background text-foreground">
-          {/* Top bar: drag region + tabs + settings + window controls */}
+          {/* Top bar: drag region + source dir + settings + window controls.
+              Tabs moved into the workspace (per-leaf strips) in the
+              tab/pane UX upgrade — gives each pane its own strip and
+              opens the room needed for drag-to-split. */}
           <header
             data-tauri-drag-region
             className={cn(
@@ -710,54 +713,10 @@ function AppShell() {
             )}
           >
             <div
-              ref={tabsScrollRef}
               data-tauri-drag-region
-              onWheel={onTabsWheel}
-              className="tabs-scroll flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
+              className="min-w-0 flex-1 px-2 text-[11px] text-muted-foreground"
             >
-              {tabs.length === 0 ? (
-                <span
-                  data-tauri-drag-region
-                  className="px-2 text-[11px] text-muted-foreground"
-                >
-                  DevOps Studio
-                </span>
-              ) : (
-                tabs.map((t) => {
-                  const active = t.id === activeId;
-                  return (
-                    <div
-                      key={t.id}
-                      ref={active ? activeTabRef : undefined}
-                      className={cn(
-                        "group flex h-7 min-w-0 shrink-0 items-center gap-1 rounded-md px-2 text-[11.5px] transition-colors",
-                        active
-                          ? "bg-foreground/[0.08] text-foreground"
-                          : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground",
-                      )}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => setActiveId(t.id)}
-                        className="max-w-[200px] truncate"
-                      >
-                        {t.title}
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Close tab"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          closeTab(t.id);
-                        }}
-                        className="ml-1 inline-flex size-4 items-center justify-center rounded text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-                      >
-                        <HugeiconsIcon icon={Cancel01Icon} size={10} strokeWidth={2} />
-                      </button>
-                    </div>
-                  );
-                })
-              )}
+              DevOps Studio
             </div>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -931,57 +890,13 @@ function AppShell() {
                       onDismiss={dismissToast}
                     />
                   )}
-                  {tabs.length === 0 ? (
-                    <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-                      <p className="text-[13px] font-medium">Pick a test case or start a generation.</p>
-                      <p className="max-w-md text-[11.5px] text-muted-foreground">
-                        Open a case from the Plans tree on the left, or click <em>Generate</em> at the
-                        top of the panel to draft new cases from your spec.
-                      </p>
-                    </div>
-                  ) : (
-                    <>
-                      {/* pointer-events-none on the wrappers so an empty stack
-                          (e.g. BugStack with no bug tabs open) doesn't sit on
-                          top of the workspace and absorb every click. The
-                          visible pane inside each Stack still captures events
-                          because pointer-events: none only suppresses on the
-                          element itself — descendants with default auto are
-                          still hit-testable. */}
-                      <div className="pointer-events-none absolute inset-0">
-                        <TestCaseStack tabs={compatTabs} activeId={activeId ?? -1} />
-                      </div>
-                      <div className="pointer-events-none absolute inset-0">
-                        <GeneratorStack
-                          tabs={compatTabs}
-                          activeId={activeId ?? -1}
-                          onOpenCase={openTestCaseTab}
-                          storesRef={genStoresRef}
-                          onRenameTab={renameGeneratorTab}
-                          onReportSession={reportGenSession}
-                        />
-                      </div>
-                      <div className="pointer-events-none absolute inset-0">
-                        <CodeViewerStack
-                          tabs={compatTabs}
-                          activeId={activeId ?? -1}
-                        />
-                      </div>
-                      <div className="pointer-events-none absolute inset-0">
-                        <BugStack
-                          tabs={compatTabs}
-                          activeId={activeId ?? -1}
-                          sourceRoot={sourceRoot}
-                        />
-                      </div>
-                      <div className="pointer-events-none absolute inset-0">
-                        <SuiteChatStack
-                          tabs={compatTabs}
-                          activeId={activeId ?? -1}
-                        />
-                      </div>
-                    </>
-                  )}
+                  <GeneratorCallbacksProvider value={generatorCallbacks}>
+                    <PaneTreeRenderer
+                      node={paneTree}
+                      sourceRoot={sourceRoot}
+                      emptyState={workspaceEmptyState}
+                    />
+                  </GeneratorCallbacksProvider>
                 </div>
               </ResizablePanel>
             </ResizablePanelGroup>
