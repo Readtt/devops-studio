@@ -10,6 +10,7 @@ import type { LeafNode } from "./store/types";
 import { TabStrip } from "./TabStrip";
 import { TabContent } from "./TabContent";
 import { leafCenterDropId } from "./dnd/dndIds";
+import { DropEdges } from "./dnd/DropEdges";
 
 type Props = {
   leaf: LeafNode;
@@ -99,6 +100,10 @@ export const LeafPane = memo(function LeafPane({
             "ring-2 ring-primary/40 ring-inset rounded-sm transition-shadow",
         )}
       >
+        {/* Drag-to-split edge zones. Only mounted during an active drag
+            so they don't block hit-tests on the underlying content when
+            the user isn't dragging. */}
+        <DropEdges leafId={leaf.id} />
         {tabs.length === 0
           ? emptyState
           : tabs.map((t) => {

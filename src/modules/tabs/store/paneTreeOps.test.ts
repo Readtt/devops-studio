@@ -135,6 +135,12 @@ describe("splitLeaf", () => {
     expect(newSibling.tabIds).toEqual([2]);
     expect(newSibling.id).toBe(newLeafId);
   });
+  it("collapses to a single leaf when the moved tab was the only tab", () => {
+    const tree = leaf("A", [42], 42);
+    const { tree: next } = splitLeaf(tree, "A", "horizontal", "after", 42);
+    expect(next.kind).toBe("leaf");
+    expect((next as { tabIds: number[] }).tabIds).toEqual([42]);
+  });
   it("flattens same-direction splits instead of nesting deeper", () => {
     const tree = leaf("A", [1, 2], 2);
     const r1 = splitLeaf(tree, "A", "horizontal", "after", 2);

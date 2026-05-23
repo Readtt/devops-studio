@@ -266,6 +266,16 @@ export function splitLeaf(
     };
     newLeaf.tabIds = [movedTabId];
     newLeaf.activeTabId = movedTabId;
+
+    // Edge case: the moved tab was the leaf's only tab. The "split"
+    // collapses to just the new sibling — keeping an empty source half
+    // would leave a useless 0-tab pane next to it.
+    if (remaining.length === 0) {
+      return {
+        tree: normalize(replaceNode(root, leafId, newLeaf)),
+        newLeafId: newLeaf.id,
+      };
+    }
   }
 
   // If the parent already splits in the same direction, just insert as a
