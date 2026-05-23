@@ -176,15 +176,10 @@
   }
 }
 
-:root {
-  --app-zoom: 1;
-}
-.zoom-content {
-  zoom: var(--app-zoom);
-}
-.zoom-exempt {
-  zoom: calc(1 / var(--app-zoom));
-}
+/* App-wide UI scale used to live here as a CSS `zoom` rule. Replaced
+ * by Tauri's native WebviewWindow.setZoom (see lib/useZoom.ts) — the
+ * native zoom reflows correctly without breaking Tauri drag regions
+ * or Radix portal positioning. */
 
 /* Custom window chrome (Linux/Windows): the OS gives us a transparent
  * borderless window, and we paint the rounded corners + border + shadow

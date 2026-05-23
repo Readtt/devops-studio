@@ -6,7 +6,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-import { Kbd, KbdGroup } from "@/components/ui/kbd";
+import { Kbd } from "@/components/ui/kbd";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowLeftRightIcon,
@@ -45,7 +45,7 @@ export const TabContextMenu = memo(function TabContextMenu({
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
-      <ContextMenuContent className="w-52">
+      <ContextMenuContent className="w-60 [&_[data-slot=context-menu-item]]:whitespace-nowrap">
         <ContextMenuItem
           icon={<HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />}
           onSelect={() => useTabsStore.getState().closeTab(tab.id)}
@@ -152,11 +152,8 @@ function ShortcutKbd({ id }: { id: ShortcutId }) {
   const b = getPrimaryBinding(id, userShortcuts);
   const tokens = getBindingTokens(b);
   if (tokens.length === 0) return null;
-  return (
-    <KbdGroup className="ml-auto">
-      {tokens.map((t, i) => (
-        <Kbd key={i}>{t}</Kbd>
-      ))}
-    </KbdGroup>
-  );
+  // Single chip with tokens joined — "Ctrl+Shift+W" reads naturally and
+  // fits a context-menu row even with 4 modifiers, where stacked chips
+  // overflowed the menu and wrapped the label.
+  return <Kbd className="ml-auto px-1.5">{tokens.join("+")}</Kbd>;
 }

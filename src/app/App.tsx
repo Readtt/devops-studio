@@ -779,7 +779,7 @@ function AppShell() {
   const paneTree = useTabsStore((s) => s.paneTree);
 
   return (
-    <div className="zoom-content relative flex h-screen flex-col overflow-hidden bg-background text-foreground">
+    <div className="relative flex h-screen flex-col overflow-hidden bg-background text-foreground">
           {/* Top bar: drag region + source dir + settings + window controls.
               Tabs moved into the workspace (per-leaf strips) in the
               tab/pane UX upgrade — gives each pane its own strip and
