@@ -453,7 +453,6 @@ function ProgressStrip({
 
 function InputPhase() {
   const requirements = useGenerationSession((s) => s.requirements);
-  const changesets = useGenerationSession((s) => s.changesets);
   const mode = useGenerationSession((s) => s.mode);
   const planId = useGenerationSession((s) => s.planId);
   const suiteId = useGenerationSession((s) => s.suiteId);
@@ -461,7 +460,6 @@ function InputPhase() {
   const attachments = useGenerationSession((s) => s.attachments);
   const overrideModelId = useGenerationSession((s) => s.overrideModelId);
   const setRequirements = useGenerationSession((s) => s.setRequirements);
-  const setChangesets = useGenerationSession((s) => s.setChangesets);
   const setMode = useGenerationSession((s) => s.setMode);
   const setTarget = useGenerationSession((s) => s.setTarget);
   const setAllowCodeSearch = useGenerationSession((s) => s.setAllowCodeSearch);
@@ -621,7 +619,9 @@ function InputPhase() {
               value={requirements}
               onChange={(e) => setRequirements(e.target.value)}
               onPaste={onPaste}
-              placeholder="Paste the Asana task / Jira ticket / spec wiki here. Drop files or paste images directly — the analyzer reads them along with the spec."
+              placeholder={
+                "Paste the Asana task / Jira ticket / spec wiki here. Drop files or paste images directly — the analyzer reads them along with the spec.\n\nIf you have changeset notes (commit messages, PR description, diff, ADO changeset URL), paste them at the bottom — the analyzer uses them to narrow scope."
+              }
               rows={10}
               className="w-full resize-y bg-transparent px-2.5 py-2 font-mono text-[11.5px] leading-relaxed outline-none focus:ring-2 focus:ring-ring/30"
             />
@@ -664,50 +664,6 @@ function InputPhase() {
               onRemove={removeAttachment}
             />
           </div>
-          {/* Changeset / scope notes — collapsed by default to keep the input
-              uncluttered. Pasting in commit messages / PR descriptions /
-              ADO changeset links tells the analyst what actually changed so
-              it can skip writing full coverage for a style-only edit. The
-              prompt treats this as POSSIBLY INCOMPLETE so missing changesets
-              still get coverage from the spec. */}
-          <details className="mt-2 rounded-md border border-border/40 bg-card/40">
-            <summary className="flex cursor-pointer list-none items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-muted-foreground hover:text-foreground">
-              <HugeiconsIcon
-                icon={ArrowRight01Icon}
-                size={9}
-                strokeWidth={1.75}
-                className="transition-transform [details[open]>summary>&]:rotate-90"
-              />
-              Changesets / scope notes
-              {changesets.trim().length > 0 ? (
-                <span className="rounded-sm bg-primary/15 px-1.5 py-px font-mono text-[9.5px] text-primary">
-                  in use
-                </span>
-              ) : null}
-              <span className="ml-auto font-mono text-[10px] text-muted-foreground/60">
-                optional
-              </span>
-            </summary>
-            <div className="border-t border-border/40 px-2.5 py-2">
-              <p className="mb-1.5 text-[10.5px] leading-relaxed text-muted-foreground">
-                Paste commit messages, PR description, raw diff, or ADO
-                changeset links. The analyzer uses this to narrow scope —
-                style-only edits won&apos;t get full functional coverage.
-                Treated as possibly incomplete; uncovered work from the spec
-                still gets cases.
-              </p>
-              <textarea
-                value={changesets}
-                onChange={(e) => setChangesets(e.target.value)}
-                placeholder={
-                  "e.g. PR #482: refactor login form CSS only — no validation\n" +
-                  "or paste a diff / changeset URL"
-                }
-                rows={4}
-                className="w-full resize-y rounded-sm border border-border/40 bg-input/40 px-2 py-1.5 font-mono text-[11px] leading-relaxed outline-none focus:ring-2 focus:ring-ring/30"
-              />
-            </div>
-          </details>
           {ingestErrors.length > 0 ? (
             <div className="mt-1.5 flex items-start gap-1.5 rounded-md border border-destructive/30 bg-destructive/[0.06] px-2 py-1.5">
               <ul className="flex min-w-0 flex-1 flex-col gap-0.5 text-[10.5px] text-destructive">
