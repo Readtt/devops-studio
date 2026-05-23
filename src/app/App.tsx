@@ -53,7 +53,7 @@ import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
 import {
   ROOT_LEAF_ID,
   useFocusedActiveTabId,
-  useTabsArray,
+  useTab,
   useTabsStore,
 } from "@/modules/tabs/store/useTabsStore";
 import { findLeaf } from "@/modules/tabs/store/paneTreeOps";
@@ -170,8 +170,11 @@ function AppShell() {
     void initPrefs();
   }, [initPrefs]);
 
-  const tabs = useTabsArray();
+  // Subscribe per-cell: the activeId selector emits a single number, the
+  // active tab selector emits one object. Unrelated tab churn (closing a
+  // tab in another pane, renaming, dragging) doesn't re-render AppShell.
   const activeId = useFocusedActiveTabId();
+  const activeTab = useTab(activeId);
   const genStoresApi = useGeneratorStoresApi();
   const setActiveId = useCallback((id: number | null) => {
     useTabsStore.getState().setActiveInLeaf(ROOT_LEAF_ID, id);
@@ -617,11 +620,8 @@ function AppShell() {
 
   // Currently-selected case id (derived from active tab), so the test-plans
   // panel can highlight the row matching what's on screen.
-  const activeCaseId = useMemo(() => {
-    if (activeId === null) return null;
-    const t = tabs.find((tab) => tab.id === activeId);
-    return t && t.kind === "test-case" ? t.caseId : null;
-  }, [activeId, tabs]);
+  const activeCaseId =
+    activeTab && activeTab.kind === "test-case" ? activeTab.caseId : null;
 
   // Keep-in-view of the active tab is handled inside TabStrip now (each
   // leaf scrolls its own active chip into view on change).
@@ -630,12 +630,10 @@ function AppShell() {
   // a generator). Used by StatusBarModelPicker to lock the model when the
   // user is in a draft / refining — outside any GenerationSessionProvider,
   // so we read from the lifted phase map by activeId.
-  const activeGenSessionInfo = useMemo(() => {
-    if (activeId === null) return null;
-    const t = tabs.find((tab) => tab.id === activeId);
-    if (!t || t.kind !== "generator") return null;
-    return genSessionPhases[activeId] ?? null;
-  }, [activeId, tabs, genSessionPhases]);
+  const activeGenSessionInfo =
+    activeTab && activeTab.kind === "generator" && activeId !== null
+      ? (genSessionPhases[activeId] ?? null)
+      : null;
 
   const [adoConfigured, setAdoConfigured] = useState(false);
   useEffect(() => {
@@ -891,7 +889,9 @@ function AppShell() {
                           // Dedup first: if a generator tab is already open
                           // for this draft, openGeneratorTab activates it
                           // and we never spin up a second store.
-                          const existing = tabs.find(
+                          const existing = Object.values(
+                            useTabsStore.getState().tabs,
+                          ).find(
                             (t) =>
                               t.kind === "generator" && t.runId === run.id,
                           );
@@ -916,7 +916,9 @@ function AppShell() {
                           // Same dedup as draft re-open. If the user has the
                           // session for this run already open, just activate
                           // it instead of spinning up a parallel done-view.
-                          const existing = tabs.find(
+                          const existing = Object.values(
+                            useTabsStore.getState().tabs,
+                          ).find(
                             (t) =>
                               t.kind === "generator" && t.runId === run.id,
                           );
