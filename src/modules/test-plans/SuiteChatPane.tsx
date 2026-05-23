@@ -40,21 +40,21 @@ import { MODELS, type ModelId } from "@/modules/ai/config";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { useChatStore } from "@/modules/ai/store/chatStore";
-import { selectEngine } from "@/modules/ai/lib/engine";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
-import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowDown01Icon,
-  ArrowUp01Icon,
+  ArrowTurnUpIcon,
   BubbleChatIcon,
   Cancel01Icon,
   Copy01Icon,
+  Delete02Icon,
+  Edit02Icon,
   FolderIcon,
   MessageAdd01Icon,
   RefreshIcon,
-  Settings01Icon,
+  Search01Icon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { useSuiteChat } from "./hooks/useSuiteChat";
@@ -349,19 +349,6 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
 
   const activeModelId = modelId ?? globalModelId;
   const activeModel = MODELS.find((m) => m.id === activeModelId);
-  const sourceLabel = sourceRoot
-    ? sourceRoot.split(/[\\/]/).filter(Boolean).slice(-1)[0] || sourceRoot
-    : null;
-  // Real code grounding requires BOTH a source dir AND the Claude Agent
-  // SDK (it's the only engine wired to Read/Glob/Grep). BYOK (Vercel SDK)
-  // can't issue tool calls in this codebase, so even with a sourceRoot
-  // set, BYOK users only get spec-level review. The header chip used to
-  // claim grounding whenever sourceRoot was set — misleading for BYOK.
-  const codeGroundingActive = (() => {
-    if (!sourceRoot) return false;
-    const sel = selectEngine(activeModelId);
-    return sel.engine === "claude-agent-sdk" && sel.active;
-  })();
   const titleParts = [...suitePath, suiteName ?? `#${suiteId}`];
   // How many cases the model will actually see after the filter is applied —
   // gives the user instant feedback when they narrow scope on a big suite.
@@ -404,9 +391,6 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
         scopedCount={scopedCount}
         filter={filter}
         onFilterChange={(v) => setFilter(planId, suiteId, v)}
-        sourceLabel={sourceLabel}
-        sourceRoot={sourceRoot}
-        codeGroundingActive={codeGroundingActive}
         modelId={modelId}
         activeModel={activeModel}
         activeModelId={activeModelId}
@@ -492,10 +476,7 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
             ? "Ask about these cases…  (Enter to send · Shift+Enter for newline)"
             : "Loading cases…"
         }
-        sourceLabel={sourceLabel}
         modelLabel={activeModel?.label ?? activeModelId}
-        sourceMissing={!sourceRoot}
-        onOpenSettings={() => void openSettingsWindow("general")}
       />
     </div>
   );
@@ -514,9 +495,6 @@ function ChatHeader({
   scopedCount,
   filter,
   onFilterChange,
-  sourceLabel,
-  sourceRoot,
-  codeGroundingActive,
   modelId,
   activeModel,
   activeModelId,
@@ -541,9 +519,6 @@ function ChatHeader({
   scopedCount: number;
   filter: string;
   onFilterChange: (v: string) => void;
-  sourceLabel: string | null;
-  sourceRoot: string | null;
-  codeGroundingActive: boolean;
   modelId: ModelId | null;
   activeModel: { label: string } | undefined;
   activeModelId: ModelId;
@@ -685,70 +660,77 @@ function ChatHeader({
           </Tooltip>
         </div>
       </div>
+      {/* Row 2 — case count + search. We deliberately keep this row light:
+          the test-plan tree, the model picker, and the bottom status bar
+          all carry their own signals. Here we only show what the user can
+          DO on this chat: see how many cases are in scope, and narrow that
+          scope with search when the suite is big. The "code grounding"
+          chip used to live here too — removed because the model picker
+          already shows the active provider, and the source-dir state is
+          a global concern that belongs in Preferences, not in every
+          chat header. */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-muted-foreground">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="inline-flex items-center gap-1">
-              {casesLoading ? (
-                "Loading cases…"
-              ) : cases ? (
-                <>
-                  <span
-                    className={cn(
-                      "font-medium",
-                      filter.trim() ? "text-primary" : "text-foreground/85",
-                    )}
-                  >
-                    {filter.trim() ? scopedCount : cases.length}
-                  </span>{" "}
-                  case{(filter.trim() ? scopedCount : cases.length) === 1 ? "" : "s"}
-                  {filter.trim() ? (
-                    <span className="text-muted-foreground/70">
-                      {" "}
-                      / {cases.length} scoped
-                    </span>
-                  ) : null}
-                  {truncated ? (
-                    <span className="text-amber-700 dark:text-amber-300">
-                      {" "}
-                      ({cases.length} of {totalCases} loaded)
-                    </span>
-                  ) : null}
-                </>
-              ) : (
-                "—"
-              )}
-            </span>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="text-[11px]">
-            {truncated
-              ? `Loaded the first ${cases?.length ?? 0} of ${totalCases} cases. Use the filter to narrow the prompt context for very large suites.`
-              : filter.trim()
-                ? `Filter "${filter.trim()}" narrows the prompt to ${scopedCount} of ${cases?.length ?? 0} loaded cases.`
-                : `Number of cases currently fed into the chat as context.`}
-          </TooltipContent>
-        </Tooltip>
-        {/* Inline filter — passes a tiny needle into the prompt builder so
-            big suites stay tractable. Matches id, title, tag, and step
-            text; `#123` does an exact id lookup. */}
-        {cases && cases.length > 0 ? (
+        <span className="inline-flex items-center gap-1">
+          {casesLoading ? (
+            "Loading cases…"
+          ) : cases ? (
+            <>
+              <span
+                className={cn(
+                  "font-medium tabular-nums",
+                  filter.trim() ? "text-primary" : "text-foreground/85",
+                )}
+              >
+                {filter.trim() ? scopedCount : cases.length}
+              </span>{" "}
+              case{(filter.trim() ? scopedCount : cases.length) === 1 ? "" : "s"}
+              {filter.trim() ? (
+                <span className="text-muted-foreground/70">
+                  {" "}
+                  matching · {cases.length} in suite
+                </span>
+              ) : truncated ? (
+                <span className="text-amber-700 dark:text-amber-300">
+                  {" "}
+                  · {totalCases - cases.length} more not loaded
+                </span>
+              ) : null}
+            </>
+          ) : (
+            "—"
+          )}
+        </span>
+        {/* Search input — a friendly affordance with leading magnifier icon
+            and clear, plain-English placeholder. Replaces the older
+            "filter cases (#123, auth, totp…)" chip which read like a
+            magic-syntax box. The matching logic still accepts `#123` for
+            an exact id but the placeholder text reads as a normal search. */}
+        {cases && cases.length > 5 ? (
           <div className="relative inline-flex items-center">
+            <HugeiconsIcon
+              icon={Search01Icon}
+              size={10}
+              strokeWidth={1.75}
+              className="pointer-events-none absolute left-1.5 text-muted-foreground/70"
+            />
             <input
               value={filter}
               onChange={(e) => onFilterChange(e.target.value)}
-              placeholder="filter cases (#123, auth, totp…)"
+              placeholder="Search cases…"
+              aria-label="Search cases in this suite"
+              title="Type any keyword to narrow what the AI sees — title, step text, tag, or #id."
               className={cn(
-                "h-6 w-[200px] rounded-md border bg-background/60 px-2 pr-6 text-[10.5px] outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-ring/30",
+                "h-6 w-[220px] rounded-md border bg-background/60 pl-6 pr-6 text-[11px] outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-ring/30",
                 filter.trim()
-                  ? "border-primary/40 bg-primary/[0.04] text-primary"
-                  : "border-border/60",
+                  ? "border-primary/40 bg-primary/[0.04] text-primary placeholder:text-primary/55"
+                  : "border-border/60 placeholder:text-muted-foreground/65",
               )}
             />
             {filter.trim() ? (
               <button
                 type="button"
                 onClick={() => onFilterChange("")}
-                aria-label="Clear filter"
+                aria-label="Clear search"
                 className="absolute right-1 grid size-4 place-items-center rounded-sm text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground"
               >
                 <HugeiconsIcon
@@ -759,58 +741,6 @@ function ChatHeader({
               </button>
             ) : null}
           </div>
-        ) : null}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span
-              className={cn(
-                "inline-flex items-center gap-1",
-                codeGroundingActive
-                  ? "text-foreground/85"
-                  : "text-amber-700 dark:text-amber-300",
-              )}
-            >
-              {codeGroundingActive ? (
-                <>
-                  code grounding:{" "}
-                  <span className="font-mono">{sourceLabel}</span>
-                </>
-              ) : sourceLabel ? (
-                "code grounding off (engine)"
-              ) : (
-                "code grounding off"
-              )}
-            </span>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="text-[11px]">
-            {codeGroundingActive
-              ? `Claude Code is wired to Read/Glob/Grep against ${sourceLabel} — the model can verify cases against actual source.`
-              : sourceLabel
-                ? `Source directory is set but the active model uses the BYOK provider path, which doesn't expose filesystem tools. Pick a Claude model (and connect Claude Code) to enable code-grounded answers.`
-                : `No source dir — pick one in Preferences to enable code-grounded answers.`}
-          </TooltipContent>
-        </Tooltip>
-        {!sourceRoot ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                size="xs"
-                variant="ghost"
-                onClick={() => void openSettingsWindow("general")}
-                className="h-5 gap-1 px-1.5 text-[10.5px] text-primary"
-              >
-                <HugeiconsIcon
-                  icon={Settings01Icon}
-                  size={10}
-                  strokeWidth={1.75}
-                />
-                set
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="text-[11px]">
-              Pick a source directory to enable code-grounded answers
-            </TooltipContent>
-          </Tooltip>
         ) : null}
       </div>
     </header>
@@ -1158,10 +1088,7 @@ function Composer({
   busy,
   disabled,
   hint,
-  sourceLabel,
-  sourceMissing,
   modelLabel,
-  onOpenSettings,
 }: {
   draft: string;
   onChange: (v: string) => void;
@@ -1170,10 +1097,7 @@ function Composer({
   busy: boolean;
   disabled: boolean;
   hint: string;
-  sourceLabel: string | null;
-  sourceMissing: boolean;
   modelLabel: string;
-  onOpenSettings: () => void;
 }) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -1245,7 +1169,7 @@ function Composer({
                   className="shrink-0"
                 >
                   <HugeiconsIcon
-                    icon={ArrowUp01Icon}
+                    icon={ArrowTurnUpIcon}
                     size={13}
                     strokeWidth={2}
                   />
@@ -1272,33 +1196,6 @@ function Composer({
             <span className="text-muted-foreground/70">model</span>{" "}
             <span className="font-medium text-foreground/85">{modelLabel}</span>
           </span>
-          {sourceMissing ? (
-            <>
-              <Dot />
-              <button
-                type="button"
-                onClick={onOpenSettings}
-                className="inline-flex items-center gap-1 text-amber-700 underline-offset-2 hover:underline dark:text-amber-300"
-              >
-                <HugeiconsIcon
-                  icon={Settings01Icon}
-                  size={9}
-                  strokeWidth={1.75}
-                />
-                set source dir
-              </button>
-            </>
-          ) : sourceLabel ? (
-            <>
-              <Dot />
-              <span className="inline-flex items-center gap-1 truncate">
-                <span className="text-muted-foreground/70">code:</span>
-                <span className="truncate font-mono text-foreground/70">
-                  {sourceLabel}
-                </span>
-              </span>
-            </>
-          ) : null}
         </div>
       </div>
     </div>
@@ -1321,13 +1218,19 @@ function Dot() {
 // Thread switcher
 // ---------------------------------------------------------------------------
 
+/** How many threads we show in the chip's popover before sending the user
+ *  to the full chats sidebar. Keep this small — the popover is for "switch
+ *  between the chats I'm actively juggling on this suite", not for browsing
+ *  the entire archive. */
+const THREAD_SWITCHER_LIMIT = 5;
+
 /**
  * Compact thread switcher chip. Shows the active thread's label (auto-
  * derived from the first user message or a user-set title) plus a count
- * pill. Clicking opens a popover with every other thread on this suite,
- * each with rename / delete affordances. Adding a new thread is wired
- * through the dedicated "+" icon next to this — keeping the popover
- * focused on selection makes the action surface clearer.
+ * pill. Clicking opens a small popover with the most recently-updated
+ * threads on this suite — each row has labelled Rename and Delete buttons,
+ * not naked icons. A "See all chats" footer hands off to the sidebar's
+ * chats tab when the user wants to dig past the recent few.
  */
 function ThreadSwitcher({
   threadList,
@@ -1349,10 +1252,10 @@ function ThreadSwitcher({
   onRenameThread: (threadId: string, title: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  // Build the rendered list. If we don't have the current thread in the
-  // store yet (e.g. brand-new thread that hasn't persisted), still show it
-  // at the top so the user can see "what I'm in right now".
-  const list = (() => {
+  // Build the rendered list. If the current thread hasn't been persisted
+  // yet (brand new + first user message hasn't sent), still surface it at
+  // the top so the user can see "what I'm in right now".
+  const fullList = (() => {
     const has = threadList.some((t) => t.threadId === activeThreadId);
     if (has) return threadList;
     return [
@@ -1365,68 +1268,104 @@ function ThreadSwitcher({
       ...threadList,
     ];
   })();
+  // Active first, then most-recent. Capped — see THREAD_SWITCHER_LIMIT.
+  const sorted = [...fullList].sort((a, b) => {
+    if (a.threadId === activeThreadId) return -1;
+    if (b.threadId === activeThreadId) return 1;
+    return b.updatedAt.localeCompare(a.updatedAt);
+  });
+  const list = sorted.slice(0, THREAD_SWITCHER_LIMIT);
+  const overflowCount = Math.max(0, fullList.length - list.length);
   const label =
     currentThreadTitle ||
-    list.find((t) => t.threadId === activeThreadId)?.title ||
+    fullList.find((t) => t.threadId === activeThreadId)?.title ||
     (currentThreadMessageCount === 0 ? "New chat" : "Untitled chat");
+
+  const openChatsTab = () => {
+    // The sidebar listens for this and switches its active view. Same
+    // event the rest of the app uses for cross-pane navigation.
+    window.dispatchEvent(
+      new CustomEvent("devops-studio:switch-sidebar-view", {
+        detail: { view: "chat-history" },
+      }),
+    );
+    setOpen(false);
+  };
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className="inline-flex h-7 max-w-[200px] items-center gap-1.5 truncate rounded-md border border-border/60 bg-card/60 px-2 text-[11px] text-foreground/85 hover:bg-foreground/[0.04]"
-          title="Switch chat thread"
-        >
-          <HugeiconsIcon
-            icon={BubbleChatIcon}
-            size={11}
-            strokeWidth={1.75}
-            className="shrink-0 text-foreground/60"
-          />
-          <span className="truncate">{label}</span>
-          {list.length > 1 ? (
-            <span className="ml-0.5 rounded-sm bg-foreground/[0.08] px-1 py-px text-[9px] font-medium text-muted-foreground">
-              {list.length}
-            </span>
-          ) : null}
-          <HugeiconsIcon
-            icon={ArrowDown01Icon}
-            size={10}
-            strokeWidth={1.75}
-            className="shrink-0 text-muted-foreground/60"
-          />
-        </button>
-      </PopoverTrigger>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              aria-label="Switch chat thread"
+              className="inline-flex h-7 max-w-[220px] items-center gap-1.5 truncate rounded-md border border-border/60 bg-card/60 px-2 text-[11px] text-foreground/85 hover:bg-foreground/[0.04]"
+            >
+              <HugeiconsIcon
+                icon={BubbleChatIcon}
+                size={11}
+                strokeWidth={1.75}
+                className="shrink-0 text-foreground/60"
+              />
+              <span className="truncate">{label}</span>
+              {fullList.length > 1 ? (
+                <span className="ml-0.5 rounded-sm bg-foreground/[0.08] px-1 py-px text-[9px] font-medium text-muted-foreground">
+                  {fullList.length}
+                </span>
+              ) : null}
+              <HugeiconsIcon
+                icon={ArrowDown01Icon}
+                size={10}
+                strokeWidth={1.75}
+                className="shrink-0 text-muted-foreground/60"
+              />
+            </button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="text-[11px]">
+          Switch between chat threads on this suite
+        </TooltipContent>
+      </Tooltip>
       <PopoverContent
         align="start"
         side="bottom"
-        className="w-[300px] p-0"
+        // Tighter corners (rounded-sm) match the editor density of the
+        // rest of the app — the default rounded-md popover felt like an
+        // iOS sheet next to the boxier toolbar above it.
+        className="w-[320px] overflow-hidden rounded-sm p-0"
       >
-        <div className="flex items-center justify-between border-b border-border/40 px-2.5 py-1.5">
+        <div className="flex items-center justify-between border-b border-border/40 bg-foreground/[0.02] px-2.5 py-1.5">
           <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-            Threads · {list.length}
+            Recent threads
           </span>
-          <button
-            type="button"
-            onClick={() => {
-              onNewThread();
-              setOpen(false);
-            }}
-            className="inline-flex items-center gap-1 rounded-sm border border-border/60 bg-card/80 px-1.5 py-0.5 text-[10px] text-foreground/85 hover:border-primary/40 hover:bg-primary/[0.06] hover:text-primary"
-          >
-            <HugeiconsIcon
-              icon={MessageAdd01Icon}
-              size={10}
-              strokeWidth={1.75}
-            />
-            New
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => {
+                  onNewThread();
+                  setOpen(false);
+                }}
+                className="inline-flex items-center gap-1 rounded-sm border border-border/60 bg-card/80 px-1.5 py-0.5 text-[10px] font-medium text-foreground/85 hover:border-primary/40 hover:bg-primary/[0.06] hover:text-primary"
+              >
+                <HugeiconsIcon
+                  icon={MessageAdd01Icon}
+                  size={10}
+                  strokeWidth={1.75}
+                />
+                New thread
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-[11px]">
+              Start a fresh thread on this suite — the current one stays.
+            </TooltipContent>
+          </Tooltip>
         </div>
-        <ul className="max-h-[280px] overflow-y-auto py-1">
+        <ul className="max-h-[260px] overflow-y-auto py-0.5">
           {list.length === 0 ? (
-            <li className="px-2.5 py-2 text-[10.5px] text-muted-foreground">
-              No threads on this suite yet.
+            <li className="px-2.5 py-3 text-center text-[10.5px] text-muted-foreground">
+              No threads yet.
             </li>
           ) : null}
           {list.map((t) => (
@@ -1434,7 +1373,7 @@ function ThreadSwitcher({
               key={t.threadId}
               thread={t}
               active={t.threadId === activeThreadId}
-              canDelete={list.length > 1}
+              canDelete={fullList.length > 1}
               onSelect={() => {
                 onSwitchThread(t.threadId);
                 setOpen(false);
@@ -1444,6 +1383,20 @@ function ThreadSwitcher({
             />
           ))}
         </ul>
+        {overflowCount > 0 ? (
+          <button
+            type="button"
+            onClick={openChatsTab}
+            className="flex w-full items-center justify-between border-t border-border/40 bg-foreground/[0.02] px-2.5 py-1.5 text-[10.5px] text-muted-foreground transition-colors hover:bg-foreground/[0.05] hover:text-foreground"
+          >
+            <span>
+              + {overflowCount} more thread{overflowCount === 1 ? "" : "s"}
+            </span>
+            <span className="font-medium text-foreground/85">
+              See all chats →
+            </span>
+          </button>
+        ) : null}
       </PopoverContent>
     </Popover>
   );
@@ -1474,9 +1427,7 @@ function ThreadRow({
     <li
       className={cn(
         "group flex items-center gap-1.5 px-2 py-1.5 transition-colors",
-        active
-          ? "bg-primary/[0.07]"
-          : "hover:bg-foreground/[0.04]",
+        active ? "bg-primary/[0.07]" : "hover:bg-foreground/[0.04]",
       )}
     >
       {editing ? (
@@ -1496,13 +1447,19 @@ function ThreadRow({
               setEditing(false);
             }
           }}
-          className="min-w-0 flex-1 rounded-sm border border-primary/50 bg-background/80 px-1.5 py-0.5 text-[11px] outline-none"
+          placeholder="Name this thread…"
+          className="min-w-0 flex-1 rounded-sm border border-primary/50 bg-background/80 px-1.5 py-0.5 text-[11px] outline-none focus:ring-1 focus:ring-ring/30"
         />
       ) : (
         <button
           type="button"
           onClick={onSelect}
           className="min-w-0 flex-1 text-left"
+          title={
+            active
+              ? "Currently active thread"
+              : "Click to switch to this thread"
+          }
         >
           <div className="flex items-center gap-1.5">
             <span
@@ -1527,31 +1484,62 @@ function ThreadRow({
         </button>
       )}
       {!editing ? (
-        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setEditing(true);
-            }}
-            aria-label="Rename thread"
-            className="grid size-5 place-items-center rounded-sm text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground"
-          >
-            <HugeiconsIcon icon={FolderIcon} size={9} strokeWidth={1.75} />
-          </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              if (!canDelete) return;
-              onDelete();
-            }}
-            disabled={!canDelete}
-            aria-label="Delete thread"
-            className="grid size-5 place-items-center rounded-sm text-muted-foreground hover:bg-destructive/15 hover:text-destructive disabled:opacity-30"
-          >
-            <HugeiconsIcon icon={Cancel01Icon} size={9} strokeWidth={2} />
-          </button>
+        // Per-row action buttons. They DO have tooltips now (the old
+        // FolderIcon-as-rename was inscrutable). On non-hover state we
+        // keep them visible at 60% opacity so users discover them
+        // immediately instead of having to mouseover-and-hope.
+        <div className="flex shrink-0 items-center gap-0.5 opacity-60 transition-opacity group-hover:opacity-100">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setEditing(true);
+                }}
+                aria-label="Rename thread"
+                className="grid size-5 place-items-center rounded-sm text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground"
+              >
+                <HugeiconsIcon
+                  icon={Edit02Icon}
+                  size={10}
+                  strokeWidth={1.75}
+                />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="text-[11px]">
+              Rename this thread
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (!canDelete) return;
+                  if (!window.confirm("Delete this thread permanently?")) {
+                    return;
+                  }
+                  onDelete();
+                }}
+                disabled={!canDelete}
+                aria-label="Delete thread"
+                className="grid size-5 place-items-center rounded-sm text-muted-foreground hover:bg-destructive/15 hover:text-destructive disabled:opacity-30"
+              >
+                <HugeiconsIcon
+                  icon={Delete02Icon}
+                  size={10}
+                  strokeWidth={1.75}
+                />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="text-[11px]">
+              {canDelete
+                ? "Delete this thread permanently"
+                : "At least one thread must remain"}
+            </TooltipContent>
+          </Tooltip>
         </div>
       ) : null}
     </li>

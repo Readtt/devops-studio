@@ -429,6 +429,24 @@ function AppShell() {
   }, []);
 
   const sidebarRef = useRef<PanelImperativeHandle | null>(null);
+
+  // Cross-pane sidebar nav. The thread switcher's "See all chats" footer
+  // dispatches this so the user lands in the Chats sidebar view in one
+  // click. Any other pane that wants to do the same can fire the event.
+  useEffect(() => {
+    const onSwitch = (e: Event) => {
+      const detail = (e as CustomEvent<{ view: SidebarViewId }>).detail;
+      if (detail?.view) {
+        persistSidebarView(detail.view);
+        // Make sure the sidebar panel is actually expanded — collapsed
+        // sidebar would land the user on a hidden view.
+        sidebarRef.current?.expand?.();
+      }
+    };
+    window.addEventListener("devops-studio:switch-sidebar-view", onSwitch);
+    return () =>
+      window.removeEventListener("devops-studio:switch-sidebar-view", onSwitch);
+  }, [persistSidebarView]);
   const sidebarWidthRef = useRef(readSidebarWidth());
   const sidebarWidthWriteTimerRef = useRef(0);
   const persistSidebarWidth = useCallback((next: number) => {

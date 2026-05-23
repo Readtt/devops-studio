@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 import {
-  AiBrain01Icon,
   AlertCircleIcon,
+  BubbleChatIcon,
   Clock01Icon,
   TaskDone01Icon,
 } from "@hugeicons/core-free-icons";
@@ -34,7 +34,7 @@ export function SidebarRail({ activeView, onSelectView, staleCount }: Props) {
       badge: staleCount,
     },
     { id: "history", label: "History", icon: Clock01Icon },
-    { id: "chat-history", label: "Chats", icon: AiBrain01Icon },
+    { id: "chat-history", label: "Chats", icon: BubbleChatIcon },
   ];
 
   return (
