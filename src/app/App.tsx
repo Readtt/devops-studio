@@ -30,14 +30,18 @@ import {
   useStaleCases,
 } from "@/modules/test-plans";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { GeneratorStack, GenerationHistoryPane } from "@/modules/generator";
+import {
+  GeneratorStack,
+  GeneratorStoresProvider,
+  GenerationHistoryPane,
+  useGeneratorStoresApi,
+} from "@/modules/generator";
 import { CodeViewerStack } from "@/modules/code-viewer";
 import { resolveSourcePath } from "@/modules/code-viewer/resolveSourcePath";
 import { ThemeProvider } from "@/modules/theme";
 import { UpdaterStatusPill, UpdaterToast, useUpdater } from "@/modules/updater";
 import {
   createGenerationSessionStore,
-  type GenerationSessionStore,
   type SessionState,
 } from "@/modules/generator/store/useGenerationSession";
 import { useSourceDirGitInfo } from "@/modules/git";
@@ -49,6 +53,13 @@ import { useChatStore } from "@/modules/ai/store/chatStore";
 import { getModel } from "@/modules/ai/config";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
 import type { Tab } from "@/modules/tabs/lib/useTabs";
+import {
+  ROOT_LEAF_ID,
+  useFocusedActiveTabId,
+  useTabsArray,
+  useTabsStore,
+} from "@/modules/tabs/store/useTabsStore";
+import type { GenerationSessionStore } from "@/modules/generator/store/useGenerationSession";
 import {
   AlertCircleIcon,
   Cancel01Icon,
@@ -132,57 +143,34 @@ function readSidebarView(): SidebarViewId {
   return "test-plans";
 }
 
-type AppTab =
-  | {
-      id: number;
-      kind: "test-case";
-      title: string;
-      caseId: number;
-    }
-  | {
-      id: number;
-      kind: "generator";
-      title: string;
-      initialPlanId: number | null;
-      initialSuiteId: number | null;
-      /** History runId this tab is bound to. Set when the tab is opened
-       *  via "Open in review" (or later as the live session reaches review
-       *  and assigns its own runId). Used to dedup re-opens — clicking
-       *  "Open in review" on the same draft twice activates the existing
-       *  tab instead of stacking a duplicate. */
-      runId: string | null;
-    }
-  | {
-      id: number;
-      kind: "code-viewer";
-      title: string;
-      path: string;
-      startLine?: number;
-      endLine?: number;
-    }
-  | {
-      id: number;
-      kind: "bug";
-      title: string;
-      bugId: number;
-    }
-  | {
-      id: number;
-      kind: "suite-chat";
-      title: string;
-      planId: number;
-      suiteId: number;
-    };
+// AppTab shape lives in src/modules/tabs/store/types.ts and is consumed
+// here as `Tab` (re-exported from src/modules/tabs/lib/useTabs).
 
 export default function App() {
+  return (
+    <ThemeProvider>
+      <TooltipProvider>
+        <GeneratorStoresProvider>
+          <AppShell />
+        </GeneratorStoresProvider>
+      </TooltipProvider>
+    </ThemeProvider>
+  );
+}
+
+function AppShell() {
   const initPrefs = usePreferencesStore((s) => s.init);
   useEffect(() => {
     void initPrefs();
   }, [initPrefs]);
 
-  const [tabs, setTabs] = useState<AppTab[]>([]);
-  const [activeId, setActiveId] = useState<number | null>(null);
-  const nextIdRef = useRef(1);
+  const tabs = useTabsArray();
+  const activeId = useFocusedActiveTabId();
+  const genStoresApi = useGeneratorStoresApi();
+  const genStoresRef = genStoresApi.ref;
+  const setActiveId = useCallback((id: number | null) => {
+    useTabsStore.getState().setActiveInLeaf(ROOT_LEAF_ID, id);
+  }, []);
 
   // Tab strip horizontal scroll: the scrollbar is hidden because the strip
   // shares its container with the window-drag region, and a visible bar
@@ -204,10 +192,8 @@ export default function App() {
 
   // Per-generator-tab Zustand stores. Each generator tab owns its own
   // session state — no more singleton-store trampling when the user has
-  // two drafts in flight. The map is a ref because React state would cause
-  // the GeneratorStack to thrash on every tab open/close even though the
-  // store identities are stable.
-  const genStoresRef = useRef<Map<number, GenerationSessionStore>>(new Map());
+  // two drafts in flight. The map lives in GeneratorStoresProvider so it
+  // survives tab moves between panes (each store keyed by tabId, not pane).
 
   // Mirror of each generator tab's current phase + isRefining, so the
   // status-bar model picker (outside Provider scope) can lock when the
@@ -242,150 +228,78 @@ export default function App() {
       // Sync the tab's stored runId so "Open in review" dedup works once
       // the live session has actually committed to a runId (set on first
       // analyze). No-op when the value hasn't changed.
-      setTabs((curr) => {
-        const idx = curr.findIndex(
-          (t) => t.id === tabId && t.kind === "generator",
-        );
-        if (idx < 0) return curr;
-        const t = curr[idx];
-        if (t.kind !== "generator" || t.runId === next.runId) return curr;
-        const out = curr.slice();
-        out[idx] = { ...t, runId: next.runId };
-        return out;
-      });
+      useTabsStore.getState().updateGeneratorRunId(tabId, next.runId);
     },
     [],
   );
 
   const renameGeneratorTab = useCallback((tabId: number, title: string) => {
-    setTabs((curr) => {
-      const idx = curr.findIndex((t) => t.id === tabId && t.kind === "generator");
-      if (idx < 0) return curr;
-      if (curr[idx].title === title) return curr;
-      const next = curr.slice();
-      next[idx] = { ...next[idx], title };
-      return next;
-    });
+    useTabsStore.getState().renameTab(tabId, title);
   }, []);
 
-  const closeTab = useCallback((id: number) => {
-    setTabs((curr) => {
-      const idx = curr.findIndex((t) => t.id === id);
-      if (idx < 0) return curr;
-      const next = curr.filter((t) => t.id !== id);
-      setActiveId((a) => {
-        if (a !== id) return a;
-        if (next.length === 0) return null;
-        const replacement = next[Math.max(0, idx - 1)];
-        return replacement.id;
+  const closeTab = useCallback(
+    (id: number) => {
+      useTabsStore.getState().closeTab(id);
+      // GeneratorStoresProvider GCs the generator-tab store via a tabs-store
+      // subscriber; we just need to clear the local phase mirror.
+      setGenSessionPhases((curr) => {
+        if (!(id in curr)) return curr;
+        const next = { ...curr };
+        delete next[id];
+        return next;
       });
-      return next;
-    });
-    // Tear down any per-tab generator state so a closed tab doesn't keep
-    // listening to refine results or hold its drafts in memory forever.
-    if (genStoresRef.current.has(id)) {
-      genStoresRef.current.delete(id);
-    }
-    setGenSessionPhases((curr) => {
-      if (!(id in curr)) return curr;
-      const next = { ...curr };
-      delete next[id];
-      return next;
-    });
-  }, []);
+    },
+    [],
+  );
 
   const openTestCaseTab = useCallback(
     (input: { caseId: number; title: string }) => {
-      let target: number | null = null;
-      setTabs((curr) => {
-        const existing = curr.find(
-          (t) => t.kind === "test-case" && t.caseId === input.caseId,
-        );
-        if (existing) {
-          target = existing.id;
-          return curr.map((t) =>
-            t.id === existing.id ? { ...t, title: input.title } : t,
-          );
-        }
-        const id = nextIdRef.current++;
-        target = id;
-        return [
-          ...curr,
-          { id, kind: "test-case", title: input.title, caseId: input.caseId },
-        ];
+      const id = useTabsStore.getState().openTab({
+        kind: "test-case",
+        caseId: input.caseId,
+        title: input.title,
       });
-      if (target !== null) setActiveId(target);
-      return target as number | null;
+      // Refresh the title on re-open (ADO title may have changed).
+      useTabsStore.getState().renameTab(id, input.title);
+      return id;
     },
     [],
   );
 
   const openBugTab = useCallback(
     (input: { bugId: number; title: string }) => {
-      let target: number | null = null;
-      setTabs((curr) => {
-        const existing = curr.find(
-          (t) => t.kind === "bug" && t.bugId === input.bugId,
-        );
-        if (existing) {
-          target = existing.id;
-          return curr.map((t) =>
-            t.id === existing.id ? { ...t, title: input.title } : t,
-          );
-        }
-        const id = nextIdRef.current++;
-        target = id;
-        return [
-          ...curr,
-          { id, kind: "bug", title: input.title, bugId: input.bugId },
-        ];
+      const id = useTabsStore.getState().openTab({
+        kind: "bug",
+        bugId: input.bugId,
+        title: input.title,
       });
-      if (target !== null) setActiveId(target);
-      return target as number | null;
+      useTabsStore.getState().renameTab(id, input.title);
+      return id;
     },
     [],
   );
 
   const openSuiteChatTab = useCallback(
     (input: { planId: number; suiteId: number; title: string }) => {
-      let target: number | null = null;
-      setTabs((curr) => {
-        // Dedup by (planId, suiteId) so a second right-click → "Chat with
-        // cases" on the same suite activates the existing thread instead
-        // of spinning up a parallel one.
-        const existing = curr.find(
-          (t) =>
-            t.kind === "suite-chat" &&
-            t.planId === input.planId &&
-            t.suiteId === input.suiteId,
-        );
-        if (existing) {
-          target = existing.id;
-          return curr.map((t) =>
-            t.id === existing.id ? { ...t, title: input.title } : t,
-          );
-        }
-        const id = nextIdRef.current++;
-        target = id;
-        return [
-          ...curr,
-          {
-            id,
-            kind: "suite-chat",
-            title: input.title,
-            planId: input.planId,
-            suiteId: input.suiteId,
-          },
-        ];
+      const id = useTabsStore.getState().openTab({
+        kind: "suite-chat",
+        planId: input.planId,
+        suiteId: input.suiteId,
+        title: input.title,
       });
-      if (target !== null) setActiveId(target);
-      return target as number | null;
+      useTabsStore.getState().renameTab(id, input.title);
+      return id;
     },
     [],
   );
 
   const openCodeViewerTab = useCallback(
-    (input: { path: string; startLine?: number; endLine?: number; title?: string }) => {
+    (input: {
+      path: string;
+      startLine?: number;
+      endLine?: number;
+      title?: string;
+    }) => {
       // Bug code refs and analyst Read entries arrive as relative paths
       // (e.g. "src/auth/sms.ts"). The Rust fs_read_file handler treats
       // whatever it gets literally, so resolving against the user's
@@ -398,36 +312,21 @@ export default function App() {
           ? `${base}:${input.startLine}${input.endLine && input.endLine !== input.startLine ? `–${input.endLine}` : ""}`
           : base;
       };
-      let target: number | null = null;
-      let reused = false;
-      setTabs((curr) => {
-        const existing = curr.find(
-          (t) =>
-            t.kind === "code-viewer" &&
-            t.path === absPath &&
-            t.startLine === input.startLine &&
-            t.endLine === input.endLine,
-        );
-        if (existing) {
-          target = existing.id;
-          reused = true;
-          return curr;
-        }
-        const id = nextIdRef.current++;
-        target = id;
-        return [
-          ...curr,
-          {
-            id,
-            kind: "code-viewer",
-            title: input.title ?? titleFor(absPath),
-            path: absPath,
-            startLine: input.startLine,
-            endLine: input.endLine,
-          },
-        ];
+      const existingTabs = useTabsStore.getState().tabs;
+      const reused = Object.values(existingTabs).some(
+        (t) =>
+          t.kind === "code-viewer" &&
+          t.path === absPath &&
+          t.startLine === input.startLine &&
+          t.endLine === input.endLine,
+      );
+      const id = useTabsStore.getState().openTab({
+        kind: "code-viewer",
+        path: absPath,
+        startLine: input.startLine,
+        endLine: input.endLine,
+        title: input.title ?? titleFor(absPath),
       });
-      if (target !== null) setActiveId(target);
       // When the tab is reused, props don't change so React's effect won't
       // re-run the scroll + pulse. Nudge the pane via a window event so
       // re-clicking the same chip still lands the user on the right line.
@@ -442,7 +341,7 @@ export default function App() {
           }),
         );
       }
-      return target as number | null;
+      return id;
     },
     [],
   );
@@ -464,47 +363,41 @@ export default function App() {
       const requestedSuiteId = input?.suiteId ?? null;
       const requestedRunId = input?.runId ?? null;
 
-      // Dedup: if this open is bound to a known runId AND a generator tab
-      // for that runId already exists, switch to it. Prevents the user
-      // from accidentally stacking the same draft over and over.
+      // Dedup by runId is handled by the store's openTab when runId is set.
+      // For un-bound tabs we always create a fresh one (per the original
+      // contract — multiple drafts in parallel is intentional).
       if (requestedRunId) {
-        const existing = tabs.find(
+        const existing = Object.values(useTabsStore.getState().tabs).find(
           (t) => t.kind === "generator" && t.runId === requestedRunId,
         );
         if (existing) {
-          setActiveId(existing.id);
+          useTabsStore
+            .getState()
+            .setActiveInLeaf(ROOT_LEAF_ID, existing.id);
           return existing.id;
         }
       }
 
-      const id = nextIdRef.current++;
-      // Always create a new isolated session store. Multi-tab generation
-      // is now a first-class workflow — each +Generate click opens its own
-      // independent draft.
+      // Build the per-tab Zustand store BEFORE registering the tab so its
+      // initial state can already reflect the hydrate target.
       const store = input?.hydrateFrom ?? createGenerationSessionStore();
-      genStoresRef.current.set(id, store);
-      // Seed the target if the caller provided one. Skip on hydrateFrom
-      // (the loaded draft already carries plan/suite).
-      if (!input?.hydrateFrom) {
-        if (requestedPlanId !== null) {
-          store.getState().setTarget(requestedPlanId, requestedSuiteId);
-        }
+      if (!input?.hydrateFrom && requestedPlanId !== null) {
+        store.getState().setTarget(requestedPlanId, requestedSuiteId);
       }
-      setTabs((curr) => [
-        ...curr,
-        {
-          id,
-          kind: "generator",
-          title: deriveGeneratorTabTitle(store.getState()),
-          initialPlanId: requestedPlanId,
-          initialSuiteId: requestedSuiteId,
-          runId: requestedRunId ?? store.getState().runId ?? null,
-        },
-      ]);
-      setActiveId(id);
+
+      const id = useTabsStore.getState().openTab({
+        kind: "generator",
+        title: deriveGeneratorTabTitle(store.getState()),
+        initialPlanId: requestedPlanId,
+        initialSuiteId: requestedSuiteId,
+        runId: requestedRunId ?? store.getState().runId ?? null,
+      });
+      // Bind the store to the new tab id (or refresh if the runId-dedup
+      // path above didn't already activate an existing one).
+      genStoresApi.attach(id, store);
       return id;
     },
-    [tabs],
+    [genStoresApi],
   );
 
   const [sidebarView, setSidebarView] = useState<SidebarViewId>(readSidebarView);
@@ -805,9 +698,7 @@ export default function App() {
       updater.status.kind === "ready");
 
   return (
-    <ThemeProvider>
-      <TooltipProvider>
-        <div className="relative flex h-screen flex-col overflow-hidden bg-background text-foreground">
+    <div className="relative flex h-screen flex-col overflow-hidden bg-background text-foreground">
           {/* Top bar: drag region + tabs + settings + window controls */}
           <header
             data-tauri-drag-region
@@ -1167,9 +1058,7 @@ export default function App() {
             onOpenHistory={() => persistSidebarView("history")}
           />
 
-        </div>
-      </TooltipProvider>
-    </ThemeProvider>
+    </div>
   );
 }
 

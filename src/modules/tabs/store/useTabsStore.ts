@@ -23,7 +23,7 @@ import {
   walkLeaves,
 } from "./paneTreeOps";
 
-const ROOT_LEAF_ID = "root";
+export const ROOT_LEAF_ID = "root";
 const RECENTLY_CLOSED_LIMIT = 10;
 
 export type OpenTabInput =
