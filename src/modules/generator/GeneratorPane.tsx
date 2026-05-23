@@ -287,7 +287,11 @@ export function GeneratorPane({
   });
 
   return (
-    <div className="flex h-full flex-col bg-background">
+    // `relative` so the ReviewChat side drawer can position itself against
+    // this container instead of the viewport. Drawer-style instead of a
+    // floating FAB means it never overlaps the bottom status bar or the
+    // progress strip.
+    <div className="relative flex h-full flex-col bg-background">
       <ProgressStrip phase={phase} />
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-4xl px-5 py-4">
@@ -299,6 +303,12 @@ export function GeneratorPane({
           {phase === "error" && <ErrorPhase />}
         </div>
       </div>
+      {/* Lift ReviewChat to a GeneratorPane child (was inside ReviewPhase).
+          As a sibling of the scroll container, the drawer can be absolutely
+          positioned against the relative outer div — staying pinned while
+          the user scrolls the review content, and naturally bounded so it
+          never covers the bottom status bar. */}
+      {phase === "review" ? <ReviewChat /> : null}
     </div>
   );
 }
@@ -1767,12 +1777,8 @@ function ReviewPhase({
       <div className="mt-3 border-t border-dashed border-border/40 pt-3">
         <RefineComposer isRefining={isRefining} />
       </div>
-
-      {/* Floating Q&A — anchored to the viewport's bottom-right so it sits
-          over the review content without competing for layout space. The
-          chat is purely informational; refine remains the way to push
-          changes into the draft. */}
-      <ReviewChat />
+      {/* ReviewChat (Ask) now docks as a right-side drawer rendered at the
+          GeneratorPane root — see GeneratorPane.tsx. */}
     </div>
   );
 }
