@@ -9,7 +9,7 @@
 // the more useful one here because the file-system tools let the model
 // validate test cases against the real codebase.
 
-import { generateText, streamText } from "ai";
+import { generateText, stepCountIs, streamText } from "ai";
 import { getModel, type ModelId } from "@/modules/ai/config";
 import { buildLanguageModel } from "@/modules/ai/lib/agent";
 import { runClaudeQuery, type ClaudeEvent } from "@/modules/ai/lib/claude";
@@ -17,6 +17,7 @@ import type { ClaudeAuthMode } from "@/modules/ai/lib/engine";
 import { getKey } from "@/modules/ai/lib/keyring";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import type { TestCase } from "@/modules/ado";
+import { buildSuiteChatTools } from "./suiteChatTools";
 
 /** Persisted record of an ADO edit that the user applied from this message.
  *  Keyed in `SuiteChatMessage.appliedEdits` by a content hash of the
@@ -129,10 +130,13 @@ Rules for edit blocks:
 
 WHAT YOU HAVE
 - Every case in the suite (id, title, steps, expected results, description).
-- The user's working source directory (when set) accessible via the Read,
-  Glob, and Grep tools. USE THEM to validate that cases actually map to
-  real code paths, that assertions match actual function behavior, and to
-  surface coverage gaps you can see by walking the code.
+- The user's working source directory (when set) accessible via a set of
+  read-only filesystem tools — the Claude CLI engine exposes them as
+  Read / Glob / Grep, and the BYOK provider engine exposes them as
+  read_file / list_files / grep. Behaviour is the same either way:
+  read files, list paths, regex-search. USE THEM to validate that cases
+  actually map to real code paths, that assertions match actual function
+  behaviour, and to surface coverage gaps you can see by walking the code.
 
 WHAT YOU DON'T HAVE
 - The ability to RUN the tests. If the user asks "do these all pass", say
@@ -152,11 +156,11 @@ HOW TO ANSWER
   \`path/to/file.ext:START-END\`. The UI renders these as clickable chips
   that jump straight into the in-app code viewer ("step 3 expects a 403,
   but src/auth/loginController.ts:42 returns 401"). Only write a path
-  you actually read with Read/Glob/Grep.
+  you actually read with the fs tools.
 - For "review against the code" requests:
     1. Identify the code paths the case claims to exercise (read the steps
        + the case description).
-    2. Verify by reading the actual files (Read/Glob/Grep).
+    2. Verify by reading the actual files (use the fs tools).
     3. Report mismatches concretely with both the #caseId and the
        file:line reference so the user can jump straight in.
 - For "what's missing" requests: list specific gaps, not generic advice.
@@ -194,11 +198,11 @@ export type VercelSuiteChatInput = SuiteChatRunInput & {
   modelId: ModelId;
   keys: ProviderKeys;
   lmstudioBaseURL?: string;
-  /** Available to the Vercel path purely as informational context — the SDK
-   *  runners here don't get filesystem tools, so this just appears in the
-   *  prompt so the model can tell the user "set a source dir to use code
-   *  grounding". */
-  sourceRootHint: string | null;
+  /** When set, the BYOK runner exposes Read/Glob/Grep tools to the model
+   *  backed by the user's source directory — so code-grounded answers
+   *  work just like they do on the Claude CLI path. When null, the
+   *  runner is text-only and the prompt warns the model. */
+  sourceRoot: string | null;
 };
 
 export async function runSuiteChat(
@@ -208,12 +212,14 @@ export async function runSuiteChat(
   const lm = await buildLanguageModel(model.provider, input.keys, model.id, {
     lmstudioBaseURL: input.lmstudioBaseURL,
   });
-  const userPrompt = buildSuiteChatUserPrompt(input, input.sourceRootHint);
+  const userPrompt = buildSuiteChatUserPrompt(input, input.sourceRoot);
+  const tools = buildSuiteChatTools(input.sourceRoot);
   const start = Date.now();
   const result = await generateText({
     model: lm,
     system: SUITE_CHAT_SYSTEM_PROMPT,
     prompt: userPrompt,
+    ...(tools ? { tools, stopWhen: stepCountIs(8) } : {}),
   });
   return { text: result.text ?? "", durationMs: Date.now() - start };
 }
@@ -229,12 +235,18 @@ export async function streamSuiteChat(
   const lm = await buildLanguageModel(model.provider, input.keys, model.id, {
     lmstudioBaseURL: input.lmstudioBaseURL,
   });
-  const userPrompt = buildSuiteChatUserPrompt(input, input.sourceRootHint);
+  const userPrompt = buildSuiteChatUserPrompt(input, input.sourceRoot);
+  const tools = buildSuiteChatTools(input.sourceRoot);
   const start = Date.now();
+  // When a source dir is set, hand the model read-only fs tools and let
+  // it loop through up to 8 tool-calling steps before forcing a final
+  // text turn. Mirrors the Claude CLI path's Read/Glob/Grep capability so
+  // BYOK users get the same code-grounded behaviour.
   const result = streamText({
     model: lm,
     system: SUITE_CHAT_SYSTEM_PROMPT,
     prompt: userPrompt,
+    ...(tools ? { tools, stopWhen: stepCountIs(8) } : {}),
   });
   let acc = "";
   for await (const chunk of result.textStream) {
@@ -347,7 +359,7 @@ function buildSuiteChatUserPrompt(
 ): string {
   const suiteLine = renderSuiteLine(input);
   const sourceLine = sourceRoot
-    ? `Source directory: ${sourceRoot} (use Read/Glob/Grep to verify cases against code).`
+    ? `Source directory: ${sourceRoot} (use the fs tools to verify cases against actual code).`
     : "Source directory: NOT SET — code grounding isn't available. Tell the user if they ask for it.";
   const casesBlock = renderCasesBlock(input.cases);
   const historyBlock = renderHistoryBlock(input.history);

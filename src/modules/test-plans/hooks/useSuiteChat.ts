@@ -660,7 +660,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
           newQuestion: text,
           keys,
           modelId,
-          sourceRootHint: sourceRoot,
+          sourceRoot,
           onText: appendDelta,
         });
       }
