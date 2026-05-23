@@ -20,7 +20,9 @@
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::client::{patch_json_patch, post_json, project_api, AdoState};
+use super::client::{
+    delete_request, patch_json_patch, post_json, project_api, AdoState,
+};
 use super::errors::{AdoError, AdoResult};
 use super::types::{CreatedWorkItem, DraftCase, LinkedWorkItem, TestCase, TestStep};
 
@@ -348,6 +350,33 @@ pub async fn update_work_item_title(
     }];
     let _: Value = patch_json_patch(state, &url, &ops, "update title").await?;
     Ok(())
+}
+
+/// Delete a Test Case work item. Defaults to "soft" delete — ADO moves the
+/// item to the project's Recycle Bin where it's recoverable for 30 days.
+/// Passing `destroy=true` skips the bin and removes it permanently; we
+/// expose that as a separate parameter and default to false because the
+/// chat-driven path should never destroy by accident.
+///
+/// Note: a work item linked to a suite stays linked even after a soft-
+/// delete — the suite-cases query just stops returning it. If the user
+/// wants a clean unlink + delete, they can hit the suite remove path from
+/// the test plan UI; the chat path doesn't need both, since "delete the
+/// case" reads as a single user-level operation.
+pub async fn delete_test_case(
+    state: &AdoState,
+    work_item_id: i64,
+    destroy: bool,
+) -> AdoResult<()> {
+    let (conn, _) = state.snapshot();
+    let conn = conn.ok_or(AdoError::NotConfigured)?;
+    let path = if destroy {
+        format!("wit/workitems/{work_item_id}&destroy=true")
+    } else {
+        format!("wit/workitems/{work_item_id}")
+    };
+    let url = project_api(&conn, &path);
+    delete_request(state, &url, "delete test case").await
 }
 
 fn merge_description(base: &str, links_block: Option<&str>) -> String {

@@ -326,6 +326,28 @@ pub async fn patch_json<B: serde::Serialize, T: DeserializeOwned>(
     handle_response(resp, resource_label).await
 }
 
+/// DELETE a URL and ignore the response body. Used for ADO work-item
+/// deletes (recycle-bin or destroy=true) where the response is either
+/// a 204 No Content or a JSON document we don't care about.
+pub async fn delete_request(
+    state: &AdoState,
+    url: &str,
+    resource_label: &str,
+) -> AdoResult<()> {
+    let (_, pat) = state.snapshot();
+    let pat = pat.ok_or(AdoError::NotConfigured)?;
+    let resp = state
+        .http()
+        .delete(url)
+        .header(reqwest::header::AUTHORIZATION, auth_header(&pat))
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(|e| network_with_url(e, url))?;
+    let _: serde_json::Value = handle_response(resp, resource_label).await?;
+    Ok(())
+}
+
 /// Wrap a reqwest error with the URL we tried so the user can diagnose
 /// builder/DNS/timeout failures from the UI instead of guessing.
 fn network_with_url(e: reqwest::Error, url: &str) -> AdoError {

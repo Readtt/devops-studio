@@ -30,6 +30,7 @@ import type {
 import {
   adoErrorMessage,
   createCaseInSuite,
+  deleteTestCase,
   getConnection,
   toAdoError,
   updateCaseSteps,
@@ -259,9 +260,25 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
           message: `Replaced ${normalized.length} step${normalized.length === 1 ? "" : "s"} on #${caseId}.`,
         };
       }
+      if (kind === "delete-case") {
+        try {
+          await deleteTestCase({ caseId });
+          void loadCases(planId, suiteId, true);
+          return {
+            ok: true,
+            message: `Moved #${caseId} to the Recycle Bin (recoverable in ADO for 30 days).`,
+          };
+        } catch (e) {
+          console.error("[suite-chat] delete-case failed:", e);
+          return {
+            ok: false,
+            message: adoErrorMessage(toAdoError(e)) || String(e),
+          };
+        }
+      }
       return {
         ok: false,
-        message: `Unknown edit kind "${kind}". Supported: rename, rewrite-steps, create-case.`,
+        message: `Unknown edit kind "${kind}". Supported: rename, rewrite-steps, create-case, delete-case.`,
       };
     } catch (e) {
       // ADO failures are easy to miss when the card just shows "Couldn't

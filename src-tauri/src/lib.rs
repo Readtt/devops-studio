@@ -489,6 +489,7 @@ pub fn run() {
             ado::ado_update_plan_name,
             ado::ado_get_case,
             ado::ado_create_case_in_suite,
+            ado::ado_delete_test_case,
             ado::ado_create_bug_and_link,
             ado::ado_create_bug,
             ado::ado_get_bug,

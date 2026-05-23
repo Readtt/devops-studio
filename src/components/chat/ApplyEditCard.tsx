@@ -38,10 +38,18 @@ import type {
 type ParsedEdit =
   | {
       ok: true;
-      kind: "rename" | "rewrite-steps" | "create-case" | "unknown";
+      kind:
+        | "rename"
+        | "rewrite-steps"
+        | "create-case"
+        | "delete-case"
+        | "unknown";
       caseId: number | null;
       title: string | null;
       steps: { action: string; expected: string }[];
+      /** Optional model-provided reason — used by delete-case to surface
+       *  "why is this being removed?" in the confirm step. */
+      reason: string | null;
     }
   | { ok: false; error: string };
 
@@ -116,6 +124,21 @@ export function ApplyEditCard({
       if (parsed.kind === "create-case") {
         payload.title = parsed.title ?? "";
         payload.steps = parsed.steps;
+      }
+      if (parsed.kind === "delete-case") {
+        // Delete is irreversible from the chat — confirm before firing.
+        // We use the native confirm because we want a blocking
+        // synchronous gate; the user has to actively say yes.
+        const confirmed = window.confirm(
+          parsed.caseId
+            ? `Delete case #${parsed.caseId}? It moves to the ADO Recycle Bin and is recoverable for 30 days.`
+            : "Delete this case?",
+        );
+        if (!confirmed) {
+          setState("idle");
+          return;
+        }
+        if (parsed.reason) payload.reason = parsed.reason;
       }
       const result: ApplyEditResult = await onApply(payload);
       if (result.ok) {
@@ -201,7 +224,9 @@ export function ApplyEditCard({
         ? "Rewrite steps"
         : parsed.kind === "create-case"
           ? "Create case"
-          : `Edit (${parsed.kind})`;
+          : parsed.kind === "delete-case"
+            ? "Delete case"
+            : `Edit (${parsed.kind})`;
 
   // --- Already-applied (persisted across sessions) -------------------------
 
@@ -946,6 +971,13 @@ function buildSubtitle(
     if (!title) return "Missing title — cannot create.";
     return `"${truncate(title, 60)}" · ${parsed.steps.length} step${parsed.steps.length === 1 ? "" : "s"}`;
   }
+  if (parsed.kind === "delete-case") {
+    if (parsed.caseId == null) return "Missing caseId — cannot delete.";
+    if (parsed.reason) {
+      return `Move to Recycle Bin · ${truncate(parsed.reason, 50)}`;
+    }
+    return `Move #${parsed.caseId} to the ADO Recycle Bin (recoverable for 30 days)`;
+  }
   return `Unsupported edit kind "${parsed.kind}"`;
 }
 
@@ -978,9 +1010,10 @@ function parseEdit(body: string): ParsedEdit {
       : typeof caseIdRaw === "string" && /^\d+$/.test(caseIdRaw.trim())
         ? Number.parseInt(caseIdRaw.trim(), 10)
         : null;
+  const reason = typeof obj.reason === "string" ? obj.reason : null;
   if (kind === "rename") {
     const title = typeof obj.title === "string" ? obj.title : null;
-    return { ok: true, kind: "rename", caseId, title, steps: [] };
+    return { ok: true, kind: "rename", caseId, title, steps: [], reason };
   }
   if (kind === "rewrite-steps") {
     const stepsArr = Array.isArray(obj.steps) ? obj.steps : [];
@@ -993,7 +1026,7 @@ function parseEdit(body: string): ParsedEdit {
         expected: typeof so.expected === "string" ? so.expected : "",
       });
     }
-    return { ok: true, kind: "rewrite-steps", caseId, title: null, steps };
+    return { ok: true, kind: "rewrite-steps", caseId, title: null, steps, reason };
   }
   if (kind === "create-case") {
     const title = typeof obj.title === "string" ? obj.title : null;
@@ -1007,7 +1040,10 @@ function parseEdit(body: string): ParsedEdit {
         expected: typeof so.expected === "string" ? so.expected : "",
       });
     }
-    return { ok: true, kind: "create-case", caseId, title, steps };
+    return { ok: true, kind: "create-case", caseId, title, steps, reason };
   }
-  return { ok: true, kind: "unknown", caseId, title: null, steps: [] };
+  if (kind === "delete-case") {
+    return { ok: true, kind: "delete-case", caseId, title: null, steps: [], reason };
+  }
+  return { ok: true, kind: "unknown", caseId, title: null, steps: [], reason };
 }

@@ -300,6 +300,26 @@ pub async fn ado_create_case_in_suite(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DeleteCaseInput {
+    pub case_id: i64,
+    /// Default false: the case lands in ADO's Recycle Bin and can be
+    /// restored for 30 days. true: permanently destroyed, irreversible.
+    /// The chat-driven path always passes false; users who want to
+    /// permanently nuke a case can use the ADO web UI's Destroy action.
+    #[serde(default)]
+    pub destroy: bool,
+}
+
+#[tauri::command]
+pub async fn ado_delete_test_case(
+    state: State<'_, AdoState>,
+    input: DeleteCaseInput,
+) -> Result<(), AdoError> {
+    test_cases::delete_test_case(&state, input.case_id, input.destroy).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateBugInput {
     pub case_id: i64,
     pub draft: DraftBug,

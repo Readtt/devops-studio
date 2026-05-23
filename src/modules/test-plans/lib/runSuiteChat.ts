@@ -90,12 +90,33 @@ When the user wants to change a case and you have a concrete recommendation, emi
 }
 \`\`\`
 
+\`\`\`devops-edit
+{
+  "kind": "delete-case",
+  "caseId": 15310,
+  "reason": "Duplicate of #15287 — same flow, same assertions"
+}
+\`\`\`
+
 Rules for edit blocks:
 - ONE concrete case per block. Don't bundle multiple cases.
-- "kind" is exactly "rename", "rewrite-steps", or "create-case". Other kinds aren't supported yet.
-- "caseId" is required for "rename" and "rewrite-steps" and must match a case in the loaded scope. For "create-case", do NOT include caseId — the case doesn't exist yet, and the new case is filed under the suite the user is chatting about.
-- "create-case" needs a non-empty "title" and at least one step. The new case is published to the active suite as soon as the user clicks Apply.
+- "kind" is exactly "rename", "rewrite-steps", "create-case", or
+  "delete-case". Other kinds aren't supported yet.
+- "caseId" is required for "rename", "rewrite-steps", and "delete-case"
+  and must match a case in the loaded scope. For "create-case", do NOT
+  include caseId — the case doesn't exist yet, and the new case is filed
+  under the suite the user is chatting about.
+- "create-case" needs a non-empty "title" and at least one step. The new
+  case is published to the active suite as soon as the user clicks Apply.
 - "rewrite-steps" steps are 1..N; the UI re-indexes on apply.
+- "delete-case" moves the work item to ADO's Recycle Bin (recoverable
+  for 30 days), it does NOT permanently destroy. Always include a short
+  "reason" string so the user knows why you're suggesting deletion. The
+  UI shows a Yes/No confirm before the delete actually goes through.
+- Only suggest delete-case when the case is clearly redundant, obsolete,
+  or contradicts the spec. If you're unsure, recommend rewrite-steps or
+  ask the user in prose. Deletion is irreversible-feeling even though
+  it's actually a soft delete.
 - ALWAYS show the user what you're proposing in plain text BEFORE the
   block ("Here's a tighter version of step 3 — apply to push it to ADO:").
   Don't just dump a block with no context.

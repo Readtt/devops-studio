@@ -186,6 +186,19 @@ export async function createCaseInSuite(
   return CreatedWorkItemSchema.parse(raw);
 }
 
+/** Soft-delete a test case (moves it to ADO's Recycle Bin — recoverable
+ *  for 30 days). Pass `destroy: true` only when permanent deletion is
+ *  intentional; the chat-driven path defaults to soft so accidents are
+ *  reversible. */
+export async function deleteTestCase(input: {
+  caseId: number;
+  destroy?: boolean;
+}): Promise<void> {
+  await invoke("ado_delete_test_case", {
+    input: { caseId: input.caseId, destroy: input.destroy ?? false },
+  });
+}
+
 export async function createBugAndLink(
   caseId: number,
   draft: DraftBug,
