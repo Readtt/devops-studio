@@ -11,11 +11,6 @@ import {
   useSortable,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { AppTab, TabKind } from "./store/types";
 import { TabContextMenu } from "./TabContextMenu";
@@ -135,77 +130,80 @@ function SortableTabChip(props: ChipProps) {
 
   return (
     <TabContextMenu tab={props.tab} leafId={props.leafId}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <div
-            ref={setNodeRef}
-            style={style}
-            {...attributes}
-            {...listeners}
-            onAuxClick={(e) => {
-              if (e.button !== 1) return;
-              e.preventDefault();
-              if (props.tab.pinned) return;
-              props.onMiddleClick?.(props.tab.id);
+      <div
+        ref={setNodeRef}
+        style={style}
+        {...attributes}
+        {...listeners}
+        // Native title carries the long hover description (path, ids, etc.)
+        // without nesting a Radix Tooltip — which would collide with the
+        // ContextMenu's asChild trigger and break right-click pin/dup/close.
+        title={describeTab(props.tab)}
+        // Opt back into the OS contextmenu pipeline; the production-only
+        // right-click guard (lib/contextMenuGuard.ts) blocks contextmenu
+        // outside this attribute, which would otherwise also suppress the
+        // Radix menu in built apps.
+        data-allow-context-menu="true"
+        onAuxClick={(e) => {
+          if (e.button !== 1) return;
+          e.preventDefault();
+          if (props.tab.pinned) return;
+          props.onMiddleClick?.(props.tab.id);
+        }}
+        onClick={() => props.onActivate(props.tab.id)}
+        className={cn(
+          "group flex h-7 min-w-0 shrink-0 cursor-default items-center gap-1 rounded-md px-2 text-[11.5px] transition-colors",
+          props.active && props.focused
+            ? "bg-foreground/[0.08] text-foreground"
+            : props.active
+              ? "bg-foreground/[0.04] text-foreground"
+              : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground",
+        )}
+      >
+        <span
+          aria-hidden
+          className={cn(
+            "h-[5px] w-[5px] shrink-0 rounded-full",
+            kindDotClass(props.tab.kind),
+          )}
+        />
+        {props.tab.pinned ? (
+          <HugeiconsIcon
+            icon={PinIcon}
+            size={9}
+            strokeWidth={1.75}
+            className="shrink-0 text-foreground/70"
+          />
+        ) : null}
+        <span
+          className={cn(
+            "truncate",
+            props.tab.pinned ? "max-w-[150px]" : "max-w-[220px]",
+          )}
+        >
+          {props.tab.title}
+        </span>
+        {!props.tab.pinned ? (
+          <button
+            type="button"
+            aria-label="Close tab"
+            title="Close (middle-click also works)"
+            onPointerDown={(e) => {
+              // Stop the sortable's drag-listener from grabbing this
+              // pointerdown — otherwise the close button is unclickable
+              // because the chip starts dragging the moment you press.
+              e.stopPropagation();
             }}
-            onClick={() => props.onActivate(props.tab.id)}
-            className={cn(
-              "group flex h-7 min-w-0 shrink-0 cursor-default items-center gap-1 rounded-md px-2 text-[11.5px] transition-colors",
-              props.active && props.focused
-                ? "bg-foreground/[0.08] text-foreground"
-                : props.active
-                  ? "bg-foreground/[0.04] text-foreground"
-                  : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground",
-            )}
+            onClick={(e) => {
+              e.stopPropagation();
+              props.onClose(props.tab.id);
+            }}
+            className="ml-1 inline-flex size-4 items-center justify-center rounded text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
           >
-            <span
-              aria-hidden
-              className={cn(
-                "h-[5px] w-[5px] shrink-0 rounded-full",
-                kindDotClass(props.tab.kind),
-              )}
-            />
-            {props.tab.pinned ? (
-              <HugeiconsIcon
-                icon={PinIcon}
-                size={9}
-                strokeWidth={1.75}
-                className="shrink-0 text-foreground/70"
-              />
-            ) : null}
-            <span
-              className={cn(
-                "truncate",
-                props.tab.pinned ? "max-w-[150px]" : "max-w-[220px]",
-              )}
-            >
-              {props.tab.title}
-            </span>
-            {!props.tab.pinned ? (
-              <button
-                type="button"
-                aria-label="Close tab"
-                onPointerDown={(e) => {
-                  // Stop the sortable's drag-listener from grabbing this
-                  // pointerdown — otherwise the close button is unclickable
-                  // because the chip starts dragging the moment you press.
-                  e.stopPropagation();
-                }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  props.onClose(props.tab.id);
-                }}
-                className="ml-1 inline-flex size-4 items-center justify-center rounded text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-              >
-                <HugeiconsIcon icon={Cancel01Icon} size={10} strokeWidth={2} />
-              </button>
-            ) : null}
-          </div>
-        </TooltipTrigger>
-        <TooltipContent side="bottom" className="max-w-[420px] text-[11px]">
-          {describeTab(props.tab)}
-        </TooltipContent>
-      </Tooltip>
+            <HugeiconsIcon icon={Cancel01Icon} size={10} strokeWidth={2} />
+          </button>
+        ) : null}
+      </div>
     </TabContextMenu>
   );
 }
@@ -250,20 +248,29 @@ function kindLabel(kind: TabKind): string {
 
 function describeTab(tab: AppTab): string {
   const k = kindLabel(tab.kind);
+  const pinNote = tab.pinned ? " · pinned" : "";
+  const hint = "\nRight-click for options · Middle-click to close";
+  let line: string;
   switch (tab.kind) {
     case "test-case":
-      return `${k} · #${tab.caseId} — ${tab.title}`;
+      line = `${k} · #${tab.caseId} — ${tab.title}`;
+      break;
     case "bug":
-      return `${k} · #${tab.bugId} — ${tab.title}`;
+      line = `${k} · #${tab.bugId} — ${tab.title}`;
+      break;
     case "code-viewer": {
       const range = tab.startLine
         ? `:${tab.startLine}${tab.endLine && tab.endLine !== tab.startLine ? `–${tab.endLine}` : ""}`
         : "";
-      return `${k} · ${tab.path}${range}`;
+      line = `${k} · ${tab.path}${range}`;
+      break;
     }
     case "suite-chat":
-      return `${k} · ${tab.title}`;
+      line = `${k} · ${tab.title}`;
+      break;
     case "generator":
-      return `${k} · ${tab.title}`;
+      line = `${k} · ${tab.title}`;
+      break;
   }
+  return `${line}${pinNote}${hint}`;
 }
