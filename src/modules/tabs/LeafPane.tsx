@@ -3,7 +3,6 @@ import { useDroppable } from "@dnd-kit/core";
 import { cn } from "@/lib/utils";
 import {
   useFocusedLeafId,
-  useHasMultiplePanes,
   useLeafTabs,
   useTabsStore,
 } from "./store/useTabsStore";
@@ -41,7 +40,6 @@ export const LeafPane = memo(function LeafPane({
   const focusedLeafId = useFocusedLeafId();
   const focused = focusedLeafId === leaf.id;
   const activeId = leaf.activeTabId;
-  const hasMultiplePanes = useHasMultiplePanes();
   const hasTabs = tabs.length > 0;
 
   const onActivate = useCallback(
@@ -76,14 +74,9 @@ export const LeafPane = memo(function LeafPane({
       ref={setLeafRef}
       className={cn(
         "flex h-full min-h-0 w-full flex-col bg-background",
-        // Focus ring only helps the user when there's more than one pane
-        // to compare against. Single-pane: the ring is just noise. Empty
-        // single-pane (no tabs open): definitely no ring — the welcome
-        // copy carries the visual weight instead.
-        focused &&
-          hasMultiplePanes &&
-          hasTabs &&
-          "ring-1 ring-primary/25 ring-inset",
+        // Focused-pane signal lives on the active tab chip (it sits at
+        // bg-foreground/[0.08] in the focused pane vs /[0.04] in an
+        // unfocused pane). The previous inset ring was duplicate noise.
         // Cross-leaf drop hint: gentle inset, not a hard outline.
         leafOver && "bg-primary/[0.03]",
       )}
