@@ -424,17 +424,39 @@ html *::-webkit-scrollbar {
  * The global kill above already zeroes scrollbars; these rules just
  * spell that out explicitly for the tab strip so future "make all
  * scrollbars visible" passes don't accidentally re-enable it here. */
+/* Thin auto-hide scrollbar for tab strips. Strips moved out of the title-
+ * bar drag region in the tab/pane refactor — they no longer steal window-
+ * drag events, so a visible bar is safe. The bar reveals on hover/focus
+ * and dims to invisible at rest, keeping the strip clean when it's not
+ * overflowing. */
 html .tabs-scroll {
-  scrollbar-width: none !important;
-  -ms-overflow-style: none !important;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 120ms ease-out;
 }
-html .tabs-scroll::-webkit-scrollbar,
-html .tabs-scroll::-webkit-scrollbar-thumb,
+html .tabs-scroll:hover,
+html .tabs-scroll:focus-within {
+  scrollbar-color: var(--border) transparent;
+}
+html .tabs-scroll::-webkit-scrollbar {
+  height: 4px;
+  width: 4px;
+  background: transparent;
+}
+html .tabs-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 2px;
+  transition: background 120ms ease-out;
+}
+html .tabs-scroll:hover::-webkit-scrollbar-thumb,
+html .tabs-scroll:focus-within::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--border) 70%, transparent);
+}
+html .tabs-scroll::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--foreground) 30%, transparent);
+}
 html .tabs-scroll::-webkit-scrollbar-track {
-  width: 0 !important;
-  height: 0 !important;
-  display: none !important;
-  background: transparent !important;
+  background: transparent;
 }
 
 @keyframes ds-collapsible-down {
@@ -467,4 +489,19 @@ html .tabs-scroll::-webkit-scrollbar-track {
 }
 .ds-collapsible-content[data-state="closed"] {
   animation: ds-collapsible-up 160ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Chat streaming caret. Lives next to the last visible glyph of an assistant
+ * message and blinks in steps so it doesn't smear during fast token bursts. */
+@keyframes chat-caret {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* Soft pulse for the "thinking…" indicator on the assistant placeholder
+ * bubble — shows the user the model is alive while the first token is
+ * still queueing. */
+@keyframes chat-thinking-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
 }

@@ -3,6 +3,7 @@ import { useDroppable } from "@dnd-kit/core";
 import { cn } from "@/lib/utils";
 import {
   useFocusedLeafId,
+  useHasMultiplePanes,
   useLeafTabs,
   useTabsStore,
 } from "./store/useTabsStore";
@@ -26,6 +27,10 @@ type Props = {
  * inactive ones — same model the kind-Stacks used today. This preserves
  * scroll, CodeMirror state, in-progress generator analyses, and the live
  * dom of every panel while keeping switching instant.
+ *
+ * The leaf-center droppable covers BOTH the strip and the body so a tab
+ * dragged from another leaf can be dropped on the empty strip area (or
+ * anywhere on the body) and lands at the end of this leaf.
  */
 export const LeafPane = memo(function LeafPane({
   leaf,
@@ -36,6 +41,8 @@ export const LeafPane = memo(function LeafPane({
   const focusedLeafId = useFocusedLeafId();
   const focused = focusedLeafId === leaf.id;
   const activeId = leaf.activeTabId;
+  const hasMultiplePanes = useHasMultiplePanes();
+  const hasTabs = tabs.length > 0;
 
   const onActivate = useCallback(
     (tabId: number) => {
@@ -57,27 +64,34 @@ export const LeafPane = memo(function LeafPane({
     useTabsStore.getState().focusLeaf(leaf.id);
   }, [focusedLeafId, leaf.id]);
 
-  // Body-level droppable. When a tab is dragged from another leaf and the
-  // pointer ends over this leaf's body (not over any chip), the tab is
-  // appended to this leaf. isOver gives a subtle visual confirmation.
-  const { setNodeRef: setBodyRef, isOver: bodyOver } = useDroppable({
+  // Leaf-wide droppable. When a tab is dragged from another leaf and the
+  // pointer ends over this leaf (anywhere — strip or body), the tab is
+  // appended. isOver gives a subtle visual confirmation.
+  const { setNodeRef: setLeafRef, isOver: leafOver } = useDroppable({
     id: leafCenterDropId(leaf.id),
   });
 
   return (
     <div
+      ref={setLeafRef}
       className={cn(
         "flex h-full min-h-0 w-full flex-col bg-background",
-        // Focus ring only matters once there's more than one pane. It's
-        // safe to render always — the single-pane case won't notice 1px
-        // of inset ring it can't compare to anything. Subtle by design.
-        focused && "ring-1 ring-primary/20 ring-inset",
+        // Focus ring only helps the user when there's more than one pane
+        // to compare against. Single-pane: the ring is just noise. Empty
+        // single-pane (no tabs open): definitely no ring — the welcome
+        // copy carries the visual weight instead.
+        focused &&
+          hasMultiplePanes &&
+          hasTabs &&
+          "ring-1 ring-primary/25 ring-inset",
+        // Cross-leaf drop hint: gentle inset, not a hard outline.
+        leafOver && "bg-primary/[0.03]",
       )}
       onPointerDownCapture={onFocus}
     >
       {/* Tab strip. Hidden when the leaf has no tabs — root leaf's empty
           state owns the whole area. */}
-      {tabs.length > 0 ? (
+      {hasTabs ? (
         <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border/40 bg-card/40 px-1">
           <TabStrip
             tabs={tabs}
@@ -92,19 +106,11 @@ export const LeafPane = memo(function LeafPane({
         </div>
       ) : null}
 
-      <div
-        ref={setBodyRef}
-        className={cn(
-          "relative min-h-0 flex-1",
-          bodyOver &&
-            "ring-2 ring-primary/40 ring-inset rounded-sm transition-shadow",
-        )}
-      >
+      <div className="relative min-h-0 flex-1">
         {/* Drag-to-split edge zones. Only mounted during an active drag
-            so they don't block hit-tests on the underlying content when
-            the user isn't dragging. */}
+            so they don't block hit-tests on the underlying content. */}
         <DropEdges leafId={leaf.id} />
-        {tabs.length === 0
+        {!hasTabs
           ? emptyState
           : tabs.map((t) => {
               const visible = t.id === activeId;

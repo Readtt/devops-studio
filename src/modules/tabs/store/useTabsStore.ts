@@ -652,6 +652,25 @@ export const useLeafTabs = (leafId: string): AppTab[] =>
 export const useHasRecentlyClosed = (): boolean =>
   useTabsStore((s) => s.recentlyClosed.length > 0);
 
+/** True when more than one leaf exists. Used to gate UI that only helps
+ *  the user disambiguate (focus ring, drag overlays for cross-leaf drops). */
+export const useHasMultiplePanes = (): boolean =>
+  useTabsStore((s) => {
+    let count = 0;
+    const walk = (node: PaneNode) => {
+      if (node.kind === "leaf") {
+        count += 1;
+        return;
+      }
+      for (const c of node.children) {
+        walk(c);
+        if (count > 1) return;
+      }
+    };
+    walk(s.paneTree);
+    return count > 1;
+  });
+
 /** Convenience: read state from outside React without subscribing. */
 export const tabsStoreApi = {
   getState: useTabsStore.getState,
