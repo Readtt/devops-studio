@@ -141,6 +141,37 @@ describe("splitLeaf", () => {
     expect(next.kind).toBe("leaf");
     expect((next as { tabIds: number[] }).tabIds).toEqual([42]);
   });
+  it("removes the moved tab from a foreign source leaf", () => {
+    // A holds tab 7; user drags it onto B's right edge → split off B.
+    const tree = makeSplit("horizontal", [leaf("A", [7, 8], 8), leaf("B", [9])]);
+    const { tree: next, newLeafId } = splitLeaf(
+      tree,
+      "B",
+      "horizontal",
+      "after",
+      7,
+    );
+    const leaves = walkLeaves(next);
+    const a = leaves.find((l) => l.id === "A");
+    const b = leaves.find((l) => l.id === "B");
+    const newSib = leaves.find((l) => l.id === newLeafId);
+    expect(a?.tabIds).toEqual([8]);
+    expect(b?.tabIds).toEqual([9]);
+    expect(newSib?.tabIds).toEqual([7]);
+  });
+  it("foreign source leaf collapses when it loses its only tab during a split", () => {
+    // A has only tab 7; dragging it onto B's edge should collapse A and
+    // create a new sibling next to B holding tab 7.
+    const tree = makeSplit("horizontal", [leaf("A", [7]), leaf("B", [9, 10], 9)]);
+    const { tree: next } = splitLeaf(tree, "B", "horizontal", "after", 7);
+    const leaves = walkLeaves(next);
+    expect(leaves.find((l) => l.id === "A")).toBeUndefined();
+    expect(leaves.find((l) => l.id === "B")?.tabIds).toEqual([9, 10]);
+    const newSib = leaves.find(
+      (l) => l.tabIds.length === 1 && l.tabIds[0] === 7,
+    );
+    expect(newSib).toBeDefined();
+  });
   it("flattens same-direction splits instead of nesting deeper", () => {
     const tree = leaf("A", [1, 2], 2);
     const r1 = splitLeaf(tree, "A", "horizontal", "after", 2);

@@ -105,18 +105,25 @@ export function DndProvider({ children }: Props) {
       return;
     }
 
-    // 2. Drop on an edge zone → split the leaf and place the tab.
+    // 2. Drop on an edge zone → split the leaf and place the tab. The
+    // store's splitLeaf is cross-leaf aware: it removes the moved tab
+    // from whichever leaf currently owns it, then puts it in the new
+    // sibling adjacent to the target leaf.
     const edge = parseLeafEdgeId(overId);
     if (edge) {
-      const direction = edge.side === "top" || edge.side === "bottom"
-        ? "vertical"
-        : "horizontal";
+      const direction =
+        edge.side === "top" || edge.side === "bottom"
+          ? "vertical"
+          : "horizontal";
       const sideForSplit =
         edge.side === "right" || edge.side === "bottom" ? "after" : "before";
       const moveId = clone
         ? useTabsStore.getState().duplicateTab(src.tabId)
         : src.tabId;
       if (moveId == null) return;
+      // No-op when dropping a tab on its own leaf's edge if it's the
+      // only tab there (would collapse → identity), but the store
+      // normalizes the tree afterward so we can call unconditionally.
       useTabsStore
         .getState()
         .splitLeaf(edge.leafId, direction, sideForSplit, moveId);

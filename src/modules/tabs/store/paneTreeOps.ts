@@ -235,7 +235,10 @@ export function dropLeaf(root: PaneNode, leafId: string): PaneNode {
  * Split `leafId` into a 50/50 pair. The side ("before" / "after") controls
  * whether the new sibling is to the left/top or right/bottom of the
  * original. If `movedTabId` is given, that tab moves into the new sibling
- * (so the original leaf loses it). Otherwise the new sibling starts empty.
+ * (from wherever it currently lives — same leaf, different leaf, or
+ * nowhere). The function leaves the rest of the tree consistent: a
+ * foreign source leaf that becomes empty collapses; a same-leaf source
+ * that becomes empty collapses to just the new sibling.
  */
 export function splitLeaf(
   root: PaneNode,
@@ -244,43 +247,65 @@ export function splitLeaf(
   side: "before" | "after",
   movedTabId?: number,
 ): { tree: PaneNode; newLeafId: string } {
-  const leaf = findLeaf(root, leafId);
-  if (!leaf) return { tree: root, newLeafId: leafId };
+  // First, decouple cross-leaf source from the target leaf. If the moved
+  // tab lives in a DIFFERENT leaf, remove it from there first; this
+  // simplifies the rest of the logic to "split this target leaf".
+  let workingTree = root;
+  if (typeof movedTabId === "number") {
+    const owner = findLeafByTab(workingTree, movedTabId);
+    if (owner && owner.id !== leafId) {
+      workingTree = removeTab(workingTree, movedTabId);
+      // The target leaf may have shifted up the tree if the source's
+      // collapse pulled its sibling up — but its id is stable, so
+      // findLeaf below still locates it.
+    }
+  }
+
+  const leaf = findLeaf(workingTree, leafId);
+  if (!leaf) return { tree: workingTree, newLeafId: leafId };
 
   // Build the new sibling first.
   const newLeaf = makeLeaf();
   let updatedOriginal: LeafNode = leaf;
 
-  if (typeof movedTabId === "number" && leaf.tabIds.includes(movedTabId)) {
-    const remaining = leaf.tabIds.filter((id) => id !== movedTabId);
-    const nextActive =
-      leaf.activeTabId === movedTabId
-        ? (remaining[Math.max(0, leaf.tabIds.indexOf(movedTabId) - 1)] ??
-          remaining[0] ??
-          null)
-        : leaf.activeTabId;
-    updatedOriginal = {
-      ...leaf,
-      tabIds: remaining,
-      activeTabId: nextActive,
-    };
-    newLeaf.tabIds = [movedTabId];
-    newLeaf.activeTabId = movedTabId;
-
-    // Edge case: the moved tab was the leaf's only tab. The "split"
-    // collapses to just the new sibling — keeping an empty source half
-    // would leave a useless 0-tab pane next to it.
-    if (remaining.length === 0) {
-      return {
-        tree: normalize(replaceNode(root, leafId, newLeaf)),
-        newLeafId: newLeaf.id,
+  if (typeof movedTabId === "number") {
+    if (leaf.tabIds.includes(movedTabId)) {
+      // Same-leaf source: move the tab out of the original half into
+      // the new sibling.
+      const remaining = leaf.tabIds.filter((id) => id !== movedTabId);
+      const nextActive =
+        leaf.activeTabId === movedTabId
+          ? (remaining[Math.max(0, leaf.tabIds.indexOf(movedTabId) - 1)] ??
+            remaining[0] ??
+            null)
+          : leaf.activeTabId;
+      updatedOriginal = {
+        ...leaf,
+        tabIds: remaining,
+        activeTabId: nextActive,
       };
+
+      // Edge case: the moved tab was the leaf's only tab. The "split"
+      // collapses to just the new sibling.
+      newLeaf.tabIds = [movedTabId];
+      newLeaf.activeTabId = movedTabId;
+      if (remaining.length === 0) {
+        return {
+          tree: normalize(replaceNode(workingTree, leafId, newLeaf)),
+          newLeafId: newLeaf.id,
+        };
+      }
+    } else {
+      // Cross-leaf source: the tab was already removed from its old
+      // owner above, so we just put it in the new sibling.
+      newLeaf.tabIds = [movedTabId];
+      newLeaf.activeTabId = movedTabId;
     }
   }
 
   // If the parent already splits in the same direction, just insert as a
   // sibling — keeps the tree flat and avoids deep nesting for line-up splits.
-  const [parent, idx] = findParent(root, leafId);
+  const [parent, idx] = findParent(workingTree, leafId);
   if (parent && parent.direction === direction) {
     const insertIdx = side === "after" ? idx + 1 : idx;
     const nextChildren = parent.children.slice();
@@ -296,7 +321,7 @@ export function splitLeaf(
       sizes: nextSizes,
     };
     return {
-      tree: normalize(replaceNode(root, parent.id, nextParent)),
+      tree: normalize(replaceNode(workingTree, parent.id, nextParent)),
       newLeafId: newLeaf.id,
     };
   }
@@ -306,7 +331,7 @@ export function splitLeaf(
     side === "after" ? [updatedOriginal, newLeaf] : [newLeaf, updatedOriginal];
   const nextSplit = makeSplit(direction, children, [50, 50]);
   return {
-    tree: normalize(replaceNode(root, leafId, nextSplit)),
+    tree: normalize(replaceNode(workingTree, leafId, nextSplit)),
     newLeafId: newLeaf.id,
   };
 }
