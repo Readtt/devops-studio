@@ -18,17 +18,47 @@ import { getKey } from "@/modules/ai/lib/keyring";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import type { TestCase } from "@/modules/ado";
 
+/** Persisted record of an ADO edit that the user applied from this message.
+ *  Keyed in `SuiteChatMessage.appliedEdits` by a content hash of the
+ *  devops-edit JSON body, so we can re-render the same block as "applied"
+ *  when the chat is reopened later.
+ *
+ *  `caseId` and `before` snapshot the state the case was in *before* the
+ *  apply. They power the Undo button — clicking Undo revives this exact
+ *  prior state regardless of what's currently in ADO (the case may have
+ *  been modified elsewhere in between). If the snapshot is missing (e.g.
+ *  on a record persisted before this field existed) the Undo button is
+ *  hidden. */
+export type AppliedEditRecord = {
+  appliedAt: string;
+  /** Result message the ADO write returned ("Replaced 3 steps on #15310"). */
+  message: string;
+  /** Case the edit targeted. Stored so undo doesn't have to re-parse the
+   *  devops-edit body to find the id. */
+  caseId?: number;
+  /** Pre-apply state of the case. `kind` mirrors the edit kind. */
+  before?:
+    | { kind: "rename"; title: string }
+    | {
+        kind: "rewrite-steps";
+        steps: { action: string; expected: string }[];
+      };
+};
+
 export type SuiteChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
   timestamp: string;
+  /** Map of devops-edit content hash → applied record. Optional so older
+   *  persisted threads still load. */
+  appliedEdits?: Record<string, AppliedEditRecord>;
 };
 
 const SUITE_CHAT_SYSTEM_PROMPT = `You are a senior QA engineer chatting with the user about a SUITE OF TEST CASES that already exist in Azure DevOps. The cases have been published; this conversation is for analysis, review, suggested edits, and "does this actually cover what the spec says it does".
 
 APPLYING EDITS (special markdown block)
-When the user wants to change a case and you have a concrete recommendation, emit the change as a fenced code block with the language tag \`devops-edit\`. The UI renders these blocks as an "Apply to ADO" card the user can click. Format:
+When the user wants to change a case and you have a concrete recommendation, emit the change as a fenced code block with the language tag \`devops-edit\`. The UI renders these blocks as an "Apply to ADO" card the user can click. Three kinds are supported:
 
 \`\`\`devops-edit
 {
@@ -49,10 +79,22 @@ When the user wants to change a case and you have a concrete recommendation, emi
 }
 \`\`\`
 
+\`\`\`devops-edit
+{
+  "kind": "create-case",
+  "title": "[Auth] Rate-limit lockout shows clear retry-after countdown",
+  "steps": [
+    { "action": "Submit invalid credentials 5 times in 60s", "expected": "Account locks; UI shows retry-after timer" },
+    { "action": "Wait for the timer to elapse and retry with valid credentials", "expected": "Login succeeds" }
+  ]
+}
+\`\`\`
+
 Rules for edit blocks:
 - ONE concrete case per block. Don't bundle multiple cases.
-- "kind" is exactly "rename" or "rewrite-steps". Other kinds aren't supported yet.
-- "caseId" is required and must match a case actually in the loaded scope.
+- "kind" is exactly "rename", "rewrite-steps", or "create-case". Other kinds aren't supported yet.
+- "caseId" is required for "rename" and "rewrite-steps" and must match a case in the loaded scope. For "create-case", do NOT include caseId — the case doesn't exist yet, and the new case is filed under the suite the user is chatting about.
+- "create-case" needs a non-empty "title" and at least one step. The new case is published to the active suite as soon as the user clicks Apply.
 - "rewrite-steps" steps are 1..N; the UI re-indexes on apply.
 - ALWAYS show the user what you're proposing in plain text BEFORE the
   block ("Here's a tighter version of step 3 — apply to push it to ADO:").
@@ -60,6 +102,9 @@ Rules for edit blocks:
 - Only emit a block when you're confident the change is an improvement.
   When the user asks "what's wrong with X" without explicitly asking for
   a rewrite, answer in prose first.
+- For new cases ("we're missing X coverage"), prefer to ask before
+  emitting a create-case block unless the user explicitly asked for the
+  case to be created. The block is an *action*, not a draft.
 
 WHAT YOU HAVE
 - Every case in the suite (id, title, steps, expected results, description).
@@ -79,13 +124,20 @@ WHAT YOU DON'T HAVE
 HOW TO ANSWER
 - Be terse and concrete. The user is a working QA engineer.
 - Cite cases by their #id when you reference them ("#15310 covers the SSO
-  invalidation, but it doesn't assert the session token is purged…").
+  invalidation, but it doesn't assert the session token is purged…"). The
+  UI auto-renders bare \`#15310\` as a clickable chip that opens the case
+  in-app, so write the id inline — never as a fenced block.
+- Cite source files inline using the form \`path/to/file.ext:LINE\` or
+  \`path/to/file.ext:START-END\`. The UI renders these as clickable chips
+  that jump straight into the in-app code viewer ("step 3 expects a 403,
+  but src/auth/loginController.ts:42 returns 401"). Only write a path
+  you actually read with Read/Glob/Grep.
 - For "review against the code" requests:
     1. Identify the code paths the case claims to exercise (read the steps
        + the case description).
     2. Verify by reading the actual files (Read/Glob/Grep).
-    3. Report mismatches concretely: "step 3 expects a 403, but
-       loginController.ts:42 returns 401 here".
+    3. Report mismatches concretely with both the #caseId and the
+       file:line reference so the user can jump straight in.
 - For "what's missing" requests: list specific gaps, not generic advice.
 - Don't fabricate file paths. If you can't ground a claim in code you've
   actually read, say so.

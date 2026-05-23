@@ -29,6 +29,7 @@ import type {
 } from "@/components/ChatMarkdown";
 import {
   adoErrorMessage,
+  createCaseInSuite,
   getConnection,
   toAdoError,
   updateCaseSteps,
@@ -164,6 +165,45 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
     }
     const p = payload as Record<string, unknown>;
     const kind = typeof p.kind === "string" ? p.kind : null;
+
+    // create-case is the only kind that doesn't require a target caseId
+    // — the case doesn't exist yet. Handle it first and short-circuit
+    // before the caseId validation below kicks in.
+    if (kind === "create-case") {
+      const title = typeof p.title === "string" ? p.title.trim() : "";
+      if (!title) return { ok: false, message: "Empty title — refusing to create." };
+      const rawSteps = Array.isArray(p.steps) ? p.steps : null;
+      if (!rawSteps || rawSteps.length === 0) {
+        return { ok: false, message: "No steps in proposal — refusing to create." };
+      }
+      const steps = rawSteps
+        .filter((s): s is Record<string, unknown> => !!s && typeof s === "object")
+        .map((s, i) => ({
+          index: i + 1,
+          action: typeof s.action === "string" ? s.action : "",
+          expected: typeof s.expected === "string" ? s.expected : "",
+        }));
+      try {
+        const result = await createCaseInSuite(planId, suiteId, {
+          title,
+          description: "",
+          steps,
+          tags: [],
+        });
+        void loadCases(planId, suiteId, true);
+        return {
+          ok: true,
+          message: `Created #${result.id} in this suite.`,
+        };
+      } catch (e) {
+        console.error("[suite-chat] create-case failed:", e);
+        return {
+          ok: false,
+          message: adoErrorMessage(toAdoError(e)) || String(e),
+        };
+      }
+    }
+
     // Tolerate both numeric and string caseId — the model occasionally
     // stringifies. ApplyEditCard already normalizes on its side, this
     // belt-and-suspenders check keeps the handler robust if the card
@@ -220,7 +260,7 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
       }
       return {
         ok: false,
-        message: `Unknown edit kind "${kind}". Supported: rename, rewrite-steps.`,
+        message: `Unknown edit kind "${kind}". Supported: rename, rewrite-steps, create-case.`,
       };
     } catch (e) {
       // ADO failures are easy to miss when the card just shows "Couldn't
