@@ -39,7 +39,13 @@ export function QuickPromptsStrip({ sessionId }: Props) {
   const [overflowOpen, setOverflowOpen] = useState(false);
 
   const handleType = (prompt: QuickPromptDef) => {
-    const text = prompt.command({ cli });
+    // Clear the current input line BEFORE typing the new prompt — otherwise
+    // clicking chip B after chip A would land "B" right after "A" on the
+    // same line, producing nonsense like `claude "Review" claude "Tests"`.
+    // \x15 is ASCII NAK (Ctrl-U) — the readline "kill to start of line"
+    // sequence honoured by bash, zsh, fish, pwsh, cmd. Empty lines are a
+    // no-op, so chip-then-chip from a clean prompt still works.
+    const text = "\x15" + prompt.command({ cli });
     void writePty(sessionId, encodeForPty(text)).catch((e) => {
       console.warn("[quick-prompts] write failed:", e);
     });

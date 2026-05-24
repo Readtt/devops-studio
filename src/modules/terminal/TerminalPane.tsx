@@ -280,16 +280,35 @@ export function TerminalPane({ tabId, sessionId, cwd, shellId: _shellId }: Props
       session = placeholder;
     } else {
       // ── Existing session: re-attach xterm DOM to the new container ──
-      // xterm.open() detaches from the old parent and inserts into the
-      // new one. The scrollback buffer survives — that's the whole
-      // point of the registry.
-      try {
-        session.term.open(container);
-      } catch (e) {
-        console.warn("[terminal] re-attach failed:", e);
+      // We do NOT call term.open(container) again — xterm.js v6 doesn't
+      // safely support being re-opened, and calling it twice was making
+      // the terminal "absolutely die" on resize / pane split. Instead we
+      // physically move the existing root element to the new container.
+      // The xterm renderer keeps painting into the same element
+      // regardless of which DOM ancestor it sits under, so the scrollback
+      // survives.
+      //
+      // WebGL is the exception: its canvas-backed framebuffer doesn't
+      // tolerate being moved between DOM contexts (the GL context tied
+      // to the old container goes invalid). Dispose the addon on
+      // re-attach and let xterm fall back to the canvas renderer. The
+      // user can reload the tab to get WebGL back if they want it.
+      if (session.webgl) {
+        try {
+          session.webgl.dispose();
+        } catch {
+          // ignore
+        }
+        session.webgl = null;
       }
-      // Hydrate the exited mirror in case we mounted after the shell
-      // had already exited.
+      const el = session.term.element;
+      if (el && el.parentElement !== container) {
+        try {
+          container.appendChild(el);
+        } catch (e) {
+          console.warn("[terminal] DOM re-attach failed:", e);
+        }
+      }
       if (session.exited !== exited) setExited(session.exited);
     }
 
@@ -308,6 +327,10 @@ export function TerminalPane({ tabId, sessionId, cwd, shellId: _shellId }: Props
     const runFit = () => {
       const s = getSession(sessionId);
       if (!s) return;
+      // The container may not be in this component's DOM tree anymore by
+      // the time a queued rAF fires (fast pane swaps can outpace our
+      // cleanup). Guard against fitting a stranded terminal.
+      if (!s.term.element || !s.term.element.isConnected) return;
       try {
         const dims = s.fit.proposeDimensions();
         if (
@@ -320,14 +343,10 @@ export function TerminalPane({ tabId, sessionId, cwd, shellId: _shellId }: Props
           return;
         }
         s.fit.fit();
-        try {
-          s.term.refresh(0, Math.max(0, s.term.rows - 1));
-        } catch {
-          // ignore
-        }
         void resizePty(sessionId, s.term.cols, s.term.rows);
       } catch {
-        // ignore
+        // proposeDimensions / fit threw — usually the container hasn't
+        // settled yet. The next ResizeObserver tick will catch it.
       }
     };
     const scheduleFit = () => {
@@ -396,9 +415,8 @@ export function TerminalPane({ tabId, sessionId, cwd, shellId: _shellId }: Props
     s.term.options.theme = resolvedTheme === "light" ? THEME_LIGHT : THEME_DARK;
     try {
       s.fit.fit();
-      s.term.refresh(0, Math.max(0, s.term.rows - 1));
     } catch {
-      // ignore
+      // ignore — the container may be momentarily detached
     }
   }, [sessionId, fontFamily, fontSize, letterSpacing, scrollback, resolvedTheme]);
 
