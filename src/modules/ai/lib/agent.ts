@@ -10,6 +10,7 @@ import {
   DEFAULT_MODEL_ID,
   getModel,
   getModelContextLimit,
+  getProvider,
   LMSTUDIO_DEFAULT_BASE_URL,
   MLX_DEFAULT_BASE_URL,
   OLLAMA_DEFAULT_BASE_URL,
@@ -76,8 +77,16 @@ export async function buildLanguageModel(
   options: BuildModelOptions = {},
 ): Promise<LanguageModel> {
   if (providerNeedsKey(provider) && !keys[provider]) {
+    // The provider here is whichever one the active model belongs to —
+    // NOT a hard-coded vendor. Users have read "No API key configured
+    // for anthropic" as "this app only works with Anthropic", which is
+    // wrong: any of the configured providers works. Lead with the
+    // generic "Configure an API key" framing, then name the active
+    // provider as supplementary info plus the always-available
+    // alternative of switching models.
+    const info = getProvider(provider);
     throw new Error(
-      `No API key configured for ${provider}. Open Settings → AI to add one.`,
+      `Configure an API key to use this model. The active model needs ${info.label} access — add a key in Settings → AI, or switch to a model from a provider you've already set up.`,
     );
   }
   const key = keys[provider] ?? "";

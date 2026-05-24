@@ -2177,24 +2177,28 @@ function classifyError(
   const lower = message.toLowerCase();
 
   if (
-    /no api key configured for (\w+)/.test(lower) ||
+    /configure an api key/.test(lower) ||
+    /no api key configured/.test(lower) ||
     /missing.*api.?key/.test(lower) ||
     /api key.*not.*set/.test(lower)
   ) {
-    const provider = lower.match(/no api key configured for (\w+)/)?.[1];
+    // Pull the provider's display label out of the message body. The
+    // new error format reads "...needs Anthropic access — add a key…"
+    // so we look for the brand label between "needs " and " access".
+    // Falls back to the legacy "no api key configured for X" form for
+    // any caller that hasn't been migrated to the new phrasing yet.
+    const newFormat = message.match(/needs\s+([\w-]+)\s+access/i)?.[1];
+    const legacyFormat = lower.match(/no api key configured for (\w+)/)?.[1];
+    const providerLabel = newFormat ?? (legacyFormat ? capitalize(legacyFormat) : null);
     return {
       code: "AUTH/01 · MISSING-KEY",
-      title: provider
-        ? `No ${capitalize(provider)} API key on file`
+      title: providerLabel
+        ? `No ${providerLabel} API key on file`
         : "No API key on file for the selected model",
       icon: Key01Icon,
       tone: "auth",
-      why: provider
-        ? `The model you have selected uses ${capitalize(
-            provider,
-          )}, but no ${capitalize(
-            provider,
-          )} key is stored in the keychain. The Generator routes by the active model — if Claude Code is set as your engine, pick a Claude model so the run goes through the CLI instead.`
+      why: providerLabel
+        ? `The model you have selected uses ${providerLabel}, but no ${providerLabel} key is stored in the keychain. You can either add the key, or switch to a model from a provider you've already configured — DevOps Studio works with any of them.`
         : "The active model needs an API key, and the keychain doesn't have one stored for that provider.",
       steps: [
         "Open Models settings and either paste a key for that provider, or switch the active model to one your current engine can drive.",

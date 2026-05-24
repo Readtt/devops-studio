@@ -186,14 +186,6 @@ function SortableTabChip(props: ChipProps) {
             kindDotClass(props.tab.kind),
           )}
         />
-        {props.tab.pinned ? (
-          <HugeiconsIcon
-            icon={PinIcon}
-            size={9}
-            strokeWidth={1.75}
-            className="shrink-0 text-foreground/70"
-          />
-        ) : null}
         <span
           className={cn(
             "truncate",
@@ -202,9 +194,15 @@ function SortableTabChip(props: ChipProps) {
         >
           {props.tab.title}
         </span>
-        {/* Pin toggle — appears on hover. Pinned tabs still show the
-            small leading PinIcon above so users can see the state at a
-            glance; this button is the action surface for changing it. */}
+        {/* Pin/unpin action button. On pinned tabs it shows a PinOff
+            icon and stays visible at rest (these tabs lack a close
+            button, so we need a persistent affordance for "this is
+            pinned, click to unpin"). On unpinned tabs it shows a Pin
+            icon and reveals on hover. We deliberately do NOT also
+            render a decorative leading pin glyph — earlier versions
+            had both, which read as "two pin icons" on every pinned
+            tab. The single action button now carries both the state
+            signal and the action. */}
         <button
           type="button"
           aria-label={props.tab.pinned ? "Unpin tab" : "Pin tab"}
@@ -219,11 +217,13 @@ function SortableTabChip(props: ChipProps) {
           className={cn(
             "ml-1 inline-flex size-4 items-center justify-center rounded text-muted-foreground",
             "hover:bg-foreground/10 hover:text-foreground",
-            // Hide unless the chip is hovered OR the tab is pinned (we
-            // need the unpin affordance ALWAYS visible for pinned tabs
-            // since they have no close button to telegraph "here's where
-            // actions live").
+            // Pinned tabs keep the button visible at rest so the user
+            // has a clear "how do I unpin this" affordance; unpinned
+            // tabs hide it until hover to keep the chip clean.
             !props.tab.pinned && "opacity-0 transition-opacity group-hover:opacity-100",
+            // On pinned tabs, tint the icon so it reads as state-on
+            // (matches the kind-dot's coloured-when-active rhythm).
+            props.tab.pinned && "text-foreground/70",
           )}
         >
           <HugeiconsIcon
