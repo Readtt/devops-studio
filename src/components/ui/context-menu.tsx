@@ -83,18 +83,31 @@ function ContextMenuItem({
   className,
   inset,
   variant = "default",
+  icon,
+  description,
+  children,
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.Item> & {
   inset?: boolean
   variant?: "default" | "destructive"
+  /** Optional leading icon. Required when `description` is set so the
+   *  description aligns under the label. Without a description, you can
+   *  still pass the icon as a child for backward compatibility. */
+  icon?: React.ReactNode
+  /** Helper text rendered beneath the label, Linear/Raycast-style. Use to
+   *  explain what the action does — context-menu items can't host tooltips
+   *  because radix's portals fight each other. */
+  description?: React.ReactNode
 }) {
+  const hasDescription = description != null
   return (
     <ContextMenuPrimitive.Item
       data-slot="context-menu-item"
       data-inset={inset}
       data-variant={variant}
       className={cn(
-        "group/context-menu-item relative flex cursor-default items-center gap-1.5 rounded-sm px-2 py-1 text-[11.5px] outline-hidden select-none transition-colors",
+        "group/context-menu-item relative flex cursor-default gap-1.5 rounded-sm px-2 text-[11.5px] outline-hidden select-none transition-colors",
+        hasDescription ? "items-start py-1.5" : "items-center py-1",
         "focus:bg-foreground/[0.06] focus:text-foreground",
         "data-inset:pl-7",
         "data-[variant=destructive]:text-destructive data-[variant=destructive]:focus:bg-destructive/10 data-[variant=destructive]:focus:text-destructive dark:data-[variant=destructive]:focus:bg-destructive/20",
@@ -104,7 +117,28 @@ function ContextMenuItem({
         className,
       )}
       {...props}
-    />
+    >
+      {hasDescription ? (
+        <>
+          {icon ? (
+            <span className="mt-px flex size-3 shrink-0 items-center justify-center">
+              {icon}
+            </span>
+          ) : null}
+          <span className="flex min-w-0 flex-col gap-0.5">
+            <span className="leading-tight">{children}</span>
+            <span className="max-w-[260px] text-[10.5px] leading-snug text-muted-foreground/80 group-focus/context-menu-item:text-muted-foreground">
+              {description}
+            </span>
+          </span>
+        </>
+      ) : (
+        <>
+          {icon}
+          {children}
+        </>
+      )}
+    </ContextMenuPrimitive.Item>
   )
 }
 

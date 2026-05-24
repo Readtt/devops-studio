@@ -25,9 +25,9 @@ import { useWorkItemTitles } from "@/modules/ado/hooks/useWorkItemTitles";
 import { useTestPlans, type CaseDetailsState, type SuiteLoad } from "./hooks/useTestPlans";
 import { NewSuiteDialog } from "./NewSuiteDialog";
 import {
-  AiBrain01Icon,
   ArrowDown01Icon,
   ArrowRight01Icon,
+  BubbleChatIcon,
   Bug01Icon,
   ExternalLink,
   FileEditIcon,
@@ -633,35 +633,36 @@ function PlanRow({
         </ContextMenuTrigger>
         <ContextMenuContent>
           <ContextMenuItem
+            icon={<HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />}
             onSelect={() => void loadSuites(plan.id, { force: true })}
           >
-            <HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />
             Refresh suites
           </ContextMenuItem>
-          <ContextMenuItem onSelect={onStartRenamePlan}>
-            <HugeiconsIcon icon={FileEditIcon} size={12} strokeWidth={1.75} />
+          <ContextMenuItem
+            icon={<HugeiconsIcon icon={FileEditIcon} size={12} strokeWidth={1.75} />}
+            onSelect={onStartRenamePlan}
+          >
             Rename plan
           </ContextMenuItem>
-          <ContextMenuItem onSelect={onNewSuiteForPlan}>
-            <HugeiconsIcon icon={FolderAddIcon} size={12} strokeWidth={1.75} />
+          <ContextMenuItem
+            icon={<HugeiconsIcon icon={FolderAddIcon} size={12} strokeWidth={1.75} />}
+            onSelect={onNewSuiteForPlan}
+          >
             New suite…
           </ContextMenuItem>
           <ContextMenuItem
+            icon={<HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={1.75} />}
+            description="Open the generator — you'll pick the suite next."
             onSelect={() => onStartGenerator({ planId: plan.id, suiteId: null })}
           >
-            <HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={1.75} />
             Generate cases for plan
           </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem
+            icon={<HugeiconsIcon icon={ExternalLink} size={12} strokeWidth={1.75} />}
             disabled={!planWebUrl}
             onSelect={() => planWebUrl && void openUrl(planWebUrl)}
           >
-            <HugeiconsIcon
-              icon={ExternalLink}
-              size={12}
-              strokeWidth={1.75}
-            />
             Open in Azure DevOps
           </ContextMenuItem>
         </ContextMenuContent>
@@ -956,29 +957,36 @@ function SuiteRow({
         </ContextMenuTrigger>
         <ContextMenuContent>
           <ContextMenuItem
+            icon={<HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />}
             onSelect={() =>
               void useTestPlans.getState().loadSuiteCases(planId, suite.id)
             }
           >
-            <HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />
             Refresh cases
           </ContextMenuItem>
-          <ContextMenuItem onSelect={() => onStartRename(suite.id)}>
-            <HugeiconsIcon icon={FileEditIcon} size={12} strokeWidth={1.75} />
+          <ContextMenuItem
+            icon={<HugeiconsIcon icon={FileEditIcon} size={12} strokeWidth={1.75} />}
+            onSelect={() => onStartRename(suite.id)}
+          >
             Rename suite
           </ContextMenuItem>
-          <ContextMenuItem onSelect={() => onNewSuite(suite.id, suite.name)}>
-            <HugeiconsIcon icon={FolderAddIcon} size={12} strokeWidth={1.75} />
+          <ContextMenuItem
+            icon={<HugeiconsIcon icon={FolderAddIcon} size={12} strokeWidth={1.75} />}
+            onSelect={() => onNewSuite(suite.id, suite.name)}
+          >
             New nested suite…
           </ContextMenuItem>
           <ContextMenuItem
+            icon={<HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={1.75} />}
+            description="Open the AI generator targeting this suite."
             onSelect={() => onStartGenerator({ planId, suiteId: suite.id })}
           >
-            <HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={1.75} />
             Generate cases for suite
           </ContextMenuItem>
           {onChatWithSuite ? (
             <ContextMenuItem
+              icon={<HugeiconsIcon icon={BubbleChatIcon} size={12} strokeWidth={1.75} />}
+              description="Chat with this suite's cases loaded as context."
               onSelect={() =>
                 onChatWithSuite({
                   planId,
@@ -987,24 +995,15 @@ function SuiteRow({
                 })
               }
             >
-              <HugeiconsIcon
-                icon={AiBrain01Icon}
-                size={12}
-                strokeWidth={1.75}
-              />
               Chat with cases
             </ContextMenuItem>
           ) : null}
           <ContextMenuSeparator />
           <ContextMenuItem
+            icon={<HugeiconsIcon icon={ExternalLink} size={12} strokeWidth={1.75} />}
             disabled={!suiteWebUrl}
             onSelect={() => suiteWebUrl && void openUrl(suiteWebUrl)}
           >
-            <HugeiconsIcon
-              icon={ExternalLink}
-              size={12}
-              strokeWidth={1.75}
-            />
             Open in Azure DevOps
           </ContextMenuItem>
         </ContextMenuContent>
@@ -1187,48 +1186,44 @@ function CaseRow({
             </button>
           </ContextMenuTrigger>
           <ContextMenuContent>
-            <ContextMenuItem onSelect={open}>
-              <HugeiconsIcon
-                icon={TaskDone01Icon}
-                size={12}
-                strokeWidth={1.75}
-              />
+            <ContextMenuItem
+              icon={<HugeiconsIcon icon={TaskDone01Icon} size={12} strokeWidth={1.75} />}
+              onSelect={open}
+            >
               Open
             </ContextMenuItem>
             <ContextMenuItem
+              icon={<HugeiconsIcon icon={ExternalLink} size={12} strokeWidth={1.75} />}
               disabled={!caseWebUrl}
               onSelect={() => caseWebUrl && void openUrl(caseWebUrl)}
             >
-              <HugeiconsIcon
-                icon={ExternalLink}
-                size={12}
-                strokeWidth={1.75}
-              />
               Open in Azure DevOps
             </ContextMenuItem>
             <ContextMenuItem
+              icon={<HugeiconsIcon icon={Link01Icon} size={12} strokeWidth={1.75} />}
               disabled={!caseWebUrl}
               onSelect={() => {
                 if (!caseWebUrl) return;
                 void navigator.clipboard.writeText(caseWebUrl);
               }}
             >
-              <HugeiconsIcon icon={Link01Icon} size={12} strokeWidth={1.75} />
               Copy link
             </ContextMenuItem>
             <ContextMenuSeparator />
             <ContextMenuItem
+              icon={<HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />}
+              description="Flag for follow-up — appears in the Stale queue."
               onSelect={() => {
                 void markForReview(tc.id, "User requested review");
               }}
             >
-              <HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />
               Mark for review
             </ContextMenuItem>
             <ContextMenuItem
+              icon={<HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={1.75} />}
+              description="Generate more cases into this same suite."
               onSelect={() => onStartGenerator({ planId, suiteId })}
             >
-              <HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={1.75} />
               Generate sibling cases
             </ContextMenuItem>
           </ContextMenuContent>
