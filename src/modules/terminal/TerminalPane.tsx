@@ -528,20 +528,37 @@ function shellKindLabel(kind: string): string {
  *  string errors pass through; PtyError-style discriminated unions (the
  *  `{ kind, message }` shape Rust's `#[derive(Serialize)] enum` produces)
  *  get their `message` extracted, with the `kind` slug appended in
- *  parentheses for grep-ability. Last-resort `JSON.stringify` so we never
- *  print "[object Object]". */
+ *  parentheses for grep-ability. PtyError variants without a free-form
+ *  message field (AtCapacity, NoShellAvailable, SessionNotFound) get
+ *  hand-written copy that names the variant in user voice. Last-resort
+ *  `JSON.stringify` so we never print "[object Object]". */
 function formatPtyError(e: unknown): string {
   if (e == null) return "unknown error";
   if (typeof e === "string") return e;
   if (e instanceof Error) return e.message;
   if (typeof e === "object") {
     const obj = e as Record<string, unknown>;
-    const message = typeof obj.message === "string" ? obj.message : null;
     const kind = typeof obj.kind === "string" ? obj.kind : null;
+    const message = typeof obj.message === "string" ? obj.message : null;
+
+    // Variant-specific copy for the PtyError variants that don't carry a
+    // free-form `message`. Reads as user-facing sentences, not enum dumps.
+    if (kind === "at-capacity") {
+      const limit = typeof obj.limit === "number" ? obj.limit : null;
+      return limit
+        ? `Too many open terminal tabs (limit: ${limit}). Close one and try again.`
+        : "Too many open terminal tabs. Close one and try again.";
+    }
+    if (kind === "no-shell-available") {
+      return "No shell found on this system. Open Settings → Terminal and configure a default shell.";
+    }
+    if (kind === "session-not-found") {
+      return "That terminal session is no longer running.";
+    }
+
     if (message && kind) return `${message} (${kind})`;
     if (message) return message;
-    // Some Tauri commands reject with `{ name, details }` or other shapes.
-    // Hand back JSON rather than the un-helpful "[object Object]".
+    // Unknown shape — hand back JSON rather than the un-helpful "[object Object]".
     try {
       return JSON.stringify(e);
     } catch {

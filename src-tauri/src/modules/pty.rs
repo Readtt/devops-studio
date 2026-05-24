@@ -34,9 +34,13 @@ use tauri::{AppHandle, Emitter, Manager};
 
 /// Hard cap on concurrent PTY sessions. Each session holds a child process,
 /// a reader thread, and the master PTY handle — call it ~5–10 MB resident.
-/// 8 is enough to split-pane terminals comfortably without letting a runaway
-/// loop of "Open Terminal" actions exhaust the user's process budget.
-const MAX_CONCURRENT_SESSIONS: usize = 8;
+/// 16 gives plenty of headroom for split-pane terminals and a few stale
+/// entries from in-flight kills (the reader thread on Windows ConPTY can
+/// take a beat to deliver EOF after a child dies) without letting a
+/// runaway loop of "Open Terminal" actions exhaust the user's process
+/// budget. Capacity-tracking removal now happens in pty_kill directly,
+/// so the slot is freed the moment the user closes a tab.
+const MAX_CONCURRENT_SESSIONS: usize = 16;
 
 /// Default PTY dimensions when the caller doesn't pass any. xterm.js will
 /// resize the moment it measures its container, so these only matter for the
@@ -451,22 +455,35 @@ pub struct PtyKillInput {
     pub session_id: String,
 }
 
-/// Kill the child shell. The reader thread will see EOF, emit the exit
-/// event, and drop the session entry on its own — this command doesn't wait
-/// for that to happen. Idempotent: calling it twice (or on an unknown id)
-/// is a no-op rather than an error, since the renderer often races a tab
-/// close against an exit event.
+/// Kill the child shell and drop the session entry from the map.
+///
+/// IMPORTANT: we remove the entry from `sessions` synchronously here, not
+/// later in the reader thread's post-EOF cleanup. The reader thread does
+/// still run its cleanup (so a clean `exit` from the shell still works),
+/// but that path is no longer the one freeing the capacity slot.
+///
+/// Why this matters: on Windows ConPTY, `Read::read()` on the master
+/// often doesn't return EOF promptly after the child dies — sometimes it
+/// hangs indefinitely. If we relied on the reader thread for removal,
+/// closing 8 terminal tabs would leave 8 stale entries in the map, and
+/// the 9th `pty_spawn` would hit AtCapacity even though every shell is
+/// already dead. Removing here decouples the capacity bookkeeping from
+/// the ConPTY EOF guarantee.
+///
+/// Idempotent: calling twice (or on an unknown id) is a no-op rather
+/// than an error, since the renderer often races a tab close against an
+/// exit event.
 #[tauri::command]
 pub async fn pty_kill(
     state: tauri::State<'_, PtyState>,
     input: PtyKillInput,
 ) -> Result<(), PtyError> {
     let session = {
-        let sessions = state
+        let mut sessions = state
             .sessions
             .lock()
             .map_err(|_| PtyError::Io { message: "session lock poisoned".into() })?;
-        sessions.get(&input.session_id).cloned()
+        sessions.remove(&input.session_id)
     };
     if let Some(session) = session {
         session.kill_silently();
