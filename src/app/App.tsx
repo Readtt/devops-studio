@@ -376,6 +376,22 @@ function AppShell() {
     [],
   );
 
+  const openCodeReviewTab = useCallback(() => {
+    const liveSourceRoot = usePreferencesStore.getState().sourceRoot;
+    if (!liveSourceRoot) {
+      // No source dir → no diff. Bounce the user to settings so they fix it
+      // — the pane would render an empty state with the same message, but
+      // routing them here saves a click.
+      void openSettingsWindow("general");
+      return null;
+    }
+    return useTabsStore.getState().openTab({
+      kind: "code-review",
+      cwd: liveSourceRoot,
+      base: null,
+    });
+  }, []);
+
   const openTerminalTab = useCallback(
     (input?: { cwd?: string | null; shellId?: string | null }) => {
       // Resolve cwd at call time. If the caller didn't pass one, fall back
@@ -1137,6 +1153,9 @@ function AppShell() {
             onOpenTestPlansSidebar={() => persistSidebarView("test-plans")}
             onOpenHistory={() => persistSidebarView("history")}
             onOpenTerminal={(input) => openTerminalTab(input)}
+            onOpenCodeReview={() => {
+              openCodeReviewTab();
+            }}
             sourceRoot={sourceRoot}
           />
 

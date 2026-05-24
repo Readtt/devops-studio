@@ -63,6 +63,13 @@ export type OpenTabInput =
        *  returns. */
       sessionId?: string;
       pinned?: boolean;
+    }
+  | {
+      kind: "code-review";
+      cwd: string;
+      base?: string | null;
+      title?: string;
+      pinned?: boolean;
     };
 
 export type TabsState = {
@@ -215,6 +222,15 @@ export const useTabsStore = create<TabsState>()(
               // reopening "Open Terminal" should give you a fresh shell, not
               // surface the existing one. Multi-terminal is a feature.
               return false;
+            case "code-review":
+              // Dedup by cwd+base — re-running "Review my changes" against
+              // the same baseline should reuse the existing thread instead
+              // of stacking a new tab. Different base → different tab.
+              return (
+                t.kind === "code-review" &&
+                t.cwd === input.cwd &&
+                (t.base ?? null) === (input.base ?? null)
+              );
           }
           return false;
         });
@@ -289,6 +305,16 @@ export const useTabsStore = create<TabsState>()(
               cwd: input.cwd ?? null,
               shellId: input.shellId ?? null,
               sessionId: input.sessionId ?? crypto.randomUUID(),
+              pinned: input.pinned ?? false,
+            };
+            break;
+          case "code-review":
+            tab = {
+              id,
+              kind: "code-review",
+              title: input.title ?? "Code review",
+              cwd: input.cwd,
+              base: input.base ?? null,
               pinned: input.pinned ?? false,
             };
             break;
@@ -443,6 +469,16 @@ export const useTabsStore = create<TabsState>()(
               title: t.title,
               cwd: t.cwd,
               shellId: t.shellId,
+            });
+          case "code-review":
+            // Same cwd+base would dedup to the original tab — so we
+            // synthesize a fresh open against an explicit-null base to
+            // bypass the dedup and start a separate review thread.
+            return get().openTab({
+              kind: "code-review",
+              cwd: t.cwd,
+              base: t.base,
+              title: `${t.title} (copy)`,
             });
         }
       },

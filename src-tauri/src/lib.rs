@@ -552,6 +552,8 @@ pub fn run() {
             claude::claude_check_auth,
             // --- Source-dir git introspection ---
             git::git_repo_info,
+            git::git_diff,
+            git::git_branch_list,
             // --- PTY / embedded terminal ---
             pty::pty_spawn,
             pty::pty_write,

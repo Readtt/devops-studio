@@ -34,6 +34,14 @@ export type SuiteChatTab = TabBase & {
   suiteId: number;
 };
 
+export type CodeReviewTab = TabBase & {
+  kind: "code-review";
+  /** Source directory the diff is computed against. */
+  cwd: string;
+  /** Base branch; null defers to backend fallback (main → master → origin/HEAD). */
+  base: string | null;
+};
+
 export type TerminalTab = TabBase & {
   kind: "terminal";
   /** Working directory the shell launches in. `null` lets `pty_spawn` use
@@ -56,7 +64,8 @@ export type AppTab =
   | CodeViewerTab
   | BugTab
   | SuiteChatTab
-  | TerminalTab;
+  | TerminalTab
+  | CodeReviewTab;
 
 export type TabKind = AppTab["kind"];
 
