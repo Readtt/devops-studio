@@ -1,12 +1,6 @@
+import { BranchPicker } from "@/components/BranchPicker";
 import { Button } from "@/components/ui/button";
 import { ChatMarkdown } from "@/components/ChatMarkdown";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Tooltip,
@@ -148,43 +142,21 @@ export function CodeReviewPane({ tabId, cwd, base }: Props) {
       <header className="flex h-9 shrink-0 items-center gap-2 border-b border-border/50 bg-card/40 px-3">
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="flex items-center gap-1.5 text-muted-foreground">
-              <HugeiconsIcon icon={GitBranchIcon} size={13} strokeWidth={1.75} />
+            <span>
+              <BranchPicker
+                value={slice?.base ?? base ?? "main"}
+                branches={baseList}
+                onChange={(v) => void changeBase(tabId, v)}
+                disabled={busy}
+                ariaLabel="Base branch"
+              />
             </span>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
-            Reviewing the git diff of your current branch against the chosen
-            base. Pick which branch to diff against using the picker on the
-            right →
-          </TooltipContent>
-        </Tooltip>
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Select
-              value={slice?.base ?? base ?? "main"}
-              onValueChange={(v) => void changeBase(tabId, v)}
-              disabled={busy}
-            >
-              <SelectTrigger
-                aria-label="Base branch"
-                className="h-6 w-auto min-w-32 gap-1 border-transparent bg-transparent px-1.5 text-[11.5px] hover:bg-foreground/[0.04]"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {baseList.map((b) => (
-                  <SelectItem key={b} value={b} className="text-[12px]">
-                    {b}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
           </TooltipTrigger>
           <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
             Base branch — the diff shows everything that's on your current
             branch but not on this one. Changing it wipes the conversation
-            (different baseline = different review).
+            (different baseline = different review). Type to filter the
+            list.
           </TooltipContent>
         </Tooltip>
 

@@ -1,9 +1,12 @@
 import { Badge } from "@/components/ui/badge";
+import { BranchPicker } from "@/components/BranchPicker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { AzureDevOpsLogo } from "@/components/AzureDevOpsLogo";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
 import {
   adoErrorMessage,
@@ -46,6 +49,35 @@ export function AzureDevOpsSection() {
   const [trackingBranch, setTrackingBranch] = useState("main");
   const [useDynamicBranch, setUseDynamicBranch] = useState(false);
   const gitInfo = useSourceDirGitInfo();
+  const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
+  // Branch list comes from the user's source repo — that's where their
+  // working branches actually exist, and ADO mirrors them by name. Pulling
+  // from git locally avoids a network round-trip to ADO for something the
+  // user can already see on their disk. Falls back to common defaults if
+  // no source dir is set.
+  const [repoBranches, setRepoBranches] = useState<string[]>(["main", "master"]);
+  useEffect(() => {
+    if (!sourceRoot) {
+      setRepoBranches(["main", "master"]);
+      return;
+    }
+    let cancelled = false;
+    void invoke<string[]>("git_branch_list", { cwd: sourceRoot })
+      .then((list) => {
+        if (cancelled) return;
+        // Always include "main" / "master" as fallbacks so the user can
+        // still pick those names if the repo doesn't have them yet (e.g.
+        // brand-new repo without an initial commit on the canonical name).
+        const merged = Array.from(new Set([...list, "main", "master"]));
+        setRepoBranches(merged);
+      })
+      .catch(() => {
+        if (!cancelled) setRepoBranches(["main", "master"]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceRoot]);
   const [status, setStatus] = useState<StatusBadge>({ kind: "unverified" });
   const [saving, setSaving] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -291,26 +323,26 @@ export function AzureDevOpsSection() {
           </div>
 
           <div className="flex flex-col gap-1">
-            <Label
-              htmlFor="ado-branch"
-              className="text-[11.5px] text-muted-foreground"
-            >
+            <Label className="text-[11.5px] text-muted-foreground">
               {useDynamicBranch ? "Fallback branch" : "Tracking branch"}
             </Label>
-            <Input
-              id="ado-branch"
+            <BranchPicker
               value={trackingBranch}
-              onChange={(e) => setTrackingBranch(e.target.value)}
-              placeholder="main"
-              spellCheck={false}
-              autoComplete="off"
+              branches={repoBranches}
+              onChange={setTrackingBranch}
               disabled={useDynamicBranch && gitInfo.isRepo && !!gitInfo.branch}
-              className="h-8 font-mono text-[12px]"
+              size="md"
+              ariaLabel={
+                useDynamicBranch ? "Fallback branch" : "Tracking branch"
+              }
+              triggerWidth={260}
             />
             <p className="text-[10.5px] text-muted-foreground/80">
               {useDynamicBranch
-                ? "Used when the source directory has no resolvable branch (detached HEAD or not a git repo)."
-                : "Staleness scans watch this branch for commits to linked files."}
+                ? "Used when the source directory has no resolvable branch (detached HEAD or not a git repo). Picker shows branches detected in your source repo."
+                : sourceRoot
+                  ? "Staleness scans watch this branch. The list is your source repo's actual branches — no typos possible."
+                  : "Staleness scans watch this branch. Set a source directory to populate the picker from your repo."}
             </p>
           </div>
         </div>
