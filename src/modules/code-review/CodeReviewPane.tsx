@@ -5,6 +5,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { getModel } from "@/modules/ai/config";
+import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
 import {
   Tooltip,
   TooltipContent,
@@ -63,6 +64,7 @@ export function CodeReviewPane({
   const pinnedModelId = slice?.modelId ?? null;
   const activeModelId = pinnedModelId ?? globalModelId;
   const activeModel = getModel(activeModelId);
+  const availability = useModelAvailability();
 
   // Live branch info from the status bar — same source of truth, so when
   // the user checks out a different branch in their terminal we react.
@@ -232,6 +234,7 @@ export function CodeReviewPane({
           <ModelPicker
             value={activeModelId}
             onChange={(id) => setModel(tabId, id)}
+            filter={(id) => availability.isAvailable(id)}
             align="end"
             side="bottom"
             trigger={({ label, provider }) => (
