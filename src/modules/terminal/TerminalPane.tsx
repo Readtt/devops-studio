@@ -227,6 +227,7 @@ export function TerminalPane({ tabId, sessionId, cwd, shellId: _shellId }: Props
           term,
           fit,
           webgl,
+          lastChipTypedLength: 0,
           unlistenData,
           unlistenExit,
           exited: false,
@@ -267,6 +268,7 @@ export function TerminalPane({ tabId, sessionId, cwd, shellId: _shellId }: Props
         unlistenExit: () => undefined,
         exited: false,
         spawnPromise,
+        lastChipTypedLength: 0,
       };
       registerSession(placeholder);
       void listenersReady.then(({ unlistenData, unlistenExit }) => {
@@ -316,6 +318,13 @@ export function TerminalPane({ tabId, sessionId, cwd, shellId: _shellId }: Props
     // current sessionId. (sessionId is stable, but this also makes the
     // disposable clean up cleanly on every unmount.)
     const dataSub = session.term.onData((data) => {
+      // The user typed something — invalidate our chip-typed-length
+      // tracker so the next Quick Prompts click doesn't backspace over
+      // the user's keystrokes. Best-effort: if the user appended just
+      // a single char, we still skip the backspace path, which leaves
+      // a messy concatenated line they can fix manually.
+      const s = getSession(sessionId);
+      if (s) s.lastChipTypedLength = 0;
       void writePty(sessionId, encodeForPty(data)).catch((e) => {
         console.warn("[terminal] write failed:", e);
       });

@@ -18,6 +18,7 @@ import {
   OVERFLOW_PROMPTS,
   type QuickPromptDef,
 } from "./quickPrompts";
+import { getSession } from "./terminalRegistry";
 import { encodeForPty, writePty } from "./usePtySession";
 
 type Props = {
@@ -39,13 +40,23 @@ export function QuickPromptsStrip({ sessionId }: Props) {
   const [overflowOpen, setOverflowOpen] = useState(false);
 
   const handleType = (prompt: QuickPromptDef) => {
-    // Clear the current input line BEFORE typing the new prompt — otherwise
-    // clicking chip B after chip A would land "B" right after "A" on the
-    // same line, producing nonsense like `claude "Review" claude "Tests"`.
-    // \x15 is ASCII NAK (Ctrl-U) — the readline "kill to start of line"
-    // sequence honoured by bash, zsh, fish, pwsh, cmd. Empty lines are a
-    // no-op, so chip-then-chip from a clean prompt still works.
-    const text = "\x15" + prompt.command({ cli });
+    // Clear whatever the LAST chip typed before typing the new prompt —
+    // otherwise clicking chip B after chip A produces nonsense like
+    // `claude "Review" claude "Tests"` on the same line.
+    //
+    // We send N backspaces (\b == \x08) where N is the length of the
+    // last chip's text. Backspace is the only kill-to-start sequence
+    // every shell line editor honours uniformly — Ctrl-U (\x15) and
+    // Esc work on Unix readlines but PowerShell prints them as literal
+    // `^U` / `^[`. The session's tracker resets to 0 whenever the user
+    // types directly, so if they've appended to a prior chip's text we
+    // skip the backspace path (and leave them a messy line to clean up
+    // manually — better than eating their keystrokes).
+    const session = getSession(sessionId);
+    const prior = session?.lastChipTypedLength ?? 0;
+    const body = prompt.command({ cli });
+    const text = "\b".repeat(prior) + body;
+    if (session) session.lastChipTypedLength = body.length;
     void writePty(sessionId, encodeForPty(text)).catch((e) => {
       console.warn("[quick-prompts] write failed:", e);
     });

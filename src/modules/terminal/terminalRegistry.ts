@@ -37,6 +37,19 @@ export type TerminalSession = {
    *  component await spawn completion when it needs to know shell kind
    *  for the tab title. */
   spawnPromise: Promise<{ shellPath: string; shellKind: string }>;
+  /** Number of characters the Quick Prompts strip last typed into this
+   *  session. Used to compute how many backspaces to send before the
+   *  NEXT chip's text so chips replace each other cleanly instead of
+   *  stacking. Reset to 0 whenever the user types anything (we don't
+   *  want to backspace over their input). Reset to 0 after a newline is
+   *  written too (a fresh prompt line resets the editing scope).
+   *
+   *  Why backspaces and not Ctrl-U (\x15): PowerShell and cmd don't
+   *  honour Ctrl-U as kill-to-start-of-line — they type the literal `^U`
+   *  characters. Backspace, by contrast, is a universal "delete one char
+   *  to the left" in every shell line editor (readline, PSReadLine, cmd
+   *  COOKED mode). */
+  lastChipTypedLength: number;
 };
 
 const registry = new Map<string, TerminalSession>();
