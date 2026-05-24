@@ -35,6 +35,11 @@ type Props = {
   onMiddleClick?: (tabId: number) => void;
   /** Click anywhere in the strip area marks the owning leaf focused. */
   onFocus: () => void;
+  /** Rendered immediately after the last chip, inside the scrollable
+   *  area. Used by LeafPane to drop the "+" launcher right next to
+   *  the tabs (Chrome-style) instead of pinning it to the pane's
+   *  right edge. */
+  inlineSuffix?: React.ReactNode;
 };
 
 /**
@@ -50,6 +55,7 @@ export const TabStrip = memo(function TabStrip({
   onClose,
   onMiddleClick,
   onFocus,
+  inlineSuffix,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -96,6 +102,11 @@ export const TabStrip = memo(function TabStrip({
           ))}
         </SortableContext>
       )}
+      {/* Launcher rides inside the scroll container so it stays glued
+          to the last chip — when the strip overflows, the launcher
+          scrolls with the tabs instead of floating away on the pane's
+          right edge. ml-0.5 keeps the same gap rhythm as between chips. */}
+      {inlineSuffix ? <div className="ml-0.5 flex shrink-0 items-center">{inlineSuffix}</div> : null}
     </div>
   );
 });

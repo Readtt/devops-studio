@@ -1,4 +1,4 @@
-import { memo, useCallback } from "react";
+import { memo, useCallback, useState } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import { cn } from "@/lib/utils";
 import {
@@ -11,7 +11,7 @@ import { TabStrip } from "./TabStrip";
 import { TabContent } from "./TabContent";
 import { leafCenterDropId } from "./dnd/dndIds";
 import { DropEdges } from "./dnd/DropEdges";
-import { LaunchMenu } from "./LaunchMenu";
+import { LaunchMenuItems } from "./LaunchMenu";
 import {
   launchCodeReview,
   launchGenerator,
@@ -20,6 +20,11 @@ import {
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Tooltip,
   TooltipContent,
@@ -96,11 +101,11 @@ export const LeafPane = memo(function LeafPane({
       )}
       onPointerDownCapture={onFocus}
     >
-      {/* Tab strip + inline "+" launcher. Hidden when the leaf has no
-          tabs — the workspace empty state owns the whole area and
-          carries its own launcher. */}
+      {/* Tab strip with the "+" launcher inlined as a strip suffix —
+          glued to the right of the last chip so it reads as part of
+          the tab row instead of floating at the pane's far edge. */}
       {hasTabs ? (
-        <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/40 bg-card/40 px-1">
+        <div className="flex h-9 shrink-0 items-center border-b border-border/40 bg-card/40 px-1">
           <TabStrip
             tabs={tabs}
             activeTabId={activeId}
@@ -110,8 +115,8 @@ export const LeafPane = memo(function LeafPane({
             onClose={onClose}
             onMiddleClick={onMiddleClick}
             onFocus={onFocus}
+            inlineSuffix={<NewTabInlineLauncher />}
           />
-          <NewTabInlineLauncher />
         </div>
       ) : null}
 
@@ -144,39 +149,55 @@ export const LeafPane = memo(function LeafPane({
 
 /** End-of-strip "+" launcher. Always visible when at least one tab is
  *  open in this leaf — gives the user a Chrome-style new-tab affordance
- *  without making them hunt for the top-bar button. Shares the same
- *  popover content as the top bar via LaunchMenu. */
+ *  without making them hunt for the top-bar button.
+ *
+ *  Composition note: Radix needs Tooltip to wrap PopoverTrigger (not the
+ *  other way around) because Tooltip.Root is a Provider with no DOM
+ *  element of its own — putting it inside `<PopoverTrigger asChild>`
+ *  means Radix's Slot can't wire onClick to anything, and clicks get
+ *  silently swallowed. So we own the Popover here and drop bare
+ *  LaunchMenuItems into the content.
+ */
 function NewTabInlineLauncher() {
   const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
+  const [open, setOpen] = useState(false);
+  const actions = {
+    onGenerator: launchGenerator,
+    onTerminal: launchTerminal,
+    onCodeReview: launchCodeReview,
+    sourceRoot,
+  };
   return (
-    <LaunchMenu
-      actions={{
-        onGenerator: launchGenerator,
-        onTerminal: launchTerminal,
-        onCodeReview: launchCodeReview,
-        sourceRoot,
-      }}
-      align="start"
-      side="bottom"
-    >
+    <Popover open={open} onOpenChange={setOpen}>
       <Tooltip>
         <TooltipTrigger asChild>
-          <button
-            type="button"
-            aria-label="New tab"
-            className={cn(
-              "grid h-6 w-6 shrink-0 place-items-center rounded-md",
-              "text-muted-foreground transition-colors",
-              "hover:bg-foreground/[0.06] hover:text-foreground",
-            )}
-          >
-            <HugeiconsIcon icon={PlusSignIcon} size={11} strokeWidth={1.75} />
-          </button>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              aria-label="New tab"
+              className={cn(
+                "grid h-6 w-6 shrink-0 place-items-center rounded-md",
+                "text-muted-foreground transition-colors",
+                "hover:bg-foreground/[0.06] hover:text-foreground",
+                open && "bg-foreground/[0.06] text-foreground",
+              )}
+            >
+              <HugeiconsIcon icon={PlusSignIcon} size={11} strokeWidth={1.75} />
+            </button>
+          </PopoverTrigger>
         </TooltipTrigger>
         <TooltipContent side="bottom" className="text-[11px]">
           New tab — Generate, Terminal, or Review
         </TooltipContent>
       </Tooltip>
-    </LaunchMenu>
+      <PopoverContent
+        side="bottom"
+        align="start"
+        sideOffset={6}
+        className="w-72 gap-0 rounded-lg p-1"
+      >
+        <LaunchMenuItems actions={actions} onClose={() => setOpen(false)} />
+      </PopoverContent>
+    </Popover>
   );
 }

@@ -18,14 +18,25 @@ import { useState, type ReactNode } from "react";
  * new tab: the top-bar "+" button, the end-of-tab-strip "+", and the
  * empty-state welcome screen.
  *
- * Trigger is passed as `children`; Radix wires up its onClick. The
- * consumer renders whatever button/chip aesthetic fits their surface.
+ * Two ways to consume this:
  *
- * Popover state is local — each instance has its own open/closed flag,
+ *   1. `<LaunchMenu>...</LaunchMenu>` — simple single-child trigger.
+ *      Children become the Popover's direct trigger via asChild. Use
+ *      this when the trigger doesn't need to be wrapped in a Tooltip.
+ *
+ *   2. `<LaunchMenuItems actions={...}/>` — bare menu items rendered
+ *      inside a PopoverContent you own. Use this when you need to
+ *      compose with Tooltip (Radix requires Tooltip to wrap
+ *      PopoverTrigger, not the other way around — putting Tooltip
+ *      as the asChild target swallows clicks because Tooltip.Root
+ *      is a Provider, not a DOM element, so Radix Slot has nothing
+ *      to wire onClick into).
+ *
+ * Popover state is local in case (1); the consumer owns it in case (2),
  * so multiple "+" buttons on screen don't interact.
  */
 
-type Actions = {
+export type LaunchMenuActions = {
   onGenerator: () => void;
   onTerminal: () => void;
   /** Disabled when there's no source root. */
@@ -40,13 +51,12 @@ export function LaunchMenu({
   align = "end",
   side = "bottom",
 }: {
-  actions: Actions;
+  actions: LaunchMenuActions;
   children: ReactNode;
   align?: "start" | "center" | "end";
   side?: "top" | "right" | "bottom" | "left";
 }) {
   const [open, setOpen] = useState(false);
-  const close = () => setOpen(false);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -57,44 +67,65 @@ export function LaunchMenu({
         sideOffset={6}
         className="w-72 gap-0 rounded-lg p-1"
       >
-        <LaunchMenuItem
-          icon={SparklesIcon}
-          label="New generation"
-          description="Generate test cases from a feature spec — the QA workflow this app was built for."
-          onSelect={() => {
-            close();
-            actions.onGenerator();
-          }}
-        />
-        <LaunchMenuItem
-          icon={CommandLineIcon}
-          label="New terminal"
-          description={
-            actions.sourceRoot
-              ? `Default shell in ${compactPath(actions.sourceRoot)}`
-              : "Default shell in app cwd — pick a source dir for project context"
-          }
-          onSelect={() => {
-            close();
-            actions.onTerminal();
-          }}
-        />
-        <LaunchMenuItem
-          icon={Search01Icon}
-          label="Review my changes"
-          description={
-            actions.sourceRoot
-              ? "AI code review of your branch diff vs main — clickable file:line citations"
-              : "Set a source directory in Settings first"
-          }
-          disabled={!actions.sourceRoot}
-          onSelect={() => {
-            close();
-            actions.onCodeReview();
-          }}
-        />
+        <LaunchMenuItems actions={actions} onClose={() => setOpen(false)} />
       </PopoverContent>
     </Popover>
+  );
+}
+
+/**
+ * Bare set of launcher rows — rendered inside an externally-managed
+ * PopoverContent. The Tooltip+Popover composition rule means the
+ * tab-strip "+" can't use LaunchMenu directly (Tooltip would have to
+ * wrap the PopoverTrigger), so it owns the Popover itself and drops
+ * this into the content.
+ */
+export function LaunchMenuItems({
+  actions,
+  onClose,
+}: {
+  actions: LaunchMenuActions;
+  onClose: () => void;
+}) {
+  return (
+    <>
+      <LaunchMenuItem
+        icon={SparklesIcon}
+        label="New generation"
+        description="Generate test cases from a feature spec — the QA workflow this app was built for."
+        onSelect={() => {
+          onClose();
+          actions.onGenerator();
+        }}
+      />
+      <LaunchMenuItem
+        icon={CommandLineIcon}
+        label="New terminal"
+        description={
+          actions.sourceRoot
+            ? `Default shell in ${compactPath(actions.sourceRoot)}`
+            : "Default shell in app cwd — pick a source dir for project context"
+        }
+        onSelect={() => {
+          onClose();
+          actions.onTerminal();
+        }}
+      />
+      <LaunchMenuItem
+        icon={Search01Icon}
+        label="Review my changes"
+        description={
+          actions.sourceRoot
+            ? "AI code review of your branch diff vs main — clickable file:line citations"
+            : "Set a source directory in Settings first"
+        }
+        disabled={!actions.sourceRoot}
+        onSelect={() => {
+          onClose();
+          actions.onCodeReview();
+        }}
+      />
+    </>
   );
 }
 
