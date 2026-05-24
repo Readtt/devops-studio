@@ -32,6 +32,7 @@ src/                                      Frontend
 │   ├── shortcuts/                        Keyboard shortcut definitions
 │   ├── sidebar/                          Left sidebar rail (Plans/Stale/History)
 │   ├── tabs/                             Tab management
+│   ├── terminal/                         xterm.js pane + Quick Prompts (developer mode)
 │   ├── test-plans/                       Plans tree, suites, cases, stale queue, bug panes
 │   ├── theme/                            Light/dark/system theme provider
 │   └── updater/                          Tauri auto-update dialog
@@ -47,6 +48,7 @@ src-tauri/src/                            Rust backend
     ├── git.rs                            git rev-parse helpers (P2 addition)
     ├── history.rs                        Generation run history (SQLite)
     ├── net.rs                            HTTP + LM-Studio ping helpers
+    ├── pty.rs                            portable-pty driver for the embedded terminal
     ├── secrets.rs                        OS keychain bridge
     ├── staleness.rs                      Per-branch stale-case detection
     └── workspace.rs                      Source-dir authorization + path resolution
@@ -197,4 +199,15 @@ the matching repo secrets.
 - **One feature, one phase commit.** When in doubt, look at `.claude/plans/humming-coalescing-petal.md` for the phased remediation plan.
 - **Skeleton loaders, not spinners.** When a list is loading, show shadcn `<Skeleton>` rows that mirror the eventual content.
 - **Tooltips on every icon-only button.** Use `<Tooltip><TooltipTrigger asChild>…</TooltipTrigger><TooltipContent side="bottom" className="text-[11px]">…</TooltipContent></Tooltip>`.
-- **Every new Windows subprocess spawn must hide the console window.** Use the `hide_console()` helper in `src-tauri/src/modules/{claude,git}.rs` (or inline `cmd.creation_flags(0x0800_0000)` for `std::process::Command` with `CommandExt` imported). Without it the spawn flashes a cmd.exe window — for a poller like `git_repo_info` that runs every 30 s, the result looks (and is) broken.
+- **Context menu items get a `description`, not a `<Tooltip>`.** Radix Tooltip and Radix ContextMenu manage their portals/focus independently and fight if you nest a tooltip on a menu item. Instead, pass `icon` + `description` props to `<ContextMenuItem>`. The component renders a Linear/Raycast-style two-line row — label on top, 10.5 px muted subtitle underneath — so right-clickers can see what an action does before they invoke it.
+  ```tsx
+  <ContextMenuItem
+    icon={<HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />}
+    description="Flag this case as needing attention — it shows up in the Stale queue."
+    onSelect={...}
+  >
+    Mark for review
+  </ContextMenuItem>
+  ```
+  Add a description for any item whose label isn't fully self-explanatory ("Open" can ride bare; "Generate sibling cases" cannot).
+- **Every new Windows subprocess spawn must hide the console window.** Use the `hide_console()` helper in `src-tauri/src/modules/{claude,git}.rs` (or inline `cmd.creation_flags(0x0800_0000)` for `std::process::Command` with `CommandExt` imported). Without it the spawn flashes a cmd.exe window — for a poller like `git_repo_info` that runs every 30 s, the result looks (and is) broken. (Exception: the embedded terminal in `pty.rs` deliberately spawns a *visible* shell via portable-pty's ConPTY backend, which doesn't pop a separate cmd.exe — it owns the PTY directly.)

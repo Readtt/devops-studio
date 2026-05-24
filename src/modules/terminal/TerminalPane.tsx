@@ -23,8 +23,21 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { cn } from "@/lib/utils";
 import { QuickPromptsStrip } from "./QuickPromptsStrip";
+import {
+  Copy01Icon,
+  ClipboardPasteIcon,
+  Eraser01Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 
 // Default monospace stack — matches the editor / chat code fences so users
 // who don't override `terminalFontFamily` get the app's house font.
@@ -363,14 +376,70 @@ export function TerminalPane({ tabId, sessionId, cwd, shellId: _shellId }: Props
         )}
       </div>
       {!exitInfo ? <QuickPromptsStrip sessionId={sessionId} /> : null}
-      <div
-        ref={containerRef}
-        className={cn(
-          "relative min-h-0 flex-1 overflow-hidden px-1.5 pt-1",
-          // Terminal owns its own scrollbar; suppress the app's themed one.
-          "[&_.xterm-viewport]:!bg-transparent",
-        )}
-      />
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <div
+            ref={containerRef}
+            className={cn(
+              "relative min-h-0 flex-1 overflow-hidden px-1.5 pt-1",
+              // Terminal owns its own scrollbar; suppress the app's themed one.
+              "[&_.xterm-viewport]:!bg-transparent",
+            )}
+          />
+        </ContextMenuTrigger>
+        <ContextMenuContent className="min-w-44">
+          <ContextMenuItem
+            icon={<HugeiconsIcon icon={Copy01Icon} size={12} strokeWidth={1.75} />}
+            description="Copy the current selection to the clipboard."
+            onSelect={() => {
+              const t = termRef.current;
+              if (!t || !t.hasSelection()) return;
+              const text = t.getSelection();
+              void navigator.clipboard.writeText(text).catch((e) => {
+                console.warn("[terminal] clipboard write failed:", e);
+              });
+            }}
+          >
+            Copy
+          </ContextMenuItem>
+          <ContextMenuItem
+            icon={
+              <HugeiconsIcon
+                icon={ClipboardPasteIcon}
+                size={12}
+                strokeWidth={1.75}
+              />
+            }
+            description="Paste clipboard contents into the shell at the cursor. Some shells treat multi-line pastes as separate commands — check before pressing Enter."
+            onSelect={() => {
+              void (async () => {
+                try {
+                  const text = await navigator.clipboard.readText();
+                  if (!text) return;
+                  await writePty(sessionId, encodeForPty(text));
+                } catch (e) {
+                  console.warn("[terminal] clipboard read failed:", e);
+                }
+              })();
+            }}
+          >
+            Paste
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            icon={
+              <HugeiconsIcon icon={Eraser01Icon} size={12} strokeWidth={1.75} />
+            }
+            description="Wipe the viewport and scrollback. The running shell isn't restarted — the next command keeps running where it left off."
+            onSelect={() => {
+              const t = termRef.current;
+              t?.clear();
+            }}
+          >
+            Clear viewport
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
     </div>
   );
 }

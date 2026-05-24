@@ -629,6 +629,11 @@ impl ResolvedShell {
             // banner just delays the first prompt by ~150ms and adds noise.
             "pwsh" => vec!["-NoLogo"],
             "powershell" => vec!["-NoLogo"],
+            // cmd.exe defaults to the OEM codepage (437 / 850) — most AI
+            // CLIs (claude, codex) emit UTF-8 and look mangled. `/K` runs
+            // the chcp command and stays interactive; `>nul` silences the
+            // "Active code page: 65001" line so the user never sees it.
+            "cmd" => vec!["/K", "chcp 65001 >nul"],
             // bash without -l keeps things fast (no profile sourcing for
             // git-bash means we don't hang on slow ~/.bashrc plugins).
             "git-bash" => vec!["--login", "-i"],

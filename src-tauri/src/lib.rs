@@ -444,6 +444,28 @@ pub fn run() {
                     ado::hydrate(&handle, &state).await;
                 }
             });
+
+            // Kill all live PTYs when the main window goes away. Without
+            // this, a user closing the app with terminal tabs open leaves
+            // orphan shell processes behind — fine on Unix where they
+            // reparent to init, but Windows holds the cmd/pwsh process
+            // alive until the user finds them in Task Manager.
+            if let Some(main) = app.get_webview_window("main") {
+                let pty_handle = app.handle().clone();
+                main.on_window_event(move |event| {
+                    if matches!(
+                        event,
+                        tauri::WindowEvent::CloseRequested { .. }
+                            | tauri::WindowEvent::Destroyed
+                    ) {
+                        if let Some(state) =
+                            pty_handle.try_state::<pty::PtyState>()
+                        {
+                            state.kill_all();
+                        }
+                    }
+                });
+            }
             Ok(())
         })
         .manage({
