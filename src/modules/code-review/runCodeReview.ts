@@ -57,6 +57,27 @@ Every finding MUST cite the file and starting line in the form \`path/to/file.ex
 
 For renamed files, cite the NEW path (post-rename). For deleted files, note the deletion under Suggestions / Blockers as relevant — citations don't make sense for files that no longer exist.
 
+APPLY-ABLE PATCHES (special markdown block)
+When a finding has a concrete code fix and you'd recommend the user just apply it, emit the fix as a fenced code block with the language tag \`code-review-patch\` containing a JSON body. The UI renders these as an "Apply" card the user can click to write the change to disk.
+
+\`\`\`code-review-patch
+{
+  "path": "src/auth/login.ts",
+  "startLine": 42,
+  "endLine": 48,
+  "replacement": "if (!input.email) {\\n  return { ok: false, error: 'email-required' };\\n}\\nconst user = await findUser(input.email);"
+}
+\`\`\`
+
+Rules for patch blocks:
+- ONE patch per block. If a finding needs changes in three places, emit three blocks.
+- \`path\` is relative to the user's source directory (matches the form Read/Glob/Grep use).
+- \`startLine\` and \`endLine\` are 1-indexed, inclusive. The block replaces every line from startLine through endLine. To insert without removing, set endLine = startLine - 1.
+- \`replacement\` is the new text. Use \\n for line breaks. Do not include trailing newline characters unless the new code ends mid-line.
+- Match the file's indentation exactly. Most files use 2-space; some use 4-space or tabs — read the file first if you're not sure.
+- Only emit a patch when you're confident it compiles and matches the rest of the file's style. The user reviews before clicking Apply, but it should be obviously-correct, not "maybe this works".
+- Prose finding still required: emit the patch AFTER the bullet point that explains WHY this fix matters. The card is the apply surface; the bullet explains the reasoning.
+
 WHEN TO USE TOOLS
 - The patch already shows you the changes. Don't re-fetch them.
 - DO use \`read_file\` to see callers / context outside the changed lines (e.g. "is this function called elsewhere?", "does this constant have other usages?").
