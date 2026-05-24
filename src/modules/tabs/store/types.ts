@@ -34,12 +34,29 @@ export type SuiteChatTab = TabBase & {
   suiteId: number;
 };
 
+export type TerminalTab = TabBase & {
+  kind: "terminal";
+  /** Working directory the shell launches in. `null` lets `pty_spawn` use
+   *  whatever the app's process cwd is at the time. */
+  cwd: string | null;
+  /** Optional shell id override (matches a `ShellCandidate.id` from
+   *  `detect_shells`). When null, `pty_spawn` falls back to `defaultShellPath`
+   *  from preferences, then platform default. */
+  shellId: string | null;
+  /** Renderer-minted session id (UUID v4). Generated when the tab is opened
+   *  so the PTY event channel name is stable across remounts. PTY state
+   *  itself doesn't survive a window reload — `useTabsStore.merge` drops
+   *  terminal tabs on rehydrate so the user gets a fresh shell. */
+  sessionId: string;
+};
+
 export type AppTab =
   | TestCaseTab
   | GeneratorTab
   | CodeViewerTab
   | BugTab
-  | SuiteChatTab;
+  | SuiteChatTab
+  | TerminalTab;
 
 export type TabKind = AppTab["kind"];
 

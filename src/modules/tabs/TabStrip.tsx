@@ -228,6 +228,8 @@ function kindDotClass(kind: TabKind): string {
       return "bg-amber-400 dark:bg-amber-500";
     case "code-viewer":
       return "bg-zinc-400 dark:bg-zinc-500";
+    case "terminal":
+      return "bg-emerald-400 dark:bg-emerald-500";
   }
 }
 
@@ -243,6 +245,8 @@ function kindLabel(kind: TabKind): string {
       return "Suite chat";
     case "code-viewer":
       return "Code";
+    case "terminal":
+      return "Terminal";
   }
 }
 
@@ -269,6 +273,9 @@ function describeTab(tab: AppTab): string {
       line = `${k} · ${tab.title}`;
       break;
     case "generator":
+      line = `${k} · ${tab.title}`;
+      break;
+    case "terminal":
       line = `${k} · ${tab.title}`;
       break;
   }

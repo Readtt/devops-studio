@@ -51,6 +51,18 @@ export type OpenTabInput =
       suiteId: number;
       title: string;
       pinned?: boolean;
+    }
+  | {
+      kind: "terminal";
+      title?: string;
+      cwd?: string | null;
+      shellId?: string | null;
+      /** Optional pre-minted session id. Most callers leave this unset and
+       *  let openTab generate one; passing it is only useful when an outside
+       *  hook needs to subscribe to the PTY event channel before openTab
+       *  returns. */
+      sessionId?: string;
+      pinned?: boolean;
     };
 
 export type TabsState = {
@@ -198,6 +210,11 @@ export const useTabsStore = create<TabsState>()(
               // Fresh generators don't dedup; bound-to-runId generators do.
               if (!input.runId) return false;
               return t.kind === "generator" && t.runId === input.runId;
+            case "terminal":
+              // Terminals never dedup. Each tab holds a live PTY session;
+              // reopening "Open Terminal" should give you a fresh shell, not
+              // surface the existing one. Multi-terminal is a feature.
+              return false;
           }
           return false;
         });
@@ -261,6 +278,17 @@ export const useTabsStore = create<TabsState>()(
               title: input.title,
               planId: input.planId,
               suiteId: input.suiteId,
+              pinned: input.pinned ?? false,
+            };
+            break;
+          case "terminal":
+            tab = {
+              id,
+              kind: "terminal",
+              title: input.title ?? "Terminal",
+              cwd: input.cwd ?? null,
+              shellId: input.shellId ?? null,
+              sessionId: input.sessionId ?? crypto.randomUUID(),
               pinned: input.pinned ?? false,
             };
             break;
@@ -406,6 +434,15 @@ export const useTabsStore = create<TabsState>()(
               title: `${t.title} (copy)`,
               initialPlanId: t.initialPlanId,
               initialSuiteId: t.initialSuiteId,
+            });
+          case "terminal":
+            // Duplicate spawns a fresh shell in the same cwd with the same
+            // shell pick. New sessionId, new PTY — terminals can't share.
+            return get().openTab({
+              kind: "terminal",
+              title: t.title,
+              cwd: t.cwd,
+              shellId: t.shellId,
             });
         }
       },
@@ -578,14 +615,16 @@ export const useTabsStore = create<TabsState>()(
           paneTree: s.paneTree,
           focusedLeafId: s.focusedLeafId,
         }) as Partial<TabsState>,
-      // Drop unsaved generator tabs (runId === null) on rehydrate — they
-      // can't be restored from the history backend.
+      // Drop tabs that can't be restored from a cold start:
+      //   * generator tabs with no runId — no draft to load
+      //   * terminal tabs — the PTY died with the previous process
       merge: (persisted, current) => {
         const merged = { ...current, ...(persisted as Partial<TabsState>) };
         if (!merged.tabs || !merged.paneTree) return current;
         const ghostIds = new Set<number>();
         for (const t of Object.values(merged.tabs) as AppTab[]) {
           if (t.kind === "generator" && !t.runId) ghostIds.add(t.id);
+          else if (t.kind === "terminal") ghostIds.add(t.id);
         }
         if (ghostIds.size > 0) {
           let tree = merged.paneTree;
