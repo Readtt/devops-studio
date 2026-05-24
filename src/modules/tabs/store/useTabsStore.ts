@@ -50,6 +50,12 @@ export type OpenTabInput =
       planId: number;
       suiteId: number;
       title: string;
+      /** Pin this tab to one specific thread on the suite. When set,
+       *  dedup includes the threadId so the same suite can host
+       *  multiple thread-bound tabs side-by-side. Omit (or pass null)
+       *  to open the suite's chat without binding to a thread — the
+       *  pane will follow whatever thread is active on the suite. */
+      threadId?: string | null;
       pinned?: boolean;
     }
   | {
@@ -214,7 +220,12 @@ export const useTabsStore = create<TabsState>()(
               return (
                 t.kind === "suite-chat" &&
                 t.planId === input.planId &&
-                t.suiteId === input.suiteId
+                t.suiteId === input.suiteId &&
+                // Thread pin is part of identity now: a no-thread tab
+                // and a thread-A tab on the same suite are different
+                // tabs. Normalise undefined↔null so callers that pass
+                // either dedup the same way.
+                (t.threadId ?? null) === (input.threadId ?? null)
               );
             case "generator":
               // Fresh generators don't dedup; bound-to-runId generators do.
@@ -295,6 +306,7 @@ export const useTabsStore = create<TabsState>()(
               title: input.title,
               planId: input.planId,
               suiteId: input.suiteId,
+              threadId: input.threadId ?? null,
               pinned: input.pinned ?? false,
             };
             break;
@@ -453,6 +465,7 @@ export const useTabsStore = create<TabsState>()(
               planId: t.planId,
               suiteId: t.suiteId,
               title: t.title,
+              threadId: t.threadId ?? null,
             });
           case "generator":
             // Duplicate as a fresh generator (no runId carry-over — drafts

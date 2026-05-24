@@ -317,10 +317,13 @@ function AppShell() {
       planId: number;
       suiteId: number;
       title: string;
-      /** Optional: jump straight to a specific thread on this suite. When
-       *  absent the suite's last-active thread is kept (or the default
-       *  thread is created on first visit). Used by the chat-history
-       *  panel so clicking a row opens the right conversation. */
+      /** Bind the tab to a specific thread. When passed (e.g. from the
+       *  chat-history sidebar clicking a past conversation), the tab
+       *  dedups against other tabs with the same threadId — so two
+       *  threads on the same suite open as TWO tabs, not one.
+       *  Omit to open the suite chat without binding to a thread
+       *  (e.g. from the suite-tree context menu); the pane will follow
+       *  whatever thread is active on that suite. */
       threadId?: string;
     }) => {
       const id = useTabsStore.getState().openTab({
@@ -328,6 +331,7 @@ function AppShell() {
         planId: input.planId,
         suiteId: input.suiteId,
         title: input.title,
+        threadId: input.threadId ?? null,
       });
       useTabsStore.getState().renameTab(id, input.title);
       if (input.threadId) {

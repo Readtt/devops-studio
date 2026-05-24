@@ -63,6 +63,13 @@ import { useSuiteChat } from "./hooks/useSuiteChat";
 type Props = {
   planId: number;
   suiteId: number;
+  /** Optional thread to activate on mount. When set, this tab is pinned
+   *  to one specific conversation on the suite (typically because the
+   *  user opened it from the chat-history sidebar). Without this prop
+   *  the pane follows whatever thread is currently active for the
+   *  suite — useful when the tab was opened from the suite tree and
+   *  the user just wants "the chat on this suite". */
+  boundThreadId?: string | null;
 };
 
 const SUGGESTED_PROMPTS_WITH_SOURCE = [
@@ -79,7 +86,7 @@ const SUGGESTED_PROMPTS_NO_SOURCE = [
   "If I asked whether these pass, what would you need to know?",
 ];
 
-export function SuiteChatPane({ planId, suiteId }: Props) {
+export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
   const suiteKey = `${planId}:${suiteId}`;
   const suite = useSuiteChat((s) => s.bySuite.get(suiteKey));
   const activeThreadId = useSuiteChat(
@@ -113,6 +120,18 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
     ensure(planId, suiteId);
     void loadCases(planId, suiteId);
   }, [planId, suiteId, ensure, loadCases]);
+
+  // If the tab is bound to a specific thread (the user opened this tab
+  // from the chat-history sidebar, or it was restored from localStorage
+  // after a reload), activate that thread once the suite slice is
+  // hydrated. Skip the activation when the suite's already on the
+  // bound thread to avoid a render thrash on remount.
+  useEffect(() => {
+    if (!boundThreadId) return;
+    if (!suite) return; // wait for ensure() to land the suite slice
+    if (activeThreadId === boundThreadId) return;
+    setActiveThread(planId, suiteId, boundThreadId);
+  }, [boundThreadId, suite, activeThreadId, planId, suiteId, setActiveThread]);
 
   // Pull the ADO connection so case chips can link out to the ADO web UI.
   // Cheap — Tauri command, cached on the Rust side.

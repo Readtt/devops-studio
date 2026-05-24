@@ -32,6 +32,14 @@ export type SuiteChatTab = TabBase & {
   kind: "suite-chat";
   planId: number;
   suiteId: number;
+  /** Optional thread pin. When set, the tab is bound to one specific
+   *  conversation on this suite and dedups against other tabs with the
+   *  same threadId. Null/undefined = "follow whatever thread is active
+   *  on this suite" — opened from the suite tree context menu or any
+   *  surface that doesn't name a specific thread. The two states coexist
+   *  cleanly: a no-thread tab + thread-A tab + thread-B tab are three
+   *  separate tabs on the same suite. */
+  threadId?: string | null;
 };
 
 export type CodeReviewTab = TabBase & {

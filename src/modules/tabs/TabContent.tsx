@@ -37,7 +37,13 @@ export const TabContent = memo(function TabContent({ tab, sourceRoot }: Props) {
         />
       );
     case "suite-chat":
-      return <SuiteChatPane planId={tab.planId} suiteId={tab.suiteId} />;
+      return (
+        <SuiteChatPane
+          planId={tab.planId}
+          suiteId={tab.suiteId}
+          boundThreadId={tab.threadId ?? null}
+        />
+      );
     case "generator":
       return <GeneratorTabContent tab={tab} />;
     case "terminal":
