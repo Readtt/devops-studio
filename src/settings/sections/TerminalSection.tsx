@@ -148,28 +148,16 @@ export function TerminalSection() {
             title="Preferred AI CLI"
             description={
               <>
-                Command Quick Prompts use when typing starter prompts. Common
-                values:{" "}
-                <code className="rounded-sm bg-foreground/[0.06] px-1 font-mono text-[10.5px]">
-                  claude
-                </code>
-                ,{" "}
-                <code className="rounded-sm bg-foreground/[0.06] px-1 font-mono text-[10.5px]">
-                  codex
-                </code>
-                ,{" "}
-                <code className="rounded-sm bg-foreground/[0.06] px-1 font-mono text-[10.5px]">
-                  aider
-                </code>
-                . Leave empty to paste prompts without a command prefix.
+                Command Quick Prompts use when typing starter prompts. Pick
+                from the common CLIs or choose <em>Custom…</em> to type your
+                own binary name. Leave empty to paste prompts raw, without a
+                command prefix.
               </>
             }
           >
-            <Input
+            <AiCliPicker
               value={preferredAiCli}
-              placeholder="claude"
-              className="w-[180px] font-mono"
-              onChange={(e) => void setPreferredAiCli(e.target.value)}
+              onChange={(next) => void setPreferredAiCli(next)}
             />
           </SettingRow>
         </div>
@@ -275,5 +263,105 @@ function Label({ children }: { children: React.ReactNode }) {
     <span className="text-[11px] font-medium tracking-tight text-muted-foreground">
       {children}
     </span>
+  );
+}
+
+// Curated set of well-known AI CLIs the user can drop into the terminal's
+// quick-prompts. `value` is the literal binary name we splice into typed
+// prompts — keep it short and exact so shells resolve it via PATH without
+// quoting. Anything not in the list lands in the "custom" branch.
+const AI_CLI_OPTIONS = [
+  { value: "claude", label: "Claude Code" },
+  { value: "codex", label: "OpenAI Codex" },
+  { value: "cursor-agent", label: "Cursor" },
+  { value: "gemini", label: "Gemini CLI" },
+  { value: "aider", label: "Aider" },
+] as const;
+
+const CUSTOM_SENTINEL = "__custom__";
+const EMPTY_SENTINEL = "__none__";
+
+function AiCliPicker({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const trimmed = value.trim();
+  const matched = AI_CLI_OPTIONS.find((o) => o.value === trimmed);
+  const isEmpty = trimmed.length === 0;
+  const isCustom = !isEmpty && !matched;
+  const [customMode, setCustomMode] = useState(isCustom);
+
+  // Keep the local "show the typing input" flag in sync if the stored value
+  // changes from outside (e.g. another window). Without this, switching to
+  // a preset elsewhere would leave the custom input lingering on screen.
+  useEffect(() => {
+    if (isCustom) setCustomMode(true);
+    else if (matched || isEmpty) setCustomMode(false);
+  }, [isCustom, matched, isEmpty]);
+
+  const selectValue = isEmpty
+    ? EMPTY_SENTINEL
+    : customMode
+      ? CUSTOM_SENTINEL
+      : (matched?.value ?? CUSTOM_SENTINEL);
+
+  return (
+    <div className="flex items-center gap-2">
+      <Select
+        value={selectValue}
+        onValueChange={(v) => {
+          if (v === CUSTOM_SENTINEL) {
+            setCustomMode(true);
+            // Don't clobber an existing custom value — give the user a chance
+            // to keep typing rather than wiping back to empty.
+            if (matched || isEmpty) onChange("");
+            return;
+          }
+          if (v === EMPTY_SENTINEL) {
+            setCustomMode(false);
+            onChange("");
+            return;
+          }
+          setCustomMode(false);
+          onChange(v);
+        }}
+      >
+        <SelectTrigger className="w-[180px]">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {AI_CLI_OPTIONS.map((o) => (
+            <SelectItem key={o.value} value={o.value}>
+              <span className="flex items-center gap-2">
+                <span className="font-mono text-[10.5px] text-muted-foreground">
+                  {o.value}
+                </span>
+                <span className="truncate">{o.label}</span>
+              </span>
+            </SelectItem>
+          ))}
+          <SelectItem value={CUSTOM_SENTINEL}>
+            <span className="italic text-muted-foreground">Custom…</span>
+          </SelectItem>
+          <SelectItem value={EMPTY_SENTINEL}>
+            <span className="italic text-muted-foreground">
+              None (paste raw)
+            </span>
+          </SelectItem>
+        </SelectContent>
+      </Select>
+      {customMode ? (
+        <Input
+          value={value}
+          placeholder="my-cli"
+          className="w-[160px] font-mono"
+          onChange={(e) => onChange(e.target.value)}
+          autoFocus={isCustom && value.length === 0}
+        />
+      ) : null}
+    </div>
   );
 }

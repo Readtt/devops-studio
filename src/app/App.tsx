@@ -1003,34 +1003,6 @@ function AppShell() {
                   : "Click to choose a source directory. Code links in bugs open from here."}
               </TooltipContent>
             </Tooltip>
-            <LaunchMenu
-              actions={{
-                onGenerator: launchGenerator,
-                onTerminal: launchTerminal,
-                onCodeReview: launchCodeReview,
-                sourceRoot,
-              }}
-            >
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-7 w-7"
-                    aria-label="New tab"
-                  >
-                    <HugeiconsIcon
-                      icon={PlusSignIcon}
-                      size={13}
-                      strokeWidth={1.75}
-                    />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="text-[11px]">
-                  New tab — Generate, Terminal, or Review
-                </TooltipContent>
-              </Tooltip>
-            </LaunchMenu>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
