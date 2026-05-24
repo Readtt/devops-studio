@@ -1,7 +1,7 @@
 import { BranchPicker } from "@/components/BranchPicker";
 import { Button } from "@/components/ui/button";
 import { ChatMarkdown } from "@/components/ChatMarkdown";
-import { Textarea } from "@/components/ui/textarea";
+import { Kbd } from "@/components/ui/kbd";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { getModel } from "@/modules/ai/config";
@@ -17,18 +17,18 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useTabsStore } from "@/modules/tabs/store/useTabsStore";
 import {
   ArrowDown01Icon,
+  ArrowTurnUpIcon,
   BubbleChatIcon,
+  Cancel01Icon,
   Copy01Icon,
   GitBranchIcon,
   InformationCircleIcon,
   RefreshIcon,
-  SentIcon,
-  StopCircleIcon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useCodeReview } from "./useCodeReview";
 
 const DEFAULT_FIRST_PROMPT =
@@ -139,13 +139,6 @@ export function CodeReviewPane({
     if (!text || busy) return;
     void send(tabId, text);
     setDraft("");
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      handleSend();
-    }
   };
 
   const baseList = useMemo(() => {
@@ -392,63 +385,144 @@ export function CodeReviewPane({
         </button>
       ) : null}
 
-      {/* Composer ------------------------------------------------------ */}
-      <div className="shrink-0 border-t border-border/50 bg-card/30 px-3 py-2.5">
-        <div className="mx-auto flex max-w-3xl items-end gap-2">
-          <Textarea
+      {/* Composer — mirrors SuiteChatPane's chat composer so the two
+          surfaces feel like one tool. Single rounded textarea with the
+          send/cancel button inset on the right, Enter to send, Shift+Enter
+          for newline, autosizing up to 180px. */}
+      <ChatComposer
+        draft={draft}
+        onChange={setDraft}
+        onSubmit={handleSend}
+        onCancel={() => stop(tabId)}
+        busy={busy}
+        disabled={!diff && !diffLoading}
+        hint={
+          messages.length === 0
+            ? "Review prompt — Enter to send · Shift+Enter for newline"
+            : "Follow up on the review… (Enter to send · Shift+Enter for newline)"
+        }
+      />
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Chat-style composer — identical visual + interaction language to the
+// SuiteChatPane composer. We intentionally keep this as a local copy
+// rather than extracting a shared component yet: the two surfaces have
+// diverged subtly before (model labels, attachment hooks) and a shared
+// component would create coupling neither pane benefits from yet.
+// ─────────────────────────────────────────────────────────────────────────
+
+function ChatComposer({
+  draft,
+  onChange,
+  onSubmit,
+  onCancel,
+  busy,
+  disabled,
+  hint,
+}: {
+  draft: string;
+  onChange: (v: string) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+  busy: boolean;
+  disabled: boolean;
+  hint: string;
+}) {
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Autosize: grow as the user types, capped at 180px so the composer
+  // never eats the message list.
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
+  }, [draft]);
+
+  return (
+    <div className="shrink-0 border-t border-border/40 bg-card/40 px-5 py-3">
+      <div className="mx-auto max-w-3xl">
+        <div
+          className={cn(
+            "group relative flex items-end gap-2 rounded-md border border-border/60 bg-input/40 px-2.5 py-1.5 transition-colors",
+            "focus-within:border-primary/55 focus-within:ring-2 focus-within:ring-ring/25",
+            busy && "border-primary/35 bg-primary/[0.03]",
+          )}
+        >
+          <textarea
+            ref={inputRef}
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={
-              messages.length === 0
-                ? "Tweak the prompt or press Ctrl/Cmd+Enter to send…"
-                : "Follow up — ask the reviewer to dig deeper, expand a finding, etc."
-            }
-            disabled={!diff && !diffLoading}
-            rows={messages.length === 0 ? 3 : 2}
-            className="min-h-0 resize-none text-[12px] leading-relaxed"
+            onChange={(e) => onChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.metaKey) {
+                e.preventDefault();
+                onSubmit();
+              }
+            }}
+            rows={1}
+            disabled={disabled}
+            placeholder={hint}
+            className="min-h-[20px] w-full resize-none bg-transparent py-1 text-[12px] leading-[1.55] outline-none placeholder:text-muted-foreground/55"
           />
           {busy ? (
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => stop(tabId)}
-                  className="h-8 shrink-0 gap-1"
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label="Cancel review"
+                  onClick={onCancel}
+                  className="shrink-0 text-destructive hover:bg-destructive/15"
                 >
                   <HugeiconsIcon
-                    icon={StopCircleIcon}
+                    icon={Cancel01Icon}
                     size={12}
                     strokeWidth={1.75}
                   />
-                  Stop
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="top" className="max-w-[280px] text-[11px]">
-                Cancel the in-flight review. The partial answer stays visible
-                — useful when the model has already said what you needed.
+              <TooltipContent side="top" className="text-[11px]">
+                Stop the review in flight
               </TooltipContent>
             </Tooltip>
           ) : (
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  size="sm"
-                  onClick={handleSend}
-                  disabled={!draft.trim() || !diff}
-                  className="h-8 shrink-0 gap-1"
+                  size="icon-xs"
+                  aria-label="Send"
+                  onClick={onSubmit}
+                  disabled={!draft.trim() || disabled}
+                  className="shrink-0"
                 >
-                  <HugeiconsIcon icon={SentIcon} size={12} strokeWidth={1.75} />
-                  Send
+                  <HugeiconsIcon
+                    icon={ArrowTurnUpIcon}
+                    size={13}
+                    strokeWidth={2}
+                  />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="top" className="max-w-[280px] text-[11px]">
-                Send this prompt to your default model with the diff as
-                context. Ctrl/Cmd+Enter sends from the textarea too.
+              <TooltipContent side="top" className="text-[11px]">
+                Send · Enter
               </TooltipContent>
             </Tooltip>
           )}
+        </div>
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 px-0.5 text-[10px] text-muted-foreground/80">
+          <span className="inline-flex items-center gap-1">
+            <Kbd>↵</Kbd>
+            send
+          </span>
+          <span aria-hidden className="text-muted-foreground/40">
+            ·
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <Kbd>⇧↵</Kbd>
+            newline
+          </span>
         </div>
       </div>
     </div>
@@ -508,8 +582,9 @@ function EmptyState({
         )}
       </p>
       <p className="text-[10.5px] text-muted-foreground/70">
-        Tip: <kbd className="rounded border border-border/60 bg-card px-1 font-mono text-[10px]">Ctrl/Cmd+Enter</kbd>{" "}
-        sends the prompt below.
+        Tip: <kbd className="rounded border border-border/60 bg-card px-1 font-mono text-[10px]">Enter</kbd>{" "}
+        sends; <kbd className="rounded border border-border/60 bg-card px-1 font-mono text-[10px]">Shift+Enter</kbd>{" "}
+        adds a newline.
       </p>
     </div>
   );
