@@ -24,6 +24,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { QuickPromptsStrip } from "./QuickPromptsStrip";
 
 // Default monospace stack — matches the editor / chat code fences so users
 // who don't override `terminalFontFamily` get the app's house font.
@@ -361,6 +362,7 @@ export function TerminalPane({ tabId, sessionId, cwd, shellId: _shellId }: Props
           </span>
         )}
       </div>
+      {!exitInfo ? <QuickPromptsStrip sessionId={sessionId} /> : null}
       <div
         ref={containerRef}
         className={cn(
