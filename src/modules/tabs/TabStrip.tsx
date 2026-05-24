@@ -79,13 +79,13 @@ export const TabStrip = memo(function TabStrip({
       ref={scrollRef}
       onWheel={onWheel}
       onPointerDown={onFocus}
-      // No horizontal scroll: tabs that don't fit get clipped at the
-      // right edge rather than spawning a scrollbar. The chips have
-      // their own truncation (max-w-[150px|220px] + truncate on the
-      // title span), and the "+" launcher rides at the end via the
-      // inlineSuffix slot. Keeping the wheel→scrollLeft shim above
-      // lets users still nudge clipped tabs into view if needed.
-      className="tabs-scroll flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden"
+      // Horizontal scroll when tabs overflow, but the scrollbar itself is
+      // visually suppressed — see .tabs-scroll in globals.css for the
+      // Firefox/WebKit rules that make the bar invisible while keeping
+      // the underlying scrollable behaviour. Users still scroll via the
+      // mouse wheel (the onWheel shim above maps deltaY→scrollLeft) and
+      // by drag-pan on touch.
+      className="tabs-scroll flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
     >
       {tabs.length === 0 ? (
         <span className="px-2 text-[11px] text-muted-foreground">No tabs</span>
