@@ -1,12 +1,17 @@
 import { cn } from "@/lib/utils";
 import {
   siAnthropic,
+  siApple,
+  siDeepseek,
   siFishshell,
   siGit,
   siGithub,
   siGitforwindows,
   siGnubash,
   siGoogle,
+  siMistralai,
+  siOllama,
+  siOpenrouter,
   siVercel,
   siZsh,
   type SimpleIcon,
@@ -29,6 +34,16 @@ const ICONS = {
   github: siGithub,
   google: siGoogle,
   vercel: siVercel,
+  apple: siApple,
+  // AI providers whose marks ship in simple-icons. Used by ProviderIcon
+  // to render the real brand glyph wherever a provider appears (model
+  // picker, status bar, settings cards). For providers simple-icons
+  // doesn't carry (OpenAI / xAI / Cerebras / etc — trademark-restricted),
+  // ProviderIcon falls back to the hugeicons stroke set.
+  deepseek: siDeepseek,
+  mistral: siMistralai,
+  ollama: siOllama,
+  openrouter: siOpenrouter,
   // Shell brand marks for the terminal default-shell picker. Microsoft
   // PowerShell and cmd.exe aren't in simple-icons (trademark-restricted —
   // same reason OpenAI is missing), so the picker falls back to a generic
