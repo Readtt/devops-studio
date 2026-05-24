@@ -181,7 +181,7 @@ export function UpdaterToast({ status, onInstall, onDismiss }: Props) {
                 from Settings → About.
               </p>
             ) : (
-              <div className="flex flex-col gap-2">
+              <div className="flex max-h-[min(55vh,420px)] flex-col gap-2 overflow-y-auto pr-0.5">
                 {sections.map((s) => {
                   const tone = SECTION_TONE[s.kind];
                   const visible = showAll
