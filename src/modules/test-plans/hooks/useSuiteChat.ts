@@ -444,27 +444,44 @@ export const useSuiteChat = create<Store>((set, get) => ({
     } catch (e) {
       console.warn("[suite-chat] delete thread failed:", e);
     }
+    // Resolve the new active thread synchronously so we can guarantee a
+    // slice for it exists in byThread before the store update lands —
+    // without that guarantee SuiteChatPane reads `byThread.get(...)` as
+    // undefined and renders the skeleton forever.
+    const currState = get();
+    const priorList = (currState.threadListBySuite.get(sk) ?? []).filter(
+      (t) => t.threadId !== threadId,
+    );
+    const wasActive = currState.activeThreadBySuite.get(sk) === threadId;
+    const nextActiveId = wasActive
+      ? priorList[0]?.threadId ?? DEFAULT_THREAD_ID
+      : currState.activeThreadBySuite.get(sk) ?? DEFAULT_THREAD_ID;
+    const nextActiveKey = threadKey(planId, suiteId, nextActiveId);
+    const needsFreshSlice =
+      wasActive && !currState.byThread.has(nextActiveKey);
+
     set((curr) => {
       const nextByThread = new Map(curr.byThread);
       nextByThread.delete(tk);
-      const nextList = new Map(curr.threadListBySuite);
-      const prior = (nextList.get(sk) ?? []).filter(
-        (t) => t.threadId !== threadId,
-      );
-      nextList.set(sk, prior);
-      const nextActive = new Map(curr.activeThreadBySuite);
-      const currentActive = nextActive.get(sk);
-      if (currentActive === threadId) {
-        // Fall back to the newest remaining thread, or a fresh default.
-        const next = prior[0]?.threadId ?? DEFAULT_THREAD_ID;
-        nextActive.set(sk, next);
+      if (needsFreshSlice) {
+        // Seed the fallback with `hydrated: false` so hydrateThread (below)
+        // can run and either load persisted messages or finalise an empty
+        // thread. Either way the skeleton clears once this slice lands.
+        nextByThread.set(nextActiveKey, initialThreadState(nextActiveId));
       }
+      const nextList = new Map(curr.threadListBySuite);
+      nextList.set(sk, priorList);
+      const nextActive = new Map(curr.activeThreadBySuite);
+      if (wasActive) nextActive.set(sk, nextActiveId);
       return {
         byThread: nextByThread,
         threadListBySuite: nextList,
         activeThreadBySuite: nextActive,
       };
     });
+    if (needsFreshSlice) {
+      void hydrateThread(planId, suiteId, nextActiveId, set, get);
+    }
     void refreshThreadList(planId, suiteId, set);
   },
 
