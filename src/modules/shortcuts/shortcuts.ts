@@ -43,6 +43,7 @@ export type ShortcutId =
   | "pane.focusDown"
   | "stale.scan"
   | "generator.new"
+  | "terminal.new"
   | "view.zoomIn"
   | "view.zoomOut"
   | "view.zoomReset";
@@ -112,6 +113,13 @@ export const SHORTCUTS: Shortcut[] = [
     label: "New Generate tab",
     group: "Tabs",
     defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "g" }],
+  },
+  {
+    id: "terminal.new",
+    label: "New terminal tab",
+    group: "Tabs",
+    // Ctrl/Cmd+Shift+` mirrors VS Code's "New Terminal" muscle memory.
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "`" }],
   },
   {
     id: "tab.close",

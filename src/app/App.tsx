@@ -52,12 +52,11 @@ import { useChatStore } from "@/modules/ai/store/chatStore";
 import { getModel } from "@/modules/ai/config";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
 import {
-  ROOT_LEAF_ID,
   useFocusedActiveTabId,
   useTab,
   useTabsStore,
 } from "@/modules/tabs/store/useTabsStore";
-import { findLeaf } from "@/modules/tabs/store/paneTreeOps";
+import { findLeaf, findLeafByTab } from "@/modules/tabs/store/paneTreeOps";
 import type { GenerationSessionStore } from "@/modules/generator/store/useGenerationSession";
 
 /** Read the active tab id of the currently-focused leaf without subscribing.
@@ -178,7 +177,20 @@ function AppShell() {
   const activeTab = useTab(activeId);
   const genStoresApi = useGeneratorStoresApi();
   const setActiveId = useCallback((id: number | null) => {
-    useTabsStore.getState().setActiveInLeaf(ROOT_LEAF_ID, id);
+    const tabs = useTabsStore.getState();
+    // Activate the tab in the leaf it actually lives in. Hard-coding
+    // ROOT_LEAF_ID here is the single root-cause behind every "this command
+    // doesn't focus my tab when it's in a split / second pane" bug — the
+    // store happily wrote `paneTree[root].activeTabId = id` to a leaf that
+    // didn't contain `id`, so nothing visible changed. When clearing (id =
+    // null) just keep the user's current focus.
+    if (id == null) {
+      tabs.setActiveInLeaf(tabs.focusedLeafId, null);
+      return;
+    }
+    const owner = findLeafByTab(tabs.paneTree, id);
+    const leafId = owner?.id ?? tabs.focusedLeafId;
+    tabs.setActiveInLeaf(leafId, id);
   }, []);
 
   // Per-generator-tab Zustand stores. Each generator tab owns its own
@@ -364,6 +376,25 @@ function AppShell() {
     [],
   );
 
+  const openTerminalTab = useCallback(
+    (input?: { cwd?: string | null; shellId?: string | null }) => {
+      // Resolve cwd at call time. If the caller didn't pass one, fall back
+      // to the user's source root — terminals you open from the palette
+      // almost always want to land in your project, not the app's process
+      // cwd. Passing null explicitly lets a caller opt out and use whatever
+      // Rust's default cwd resolution gives back.
+      const liveSourceRoot = usePreferencesStore.getState().sourceRoot;
+      const cwd =
+        input?.cwd === undefined ? liveSourceRoot ?? null : input.cwd;
+      return useTabsStore.getState().openTab({
+        kind: "terminal",
+        cwd,
+        shellId: input?.shellId ?? null,
+      });
+    },
+    [],
+  );
+
   const openGeneratorTab = useCallback(
     (input?: {
       planId?: number | null;
@@ -385,13 +416,19 @@ function AppShell() {
       // For un-bound tabs we always create a fresh one (per the original
       // contract — multiple drafts in parallel is intentional).
       if (requestedRunId) {
-        const existing = Object.values(useTabsStore.getState().tabs).find(
+        const tabsState = useTabsStore.getState();
+        const existing = Object.values(tabsState.tabs).find(
           (t) => t.kind === "generator" && t.runId === requestedRunId,
         );
         if (existing) {
-          useTabsStore
-            .getState()
-            .setActiveInLeaf(ROOT_LEAF_ID, existing.id);
+          // Activate the tab in the leaf it actually lives in — earlier
+          // versions hard-coded ROOT_LEAF_ID, which silently no-op'd when
+          // the existing generator tab was in any other pane (after a
+          // split, or any leaf the user has dragged it to). That made
+          // "Open in review" look broken on the second invocation.
+          const owner = findLeafByTab(tabsState.paneTree, existing.id);
+          const leafId = owner?.id ?? tabsState.focusedLeafId;
+          tabsState.setActiveInLeaf(leafId, existing.id);
           return existing.id;
         }
       }
@@ -575,6 +612,7 @@ function AppShell() {
         void setTheme(next);
       },
       "generator.new": () => openGeneratorTab(),
+      "terminal.new": () => openTerminalTab(),
       "tab.close": () => {
         const target = focusedActiveId();
         if (target != null) useTabsStore.getState().closeTab(target);
@@ -1098,6 +1136,8 @@ function AppShell() {
             onOpenStaleQueue={() => persistSidebarView("stale-queue")}
             onOpenTestPlansSidebar={() => persistSidebarView("test-plans")}
             onOpenHistory={() => persistSidebarView("history")}
+            onOpenTerminal={(input) => openTerminalTab(input)}
+            sourceRoot={sourceRoot}
           />
 
     </div>

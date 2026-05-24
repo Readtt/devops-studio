@@ -20,6 +20,7 @@ import {
   Bug01Icon,
   Clock01Icon,
   CloudServerIcon,
+  CommandLineIcon,
   PlusSignIcon,
   RefreshIcon,
   Search01Icon,
@@ -42,6 +43,12 @@ type Props = {
   onOpenTestPlansSidebar: () => void;
   onOpenHistory?: () => void;
   onOpenBug?: (input: { bugId: number; title: string }) => void;
+  /** Open a new terminal tab. When the caller doesn't pass a cwd the new
+   *  tab inherits the user's source root (resolved on the App.tsx side). */
+  onOpenTerminal?: (input?: { cwd?: string | null }) => void;
+  /** Absolute path of the user's source directory — surfaced in the
+   *  "Open Terminal at source root" command's subtitle. */
+  sourceRoot?: string | null;
 };
 
 /**
@@ -61,6 +68,8 @@ export function CommandPalette({
   onOpenTestPlansSidebar,
   onOpenHistory,
   onOpenBug,
+  onOpenTerminal,
+  sourceRoot,
 }: Props) {
   const [query, setQuery] = useState("");
   const { plans, configured, refreshConnection } = useTestPlans();
@@ -199,6 +208,49 @@ export function CommandPalette({
             New test case generation session
           </CommandItem>
         </CommandGroup>
+
+        {onOpenTerminal ? (
+          <CommandGroup heading="Developer">
+            <CommandItem
+              value="open-terminal"
+              onSelect={() => run(() => onOpenTerminal())}
+            >
+              <HugeiconsIcon
+                icon={CommandLineIcon}
+                size={12}
+                strokeWidth={1.75}
+              />
+              <div className="flex min-w-0 flex-col">
+                <span>Open Terminal</span>
+                {sourceRoot ? (
+                  <span className="truncate text-[10.5px] text-muted-foreground">
+                    {sourceRoot}
+                  </span>
+                ) : (
+                  <span className="text-[10.5px] text-muted-foreground/70">
+                    Set a source directory in Settings to land here
+                  </span>
+                )}
+              </div>
+            </CommandItem>
+            <CommandItem
+              value="open-terminal-default"
+              onSelect={() => run(() => onOpenTerminal({ cwd: null }))}
+            >
+              <HugeiconsIcon
+                icon={CommandLineIcon}
+                size={12}
+                strokeWidth={1.75}
+              />
+              <div className="flex min-w-0 flex-col">
+                <span>Open Terminal (default directory)</span>
+                <span className="text-[10.5px] text-muted-foreground">
+                  Launches in the app's process cwd — ignore source root
+                </span>
+              </div>
+            </CommandItem>
+          </CommandGroup>
+        ) : null}
 
         <CommandGroup heading="Test Plans">
           <CommandItem
