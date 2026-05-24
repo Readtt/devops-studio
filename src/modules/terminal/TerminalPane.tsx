@@ -32,9 +32,13 @@ import {
   Eraser01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  disposeSession,
+  getSession,
+  registerSession,
+  type TerminalSession,
+} from "./terminalRegistry";
 
-// Default monospace stack — matches the editor / chat code fences so users
-// who don't override `terminalFontFamily` get the app's house font.
 const DEFAULT_FONT_FAMILY =
   '"JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Code", "Roboto Mono", monospace';
 
@@ -89,29 +93,39 @@ const THEME_LIGHT: ITheme = {
 };
 
 type Props = {
-  /** Tab id — used to look up the tab in the tabs store for cwd / shellId
-   *  config. */
   tabId: number;
-  /** Stable session id minted when the tab was opened. */
   sessionId: string;
-  /** Working directory the shell launches in. */
   cwd: string | null;
-  /** Selected shell id (matches `ShellCandidate.id`). Reserved for a future
-   *  "open with X shell" entry point — today we resolve against the user's
-   *  `defaultShellPath` preference only. */
+  /** Reserved — see ShellBrandIcon comment in the previous diff. */
   shellId: string | null;
 };
 
+/**
+ * Terminal pane.
+ *
+ * Terminal + PTY ownership lives OUTSIDE React in `terminalRegistry.ts`.
+ * Why: when the user splits the workspace pane, the React tree restructures
+ * and React unmounts everything under the leaf — including TerminalPane.
+ * If we owned the xterm Terminal here, that unmount would dispose it and
+ * kill the PTY, blanking the user's session mid-keystroke. The registry
+ * keeps the Terminal + PTY alive across remounts; this component just
+ * attaches xterm's DOM to whichever container React happens to give us.
+ *
+ * Disposal happens on real lifecycle events:
+ *   - tab close   → `useTabsStore` no longer has our tabId → dispose
+ *   - PTY exit    → user typed `exit`; component stays mounted, registry
+ *                   entry stays alive (exited=true) until tab close
+ *   - app close   → Rust-side `PtyState::kill_all` handles it
+ */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- shellId reserved
 export function TerminalPane({ tabId, sessionId, cwd, shellId: _shellId }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const termRef = useRef<Terminal | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
-  const webglRef = useRef<WebglAddon | null>(null);
-  // `exited` is the only piece of UI state we keep — the header chrome is
-  // gone, but the QuickPromptsStrip hides once the shell ends (no point
-  // typing prompts into a dead terminal) so we need this signal.
-  const [exited, setExited] = useState(false);
+  // Local-only mirror of the registry's exited flag — drives the
+  // QuickPromptsStrip visibility without forcing every consumer to peek
+  // into the registry.
+  const [exited, setExited] = useState(
+    () => getSession(sessionId)?.exited ?? false,
+  );
 
   const { resolvedTheme } = useTheme();
   const fontSize = usePreferencesStore((s) => s.terminalFontSize);
@@ -130,90 +144,190 @@ export function TerminalPane({ tabId, sessionId, cwd, shellId: _shellId }: Props
     [fontFamilyOverride],
   );
 
-  // Spawn + mount. Runs once per session — sessionId is stable for the tab
-  // lifetime, so depending on it is correct AND defensive.
+  // Effect runs on every mount. If the registry already has a live
+  // session for this id (because we're remounting after a pane split),
+  // we just re-attach xterm's DOM and keep going. Otherwise we create
+  // the session from scratch.
   useEffect(() => {
     if (!containerRef.current) return;
     const container = containerRef.current;
 
-    const term = new Terminal({
-      fontFamily,
-      fontSize,
-      letterSpacing,
-      scrollback,
-      cursorBlink: true,
-      cursorStyle: "block",
-      allowProposedApi: true,
-      convertEol: false,
-      theme: resolvedTheme === "light" ? THEME_LIGHT : THEME_DARK,
-    });
+    let session = getSession(sessionId);
+    const isNew = !session;
 
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon());
+    if (!session) {
+      // ── Fresh session ─────────────────────────────────────────────
+      const term = new Terminal({
+        fontFamily,
+        fontSize,
+        letterSpacing,
+        scrollback,
+        cursorBlink: true,
+        cursorStyle: "block",
+        allowProposedApi: true,
+        convertEol: false,
+        theme: resolvedTheme === "light" ? THEME_LIGHT : THEME_DARK,
+      });
+      const fit = new FitAddon();
+      term.loadAddon(fit);
+      term.loadAddon(new WebLinksAddon());
+      term.open(container);
 
-    term.open(container);
-
-    if (webglEnabled) {
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => {
-          // Lost the GPU context (e.g. driver crash). Drop the addon and let
-          // xterm fall back to canvas — terminal stays usable.
-          webgl.dispose();
-          webglRef.current = null;
-        });
-        term.loadAddon(webgl);
-        webglRef.current = webgl;
-      } catch (e) {
-        console.warn("[terminal] webgl addon failed, using canvas:", e);
+      let webgl: WebglAddon | null = null;
+      if (webglEnabled) {
+        try {
+          const w = new WebglAddon();
+          w.onContextLoss(() => {
+            w.dispose();
+            const cur = getSession(sessionId);
+            if (cur) cur.webgl = null;
+          });
+          term.loadAddon(w);
+          webgl = w;
+        } catch (e) {
+          console.warn("[terminal] webgl addon failed, using canvas:", e);
+        }
       }
+
+      // PTY listeners — these stay alive for the entire session
+      // lifetime regardless of remounts. We store the unlisten fns in
+      // the registry so disposeSession can tear them down at tab close.
+      const sessionForCallbacks: { ref: TerminalSession | null } = { ref: null };
+      const listenersReady = (async () => {
+        const unlistenData = await listenPtyData(sessionId, ({ data }) => {
+          const s = sessionForCallbacks.ref;
+          if (!s) return;
+          s.term.write(decodeFromPty(data));
+        });
+        const unlistenExit = await listenPtyExit(sessionId, (payload) => {
+          const s = sessionForCallbacks.ref;
+          if (!s) return;
+          s.exited = true;
+          setExited(true);
+          const tag =
+            payload.killed
+              ? "\r\n\x1b[2m[terminal closed]\x1b[0m\r\n"
+              : `\r\n\x1b[2m[process exited${
+                  payload.exitCode == null ? "" : ` with code ${payload.exitCode}`
+                }]\x1b[0m\r\n`;
+          s.term.write(tag);
+          const { tabs } = useTabsStore.getState();
+          const t = tabs[tabId];
+          if (t && !t.title.endsWith(" (exited)")) {
+            renameTab(tabId, `${t.title} (exited)`);
+          }
+        });
+        return { unlistenData, unlistenExit };
+      })();
+
+      const spawnPromise = (async () => {
+        const { unlistenData, unlistenExit } = await listenersReady;
+        const s: TerminalSession = {
+          sessionId,
+          term,
+          fit,
+          webgl,
+          unlistenData,
+          unlistenExit,
+          exited: false,
+          spawnPromise: null as unknown as Promise<{ shellPath: string; shellKind: string }>,
+        };
+        sessionForCallbacks.ref = s;
+        // Wait one paint so the container has measured.
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+        try {
+          fit.fit();
+        } catch {
+          // ignore
+        }
+        const { cols = 80, rows = 24 } = term;
+        const result = await spawnPty({
+          sessionId,
+          shellPath: defaultShellPath,
+          cwd,
+          cols,
+          rows,
+        });
+        const cwdBase = cwd ? cwd.split(/[\\/]/).filter(Boolean).pop() : null;
+        const titleParts = [shellKindLabel(result.shellKind)];
+        if (cwdBase) titleParts.push(cwdBase);
+        renameTab(tabId, titleParts.join(" · "));
+        return result;
+      })();
+
+      // Place a placeholder entry in the registry BEFORE spawn resolves
+      // so a fast pane-restructure that remounts the component finds
+      // the in-flight session and doesn't double-spawn.
+      const placeholder: TerminalSession = {
+        sessionId,
+        term,
+        fit,
+        webgl,
+        unlistenData: () => undefined,
+        unlistenExit: () => undefined,
+        exited: false,
+        spawnPromise,
+      };
+      registerSession(placeholder);
+      void listenersReady.then(({ unlistenData, unlistenExit }) => {
+        const s = getSession(sessionId);
+        if (s) {
+          s.unlistenData = unlistenData;
+          s.unlistenExit = unlistenExit;
+          sessionForCallbacks.ref = s;
+        }
+      });
+      session = placeholder;
+    } else {
+      // ── Existing session: re-attach xterm DOM to the new container ──
+      // xterm.open() detaches from the old parent and inserts into the
+      // new one. The scrollback buffer survives — that's the whole
+      // point of the registry.
+      try {
+        session.term.open(container);
+      } catch (e) {
+        console.warn("[terminal] re-attach failed:", e);
+      }
+      // Hydrate the exited mirror in case we mounted after the shell
+      // had already exited.
+      if (session.exited !== exited) setExited(session.exited);
     }
 
-    termRef.current = term;
-    fitRef.current = fit;
+    // Keystroke pipe — recreated per mount so the closure captures the
+    // current sessionId. (sessionId is stable, but this also makes the
+    // disposable clean up cleanly on every unmount.)
+    const dataSub = session.term.onData((data) => {
+      void writePty(sessionId, encodeForPty(data)).catch((e) => {
+        console.warn("[terminal] write failed:", e);
+      });
+    });
 
-    // ── Resize handling ────────────────────────────────────────────────
-    //
-    // The split-pane case used to break the terminal: when the user
-    // dragged the resize handle, xterm's FitAddon would measure mid-drag
-    // (sometimes with dimensions of 0) and either throw or paint cells at
-    // the wrong size. The fix has three parts:
-    //
-    //   1. Guard via `proposeDimensions` — if the proposed size is too
-    //      small (or zero), skip the fit and try again next frame.
-    //   2. After every fit, call `term.refresh(0, rows-1)` to force xterm
-    //      to repaint cells against the new metrics — without this, the
-    //      WebGL renderer leaves stale tiles around the edges.
-    //   3. Run a second fit on a small delay after the burst settles, so
-    //      anything the mid-drag fit got wrong is corrected once the user
-    //      releases the handle.
+    // ── Resize handling (same robustness fixes as before) ─────────────
     let rafId = 0;
     let settleTimer: number | undefined;
     const runFit = () => {
-      const t = termRef.current;
-      const f = fitRef.current;
-      if (!t || !f) return;
+      const s = getSession(sessionId);
+      if (!s) return;
       try {
-        const dims = f.proposeDimensions();
-        if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) {
+        const dims = s.fit.proposeDimensions();
+        if (
+          !dims ||
+          !Number.isFinite(dims.cols) ||
+          !Number.isFinite(dims.rows) ||
+          dims.cols < 2 ||
+          dims.rows < 2
+        ) {
           return;
         }
-        if (dims.cols < 2 || dims.rows < 2) return;
-        f.fit();
-        // refresh() forces a re-render of the visible rows so the WebGL
-        // / canvas backbuffer matches the new layout. Without it,
-        // resize-during-drag leaves smeared cells until the next keystroke.
+        s.fit.fit();
         try {
-          t.refresh(0, Math.max(0, t.rows - 1));
+          s.term.refresh(0, Math.max(0, s.term.rows - 1));
         } catch {
-          // ignore — refresh on a disposed terminal throws, which is
-          // already covered by the disposed flag in the teardown path.
+          // ignore
         }
-        void resizePty(sessionId, t.cols, t.rows);
+        void resizePty(sessionId, s.term.cols, s.term.rows);
       } catch {
-        // proposeDimensions / fit threw — usually the container hasn't
-        // measured yet. The next ResizeObserver tick will catch it.
+        // ignore
       }
     };
     const scheduleFit = () => {
@@ -222,151 +336,71 @@ export function TerminalPane({ tabId, sessionId, cwd, shellId: _shellId }: Props
         rafId = 0;
         runFit();
       });
-      // Belt-and-braces: also fire once after the resize burst settles.
-      // 120ms covers a normal release-of-pane-handle.
       if (settleTimer) window.clearTimeout(settleTimer);
-      settleTimer = window.setTimeout(() => {
-        runFit();
-      }, 120);
+      settleTimer = window.setTimeout(runFit, 120);
     };
-
-    // Initial paint may race with the parent's layout — schedule rather
-    // than calling fit() inline.
     scheduleFit();
 
-    // Subscribe to PTY events BEFORE spawning so we can't miss the first
-    // chunk of output. Tauri's `listen` returns a promise to the unlisten
-    // fn; we accumulate them and run on teardown.
-    let unlistenData: (() => void) | undefined;
-    let unlistenExit: (() => void) | undefined;
-    let disposed = false;
+    const ro = new ResizeObserver(scheduleFit);
+    ro.observe(container);
+    if (container.parentElement) ro.observe(container.parentElement);
 
-    void (async () => {
-      try {
-        unlistenData = await listenPtyData(sessionId, ({ data }) => {
-          if (disposed) return;
-          term.write(decodeFromPty(data));
-        });
-        unlistenExit = await listenPtyExit(sessionId, (payload) => {
-          if (disposed) return;
-          setExited(true);
-          const tag =
-            payload.killed
-              ? "\r\n\x1b[2m[terminal closed]\x1b[0m\r\n"
-              : `\r\n\x1b[2m[process exited${
-                  payload.exitCode == null ? "" : ` with code ${payload.exitCode}`
-                }]\x1b[0m\r\n`;
-          term.write(tag);
-          // Reflect exit in the tab title so the strip carries the signal
-          // without us putting a chrome bar back.
-          const { tabs } = useTabsStore.getState();
-          const t = tabs[tabId];
-          if (t && !t.title.endsWith(" (exited)")) {
-            renameTab(tabId, `${t.title} (exited)`);
-          }
-        });
-
-        // Wait one frame so the container has measured before we propose
-        // dimensions to the PTY. Spawning at 80×24 and then resizing
-        // works, but starts the shell drawing at the wrong size which
-        // looks janky for the first 100ms.
-        await new Promise((r) => requestAnimationFrame(() => r(null)));
-        const { cols = 80, rows = 24 } = term;
-
-        const result = await spawnPty({
-          sessionId,
-          shellPath: defaultShellPath,
-          cwd,
-          cols,
-          rows,
-        });
-        if (disposed) {
-          void killPty(sessionId);
-          return;
-        }
-        const cwdBase = cwd ? cwd.split(/[\\/]/).filter(Boolean).pop() : null;
-        const titleParts = [shellKindLabel(result.shellKind)];
-        if (cwdBase) titleParts.push(cwdBase);
-        renameTab(tabId, titleParts.join(" · "));
-        // Fit one more time after the shell starts — the first prompt may
-        // have shifted the visible area (e.g. PS1 with a newline above).
+    // Tab-store subscription serves two purposes:
+    //   1. Trigger a re-fit on pane-tree changes that don't resize our
+    //      container (tab swap, sibling pane split, etc).
+    //   2. Detect when our tab has been closed and dispose the session.
+    const unsubTabs = useTabsStore.subscribe((s) => {
+      if (!s.tabs[tabId]) {
+        // Tab is gone. Kill PTY + dispose xterm + registry entry.
+        void killPty(sessionId);
+        disposeSession(sessionId);
+      } else {
         scheduleFit();
-      } catch (e) {
-        console.error("[terminal] spawn failed:", e);
-        term.write(
+      }
+    });
+
+    if (isNew) {
+      // Surface spawn errors in the viewport once.
+      void session.spawnPromise.catch((e: unknown) => {
+        const s = getSession(sessionId);
+        if (!s) return;
+        s.term.write(
           `\r\n\x1b[31mFailed to start terminal:\x1b[0m ${
             e instanceof Error ? e.message : String(e)
           }\r\n`,
         );
-      }
-    })();
-
-    const dataSub = term.onData((data) => {
-      void writePty(sessionId, encodeForPty(data)).catch((e) => {
-        console.warn("[terminal] write failed:", e);
       });
-    });
-
-    // ResizeObserver covers pane-split resize, window resize, and the
-    // initial-mount race where the container takes a frame to settle.
-    const ro = new ResizeObserver(scheduleFit);
-    ro.observe(container);
-
-    // Also watch the *parent* — when a sibling pane is split or its
-    // resizable handle is dragged, the parent's layout shifts before
-    // our container's contentRect does. Observing the parent picks up
-    // the upstream change one frame earlier and avoids visible jitter.
-    if (container.parentElement) {
-      ro.observe(container.parentElement);
     }
 
-    // Subscribe to tab-store changes too — splits/merges/tab swaps may
-    // not change our container's content-rect (tabs use visibility:hidden,
-    // not display:none, so dimensions stay constant). Fires on every
-    // tabs-store update; scheduleFit is rAF-coalesced so the extra wakes
-    // are cheap.
-    const unsubTabs = useTabsStore.subscribe(() => {
-      scheduleFit();
-    });
-
     return () => {
-      disposed = true;
+      // Detach but DO NOT dispose — the session lives in the registry
+      // until the tab closes. ResizeObserver and the keystroke pipe are
+      // mount-scoped, so those get cleaned up here.
       ro.disconnect();
       if (rafId) cancelAnimationFrame(rafId);
       if (settleTimer) window.clearTimeout(settleTimer);
       unsubTabs();
       dataSub.dispose();
-      if (unlistenData) unlistenData();
-      if (unlistenExit) unlistenExit();
-      void killPty(sessionId);
-      try {
-        term.dispose();
-      } catch {
-        // ignore — addon disposal can throw on partial mounts.
-      }
-      termRef.current = null;
-      fitRef.current = null;
-      webglRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
   // Live-update font / spacing / scrollback / theme without re-spawning.
   useEffect(() => {
-    const term = termRef.current;
-    if (!term) return;
-    term.options.fontFamily = fontFamily;
-    term.options.fontSize = fontSize;
-    term.options.letterSpacing = letterSpacing;
-    term.options.scrollback = scrollback;
-    term.options.theme = resolvedTheme === "light" ? THEME_LIGHT : THEME_DARK;
+    const s = getSession(sessionId);
+    if (!s) return;
+    s.term.options.fontFamily = fontFamily;
+    s.term.options.fontSize = fontSize;
+    s.term.options.letterSpacing = letterSpacing;
+    s.term.options.scrollback = scrollback;
+    s.term.options.theme = resolvedTheme === "light" ? THEME_LIGHT : THEME_DARK;
     try {
-      fitRef.current?.fit();
-      term.refresh(0, Math.max(0, term.rows - 1));
+      s.fit.fit();
+      s.term.refresh(0, Math.max(0, s.term.rows - 1));
     } catch {
-      // ignore — same race as on mount
+      // ignore
     }
-  }, [fontFamily, fontSize, letterSpacing, scrollback, resolvedTheme]);
+  }, [sessionId, fontFamily, fontSize, letterSpacing, scrollback, resolvedTheme]);
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col bg-background">
@@ -377,7 +411,6 @@ export function TerminalPane({ tabId, sessionId, cwd, shellId: _shellId }: Props
             ref={containerRef}
             className={cn(
               "relative min-h-0 flex-1 overflow-hidden px-1.5 pt-1",
-              // Terminal owns its own scrollbar; suppress the app's themed one.
               "[&_.xterm-viewport]:!bg-transparent",
             )}
           />
@@ -387,10 +420,9 @@ export function TerminalPane({ tabId, sessionId, cwd, shellId: _shellId }: Props
             icon={<HugeiconsIcon icon={Copy01Icon} size={12} strokeWidth={1.75} />}
             description="Copy the current selection to the clipboard."
             onSelect={() => {
-              const t = termRef.current;
-              if (!t || !t.hasSelection()) return;
-              const text = t.getSelection();
-              void navigator.clipboard.writeText(text).catch((e) => {
+              const s = getSession(sessionId);
+              if (!s || !s.term.hasSelection()) return;
+              void navigator.clipboard.writeText(s.term.getSelection()).catch((e) => {
                 console.warn("[terminal] clipboard write failed:", e);
               });
             }}
@@ -427,8 +459,8 @@ export function TerminalPane({ tabId, sessionId, cwd, shellId: _shellId }: Props
             }
             description="Wipe the viewport and scrollback. The running shell isn't restarted — the next command keeps running where it left off."
             onSelect={() => {
-              const t = termRef.current;
-              t?.clear();
+              const s = getSession(sessionId);
+              s?.term.clear();
             }}
           >
             Clear viewport
@@ -439,7 +471,6 @@ export function TerminalPane({ tabId, sessionId, cwd, shellId: _shellId }: Props
   );
 }
 
-/** Human label for a shell kind from `pty_spawn`'s response. */
 function shellKindLabel(kind: string): string {
   switch (kind) {
     case "pwsh":
