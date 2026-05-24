@@ -668,10 +668,15 @@ function InputPhase() {
 
   return (
     // Container-query-driven layout: stack vertically on narrow panes, side-
-    // by-side once the GeneratorPane has room (@xl ≈ 36rem container width).
-    // The old `lg:` viewport breakpoint kept the two-col layout even in a
-    // 320 px split pane, which produced overflow + crammed inputs.
-    <div className="grid grid-cols-1 gap-4 @xl:grid-cols-[1fr_280px]">
+    // by-side only once we have real room. @3xl (≈ 48rem ≈ 768px container)
+    // is the right breakpoint here — the previous @xl (576px) would split
+    // into two columns the moment the pane crossed half-width on a typical
+    // monitor, which left both columns visibly congested (the spec textarea
+    // shrank to ~280px and the Run preview pushed against it). Now the
+    // user has to genuinely have room for the two-column layout before it
+    // appears; otherwise the form stacks above the preview, both with the
+    // full pane width.
+    <div className="grid grid-cols-1 gap-4 @3xl:grid-cols-[1fr_280px]">
       <section className="flex min-w-0 flex-col gap-3">
         <Field label="Requirements / feature spec">
           {planId !== null && suiteId !== null ? (
@@ -1097,13 +1102,11 @@ function InputPhase() {
 
       {/* Preview pane — what the run will actually do. Surfaces the things
           the user usually forgets to set (branch, source root, model) before
-          firing off a 30-second analysis. Sticky binding uses the container-
-          query @xl breakpoint so the two-column layout's stickiness lines up
-          with when the layout actually splits (the lg: viewport breakpoint
-          was wrong for split panes — a 1200px window with a 300px pane was
-          still triggering "lg" and trying to stick a column that didn't
-          exist). */}
-      <aside className="flex flex-col gap-2 @xl:sticky @xl:top-0 @xl:self-start">
+          firing off a 30-second analysis. Sticky binding matches the
+          two-column breakpoint (@3xl) — the sticky behavior only applies
+          when the aside is actually a side column, never when it's stacked
+          below the form. */}
+      <aside className="flex flex-col gap-2 @3xl:sticky @3xl:top-0 @3xl:self-start">
         <h2 className="text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
           Run preview
         </h2>
