@@ -68,9 +68,17 @@ function focusedActiveId(): number | null {
   return leaf?.activeTabId ?? null;
 }
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
   AlertCircleIcon,
+  CommandLineIcon,
   FolderOpenIcon,
   GitBranchIcon,
+  PlusSignIcon,
+  Search01Icon,
   Settings01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -161,6 +169,45 @@ export default function App() {
         </GeneratorStoresProvider>
       </TooltipProvider>
     </ThemeProvider>
+  );
+}
+
+/** Two-line menu item used by the header's "+" popover. Matches the
+ *  Linear/Raycast pattern: icon, label, muted subtitle. */
+function NewTabMenuItem({
+  icon,
+  label,
+  description,
+  disabled,
+  onSelect,
+}: {
+  icon: Parameters<typeof HugeiconsIcon>[0]["icon"];
+  label: string;
+  description: string;
+  disabled?: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onSelect}
+      className={cn(
+        "flex w-full cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 text-left",
+        "hover:bg-foreground/[0.05] focus-visible:outline-none focus-visible:bg-foreground/[0.05]",
+        "disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent",
+      )}
+    >
+      <span className="mt-0.5 grid size-4 shrink-0 place-items-center text-muted-foreground">
+        <HugeiconsIcon icon={icon} size={12} strokeWidth={1.75} />
+      </span>
+      <span className="flex min-w-0 flex-col gap-0.5">
+        <span className="text-[12px] font-medium leading-tight">{label}</span>
+        <span className="text-[10.5px] leading-snug text-muted-foreground">
+          {description}
+        </span>
+      </span>
+    </button>
   );
 }
 
@@ -606,6 +653,7 @@ function AppShell() {
   const { zoomIn, zoomOut, zoomReset } = useZoom();
 
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [newTabMenuOpen, setNewTabMenuOpen] = useState(false);
   // Global keyboard shortcuts. Wired through useGlobalShortcuts so the
   // Settings → Shortcuts page can customize bindings — declaring them
   // there but not handling them here would let users "rebind" keys that
@@ -916,6 +964,63 @@ function AppShell() {
                   : "Click to choose a source directory. Code links in bugs open from here."}
               </TooltipContent>
             </Tooltip>
+            <Popover open={newTabMenuOpen} onOpenChange={setNewTabMenuOpen}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <PopoverTrigger asChild>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      aria-label="New tab"
+                    >
+                      <HugeiconsIcon
+                        icon={PlusSignIcon}
+                        size={13}
+                        strokeWidth={1.75}
+                      />
+                    </Button>
+                  </PopoverTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-[11px]">
+                  New tab
+                </TooltipContent>
+              </Tooltip>
+              <PopoverContent
+                side="bottom"
+                align="end"
+                sideOffset={6}
+                className="w-64 gap-0 rounded-lg p-1"
+              >
+                <NewTabMenuItem
+                  icon={CommandLineIcon}
+                  label="New terminal"
+                  description={
+                    sourceRoot
+                      ? `Default shell in ${compactPath(sourceRoot)}`
+                      : "Default shell in app cwd — pick a source dir for project context"
+                  }
+                  onSelect={() => {
+                    setNewTabMenuOpen(false);
+                    openTerminalTab();
+                  }}
+                />
+                <NewTabMenuItem
+                  icon={Search01Icon}
+                  label="Review my changes"
+                  description={
+                    sourceRoot
+                      ? "Streamed code review of your branch diff"
+                      : "Set a source directory in Settings first"
+                  }
+                  disabled={!sourceRoot}
+                  onSelect={() => {
+                    setNewTabMenuOpen(false);
+                    openCodeReviewTab();
+                  }}
+                />
+              </PopoverContent>
+            </Popover>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button

@@ -1,10 +1,14 @@
 import { cn } from "@/lib/utils";
 import {
   siAnthropic,
+  siFishshell,
   siGit,
   siGithub,
+  siGitforwindows,
+  siGnubash,
   siGoogle,
   siVercel,
+  siZsh,
   type SimpleIcon,
 } from "simple-icons";
 
@@ -25,6 +29,14 @@ const ICONS = {
   github: siGithub,
   google: siGoogle,
   vercel: siVercel,
+  // Shell brand marks for the terminal default-shell picker. Microsoft
+  // PowerShell and cmd.exe aren't in simple-icons (trademark-restricted —
+  // same reason OpenAI is missing), so the picker falls back to a generic
+  // terminal glyph for those.
+  bash: siGnubash,
+  zsh: siZsh,
+  fish: siFishshell,
+  "git-bash": siGitforwindows,
 } satisfies Record<string, SimpleIcon>;
 
 export type BrandName = keyof typeof ICONS;
