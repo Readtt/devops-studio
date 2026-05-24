@@ -211,3 +211,52 @@ the matching repo secrets.
   ```
   Add a description for any item whose label isn't fully self-explanatory ("Open" can ride bare; "Generate sibling cases" cannot).
 - **Every new Windows subprocess spawn must hide the console window.** Use the `hide_console()` helper in `src-tauri/src/modules/{claude,git}.rs` (or inline `cmd.creation_flags(0x0800_0000)` for `std::process::Command` with `CommandExt` imported). Without it the spawn flashes a cmd.exe window — for a poller like `git_repo_info` that runs every 30 s, the result looks (and is) broken. (Exception: the embedded terminal in `pty.rs` deliberately spawns a *visible* shell via portable-pty's ConPTY backend, which doesn't pop a separate cmd.exe — it owns the PTY directly.)
+
+## Tab kinds and dedup rules
+
+Tabs are a discriminated union (`AppTab` in `src/modules/tabs/store/types.ts`). Opening a tab routes through `useTabsStore.openTab(input)` which is the **single place** that decides whether a new tab is created or an existing one is reactivated. The dedup rule is per-kind:
+
+| Kind          | Dedup key                       | Why                                                              |
+|---------------|---------------------------------|------------------------------------------------------------------|
+| `test-case`   | `caseId`                        | One case == one tab. Re-opening jumps to the existing tab.       |
+| `bug`         | `bugId`                         | Same.                                                            |
+| `code-viewer` | `path + startLine + endLine`    | Same path at a different line range is a different tab.          |
+| `suite-chat`  | `planId + suiteId`              | Per-suite chat. Threads live inside the tab via the switcher.    |
+| `generator`   | `runId` (only when set)         | Fresh generator drafts deliberately stack; bound drafts dedup.   |
+| `terminal`    | **never**                       | Each `pty_spawn` is a real OS process — N tabs = N shells.       |
+| `code-review` | **never**                       | User wants to keep parallel reviews open against the same diff.  |
+
+When you add a new kind, set the rule explicitly. The dedup rule is also where the user's "why can't I open two of these?" frustration lives — if a kind doesn't dedup naturally, it should NOT dedup in the openTab switch.
+
+## Tab content survival across pane restructures
+
+The workspace pane tree is built by `react-resizable-panels`. **Splitting or merging a pane unmounts everything underneath the affected leaf**, which used to wipe terminal sessions (lost typed input, killed PTYs). The general fix pattern: anything expensive that needs to survive a React unmount — running processes, WebGL contexts, streaming connections — lives in a module-level registry outside React. The component just attaches the existing DOM to whatever container React gives it this render.
+
+Reference: `src/modules/terminal/terminalRegistry.ts` — module-scoped `Map<sessionId, TerminalSession>`. `TerminalPane` looks up by id on mount, re-attaches if it exists, creates if it doesn't. Disposal triggers on real lifecycle events (tab close, PTY exit, app close) — never on React unmount.
+
+If you add another long-running pane (streaming logs, video, an embedded editor with unsaved state), follow the same pattern.
+
+## Brand icons
+
+Three sources, in priority order. **Don't add new manual SVGs** — pick a registry.
+
+1. **simple-icons** via `BrandIcon` (`src/components/BrandIcon.tsx`). First-class for AI providers and shells that ship in the upstream pack. Currently registered: `anthropic`, `git`, `github`, `google`, `vercel`, `apple`, `deepseek`, `mistral` (→ `siMistralai`), `ollama`, `openrouter`, plus shell marks `bash` (`siGnubash`), `zsh`, `fish` (`siFishshell`), `git-bash` (`siGitforwindows`). The `branded` prop controls colour vs `currentColor`; the `isNearBlack` detector keeps Anthropic / Vercel / GitHub legible on dark surfaces by inheriting text colour.
+2. **thesvg.org** for brands simple-icons doesn't carry (Microsoft trademarks: PowerShell, Azure DevOps). Fetch from `https://thesvg.org/icons/{slug}/default.svg` and inline as a React component. Examples: `src/modules/terminal/ShellBrandIcon.tsx` (PowerShell), `src/components/AzureDevOpsLogo.tsx`. Use `useId` for gradient defs so multiple copies don't collide. License is "nominative-fair-use for identification", which fits our use.
+3. **hugeicons stroke set** as the catch-all fallback. Used when neither registry carries a usable mark (OpenAI, xAI/Grok, Cerebras, Groq, LMStudio). `ProviderIcon` (`src/modules/ai/components/ProviderIcon.tsx`) handles this routing automatically — consumers just write `<ProviderIcon provider={...} />`.
+
+When adding a new provider:
+- Check `simple-icons` first: `node -e "const s=require('simple-icons'); console.log(typeof s.siXxx)"`.
+- If it's there, register the slug in `BrandIcon`'s `ICONS` map and add the provider → BrandName entry in `ProviderIcon`'s `SIMPLE_ICON_BRAND`.
+- If not, check `https://thesvg.org/api/registry.json` for the slug.
+- If neither, fall back to a hugeicons stroke icon (the LAST resort — brand recognition matters).
+
+## UI consistency
+
+The fastest way to make a new pane feel native: copy `SuiteChatPane` (or `CodeReviewPane`) and adapt. Specifically:
+
+- **Chat surfaces all use the same bubble pattern.** User messages right-aligned in `bg-primary/12` with `rounded-2xl rounded-br-sm`; assistant messages left-aligned with a 24×24 avatar tile and `border border-border/45 bg-card/55`. Copy-on-hover button absolute-positioned top-right of the assistant bubble. Streaming placeholder is three pulsing dots, 1.5px × 1.5px, staggered animation delays of 0 / 120 / 240ms.
+- **Every interactive control gets a tooltip.** Header buttons, base pickers, send/stop, the file-count chip — all wrapped in `<Tooltip><TooltipTrigger asChild>…</TooltipTrigger><TooltipContent side="bottom" className="max-w-[280px] text-[11px]">…</TooltipContent></Tooltip>`. The tooltip explains what the action does AND what'll happen if the user clicks it (e.g. "Changing wipes the conversation"). The user has explicitly asked for this — UI features without tooltips read as "WTF is this".
+- **Branch pickers use `BranchPicker`** (`src/components/BranchPicker.tsx`), not a raw `<Select>`. It's a cmdk Combobox in a Popover with fuzzy search and `max-h-[280px]` so long branch lists don't take the viewport. Both Code Review and Azure DevOps settings consume it; new branch-picker surfaces should too.
+- **Empty states explain what's about to happen.** Don't just show a centered icon — write a sentence describing what this pane does and what triggering its primary action will do. Example: `CodeReviewPane`'s `EmptyState`. Confused users disable features.
+- **One look for AI provider marks.** Use `ProviderIcon` — never embed a hugeicons stroke for a provider that has a brand mark in `BrandIcon`. The mixed look (real Anthropic next to stroke OpenAI) is fine because each provider's icon is the best available representation for that brand.
+- **Don't reinvent the wheel for kinds that have an established pattern.** If you're adding a chat pane, it should look like the existing chat panes. If you're adding a developer-mode surface, it should match the terminal/code-review aesthetic. The codebase has converged on a few visual templates; honour them.
