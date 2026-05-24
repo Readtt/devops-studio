@@ -188,10 +188,19 @@ html[data-chrome="borderless"],
 html[data-chrome="borderless"] body {
   background: transparent !important;
 }
-html[data-chrome="borderless"] #root,
-html[data-chrome="borderless"] #settings-root {
+html[data-chrome="borderless"] #root {
   height: 100%;
   border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--background);
+}
+/* Settings is a smaller, fixed-size window — a 12px inner radius reads as
+ * noticeably more curved than the OS-painted outer corner there. 8px lines
+ * up visually with the actual window edge across the platforms we ship. */
+html[data-chrome="borderless"] #settings-root {
+  height: 100%;
+  border-radius: 8px;
   overflow: hidden;
   border: 1px solid var(--border);
   background: var(--background);
@@ -428,6 +437,10 @@ html .tabs-scroll {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
   transition: scrollbar-color 120ms ease-out;
+  /* Reserve the 4px gutter at all times — without this, the strip vertically
+   * shifts the moment tabs overflow and the bar appears, which reads as the
+   * tab chips "constricting upward". Stable gutter = consistent layout. */
+  scrollbar-gutter: stable;
 }
 html .tabs-scroll:hover,
 html .tabs-scroll:focus-within {
