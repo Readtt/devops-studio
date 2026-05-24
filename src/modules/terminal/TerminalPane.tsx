@@ -388,14 +388,17 @@ export function TerminalPane({ tabId, sessionId, cwd, shellId: _shellId }: Props
     });
 
     if (isNew) {
-      // Surface spawn errors in the viewport once.
+      // Surface spawn errors in the viewport once. Tauri commands that
+      // return Result<T, EnumError> serialize the Err variant to a plain
+      // JS object like { kind: "spawn-failed", message: "..." } — naive
+      // String(e) on that prints "[object Object]", which is what the
+      // user reported. formatPtyError unwraps the message field and
+      // falls back to JSON.stringify so we never print [object Object].
       void session.spawnPromise.catch((e: unknown) => {
         const s = getSession(sessionId);
         if (!s) return;
         s.term.write(
-          `\r\n\x1b[31mFailed to start terminal:\x1b[0m ${
-            e instanceof Error ? e.message : String(e)
-          }\r\n`,
+          `\r\n\x1b[31mFailed to start terminal:\x1b[0m ${formatPtyError(e)}\r\n`,
         );
       });
     }
@@ -519,4 +522,31 @@ function shellKindLabel(kind: string): string {
     default:
       return "shell";
   }
+}
+
+/** Coerce a Tauri-command rejection into a human-readable string. Plain
+ *  string errors pass through; PtyError-style discriminated unions (the
+ *  `{ kind, message }` shape Rust's `#[derive(Serialize)] enum` produces)
+ *  get their `message` extracted, with the `kind` slug appended in
+ *  parentheses for grep-ability. Last-resort `JSON.stringify` so we never
+ *  print "[object Object]". */
+function formatPtyError(e: unknown): string {
+  if (e == null) return "unknown error";
+  if (typeof e === "string") return e;
+  if (e instanceof Error) return e.message;
+  if (typeof e === "object") {
+    const obj = e as Record<string, unknown>;
+    const message = typeof obj.message === "string" ? obj.message : null;
+    const kind = typeof obj.kind === "string" ? obj.kind : null;
+    if (message && kind) return `${message} (${kind})`;
+    if (message) return message;
+    // Some Tauri commands reject with `{ name, details }` or other shapes.
+    // Hand back JSON rather than the un-helpful "[object Object]".
+    try {
+      return JSON.stringify(e);
+    } catch {
+      return String(e);
+    }
+  }
+  return String(e);
 }

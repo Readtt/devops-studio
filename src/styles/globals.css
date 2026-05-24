@@ -434,13 +434,13 @@ html *::-webkit-scrollbar {
  * and dims to invisible at rest, keeping the strip clean when it's not
  * overflowing. */
 html .tabs-scroll {
+  /* The strip no longer scrolls (TabStrip uses overflow-hidden) — tabs
+   * that don't fit are clipped at the right edge. We keep the scrollbar
+   * styling rules here as a no-op for now in case a future variant of
+   * the strip needs to scroll again. */
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
   transition: scrollbar-color 120ms ease-out;
-  /* Reserve the 4px gutter at all times — without this, the strip vertically
-   * shifts the moment tabs overflow and the bar appears, which reads as the
-   * tab chips "constricting upward". Stable gutter = consistent layout. */
-  scrollbar-gutter: stable;
 }
 html .tabs-scroll:hover,
 html .tabs-scroll:focus-within {
