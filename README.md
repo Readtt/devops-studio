@@ -36,6 +36,20 @@ It's an editor-shaped tool: tabbed workspace, command palette, keyboard-driven, 
 - When linked source code changes upstream, **stale-detection** surfaces affected test cases in a dedicated queue. Acknowledge, mark-for-review, or re-publish a fresh draft against the current code.
 - The bottom status bar shows your source directory + the live git branch, so you always know what the staleness baseline is tracking.
 
+### Chat with a published suite
+- Right-click any suite → **Open chat** and ask follow-ups grounded in the cases ADO actually has — "which of these cover the empty-tenant path?", "draft a sibling case for the timeout branch", "delete the duplicate at row 4". The Suite Chat pane streams responses, persists every thread in SQLite (cross-session), and surfaces them in the **Chats** sidebar.
+- **Multi-thread per suite** with a "Narrow AI scope" pill so you can keep separate conversations (regression sweep, exploratory, bug triage) without mixing context. Each thread opens in its own tab from the history sidebar.
+- **Inline "Apply to ADO" edit cards** — when the model proposes a concrete edit (rewrite a step, create a sibling case, delete a duplicate), it renders as a card you click to apply. Real fs tools wired into the BYOK runner give the model real code grounding, not just chat.
+
+### Review your current branch with AI
+- **Code Review** pane points at your current branch diff (vs. a chosen base — defaults to the real default branch) and lets you ask any BYOK provider about the changes. Chat-style composer with suggested prompts and message bubbles that match Suite Chat.
+- **Apply-able patches** — suggested edits render as click-to-write cards backed by the same fs writer the analyst uses. Multiple Review tabs can be open at once; threads are persistent and surface in the Chats sidebar.
+
+### Developer-mode embedded terminal
+- Optional **xterm.js terminal** with a portable-pty Rust backend. Open from the sidebar, the command palette, or `Ctrl+Shift+`` `. Defaults to your platform shell (PowerShell / bash / zsh / fish) with a per-pane shell picker that uses real brand marks.
+- **Quick-Prompts** strip with CLI-aware starter prompts that auto-detect the active Claude / Codex / Cursor / Gemini CLI and resolve the real git default branch.
+- **Survives pane splits/merges** — xterm + the PTY live outside React's lifecycle, so reshaping the workspace doesn't kill the shell or wipe scrollback.
+
 ### Bring your own AI
 Two engines, swappable per generation:
 - **Vercel AI SDK** (BYOK) — OpenAI, Anthropic, Google, xAI, Cerebras, Groq, DeepSeek, Mistral, OpenRouter, any OpenAI-compatible endpoint, plus local LM Studio / MLX / Ollama.
@@ -46,6 +60,8 @@ API keys live in the OS keychain (Windows Credential Manager / macOS Keychain / 
 ### Editor-density UX
 - **Command palette** (`Ctrl/Cmd+K`) — jump to plans, cases, bugs, history, or start a generation
 - **Customizable shortcuts** for palette, settings, sidebar toggle, theme cycle, new generate tab, tab navigation, stale scan, zoom
+- **Workspace tabs with splits** — drag tabs to reorder within a strip, between panes to move, or into a leaf's edge zones to split horizontally / vertically. Ctrl-drag clones. Pin, duplicate, close-others / close-right / close-all, jump-to-N, reopen-closed; everything is keyboard-driven.
+- **UI scale slider** in Settings → General — independent of the OS zoom, with an 80% floor so dense panes stay readable.
 - **Persistent drafts** — every edit autosaves to history. Close the tab, close the window, reopen — your draft (including refine thinking) lands back exactly as you left it.
 - **Generation history pane** with status filters (draft / published), search by plan/suite/title, and "Open in review" to resume any draft.
 
@@ -114,7 +130,7 @@ recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## History
 
-Originally forked from the open-source [Terax](https://github.com/crynta/terax-ai) AI terminal. The terminal / shell / agents UI was removed during the QA pivot; what remains is a purpose-built ADO Test Plans tool.
+Originally forked from the open-source [Terax](https://github.com/crynta/terax-ai) AI terminal. The shell / agents UI was stripped down during the QA pivot to make room for a purpose-built ADO Test Plans tool; an opt-in xterm.js terminal pane has since been added back as a developer-mode surface alongside the editor.
 
 ## License
 

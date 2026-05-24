@@ -24,16 +24,18 @@ src/                                      Frontend
 ├── modules/
 │   ├── ado/                              Tauri-invoke wrappers + types for ADO commands
 │   ├── ai/                               AI provider config, keyring, Claude/Vercel SDK clients
+│   ├── code-review/                      BYOK-grounded review pane for the current branch diff
 │   ├── code-viewer/                      CodeMirror panes
 │   ├── command-palette/                  Ctrl/Cmd+K palette
 │   ├── generator/                        Test case generator: store, prompt, Claude+Vercel runs, panes
 │   ├── git/                              Source-directory git branch reading (P2 addition)
+│   ├── search/                           Workspace-wide search surface
 │   ├── settings/                         Preferences store + cross-window settings bridge
 │   ├── shortcuts/                        Keyboard shortcut definitions
-│   ├── sidebar/                          Left sidebar rail (Plans/Stale/History)
-│   ├── tabs/                             Tab management
+│   ├── sidebar/                          Left sidebar rail (Plans/Stale/History/Chats)
+│   ├── tabs/                             Recursive pane tree + tab store (split, drag, pin, dedup)
 │   ├── terminal/                         xterm.js pane + Quick Prompts (developer mode)
-│   ├── test-plans/                       Plans tree, suites, cases, stale queue, bug panes
+│   ├── test-plans/                       Plans tree, suites, cases, stale queue, bug panes, Suite Chat
 │   ├── theme/                            Light/dark/system theme provider
 │   └── updater/                          Tauri auto-update dialog
 ├── settings/                             Settings window (its own Vite entry)
@@ -43,6 +45,7 @@ src-tauri/src/                            Rust backend
 ├── lib.rs                                Tauri builder + command handler registry
 └── modules/
     ├── ado/                              Typed ADO HTTP client (plans, suites, cases, bugs, repos)
+    ├── chat_threads.rs                   SQLite-backed persistence for suite-chat + code-review threads
     ├── claude.rs                         Subprocess driver for `claude` CLI (probe, run-query, setup-token)
     ├── fs/                               Filesystem reads (read/write/grep/glob/tree)
     ├── git.rs                            git rev-parse helpers (P2 addition)
@@ -194,7 +197,7 @@ the matching repo secrets.
 ## Contribution notes for follow-ups
 
 - **Don't regenerate shadcn components** from the registry — we customized them. If you must update, diff carefully.
-- **Don't reintroduce WSL or terminal code** — those modules were intentionally removed.
+- **Don't reintroduce WSL code** — that module was intentionally removed. (The embedded terminal *is* back as a developer-mode pane; see `src/modules/terminal/` and `src-tauri/src/modules/pty.rs`.)
 - **Don't add comments that just restate the code.** This codebase generally writes a comment only when there's a non-obvious "why."
 - **One feature, one phase commit.** When in doubt, look at `.claude/plans/humming-coalescing-petal.md` for the phased remediation plan.
 - **Skeleton loaders, not spinners.** When a list is loading, show shadcn `<Skeleton>` rows that mirror the eventual content.
