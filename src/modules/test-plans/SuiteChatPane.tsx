@@ -124,14 +124,33 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
   // If the tab is bound to a specific thread (the user opened this tab
   // from the chat-history sidebar, or it was restored from localStorage
   // after a reload), activate that thread once the suite slice is
-  // hydrated. Skip the activation when the suite's already on the
-  // bound thread to avoid a render thrash on remount.
+  // hydrated.
+  //
+  // Concurrency: the activation is guarded by a one-shot ref so it runs
+  // exactly once per (tabId, boundThreadId) combination. The `suite`
+  // selector returns a NEW object reference every time loadCases calls
+  // patchSuite (which spreads ...curr into a fresh slice), and an effect
+  // keyed on `suite` would re-run on every one of those updates. Without
+  // the guard, the second-render setActiveThread call (with activeThreadId
+  // still reading stale state via the snapshot React captured) could fire
+  // in a tight loop and feed back into Radix's compose-refs on consumers
+  // that re-render off the same store — the "Maximum update depth"
+  // failure mode the user hit.
+  const activatedBoundThreadRef = useRef<string | null>(null);
   useEffect(() => {
     if (!boundThreadId) return;
     if (!suite) return; // wait for ensure() to land the suite slice
-    if (activeThreadId === boundThreadId) return;
+    if (activatedBoundThreadRef.current === boundThreadId) return;
+    activatedBoundThreadRef.current = boundThreadId;
+    // Read activeThreadId imperatively here so the effect doesn't depend
+    // on a value that this very effect mutates — that's the dep cycle
+    // that produces the render storm.
+    const current = useSuiteChat
+      .getState()
+      .activeThreadBySuite.get(`${planId}:${suiteId}`);
+    if (current === boundThreadId) return;
     setActiveThread(planId, suiteId, boundThreadId);
-  }, [boundThreadId, suite, activeThreadId, planId, suiteId, setActiveThread]);
+  }, [boundThreadId, suite, planId, suiteId, setActiveThread]);
 
   // Pull the ADO connection so case chips can link out to the ADO web UI.
   // Cheap — Tauri command, cached on the Rust side.
