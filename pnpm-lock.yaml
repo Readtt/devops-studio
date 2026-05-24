@@ -140,6 +140,9 @@ importers:
       '@tauri-apps/plugin-window-state':
         specifier: ~2.4.1
         version: 2.4.1
+      '@thesvg/react':
+        specifier: ^3.0.5
+        version: 3.0.5(react@19.2.5)
       '@uiw/codemirror-theme-atomone':
         specifier: ^4.25.9
         version: 4.25.9(@codemirror/language@6.12.3)(@codemirror/state@6.6.0)(@codemirror/view@6.41.1)
@@ -2197,6 +2200,12 @@ packages:
 
   '@tauri-apps/plugin-window-state@2.4.1':
     resolution: {integrity: sha512-OuvdrzyY8Q5Dbzpj+GcrnV1iCeoZbcFdzMjanZMMcAEUNy/6PH5pxZPXpaZLOR7whlzXiuzx0L9EKZbH7zpdRw==}
+
+  '@thesvg/react@3.0.5':
+    resolution: {integrity: sha512-HL7YcfitrXCaVlI3ncnkcOmiYJwM9f4q5c21v0n0WMD4InarsNepM0BNKluGM8kTDyG1Yua/dIfvnmLvv+DdGA==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      react: '>=18'
 
   '@tokenlens/core@1.3.0':
     resolution: {integrity: sha512-d8YNHNC+q10bVpi95fELJwJyPVf1HfvBEI18eFQxRSZTdByXrP+f/ZtlhSzkx0Jl0aEmYVeBA5tPeeYRioLViQ==}
@@ -6623,6 +6632,10 @@ snapshots:
   '@tauri-apps/plugin-window-state@2.4.1':
     dependencies:
       '@tauri-apps/api': 2.10.1
+
+  '@thesvg/react@3.0.5(react@19.2.5)':
+    dependencies:
+      react: 19.2.5
 
   '@tokenlens/core@1.3.0': {}
 

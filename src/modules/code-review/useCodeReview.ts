@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import type { ModelId } from "@/modules/ai/config";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
@@ -31,6 +32,10 @@ type TabSlice = {
    *  history store so the Chats sidebar can reopen this conversation
    *  later. Null until the first message goes out. */
   threadId: string | null;
+  /** Per-tab model override. Null = inherit the global default model.
+   *  Setting this here doesn't touch the global default; it scopes only
+   *  to this Code Review tab — same pattern as suite-chat's pin. */
+  modelId: ModelId | null;
 };
 
 type State = {
@@ -45,6 +50,7 @@ type State = {
   ) => Promise<void>;
   refreshDiff: (tabId: number) => Promise<void>;
   changeBase: (tabId: number, base: string) => Promise<void>;
+  setModel: (tabId: number, modelId: ModelId | null) => void;
   send: (tabId: number, text: string) => Promise<void>;
   stop: (tabId: number) => void;
   clear: (tabId: number) => void;
@@ -82,7 +88,13 @@ export const useCodeReview = create<State>((set, get) => ({
     const hist = rehydrateThreadId
       ? useCodeReviewHistory.getState().get(rehydrateThreadId)
       : undefined;
-    const initialBase = hist?.base ?? base ?? "main";
+    // Don't default to "main" eagerly — the repo may not have main
+    // (master, develop, or an entirely different convention). Empty
+    // string means "auto-detect", which makes refreshDiff hand
+    // `base: undefined` to Rust so its fallback chain runs (main →
+    // master → origin/HEAD → user error). Once git_diff resolves we
+    // patch the real base into the slice.
+    const initialBase = hist?.base ?? base ?? "";
     set((s) => {
       const next = new Map(s.byTab);
       next.set(tabId, {
@@ -96,6 +108,7 @@ export const useCodeReview = create<State>((set, get) => ({
         abort: null,
         error: null,
         threadId: hist?.id ?? null,
+        modelId: null,
       });
       return { byTab: next };
     });
@@ -107,9 +120,11 @@ export const useCodeReview = create<State>((set, get) => ({
     if (!slice) return;
     patch(set, tabId, { diffLoading: true, diffError: null });
     try {
+      // Empty base means "auto-detect" — pass undefined to Rust so it
+      // walks the main → master → origin/HEAD fallback chain.
       const diff = await invoke<DiffSummary>("git_diff", {
         cwd: slice.cwd,
-        base: slice.base,
+        base: slice.base ? slice.base : undefined,
       });
       patch(set, tabId, {
         diff,
@@ -125,6 +140,10 @@ export const useCodeReview = create<State>((set, get) => ({
         diffError: typeof e === "string" ? e : (e as Error).message ?? String(e),
       });
     }
+  },
+
+  setModel: (tabId, modelId) => {
+    patch(set, tabId, { modelId });
   },
 
   changeBase: async (tabId, base) => {
@@ -196,8 +215,10 @@ export const useCodeReview = create<State>((set, get) => ({
     try {
       const chat = useChatStore.getState();
       const prefs = usePreferencesStore.getState();
+      // Per-tab pinned model wins; otherwise inherit the global default.
+      const effectiveModelId = slice.modelId ?? prefs.defaultModelId;
       await streamCodeReview({
-        modelId: prefs.defaultModelId,
+        modelId: effectiveModelId,
         keys: chat.apiKeys,
         sourceRoot: slice.cwd,
         diff: slice.diff,

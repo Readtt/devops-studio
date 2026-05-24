@@ -45,7 +45,7 @@ import {
 } from "@/modules/generator/store/useGenerationSession";
 import { useSourceDirGitInfo } from "@/modules/git";
 import { getConnection } from "@/modules/ado";
-import { AzureDevOpsLogo } from "@/components/AzureDevOpsLogo";
+import { AzureDevOpsBrand } from "@/components/AzureDevOpsBrand";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { useChatStore } from "@/modules/ai/store/chatStore";
@@ -1310,7 +1310,10 @@ function AppShell() {
                           : "bg-muted-foreground/40",
                       )}
                     />
-                    <AzureDevOpsLogo size={11} mono={!adoConfigured} />
+                    <AzureDevOpsBrand
+                      size={11}
+                      className={cn(!adoConfigured && "opacity-50 grayscale")}
+                    />
                     <span>{adoConfigured ? "Azure DevOps" : "Not connected"}</span>
                   </button>
                 </TooltipTrigger>

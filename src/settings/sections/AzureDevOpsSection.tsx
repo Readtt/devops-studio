@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { AzureDevOpsLogo } from "@/components/AzureDevOpsLogo";
+import { AzureDevOpsBrand } from "@/components/AzureDevOpsBrand";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
@@ -198,7 +198,7 @@ export function AzureDevOpsSection() {
     <div className="flex flex-col gap-6">
       <SectionHeader
         title="Azure DevOps"
-        icon={<AzureDevOpsLogo size={16} />}
+        icon={<AzureDevOpsBrand size={16} />}
         description="Connect to your Azure DevOps organization to read Test Plans and publish generated cases. Switch projects from the explorer header."
       />
 
@@ -335,7 +335,6 @@ export function AzureDevOpsSection() {
               ariaLabel={
                 useDynamicBranch ? "Fallback branch" : "Tracking branch"
               }
-              triggerWidth={260}
             />
             <p className="text-[10.5px] text-muted-foreground/80">
               {useDynamicBranch

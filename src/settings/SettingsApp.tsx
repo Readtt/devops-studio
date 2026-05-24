@@ -1,6 +1,6 @@
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { WindowControls } from "@/components/WindowControls";
-import { AzureDevOpsLogo } from "@/components/AzureDevOpsLogo";
+import { AzureDevOpsBrand } from "@/components/AzureDevOpsBrand";
 import { IS_MAC, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
 import { useZoom } from "@/lib/useZoom";
 import { useGlobalShortcuts } from "@/modules/shortcuts";
@@ -47,7 +47,7 @@ const TABS: TabDef[] = [
   {
     id: "azure-devops",
     label: "Azure DevOps",
-    glyph: <AzureDevOpsLogo size={12} />,
+    glyph: <AzureDevOpsBrand size={12} />,
     component: AzureDevOpsSection,
   },
   {

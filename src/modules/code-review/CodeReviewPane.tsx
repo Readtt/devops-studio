@@ -2,6 +2,9 @@ import { BranchPicker } from "@/components/BranchPicker";
 import { Button } from "@/components/ui/button";
 import { ChatMarkdown } from "@/components/ChatMarkdown";
 import { Textarea } from "@/components/ui/textarea";
+import { ModelPicker } from "@/modules/ai/components/ModelPicker";
+import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
+import { getModel } from "@/modules/ai/config";
 import {
   Tooltip,
   TooltipContent,
@@ -50,11 +53,16 @@ export function CodeReviewPane({
   const ensure = useCodeReview((s) => s.ensure);
   const refreshDiff = useCodeReview((s) => s.refreshDiff);
   const changeBase = useCodeReview((s) => s.changeBase);
+  const setModel = useCodeReview((s) => s.setModel);
   const send = useCodeReview((s) => s.send);
   const stop = useCodeReview((s) => s.stop);
   const clear = useCodeReview((s) => s.clear);
   const slice = useCodeReview((s) => s.byTab.get(tabId));
   const renameTab = useTabsStore((s) => s.renameTab);
+  const globalModelId = usePreferencesStore((s) => s.defaultModelId);
+  const pinnedModelId = slice?.modelId ?? null;
+  const activeModelId = pinnedModelId ?? globalModelId;
+  const activeModel = getModel(activeModelId);
 
   // Live branch info from the status bar — same source of truth, so when
   // the user checks out a different branch in their terminal we react.
@@ -154,7 +162,8 @@ export function CodeReviewPane({
           <TooltipTrigger asChild>
             <span>
               <BranchPicker
-                value={slice?.base ?? base ?? "main"}
+                value={slice?.base ?? base ?? ""}
+                placeholder={diffLoading ? "Detecting base…" : "Select base"}
                 branches={baseList}
                 onChange={(v) => void changeBase(tabId, v)}
                 disabled={busy}
@@ -164,9 +173,10 @@ export function CodeReviewPane({
           </TooltipTrigger>
           <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
             Base branch — the diff shows everything that's on your current
-            branch but not on this one. Changing it wipes the conversation
-            (different baseline = different review). Type to filter the
-            list.
+            branch but not on this one. Defaults to whatever git finds
+            first: main → master → origin/HEAD. Changing it wipes the
+            conversation (different baseline = different review). Type to
+            filter the list.
           </TooltipContent>
         </Tooltip>
 
@@ -215,6 +225,45 @@ export function CodeReviewPane({
         ) : null}
 
         <div className="ml-auto flex items-center gap-1">
+          {/* Model picker — matches SuiteChatPane: chip that shows the
+              active model, click to choose another. Pinning here only
+              scopes to this tab; "Unpin" footer returns to the global
+              default. */}
+          <ModelPicker
+            value={activeModelId}
+            onChange={(id) => setModel(tabId, id)}
+            align="end"
+            side="bottom"
+            trigger={({ label, provider }) => (
+              <span
+                title={
+                  pinnedModelId
+                    ? "Model pinned for this review — click to change or unset."
+                    : `Inherits the global model (${activeModel?.label ?? activeModelId}). Click to pin a different model for this review only.`
+                }
+                className="inline-flex h-6 max-w-[160px] items-center gap-1.5 truncate rounded-md border border-border/60 bg-card/60 px-2 text-[11px] text-foreground/85 hover:bg-foreground/[0.04]"
+              >
+                <ProviderIcon provider={provider} className="size-3" />
+                <span className="truncate">{label}</span>
+                {pinnedModelId ? (
+                  <span className="ml-0.5 rounded-sm bg-primary/15 px-1 py-px text-[9px] font-medium text-primary">
+                    pin
+                  </span>
+                ) : null}
+              </span>
+            )}
+            footer={
+              pinnedModelId ? (
+                <button
+                  type="button"
+                  onClick={() => setModel(tabId, null)}
+                  className="w-full px-2 py-1.5 text-left text-[11px] text-muted-foreground hover:bg-foreground/[0.04]"
+                >
+                  Unpin — inherit global default
+                </button>
+              ) : undefined
+            }
+          />
           <Tooltip>
             <TooltipTrigger asChild>
               <button

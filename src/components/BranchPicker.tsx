@@ -26,6 +26,9 @@ type Props = {
   branches: string[];
   onChange: (next: string) => void;
   disabled?: boolean;
+  /** Placeholder shown when `value` is empty. Default "Select a branch…".
+   *  Pass a domain-specific hint (e.g. "Detecting base…") for context. */
+  placeholder?: string;
   /** Optional sentinel option — used by the ADO settings panel to expose
    *  the "$current" → resolve at scan time behavior. Rendered above the
    *  branch list with a distinct label. */
@@ -64,6 +67,7 @@ export function BranchPicker({
   branches,
   onChange,
   disabled,
+  placeholder = "Select a branch…",
   sentinel,
   size = "sm",
   ariaLabel = "Branch",
@@ -99,7 +103,7 @@ export function BranchPicker({
 
   const displayValue = sentinel && value === sentinel.value
     ? sentinel.label
-    : value || "Select a branch…";
+    : value || placeholder;
 
   const triggerH = size === "md" ? "h-8" : "h-6";
   const triggerText = size === "md" ? "text-[12px]" : "text-[11.5px]";
@@ -113,7 +117,7 @@ export function BranchPicker({
           disabled={disabled}
           style={triggerWidth === "auto" ? undefined : { width: triggerWidth }}
           className={cn(
-            "inline-flex items-center gap-1.5 rounded-md px-2 transition-colors",
+            "inline-flex w-fit max-w-full items-center gap-1.5 rounded-md px-2 transition-colors",
             triggerH,
             triggerText,
             "border border-transparent hover:bg-foreground/[0.04]",
