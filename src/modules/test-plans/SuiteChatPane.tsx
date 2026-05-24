@@ -493,7 +493,6 @@ export function SuiteChatPane({ planId, suiteId }: Props) {
             ? "Ask about these cases…  (Enter to send · Shift+Enter for newline)"
             : "Loading cases…"
         }
-        modelLabel={activeModel?.label ?? activeModelId}
       />
     </div>
   );
@@ -717,47 +716,67 @@ function ChatHeader({
             "—"
           )}
         </span>
-        {/* Search input — a friendly affordance with leading magnifier icon
-            and clear, plain-English placeholder. Replaces the older
-            "filter cases (#123, auth, totp…)" chip which read like a
-            magic-syntax box. The matching logic still accepts `#123` for
-            an exact id but the placeholder text reads as a normal search. */}
+        {/* Scope-narrowing input. Earlier copy ("Search cases…") didn't
+            explain why this control exists — users assumed it was a UI
+            filter and ignored it. It's actually a budget control: the
+            chat sends every loaded case to the model on every turn, so
+            on a big suite the only way to keep answers grounded in the
+            cases you care about is to narrow scope here. The leading
+            "Narrow AI scope" label makes the intent unmistakable. */}
         {cases && cases.length > 5 ? (
-          <div className="relative inline-flex items-center">
-            <HugeiconsIcon
-              icon={Search01Icon}
-              size={10}
-              strokeWidth={1.75}
-              className="pointer-events-none absolute left-1.5 text-muted-foreground/70"
-            />
-            <input
-              value={filter}
-              onChange={(e) => onFilterChange(e.target.value)}
-              placeholder="Search cases…"
-              aria-label="Search cases in this suite"
-              title="Type any keyword to narrow what the AI sees — title, step text, tag, or #id."
-              className={cn(
-                "h-6 w-[220px] rounded-md border bg-background/60 pl-6 pr-6 text-[11px] outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-ring/30",
-                filter.trim()
-                  ? "border-primary/40 bg-primary/[0.04] text-primary placeholder:text-primary/55"
-                  : "border-border/60 placeholder:text-muted-foreground/65",
-              )}
-            />
-            {filter.trim() ? (
-              <button
-                type="button"
-                onClick={() => onFilterChange("")}
-                aria-label="Clear search"
-                className="absolute right-1 grid size-4 place-items-center rounded-sm text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground"
-              >
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="inline-flex items-center gap-1.5 rounded-md border border-border/50 bg-background/40 pl-1.5 pr-0.5 py-0.5">
                 <HugeiconsIcon
-                  icon={Cancel01Icon}
-                  size={9}
-                  strokeWidth={2}
+                  icon={Search01Icon}
+                  size={10}
+                  strokeWidth={1.75}
+                  className="text-muted-foreground/80"
                 />
-              </button>
-            ) : null}
-          </div>
+                <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/85">
+                  Narrow AI scope
+                </span>
+                <div className="relative inline-flex items-center">
+                  <input
+                    value={filter}
+                    onChange={(e) => onFilterChange(e.target.value)}
+                    placeholder="title, #id, tag, step…"
+                    aria-label="Narrow which cases the AI sees in this chat"
+                    className={cn(
+                      "h-5 w-[180px] rounded-sm border bg-background/60 pl-1.5 pr-5 text-[11px] outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-ring/30",
+                      filter.trim()
+                        ? "border-primary/40 bg-primary/[0.04] text-primary placeholder:text-primary/55"
+                        : "border-border/60 placeholder:text-muted-foreground/65",
+                    )}
+                  />
+                  {filter.trim() ? (
+                    <button
+                      type="button"
+                      onClick={() => onFilterChange("")}
+                      aria-label="Clear scope filter"
+                      className="absolute right-0.5 grid size-4 place-items-center rounded-sm text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground"
+                    >
+                      <HugeiconsIcon
+                        icon={Cancel01Icon}
+                        size={9}
+                        strokeWidth={2}
+                      />
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </TooltipTrigger>
+            <TooltipContent
+              side="bottom"
+              variant="panel"
+              className="max-w-[280px] px-3 py-2 text-[11px] leading-relaxed"
+            >
+              The chat sends every loaded case to the model on each turn.
+              On a big suite that dilutes answers — type a keyword here to
+              focus the AI on the matching subset (title, step text, tag,
+              or <span className="font-mono">#id</span>).
+            </TooltipContent>
+          </Tooltip>
         ) : null}
       </div>
     </header>
@@ -1105,7 +1124,6 @@ function Composer({
   busy,
   disabled,
   hint,
-  modelLabel,
 }: {
   draft: string;
   onChange: (v: string) => void;
@@ -1114,7 +1132,6 @@ function Composer({
   busy: boolean;
   disabled: boolean;
   hint: string;
-  modelLabel: string;
 }) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -1207,11 +1224,6 @@ function Composer({
           <span className="inline-flex items-center gap-1">
             <Kbd>⇧↵</Kbd>
             newline
-          </span>
-          <Dot />
-          <span className="truncate">
-            <span className="text-muted-foreground/70">model</span>{" "}
-            <span className="font-medium text-foreground/85">{modelLabel}</span>
           </span>
         </div>
       </div>
