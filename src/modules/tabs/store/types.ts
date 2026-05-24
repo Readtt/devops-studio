@@ -40,6 +40,11 @@ export type CodeReviewTab = TabBase & {
   cwd: string;
   /** Base branch; null defers to backend fallback (main → master → origin/HEAD). */
   base: string | null;
+  /** When set, hydrate this tab's conversation from useCodeReviewHistory
+   *  on mount. Surfaces when the user reopens a past review from the
+   *  Chats sidebar. The current diff still loads from disk (the prior
+   *  diff is not stored), but messages are restored verbatim. */
+  rehydrateThreadId?: string | null;
 };
 
 export type TerminalTab = TabBase & {

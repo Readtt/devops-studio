@@ -11,6 +11,7 @@ import {
   BubbleChatIcon,
   Cancel01Icon,
   FolderIcon,
+  GitBranchIcon,
   RefreshIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -20,6 +21,7 @@ import {
   type StoredChatThread,
 } from "./lib/chatThreadsApi";
 import { useTestPlans } from "./hooks/useTestPlans";
+import { useCodeReviewHistory } from "@/modules/code-review/useCodeReviewHistory";
 
 type Props = {
   /** Opens (or focuses) a suite-chat tab for the given (planId, suiteId).
@@ -31,6 +33,15 @@ type Props = {
     threadId?: string;
     title: string;
   }) => void;
+  /** Optional: open a Code Review tab pre-loaded with a past thread. The
+   *  sidebar surfaces code-review history alongside suite-chat history;
+   *  when this callback is missing, code-review rows are hidden. */
+  onOpenCodeReview?: (input: {
+    cwd: string;
+    base: string;
+    threadId: string;
+    title: string;
+  }) => void;
 };
 
 /**
@@ -40,10 +51,12 @@ type Props = {
  * title (auto-derived from the first user message or set explicitly in the
  * chat pane) is the primary label; the suite/plan path is the subtitle.
  */
-export function ChatHistoryPanel({ onOpenChat }: Props) {
+export function ChatHistoryPanel({ onOpenChat, onOpenCodeReview }: Props) {
   const [threads, setThreads] = useState<StoredChatThread[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  const codeReviewThreads = useCodeReviewHistory((s) => s.threads);
+  const removeCodeReviewThread = useCodeReviewHistory((s) => s.remove);
 
   const refresh = useCallback(async () => {
     try {
@@ -88,6 +101,22 @@ export function ChatHistoryPanel({ onOpenChat }: Props) {
       );
     });
   }, [threads, planNameLookup, suiteNameLookup, needle]);
+
+  const visibleCodeReviews = useMemo(() => {
+    if (!onOpenCodeReview) return [];
+    if (!needle) return codeReviewThreads;
+    return codeReviewThreads.filter((t) => {
+      const lower = (s: string) => s.toLowerCase().includes(needle);
+      const firstUser = t.messages.find((m) => m.role === "user");
+      return (
+        lower(t.title) ||
+        lower(t.cwd) ||
+        lower(t.base) ||
+        lower(t.head) ||
+        (firstUser ? lower(firstUser.content) : false)
+      );
+    });
+  }, [codeReviewThreads, needle, onOpenCodeReview]);
 
   const onDelete = useCallback(
     async (planId: number, suiteId: number, threadId: string) => {
@@ -140,33 +169,75 @@ export function ChatHistoryPanel({ onOpenChat }: Props) {
             <Skeleton className="h-12 w-full" />
             <Skeleton className="h-12 w-full" />
           </div>
-        ) : threads.length === 0 ? (
+        ) : threads.length === 0 && visibleCodeReviews.length === 0 ? (
           <EmptyState />
-        ) : visible && visible.length === 0 ? (
+        ) : visible &&
+          visible.length === 0 &&
+          visibleCodeReviews.length === 0 ? (
           <p className="px-3 py-3 text-[11px] text-muted-foreground">
             No chats match this filter.
           </p>
         ) : (
-          <ul className="flex flex-col px-1 py-1">
-            {visible!.map((row) => (
-              <li key={row.key}>
-                <ThreadRow
-                  row={row}
-                  onOpen={() =>
-                    onOpenChat({
-                      planId: row.planId,
-                      suiteId: row.suiteId,
-                      threadId: row.threadId,
-                      title: `Chat: ${row.threadLabel}`,
-                    })
-                  }
-                  onDelete={() =>
-                    void onDelete(row.planId, row.suiteId, row.threadId)
-                  }
+          <div className="flex flex-col gap-1 px-1 py-1">
+            {visibleCodeReviews.length > 0 && onOpenCodeReview ? (
+              <section className="flex flex-col">
+                <SectionHeading
+                  icon={GitBranchIcon}
+                  label="Code reviews"
+                  count={visibleCodeReviews.length}
                 />
-              </li>
-            ))}
-          </ul>
+                <ul className="flex flex-col">
+                  {visibleCodeReviews.map((t) => (
+                    <li key={`cr-${t.id}`}>
+                      <CodeReviewRow
+                        thread={t}
+                        onOpen={() =>
+                          onOpenCodeReview({
+                            cwd: t.cwd,
+                            base: t.base,
+                            threadId: t.id,
+                            title: `Review · ${t.title}`,
+                          })
+                        }
+                        onDelete={() => removeCodeReviewThread(t.id)}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
+            {visible && visible.length > 0 ? (
+              <section className="flex flex-col">
+                {visibleCodeReviews.length > 0 ? (
+                  <SectionHeading
+                    icon={BubbleChatIcon}
+                    label="Suite chats"
+                    count={visible.length}
+                  />
+                ) : null}
+                <ul className="flex flex-col">
+                  {visible.map((row) => (
+                    <li key={row.key}>
+                      <ThreadRow
+                        row={row}
+                        onOpen={() =>
+                          onOpenChat({
+                            planId: row.planId,
+                            suiteId: row.suiteId,
+                            threadId: row.threadId,
+                            title: `Chat: ${row.threadLabel}`,
+                          })
+                        }
+                        onDelete={() =>
+                          void onDelete(row.planId, row.suiteId, row.threadId)
+                        }
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
+          </div>
         )}
       </div>
     </div>
@@ -329,4 +400,96 @@ function formatRelative(iso: string): string {
   } catch {
     return iso;
   }
+}
+
+function SectionHeading({
+  icon,
+  label,
+  count,
+}: {
+  icon: Parameters<typeof HugeiconsIcon>[0]["icon"];
+  label: string;
+  count: number;
+}) {
+  return (
+    <div className="flex items-center gap-1.5 px-2 pt-2 pb-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
+      <HugeiconsIcon icon={icon} size={10} strokeWidth={1.75} />
+      <span>{label}</span>
+      <span className="text-muted-foreground/50">·</span>
+      <span>{count}</span>
+    </div>
+  );
+}
+
+/**
+ * Code-review thread row. Same visual rhythm as ThreadRow above, but the
+ * fields it surfaces are different (base branch instead of suite path,
+ * cwd basename instead of plan name) so the metadata reads correctly for
+ * a developer-mode review rather than a QA chat.
+ */
+function CodeReviewRow({
+  thread,
+  onOpen,
+  onDelete,
+}: {
+  thread: ReturnType<typeof useCodeReviewHistory.getState>["threads"][number];
+  onOpen: () => void;
+  onDelete: () => void;
+}) {
+  const firstUser = thread.messages.find((m) => m.role === "user");
+  const preview = firstUser
+    ? firstUser.content.replace(/\s+/g, " ").trim()
+    : "(no messages)";
+  const cwdLabel = thread.cwd.split(/[\\/]/).filter(Boolean).pop() ?? thread.cwd;
+  return (
+    <div className="group/row flex items-start gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-foreground/[0.04]">
+      <button
+        type="button"
+        onClick={onOpen}
+        className="min-w-0 flex-1 text-left"
+      >
+        <div className="flex items-center gap-1.5 text-[11.5px] font-medium">
+          <HugeiconsIcon
+            icon={GitBranchIcon}
+            size={11}
+            strokeWidth={1.75}
+            className="shrink-0 text-fuchsia-500 dark:text-fuchsia-400"
+          />
+          <span className="truncate">{thread.title}</span>
+        </div>
+        <p className="mt-0.5 flex items-center gap-1 truncate text-[10.5px] text-muted-foreground">
+          <span className="truncate font-mono">
+            {thread.base} → {thread.head}
+          </span>
+          <span className="text-muted-foreground/55">·</span>
+          <span className="truncate">{cwdLabel}</span>
+          <span className="text-muted-foreground/55">·</span>
+          <span>{thread.messages.length} msg{thread.messages.length === 1 ? "" : "s"}</span>
+          <span className="text-muted-foreground/55">·</span>
+          <span>{formatRelative(thread.updatedAt)}</span>
+        </p>
+        {preview ? (
+          <p className="mt-0.5 line-clamp-2 text-[10.5px] italic text-foreground/70">
+            {preview}
+          </p>
+        ) : null}
+      </button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label="Delete this review"
+            onClick={onDelete}
+            className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/15 hover:text-destructive group-hover/row:opacity-100"
+          >
+            <HugeiconsIcon icon={Cancel01Icon} size={10} strokeWidth={2} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="left" className="text-[11px]">
+          Drop this review from history permanently. The branch diff itself
+          isn't touched.
+        </TooltipContent>
+      </Tooltip>
+    </div>
+  );
 }

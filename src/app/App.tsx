@@ -442,21 +442,29 @@ function AppShell() {
     [],
   );
 
-  const openCodeReviewTab = useCallback(() => {
-    const liveSourceRoot = usePreferencesStore.getState().sourceRoot;
-    if (!liveSourceRoot) {
-      // No source dir → no diff. Bounce the user to settings so they fix it
-      // — the pane would render an empty state with the same message, but
-      // routing them here saves a click.
-      void openSettingsWindow("general");
-      return null;
-    }
-    return useTabsStore.getState().openTab({
-      kind: "code-review",
-      cwd: liveSourceRoot,
-      base: null,
-    });
-  }, []);
+  const openCodeReviewTab = useCallback(
+    (input?: {
+      cwd?: string;
+      base?: string | null;
+      rehydrateThreadId?: string;
+      title?: string;
+    }) => {
+      const liveSourceRoot = usePreferencesStore.getState().sourceRoot;
+      const cwd = input?.cwd ?? liveSourceRoot;
+      if (!cwd) {
+        void openSettingsWindow("general");
+        return null;
+      }
+      return useTabsStore.getState().openTab({
+        kind: "code-review",
+        cwd,
+        base: input?.base ?? null,
+        rehydrateThreadId: input?.rehydrateThreadId ?? null,
+        title: input?.title,
+      });
+    },
+    [],
+  );
 
   const openTerminalTab = useCallback(
     (input?: { cwd?: string | null; shellId?: string | null }) => {
@@ -1218,6 +1226,14 @@ function AppShell() {
                         onOpenChat={(input) =>
                           openSuiteChatTab(input)
                         }
+                        onOpenCodeReview={(input) => {
+                          openCodeReviewTab({
+                            cwd: input.cwd,
+                            base: input.base,
+                            rehydrateThreadId: input.threadId,
+                            title: input.title,
+                          });
+                        }}
                       />
                     </div>
                   </div>

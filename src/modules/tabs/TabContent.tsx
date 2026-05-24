@@ -50,7 +50,14 @@ export const TabContent = memo(function TabContent({ tab, sourceRoot }: Props) {
         />
       );
     case "code-review":
-      return <CodeReviewPane tabId={tab.id} cwd={tab.cwd} base={tab.base} />;
+      return (
+        <CodeReviewPane
+          tabId={tab.id}
+          cwd={tab.cwd}
+          base={tab.base}
+          rehydrateThreadId={tab.rehydrateThreadId ?? null}
+        />
+      );
   }
 });
 

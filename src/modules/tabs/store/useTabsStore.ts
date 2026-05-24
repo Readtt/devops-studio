@@ -68,6 +68,9 @@ export type OpenTabInput =
       kind: "code-review";
       cwd: string;
       base?: string | null;
+      /** Pre-existing code-review thread to rehydrate. Used by the
+       *  Chats sidebar to reopen past reviews. */
+      rehydrateThreadId?: string | null;
       title?: string;
       pinned?: boolean;
     };
@@ -313,6 +316,7 @@ export const useTabsStore = create<TabsState>()(
               title: input.title ?? "Code review",
               cwd: input.cwd,
               base: input.base ?? null,
+              rehydrateThreadId: input.rehydrateThreadId ?? null,
               pinned: input.pinned ?? false,
             };
             break;

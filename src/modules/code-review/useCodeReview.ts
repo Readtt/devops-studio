@@ -7,6 +7,10 @@ import {
   type CodeReviewMessage,
   type DiffSummary,
 } from "./runCodeReview";
+import {
+  deriveCodeReviewTitle,
+  useCodeReviewHistory,
+} from "./useCodeReviewHistory";
 
 type TabSlice = {
   /** Resolved by the first ensure() call; persists for the tab lifetime. */
@@ -23,11 +27,22 @@ type TabSlice = {
   /** Renderer's cancel button. Aborts the streamText call cooperatively. */
   abort: AbortController | null;
   error: string | null;
+  /** Stable thread id minted at first send. Used to upsert into the
+   *  history store so the Chats sidebar can reopen this conversation
+   *  later. Null until the first message goes out. */
+  threadId: string | null;
 };
 
 type State = {
   byTab: Map<number, TabSlice>;
-  ensure: (tabId: number, cwd: string, base?: string | null) => Promise<void>;
+  ensure: (
+    tabId: number,
+    cwd: string,
+    base?: string | null,
+    /** Optional thread to rehydrate from. Used when the Chats sidebar
+     *  reopens a past review. */
+    rehydrateThreadId?: string | null,
+  ) => Promise<void>;
   refreshDiff: (tabId: number) => Promise<void>;
   changeBase: (tabId: number, base: string) => Promise<void>;
   send: (tabId: number, text: string) => Promise<void>;
@@ -52,29 +67,35 @@ function patch(set: (fn: (s: State) => Partial<State>) => void, tabId: number, p
 export const useCodeReview = create<State>((set, get) => ({
   byTab: new Map(),
 
-  ensure: async (tabId, cwd, base) => {
+  ensure: async (tabId, cwd, base, rehydrateThreadId) => {
     const existing = get().byTab.get(tabId);
     if (existing && existing.cwd === cwd) {
-      // Already initialised for this cwd. If the diff is missing (e.g.
-      // earlier load errored), nudge a refresh — but don't clobber the
-      // message history.
       if (!existing.diff && !existing.diffLoading) {
         await get().refreshDiff(tabId);
       }
       return;
     }
+    // Optional rehydration from history. Chats sidebar passes a threadId
+    // when the user clicks a past review row — we preload the messages
+    // so the conversation is visible while the (current!) diff loads
+    // alongside.
+    const hist = rehydrateThreadId
+      ? useCodeReviewHistory.getState().get(rehydrateThreadId)
+      : undefined;
+    const initialBase = hist?.base ?? base ?? "main";
     set((s) => {
       const next = new Map(s.byTab);
       next.set(tabId, {
         cwd,
-        base: base ?? "main",
+        base: initialBase,
         diff: null,
         diffLoading: false,
         diffError: null,
-        messages: [],
+        messages: hist?.messages ?? [],
         busy: false,
         abort: null,
         error: null,
+        threadId: hist?.id ?? null,
       });
       return { byTab: next };
     });
@@ -111,13 +132,14 @@ export const useCodeReview = create<State>((set, get) => ({
     if (!slice) return;
     if (slice.base === base) return;
     // Wipe the thread — the prior conversation was scoped to the old
-    // baseline, and replaying it against a new diff would confuse the
-    // model. The user can always start a fresh review.
+    // baseline. Mint a fresh thread id on the next send so the new
+    // conversation lands as a separate history entry.
     patch(set, tabId, {
       base,
       messages: [],
       error: null,
       diff: null,
+      threadId: null,
     });
     await get().refreshDiff(tabId);
   },
@@ -145,12 +167,16 @@ export const useCodeReview = create<State>((set, get) => ({
     };
     const abort = new AbortController();
     const priorMessages = slice.messages;
+    // Mint a stable thread id at first send so history snapshots line up
+    // across refreshes. Keep the same id once we've got one.
+    const threadId = slice.threadId ?? newId();
 
     patch(set, tabId, {
       busy: true,
       error: null,
       messages: [...priorMessages, userMsg, assistantMsg],
       abort,
+      threadId,
     });
 
     const appendDelta = (delta: string) => {
@@ -181,12 +207,16 @@ export const useCodeReview = create<State>((set, get) => ({
         signal: abort.signal,
       });
       patch(set, tabId, { busy: false, abort: null });
+      persistToHistory(tabId, threadId);
     } catch (e) {
       const aborted = (e as { name?: string } | null)?.name === "AbortError";
       if (aborted) {
         // Leave the partial assistant message in place — useful for the
         // user to see what the model had drafted before they bailed.
+        // Persist what we have so the partial review still shows up in
+        // the Chats sidebar.
         patch(set, tabId, { busy: false, abort: null });
+        persistToHistory(tabId, threadId);
         return;
       }
       console.error("[code-review] stream failed:", e);
@@ -214,6 +244,34 @@ export const useCodeReview = create<State>((set, get) => ({
   },
 
   clear: (tabId) => {
-    patch(set, tabId, { messages: [], error: null });
+    // Don't blow away the threadId — clear() also wipes the persisted
+    // history entry for it so the Chats sidebar follows along. If the
+    // user types again, a fresh threadId mints on the next send.
+    const slice = get().byTab.get(tabId);
+    if (slice?.threadId) {
+      useCodeReviewHistory.getState().remove(slice.threadId);
+    }
+    patch(set, tabId, { messages: [], error: null, threadId: null });
   },
 }));
+
+/** Snapshot the tab's current state into the persisted history store.
+ *  Called after every successful send and after a user-cancelled send so
+ *  partial reviews still surface in the Chats sidebar. */
+function persistToHistory(tabId: number, threadId: string): void {
+  const slice = useCodeReview.getState().byTab.get(tabId);
+  if (!slice || !slice.diff) return;
+  if (slice.messages.length === 0) return;
+  useCodeReviewHistory.getState().upsert({
+    id: threadId,
+    cwd: slice.cwd,
+    base: slice.diff.base,
+    head: slice.diff.head,
+    title: deriveCodeReviewTitle(
+      slice.messages,
+      `Review · ${slice.diff.base} → ${slice.diff.head}`,
+    ),
+    updatedAt: new Date().toISOString(),
+    messages: slice.messages,
+  });
+}

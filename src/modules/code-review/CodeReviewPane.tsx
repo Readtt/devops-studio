@@ -34,9 +34,19 @@ type Props = {
   tabId: number;
   cwd: string;
   base: string | null;
+  /** When set, useCodeReview.ensure() will preload the matching history
+   *  thread on mount. The diff is still re-read from disk (we don't
+   *  persist diffs across sessions), so the conversation may reference
+   *  lines that have since moved — the model is told that explicitly. */
+  rehydrateThreadId?: string | null;
 };
 
-export function CodeReviewPane({ tabId, cwd, base }: Props) {
+export function CodeReviewPane({
+  tabId,
+  cwd,
+  base,
+  rehydrateThreadId,
+}: Props) {
   const ensure = useCodeReview((s) => s.ensure);
   const refreshDiff = useCodeReview((s) => s.refreshDiff);
   const changeBase = useCodeReview((s) => s.changeBase);
@@ -59,7 +69,7 @@ export function CodeReviewPane({ tabId, cwd, base }: Props) {
   const [atBottom, setAtBottom] = useState(true);
 
   useEffect(() => {
-    void ensure(tabId, cwd, base);
+    void ensure(tabId, cwd, base, rehydrateThreadId ?? null);
     invoke<string[]>("git_branch_list", { cwd })
       .then(setBranches)
       .catch(() => setBranches([]));
