@@ -346,6 +346,8 @@ export function CodeReviewPane({
             base={slice?.base ?? base ?? "main"}
             head={diff?.head ?? liveGit.branch ?? null}
             fileCount={totals?.count ?? 0}
+            onPick={(prompt) => setDraft(prompt)}
+            canPick={!!diff}
           />
         ) : (
           <div className="mx-auto flex max-w-3xl flex-col gap-3">
@@ -355,6 +357,7 @@ export function CodeReviewPane({
                 role={m.role}
                 content={m.content}
                 streaming={busy && i === messages.length - 1}
+                assistantProvider={activeModel.provider}
               />
             ))}
             {error ? (
@@ -529,18 +532,33 @@ function ChatComposer({
   );
 }
 
+// Curated starter prompts the user can click to drop into the composer.
+// Picked to cover the most common "I just want a quick second pair of
+// eyes" asks for a branch — they read naturally as a user voice (not a
+// system instruction) so the model treats them as the actual ask.
+const SUGGESTED_PROMPTS = [
+  "Review the diff — flag blockers, suggestions, and nits with file:line.",
+  "What tests am I missing for this change?",
+  "Are there security issues — injection, secrets, auth — in this diff?",
+  "Suggest concrete patches I can apply to fix any blockers.",
+];
+
 function EmptyState({
   base,
   head,
   fileCount,
+  onPick,
+  canPick,
 }: {
   base: string;
   head: string | null;
   fileCount: number;
+  onPick: (prompt: string) => void;
+  canPick: boolean;
 }) {
   const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
   return (
-    <div className="mx-auto flex max-w-md flex-col items-center gap-3 py-12 text-center">
+    <div className="mx-auto flex max-w-lg flex-col items-center gap-3 py-10 text-center">
       <div className="grid size-10 place-items-center rounded-full bg-foreground/[0.04] text-muted-foreground">
         <HugeiconsIcon icon={GitBranchIcon} size={16} strokeWidth={1.5} />
       </div>
@@ -567,7 +585,8 @@ function EmptyState({
             <code className="rounded-sm bg-foreground/[0.06] px-1 font-mono text-[10.5px]">
               path:line
             </code>{" "}
-            citations.
+            citations. Suggested fixes arrive as Apply cards you click to
+            write straight to disk.
           </>
         ) : (
           <>
@@ -581,10 +600,29 @@ function EmptyState({
           </>
         )}
       </p>
+      {/* Starter prompts mirror the chat tab's onboarding pills. They
+          drop the text into the composer (not auto-send) so the user
+          stays in control of when the diff is actually shipped to the
+          model. Hidden until a diff has loaded — picking a prompt
+          before then can't actually run anyway. */}
+      {canPick ? (
+        <div className="flex flex-wrap justify-center gap-1.5 px-2">
+          {SUGGESTED_PROMPTS.map((p) => (
+            <button
+              key={p}
+              type="button"
+              onClick={() => onPick(p)}
+              className="rounded-full border border-border/50 bg-background/60 px-2.5 py-1 text-[10.5px] text-foreground/80 transition-colors hover:border-primary/50 hover:bg-primary/[0.06] hover:text-primary"
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+      ) : null}
       <p className="text-[10.5px] text-muted-foreground/70">
-        Tip: <kbd className="rounded border border-border/60 bg-card px-1 font-mono text-[10px]">Enter</kbd>{" "}
-        sends; <kbd className="rounded border border-border/60 bg-card px-1 font-mono text-[10px]">Shift+Enter</kbd>{" "}
-        adds a newline.
+        <kbd className="rounded border border-border/60 bg-card px-1 font-mono text-[10px]">Enter</kbd>{" "}
+        sends · <kbd className="rounded border border-border/60 bg-card px-1 font-mono text-[10px]">Shift+Enter</kbd>{" "}
+        adds a newline
       </p>
     </div>
   );
@@ -601,10 +639,12 @@ function MessageBubble({
   role,
   content,
   streaming,
+  assistantProvider,
 }: {
   role: "user" | "assistant";
   content: string;
   streaming: boolean;
+  assistantProvider: import("@/modules/ai/config").ProviderId | null;
 }) {
   const [copied, setCopied] = useState(false);
   const onCopy = async () => {
@@ -634,13 +674,17 @@ function MessageBubble({
   return (
     <div className="flex items-start gap-2.5">
       <div className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-full border border-border/60 bg-card/80 text-foreground/70">
-        <HugeiconsIcon icon={BubbleChatIcon} size={11} strokeWidth={1.75} />
+        {assistantProvider ? (
+          <ProviderIcon provider={assistantProvider} size={11} />
+        ) : (
+          <HugeiconsIcon icon={BubbleChatIcon} size={11} strokeWidth={1.75} />
+        )}
       </div>
       <div className="group/msg relative min-w-0 flex-1 rounded-2xl rounded-tl-sm border border-border/45 bg-card/55 px-3.5 py-2.5">
         {content ? (
           <ChatMarkdown source={content} streaming={streaming} />
         ) : streaming ? (
-          <StreamingDots />
+          <StreamingPlaceholder />
         ) : (
           <p className="text-[11.5px] italic text-muted-foreground">
             (empty response)
@@ -680,18 +724,16 @@ function MessageBubble({
   );
 }
 
-function StreamingDots() {
+// Matches SuiteChatPane's placeholder: three pulsing primary-tinted dots
+// staggered by 180ms, with a quiet "Reading the diff…" hint that names
+// exactly what the reviewer is doing while the user waits.
+function StreamingPlaceholder() {
   return (
-    <span className="inline-flex gap-1 py-1">
-      <span className="size-1.5 animate-pulse rounded-full bg-foreground/40" />
-      <span
-        className="size-1.5 animate-pulse rounded-full bg-foreground/40"
-        style={{ animationDelay: "120ms" }}
-      />
-      <span
-        className="size-1.5 animate-pulse rounded-full bg-foreground/40"
-        style={{ animationDelay: "240ms" }}
-      />
+    <span className="inline-flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
+      <span className="inline-flex h-1.5 w-1.5 animate-[chat-thinking-pulse_1.2s_ease-in-out_infinite] rounded-full bg-primary" />
+      <span className="inline-flex h-1.5 w-1.5 animate-[chat-thinking-pulse_1.2s_ease-in-out_infinite] rounded-full bg-primary [animation-delay:0.18s]" />
+      <span className="inline-flex h-1.5 w-1.5 animate-[chat-thinking-pulse_1.2s_ease-in-out_infinite] rounded-full bg-primary [animation-delay:0.36s]" />
+      <span className="ml-1">Reading the diff…</span>
     </span>
   );
 }
