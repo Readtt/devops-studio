@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.3.1] - 2026-05-24
+
+- **Updater toast no longer fills the workspace height when expanded.** Clicking "Show all N changes" on a release with a long changelog used to stretch the bottom-left toast all the way to the top of the workspace. The sections list is now capped at `min(55vh, 420px)` with internal scrolling, so the card stays a glanceable corner notification even on releases with a lot of changes.
+
 ## [0.3.0] - 2026-05-24
 
 This release lands two big new surfaces — an embedded terminal and an AI code-review pane — on top of a full workspace tab system rewrite (drag-to-split, recursive panes, persistent reorder/pin), multi-thread persistent Suite Chat with real code grounding, and a Settings UI scale slider. Plus the usual basket of fixes.
