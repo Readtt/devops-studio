@@ -7,6 +7,53 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.3.0] - 2026-05-24
+
+This release lands two big new surfaces — an embedded terminal and an AI code-review pane — on top of a full workspace tab system rewrite (drag-to-split, recursive panes, persistent reorder/pin), multi-thread persistent Suite Chat with real code grounding, and a Settings UI scale slider. Plus the usual basket of fixes.
+
+
+- **Embedded terminal (developer mode).** `xterm.js` pane backed by a Rust `portable-pty` driver. Open from the sidebar, the command palette, an in-strip "+" launcher, or `Ctrl+Shift+`` `. Per-pane shell picker (PowerShell / cmd / bash / zsh / fish / Git Bash) renders real brand marks. Quick-Prompts strip with CLI-aware starter prompts that detect the active Claude / Codex / Cursor / Gemini CLI and resolve the source-dir's *real* git default branch. UTF-8 forced on cmd.exe so non-ASCII output renders. Right-click context menu, copy/paste/clear actions, and clean app-close + tab-close lifecycle. Sessions survive pane splits / merges because xterm + the PTY live outside the React lifecycle (module-scoped registry, DOM-move on re-attach). Concurrent-session cap raised from 8 → 16 with synchronous slot release on kill.
+- **Code Review pane.** BYOK-grounded review of your current branch diff against a chosen base (defaults to the real default branch, never main-when-you're-on-trunk-flow). Chat-style composer matching Suite Chat — message bubbles, suggested prompts, send/stop, model picker filtered to providers that actually have an API key, branch picker with fuzzy search. **Apply-able patch cards** — when the model proposes an edit, it renders as a click-to-write card; applying patches is now the default surface, not optional. Threads persist in SQLite and surface in the new **Chats** sidebar. Multiple Review tabs can be open at once. ADO marks now come from `@thesvg/react` instead of inline SVG.
+- **Workspace tab system rewrite.** A recursive pane renderer replaces five kind-specific stacks. Drag tabs to reorder within a strip, drop them on another pane to move, drop into a leaf's edge zones to split horizontally or vertically; `Ctrl`-drag clones instead of moving. Keyboard splits / focus / move shortcuts. Pin, duplicate, close-others / close-right / close-all, jump-to-N (`Ctrl+1`…`Ctrl+9`), reopen-closed. "+" launcher in three surfaces (sidebar, top bar, in-strip) with Generate + terminal-action shortcuts in the popover. Per-cell store subscriptions for tab state so opening a tab doesn't re-render every other tab.
+- **Multi-thread Suite Chat with code grounding.** Each ADO suite now owns multiple persistent threads (SQLite-backed) — keep regression sweeps, exploratory chats, and bug triage separate without context bleed. A "Narrow AI scope" pill replaces the old ambiguous search box; each thread opens in its own tab from the history sidebar. The BYOK runner now has real `fs` tools (read / grep / glob / write) wired in, so the model can actually look at your code instead of pretending. Apply pipeline now covers **create-case** and **delete-case** alongside the existing **devops-edit** flow — proposed ADO mutations land as inline cards you click to apply.
+- **Editable test-case steps in TestCasePane.** Click any step to edit in place; the table is stable across edits and keeps focus.
+- **Reopen-and-republish drafts.** Generation history rows now open back into the review draft and re-publishing is idempotent — no more duplicate cases on a second click.
+- **UI scale slider** (Settings → General → Accessibility). Independent of the OS zoom, 80% floor so dense panes stay readable. The settings window no longer rescales itself when you drag the slider.
+- **shadcn `Kbd` / `KbdGroup`** rendering everywhere shortcuts appear — sleeker, more compact, no more context-menu line wrap.
+- **`ContextMenuItem` `icon` + `description` props** for Linear/Raycast-style two-line menu rows (label on top, 10.5 px muted subtitle underneath). Use instead of nesting a Tooltip on a Radix menu item.
+- **`BranchPicker` shared component** — cmdk Combobox in a Popover, fuzzy search, height-capped at 280 px. Reused by Code Review and Azure DevOps settings.
+- **`ProviderIcon` picks real brand marks where available** — simple-icons for Anthropic / Vercel / Google / Mistral / Ollama / OpenRouter / DeepSeek and shell marks (PowerShell from thesvg.org, bash / zsh / fish / Git Bash from simple-icons), with the hugeicons stroke set as a clearly-labelled fallback only for providers without a registered brand (OpenAI, xAI, Cerebras, Groq, LM Studio).
+- **Cursor** added to the AI CLI picker in the top bar.
+
+
+- **Suite-chat render loop** in the `boundThread` activation effect — the pane no longer spins on first open.
+- **Suite-chat deleting the active thread** no longer leaves the pane stuck in skeleton state forever.
+- **Tab strip overflow** scrolls horizontally without showing a visible scrollbar; in-strip "+" launcher actually opens and sits next to the last tab.
+- **Tabs context menu** — right-click now opens; cross-leaf split-leaf now actually moves the tab; drop targets gained nicer focus / drop hints; the focused-pane inset ring was dropped.
+- **PTY capacity-slot leak** — slot is freed synchronously on `kill` instead of waiting on the async exit signal. Cap raised to 16. PTY error messages are now readable (the OS error number is wrapped with context) instead of opaque codes leaking through.
+- **Terminal quick-prompt clear** — switched from `Ctrl+U` to backspace tracking (Ctrl+U was triggering cmd.exe's command-history menu). Quick prompts now send a single explicit `Ctrl+U` before typing so the prompt isn't appended to stale input.
+- **Terminal re-attach** moves the xterm DOM node instead of re-instantiating, so React unmount/remount no longer wipes scrollback or kills the shell.
+- **Code-review model picker** is filtered to providers that have an API key configured — no more selecting a model the runner will immediately fail on.
+- **Generator narrow-column layout** — 2-column input breakpoint bumped from `@xl` to `@3xl`; container-query responsive layout means a generator tab in a narrow split pane lays out as one column instead of overflowing.
+- **Steps-table editing stability** + settings dialog corner radius + scroll gutter alignment.
+- **AI / tabs missing-key copy** is now generic instead of mentioning a specific provider that may not be the one you tried to use. Duplicate pin glyph removed from the tab strip.
+- **Native webview zoom** wired correctly — 80% lower bound; settings window no longer rescales itself when you change app-wide zoom.
+
+
+- **Apply-able patches are the default** in Code Review — not behind a feature flag, not an opt-in surface.
+- **Review chat** promoted from floating FAB → right-side drawer → flex sibling controlled by `GeneratorPane`, so it survives layout changes and respects pane resizing.
+- **Top-bar "+" launcher** dedup — drop the duplicate entry; the sidebar / top-bar / in-strip launchers now share one popover.
+- **Suite Chat header** simplified — clearer thread switcher, send-arrow composer that matches Code Review.
+- **Tab context menu** trimmed to labels only (no descriptions) — descriptions live on the new ContextMenuItem two-line pattern instead, used where the label isn't self-explanatory.
+- **Settings → Models default-model picker** stays in sync across the main and settings windows via the prefs bridge (`emitGenerationBusy` / `onGenerationBusy`).
+- **Generator Changesets / Scope Notes field** folded into the Requirements field — one place to paste your spec instead of two near-identical text areas.
+- **Branch awareness across panes** — `$current` sentinel resolves at scan-time from the live source-dir branch; quick prompts and code-review base default to the real default branch instead of hard-coded `main`.
+
+
+- **Generator Changesets / Scope Notes field** as a separate input — its content lives inside Requirements now.
+- **Duplicate "+" launcher** in the top bar (one launcher, three surfaces).
+- **Floating Q&A FAB** over the review draft — promoted to a docked sibling, see Changed.
+
 ## [0.2.0] - 2026-05-22
 
 - **Status-bar update indicator + bottom-left toast** replace the modal that used to pop over the workspace whenever an update landed. The pill in the footer mirrors updater state (available / downloading / restart-ready) and the toast renders a parsed Keep-a-Changelog body — `Added`, `Fixed`, `Changed`, `Removed`, `Security` get tone-coded chips and overflow into a "show all N" affordance. Dismissing the toast remembers the version in `localStorage` so it doesn't re-pop every launch; clicking the pill un-dismisses for that version.
