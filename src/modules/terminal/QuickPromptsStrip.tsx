@@ -12,7 +12,8 @@ import { cn } from "@/lib/utils";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { MoreHorizontalCircle01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { useEffect, useState } from "react";
 import {
   FEATURED_PROMPTS,
   OVERFLOW_PROMPTS,
@@ -20,6 +21,27 @@ import {
 } from "./quickPrompts";
 import { getSession } from "./terminalRegistry";
 import { encodeForPty, writePty } from "./usePtySession";
+
+/** Priority order when picking a sensible default base. Mirrors the Rust
+ *  side's `DEFAULT_BASES` so the terminal's "review vs main" prompt lines
+ *  up with what the Code Review pane chooses on the same repo. */
+const BASE_PRIORITY = ["main", "master", "develop", "trunk"] as const;
+
+function pickDefaultBase(branches: string[]): string | null {
+  if (branches.length === 0) return null;
+  // Local branches win over `origin/main` etc — calling out a remote ref
+  // by name in the prompt is correct but reads weirder, so prefer the
+  // local copy when present.
+  for (const candidate of BASE_PRIORITY) {
+    if (branches.includes(candidate)) return candidate;
+  }
+  // Fall back to whichever remote-tracking ref matches our priority list.
+  for (const candidate of BASE_PRIORITY) {
+    const remote = branches.find((b) => b.endsWith(`/${candidate}`));
+    if (remote) return remote;
+  }
+  return null;
+}
 
 type Props = {
   /** Session id of the PTY this strip writes into. */
@@ -37,7 +59,34 @@ type Props = {
  */
 export function QuickPromptsStrip({ sessionId }: Props) {
   const cli = usePreferencesStore((s) => s.preferredAiCli);
+  const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
   const [overflowOpen, setOverflowOpen] = useState(false);
+  // Detected default base branch for the user's source dir, refreshed when
+  // the source root changes. Null = not a git repo (or detection failed) —
+  // prompts that mention a base fall back to "the default branch" copy so
+  // they still read sensibly without lying.
+  const [baseBranch, setBaseBranch] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!sourceRoot) {
+      setBaseBranch(null);
+      return;
+    }
+    let cancelled = false;
+    invoke<string[]>("git_branch_list", { cwd: sourceRoot })
+      .then((branches) => {
+        if (cancelled) return;
+        setBaseBranch(pickDefaultBase(branches));
+      })
+      .catch(() => {
+        // Not a git repo / git missing / permission denied. Bail to null so
+        // the chips fall back to generic "default branch" copy.
+        if (!cancelled) setBaseBranch(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceRoot]);
 
   const handleType = (prompt: QuickPromptDef) => {
     // Clear whatever the LAST chip typed before typing the new prompt —
@@ -54,7 +103,7 @@ export function QuickPromptsStrip({ sessionId }: Props) {
     // manually — better than eating their keystrokes).
     const session = getSession(sessionId);
     const prior = session?.lastChipTypedLength ?? 0;
-    const body = prompt.command({ cli });
+    const body = prompt.command({ cli, baseBranch });
     const text = "\b".repeat(prior) + body;
     if (session) session.lastChipTypedLength = body.length;
     void writePty(sessionId, encodeForPty(text)).catch((e) => {

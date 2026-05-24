@@ -14,6 +14,18 @@
  * curly-free so they don't surprise shells that interpret smart quotes.
  */
 
+export type QuickPromptCtx = {
+  /** The CLI binary the user has set as their preferred AI tool. Empty
+   *  string means "paste body raw" — see `callCli`. */
+  cli: string;
+  /** Resolved default base branch for the user's source dir, computed once
+   *  by the strip via `git_branch_list` and a `main → master → develop`
+   *  fallback. `null` when the dir isn't a git repo (or detection failed)
+   *  — prompts that reference a base should phrase themselves to still
+   *  read sensibly without it ("vs main" → "vs the default branch"). */
+  baseBranch: string | null;
+};
+
 export type QuickPromptDef = {
   /** Stable id used for telemetry / preferences. Don't rename after release. */
   id: string;
@@ -28,7 +40,7 @@ export type QuickPromptDef = {
   /** Builds the actual string to type. The trailing space is intentional:
    *  it puts the cursor in a useful spot if the user wants to append
    *  something before submitting. */
-  command: (ctx: { cli: string }) => string;
+  command: (ctx: QuickPromptCtx) => string;
 };
 
 // Wrap a prompt body in the CLI's preferred call shape. Empty CLI ⇒ paste
@@ -44,17 +56,26 @@ function callCli(cli: string, body: string): string {
   return `${trimmed} "${safeBody}" `;
 }
 
+// Pretty-print "vs <branch>" — falls back to "vs the default branch" when
+// the source dir isn't a git repo so the chip still types a coherent
+// sentence. Without this every chip that mentions main on a non-git tree
+// would bake "vs main" into a prompt the model would then hallucinate
+// against.
+function vsBase(base: string | null): string {
+  return base ? `vs ${base}` : "vs the default branch";
+}
+
 export const QUICK_PROMPTS: QuickPromptDef[] = [
   {
     id: "review-diff",
     label: "Review my diff",
     description:
-      "Asks the CLI to review the uncommitted + branch changes vs main. Press Enter to run; the CLI will read your diff and flag bugs, missing tests, and security issues.",
+      "Asks the CLI to review your branch changes against the detected default branch (main / master / develop). Press Enter to run; the CLI will read your diff and flag bugs, missing tests, and security issues.",
     featured: true,
-    command: ({ cli }) =>
+    command: ({ cli, baseBranch }) =>
       callCli(
         cli,
-        "Review my changes on this branch vs main. Flag bugs, missing tests, and security issues. Cite files as path:line.",
+        `Review my changes on this branch ${vsBase(baseBranch)}. Flag bugs, missing tests, and security issues. Cite files as path:line.`,
       ),
   },
   {
@@ -73,12 +94,12 @@ export const QUICK_PROMPTS: QuickPromptDef[] = [
     id: "pr-description",
     label: "PR description",
     description:
-      "Drafts a PR title + body from your branch's commit history and diff vs main.",
+      "Drafts a PR title + body from your branch's commit history and diff against the detected default branch.",
     featured: true,
-    command: ({ cli }) =>
+    command: ({ cli, baseBranch }) =>
       callCli(
         cli,
-        "Write a PR description based on my git log and diff vs main. Use the conventional commit style for the title.",
+        `Write a PR description based on my git log and diff ${vsBase(baseBranch)}. Use the conventional commit style for the title.`,
       ),
   },
   {
@@ -106,10 +127,10 @@ export const QUICK_PROMPTS: QuickPromptDef[] = [
     label: "Security audit",
     description: "Targeted security review of your branch changes — input validation, secrets, injection, auth.",
     featured: false,
-    command: ({ cli }) =>
+    command: ({ cli, baseBranch }) =>
       callCli(
         cli,
-        "Audit my branch changes for security issues — input validation, secret exposure, injection, and auth holes. Cite findings as path:line with severity.",
+        `Audit my branch changes ${vsBase(baseBranch)} for security issues — input validation, secret exposure, injection, and auth holes. Cite findings as path:line with severity.`,
       ),
   },
   {
