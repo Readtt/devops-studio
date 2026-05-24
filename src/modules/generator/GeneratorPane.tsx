@@ -939,7 +939,7 @@ function InputPhase() {
                       // Override gets the primary accent; the default-state
                       // chip stays understated so the picker reads as a hint,
                       // not a CTA.
-                      "inline-flex h-8 items-center gap-2 rounded-md border bg-card px-2.5 text-[11.5px] transition-colors hover:border-primary/60",
+                      "inline-flex h-8 min-w-0 max-w-full items-center gap-2 rounded-md border bg-card px-2.5 text-[11.5px] transition-colors hover:border-primary/60",
                       overrideModelId
                         ? "border-primary/50 bg-primary/[0.06]"
                         : "border-border/60",
@@ -947,7 +947,7 @@ function InputPhase() {
                   >
                     <span
                       className={cn(
-                        "rounded-sm px-1 py-px font-mono text-[9.5px] uppercase tracking-wide",
+                        "shrink-0 rounded-sm px-1 py-px font-mono text-[9.5px] uppercase tracking-wide",
                         overrideModelId
                           ? "bg-primary/15 text-primary"
                           : "bg-foreground/[0.06] text-muted-foreground",
@@ -956,17 +956,20 @@ function InputPhase() {
                       {overrideModelId ? "run-only" : "default"}
                     </span>
                     <ProviderIcon provider={provider} size={12} />
-                    <span className="max-w-[180px] truncate font-medium">
+                    <span className="min-w-0 max-w-[180px] truncate font-medium">
                       {activeModel.label}
                     </span>
-                    <span className="font-mono text-[10px] text-muted-foreground/85">
+                    {/* Hint text is purely informational ("fast", "balanced",
+                        etc.) — drop it on narrow panes so the model label
+                        gets the room to breathe instead of competing for it. */}
+                    <span className="hidden shrink-0 font-mono text-[10px] text-muted-foreground/85 @md:inline">
                       · {activeModel.hint.toLowerCase()}
                     </span>
                     <HugeiconsIcon
                       icon={ArrowDown01Icon}
                       size={10}
                       strokeWidth={2}
-                      className="opacity-60"
+                      className="shrink-0 opacity-60"
                     />
                   </span>
                 </TooltipTrigger>
@@ -1094,8 +1097,13 @@ function InputPhase() {
 
       {/* Preview pane — what the run will actually do. Surfaces the things
           the user usually forgets to set (branch, source root, model) before
-          firing off a 30-second analysis. */}
-      <aside className="flex flex-col gap-2 lg:sticky lg:top-0 lg:self-start">
+          firing off a 30-second analysis. Sticky binding uses the container-
+          query @xl breakpoint so the two-column layout's stickiness lines up
+          with when the layout actually splits (the lg: viewport breakpoint
+          was wrong for split panes — a 1200px window with a 300px pane was
+          still triggering "lg" and trying to stick a column that didn't
+          exist). */}
+      <aside className="flex flex-col gap-2 @xl:sticky @xl:top-0 @xl:self-start">
         <h2 className="text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
           Run preview
         </h2>
@@ -1211,19 +1219,19 @@ function AnalyzingPhase() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between rounded-md border border-border/60 bg-card/40 px-3 py-2.5">
-        <div className="flex items-center gap-2">
-          <Spinner className="size-4 text-primary" />
-          <div>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-md border border-border/60 bg-card/40 px-3 py-2.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <Spinner className="size-4 shrink-0 text-primary" />
+          <div className="min-w-0">
             <p className="text-[12px] font-medium">Analyzing requirements…</p>
-            <p className="text-[10.5px] text-muted-foreground">
+            <p className="truncate text-[10.5px] text-muted-foreground">
               {stepLabel || "Routing to the model."}
             </p>
           </div>
         </div>
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button size="sm" variant="outline" onClick={cancel}>
+            <Button size="sm" variant="outline" onClick={cancel} className="shrink-0">
               Cancel
             </Button>
           </TooltipTrigger>
@@ -1498,21 +1506,27 @@ function ReviewPhase({
           </p>
         </div>
       ) : null}
-      <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-card/40 px-3 py-2">
-        <p className="text-[11px] text-muted-foreground">
+      {/* Header row — flex-wraps on narrow panes so the Publish button
+          drops onto its own line instead of squeezing the counts text
+          to a single-character ellipsis. The keyboard-shortcut tail is
+          hidden on small widths since it's a power-user hint that just
+          clutters a cramped header. */}
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-md border border-border/60 bg-card/40 px-3 py-2">
+        <p className="min-w-0 text-[11px] text-muted-foreground">
           <span className="font-medium text-foreground">{cases.length}</span>{" "}
           case{cases.length === 1 ? "" : "s"}
           {bugs.length > 0
             ? `, ${bugs.length} bug suggestion${bugs.length === 1 ? "" : "s"}`
             : ""}
           {durationMs ? ` · ${(durationMs / 1000).toFixed(1)}s` : ""}.
-          <span className="ml-2 text-muted-foreground/70">
+          <span className="ml-2 hidden text-muted-foreground/70 @md:inline">
             j/k to nav cases &amp; bugs · space to toggle · p to publish
           </span>
         </p>
         <Button
           onClick={() => void publish()}
           disabled={publishCount === 0}
+          className="shrink-0"
         >
           {hasAnyPublished
             ? publishCount === 0
@@ -1676,13 +1690,50 @@ function ReviewPhase({
                 </summary>
                 <ol className="mt-1.5 flex flex-col gap-1 border-l border-border/40 pl-3 text-[11px]">
                   {c.steps.map((s, idx) => (
+                    // Narrow panes (default): stack action over expected
+                    // under one row number — the inline 5-col grid below
+                    // squeezed everything to a single-char ellipsis once
+                    // the pane dropped below ~480px. Wider panes (@md+)
+                    // get the original action → expected → remove inline
+                    // layout back. The remove button sits with the row
+                    // number on the stacked view so it stays accessible
+                    // without inflating the row.
                     <li
                       key={idx}
-                      className="group/step grid grid-cols-[auto_1fr_auto_1fr_auto] items-start gap-2 py-0.5"
+                      className="group/step grid grid-cols-[auto_1fr] items-start gap-x-2 gap-y-0.5 py-0.5 @md:grid-cols-[auto_1fr_auto_1fr_auto]"
                     >
-                      <span className="mt-px font-mono text-[10px] text-muted-foreground/70 tabular-nums">
-                        {String(idx + 1).padStart(2, "0")}
-                      </span>
+                      <div className="flex items-center gap-1 @md:contents">
+                        <span className="mt-px font-mono text-[10px] text-muted-foreground/70 tabular-nums">
+                          {String(idx + 1).padStart(2, "0")}
+                        </span>
+                        {/* Narrow-only remove — wider panes use the
+                            inline button on the row's right edge. */}
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              type="button"
+                              aria-label={`Remove step ${idx + 1}`}
+                              disabled={c.steps.length <= 1}
+                              onClick={() => removeCaseStep(c.uid, idx)}
+                              className={cn(
+                                "inline-flex size-4 items-center justify-center rounded-sm text-muted-foreground/40 hover:bg-destructive/15 hover:text-destructive @md:hidden",
+                                c.steps.length <= 1 && "cursor-not-allowed",
+                              )}
+                            >
+                              <HugeiconsIcon
+                                icon={Cancel01Icon}
+                                size={9}
+                                strokeWidth={2}
+                              />
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent side="right" className="text-[11px]">
+                            {c.steps.length <= 1
+                              ? "Cases must have at least one step"
+                              : "Remove this step"}
+                          </TooltipContent>
+                        </Tooltip>
+                      </div>
                       <EditableText
                         value={s.action}
                         onCommit={(next) =>
@@ -1693,7 +1744,7 @@ function ReviewPhase({
                         ariaLabel={`Step ${idx + 1} action`}
                         className="block text-foreground/85"
                       />
-                      <span className="mt-px shrink-0 text-muted-foreground/60">
+                      <span className="mt-px hidden shrink-0 text-muted-foreground/60 @md:inline">
                         →
                       </span>
                       <EditableText
@@ -1704,8 +1755,11 @@ function ReviewPhase({
                         placeholder="(expected)"
                         variant="multiline"
                         ariaLabel={`Step ${idx + 1} expected`}
-                        className="block text-muted-foreground"
+                        className="col-start-2 block text-muted-foreground @md:col-auto"
                       />
+                      {/* Inline remove button (wider panes only) — keeps
+                          the original hover-reveal affordance for users
+                          who have the room. */}
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <button
@@ -1714,7 +1768,7 @@ function ReviewPhase({
                             disabled={c.steps.length <= 1}
                             onClick={() => removeCaseStep(c.uid, idx)}
                             className={cn(
-                              "mt-px inline-flex size-4 items-center justify-center rounded-sm text-muted-foreground/40 opacity-0 transition-all group-hover/step:opacity-100 hover:bg-destructive/15 hover:text-destructive",
+                              "mt-px hidden size-4 items-center justify-center rounded-sm text-muted-foreground/40 opacity-0 transition-all group-hover/step:opacity-100 hover:bg-destructive/15 hover:text-destructive @md:inline-flex",
                               c.steps.length <= 1 && "cursor-not-allowed",
                             )}
                           >
@@ -2070,7 +2124,7 @@ function DonePhase() {
   }, [log, setPublishLogTitle]);
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between rounded-md border border-border/60 bg-card/40 px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-md border border-border/60 bg-card/40 px-3 py-2">
         <p className="text-[12px] font-medium">
           Published <span className="text-emerald-700 dark:text-emerald-300">{ok}</span>
           {failed > 0 ? (
@@ -2081,7 +2135,7 @@ function DonePhase() {
           ) : null}
           .
         </p>
-        <Button onClick={startNew}>Start another</Button>
+        <Button onClick={startNew} className="shrink-0">Start another</Button>
       </div>
       <PublishLogList log={log} />
     </div>
