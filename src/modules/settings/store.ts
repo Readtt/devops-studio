@@ -101,7 +101,17 @@ export type Preferences = {
   terminalLetterSpacing: number;
   terminalFontSize: number;
   terminalScrollback: number;
-  lastWslDistro: string | null;
+  /** Detected-shell id chosen by the user in Settings → Terminal. We persist
+   *  id + path together: the id survives a pwsh upgrade that moves the
+   *  binary, the path is what pty_spawn actually executes when the user
+   *  uses the same machine that did the picking. */
+  defaultShellId: string | null;
+  defaultShellPath: string | null;
+  /** Command prefix Quick Prompts use when typing starter prompts into the
+   *  terminal. Examples: `claude`, `codex`, `aider`. The chip code substitutes
+   *  this into a template like `{cli} "Review my diff vs main"`. Empty string
+   *  ⇒ chips paste the raw prompt without a CLI prefix. */
+  preferredAiCli: string;
   zoomLevel: number;
   shortcuts: Record<ShortcutId, KeyBinding[]>;
   /** Phase 5: which engine to use for AI generation. */
@@ -166,7 +176,9 @@ const KEY_TERMINAL_FONT_FAMILY = "terminalFontFamily";
 const KEY_TERMINAL_LETTER_SPACING = "terminalLetterSpacing";
 const KEY_TERMINAL_FONT_SIZE = "terminalFontSize";
 const KEY_TERMINAL_SCROLLBACK = "terminalScrollback";
-const KEY_LAST_WSL_DISTRO = "lastWslDistro";
+const KEY_DEFAULT_SHELL_ID = "defaultShellId";
+const KEY_DEFAULT_SHELL_PATH = "defaultShellPath";
+const KEY_PREFERRED_AI_CLI = "preferredAiCli";
 const KEY_ZOOM_LEVEL = "zoomLevel";
 const KEY_SHORTCUTS = "shortcuts";
 const KEY_AI_ENGINE = "aiEngine";
@@ -229,7 +241,9 @@ export const DEFAULT_PREFERENCES: Preferences = {
   terminalLetterSpacing: 0,
   terminalFontSize: TERMINAL_FONT_SIZE_DEFAULT,
   terminalScrollback: TERMINAL_SCROLLBACK_DEFAULT,
-  lastWslDistro: null,
+  defaultShellId: null,
+  defaultShellPath: null,
+  preferredAiCli: "claude",
   zoomLevel: 1.0,
   shortcuts: {} as Record<ShortcutId, KeyBinding[]>,
   aiEngine: "vercel-ai-sdk",
@@ -338,9 +352,14 @@ export async function loadPreferences(): Promise<Preferences> {
       get<number>(KEY_TERMINAL_SCROLLBACK) ??
         DEFAULT_PREFERENCES.terminalScrollback,
     ),
-    lastWslDistro:
-      get<string | null>(KEY_LAST_WSL_DISTRO) ??
-      DEFAULT_PREFERENCES.lastWslDistro,
+    defaultShellId:
+      get<string | null>(KEY_DEFAULT_SHELL_ID) ??
+      DEFAULT_PREFERENCES.defaultShellId,
+    defaultShellPath:
+      get<string | null>(KEY_DEFAULT_SHELL_PATH) ??
+      DEFAULT_PREFERENCES.defaultShellPath,
+    preferredAiCli:
+      get<string>(KEY_PREFERRED_AI_CLI) ?? DEFAULT_PREFERENCES.preferredAiCli,
     zoomLevel: get<number>(KEY_ZOOM_LEVEL) ?? DEFAULT_PREFERENCES.zoomLevel,
     shortcuts:
       get<Record<ShortcutId, KeyBinding[]>>(KEY_SHORTCUTS) ??
@@ -554,8 +573,19 @@ export async function setTerminalScrollback(value: number): Promise<void> {
   await writePref(KEY_TERMINAL_SCROLLBACK, clampScrollback(value));
 }
 
-export async function setLastWslDistro(value: string | null): Promise<void> {
-  await writePref(KEY_LAST_WSL_DISTRO, value);
+export async function setDefaultShell(
+  id: string | null,
+  path: string | null,
+): Promise<void> {
+  // Always set both atomically — the id is meaningless without a path, and
+  // a stale path-only state would have pty_spawn falling back to the
+  // platform default while the UI shows a phantom selection.
+  await writePref(KEY_DEFAULT_SHELL_ID, id);
+  await writePref(KEY_DEFAULT_SHELL_PATH, path);
+}
+
+export async function setPreferredAiCli(value: string): Promise<void> {
+  await writePref(KEY_PREFERRED_AI_CLI, value.trim());
 }
 
 export async function setZoomLevel(value: number): Promise<void> {
@@ -608,7 +638,9 @@ export async function onPreferencesChange(
     [KEY_TERMINAL_LETTER_SPACING]: "terminalLetterSpacing",
     [KEY_TERMINAL_FONT_SIZE]: "terminalFontSize",
     [KEY_TERMINAL_SCROLLBACK]: "terminalScrollback",
-    [KEY_LAST_WSL_DISTRO]: "lastWslDistro",
+    [KEY_DEFAULT_SHELL_ID]: "defaultShellId",
+    [KEY_DEFAULT_SHELL_PATH]: "defaultShellPath",
+    [KEY_PREFERRED_AI_CLI]: "preferredAiCli",
     [KEY_ZOOM_LEVEL]: "zoomLevel",
     [KEY_SHORTCUTS]: "shortcuts",
     [KEY_AI_ENGINE]: "aiEngine",

@@ -8,6 +8,7 @@ import type { SettingsTab } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   AiScanIcon,
+  CommandLineIcon,
   InformationCircleIcon,
   Settings01Icon,
   KeyboardIcon,
@@ -20,6 +21,7 @@ import { AzureDevOpsSection } from "./sections/AzureDevOpsSection";
 import { GeneralSection } from "./sections/GeneralSection";
 import { ModelsSection } from "./sections/ModelsSection";
 import { ShortcutsSection } from "./sections/ShortcutsSection";
+import { TerminalSection } from "./sections/TerminalSection";
 
 type TabDef = {
   id: SettingsTab;
@@ -55,6 +57,12 @@ const TABS: TabDef[] = [
     component: ModelsSection,
   },
   {
+    id: "terminal",
+    label: "Terminal",
+    glyph: <HugeiconsIcon icon={CommandLineIcon} size={12} strokeWidth={1.75} />,
+    component: TerminalSection,
+  },
+  {
     id: "about",
     label: "About",
     glyph: <HugeiconsIcon icon={InformationCircleIcon} size={12} strokeWidth={1.75} />,
@@ -67,6 +75,7 @@ const VALID_TABS: SettingsTab[] = [
   "shortcuts",
   "azure-devops",
   "models",
+  "terminal",
   "about",
 ];
 
