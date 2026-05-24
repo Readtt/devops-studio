@@ -44,11 +44,23 @@ export type ShortcutId =
   | "stale.scan"
   | "generator.new"
   | "terminal.new"
+  | "terminal.copy"
+  | "terminal.paste"
+  | "terminal.clear"
+  | "terminal.fontSizeUp"
+  | "terminal.fontSizeDown"
+  | "codeReview.new"
   | "view.zoomIn"
   | "view.zoomOut"
   | "view.zoomReset";
 
-export type ShortcutGroup = "General" | "Tabs" | "Panes" | "View" | "ADO";
+export type ShortcutGroup =
+  | "General"
+  | "Tabs"
+  | "Panes"
+  | "View"
+  | "ADO"
+  | "Terminal";
 
 export type KeyBinding = {
   key: string;
@@ -120,6 +132,48 @@ export const SHORTCUTS: Shortcut[] = [
     group: "Tabs",
     // Ctrl/Cmd+Shift+` mirrors VS Code's "New Terminal" muscle memory.
     defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "`" }],
+  },
+  {
+    id: "codeReview.new",
+    label: "New code review",
+    group: "Tabs",
+    // Ctrl/Cmd+Shift+R — R for Review. Plain Ctrl+R is browser refresh in
+    // most webviews, so we take the shift slot.
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "r" }],
+  },
+  {
+    id: "terminal.copy",
+    label: "Copy terminal selection",
+    group: "Terminal",
+    // Ctrl/Cmd+Shift+C is the standard "copy from terminal" binding on
+    // every Unix terminal emulator. Avoids fighting Ctrl+C (interrupt).
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "c" }],
+  },
+  {
+    id: "terminal.paste",
+    label: "Paste into terminal",
+    group: "Terminal",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "v" }],
+  },
+  {
+    id: "terminal.clear",
+    label: "Clear terminal viewport",
+    group: "Terminal",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "k" }],
+  },
+  {
+    id: "terminal.fontSizeUp",
+    label: "Terminal font size +",
+    group: "Terminal",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "=" }],
+    allowRepeat: true,
+  },
+  {
+    id: "terminal.fontSizeDown",
+    label: "Terminal font size −",
+    group: "Terminal",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "-" }],
+    allowRepeat: true,
   },
   {
     id: "tab.close",
@@ -270,6 +324,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
   "General",
   "Tabs",
   "Panes",
+  "Terminal",
   "ADO",
   "View",
 ];

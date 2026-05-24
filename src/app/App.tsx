@@ -67,6 +67,24 @@ function focusedActiveId(): number | null {
   const leaf = findLeaf(s.paneTree, s.focusedLeafId);
   return leaf?.activeTabId ?? null;
 }
+
+/** Run `fn` against the live terminal session for the focused tab, when
+ *  that tab is a terminal. Quiet no-op otherwise. Used by the terminal
+ *  shortcuts so they're context-aware (no "paste into your generator"
+ *  surprises). */
+function withFocusedTerminal(
+  fn: (session: import("@/modules/terminal/terminalRegistry").TerminalSession) => void,
+): void {
+  const s = useTabsStore.getState();
+  const id = focusedActiveId();
+  if (id == null) return;
+  const tab = s.tabs[id];
+  if (!tab || tab.kind !== "terminal") return;
+  void import("@/modules/terminal/terminalRegistry").then(({ getSession }) => {
+    const session = getSession(tab.sessionId);
+    if (session) fn(session);
+  });
+}
 import {
   Popover,
   PopoverContent,
@@ -80,6 +98,7 @@ import {
   PlusSignIcon,
   Search01Icon,
   Settings01Icon,
+  SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -677,6 +696,42 @@ function AppShell() {
       },
       "generator.new": () => openGeneratorTab(),
       "terminal.new": () => openTerminalTab(),
+      "codeReview.new": () => {
+        openCodeReviewTab();
+      },
+      "terminal.copy": () => withFocusedTerminal((session) => {
+        if (!session.term.hasSelection()) return;
+        void navigator.clipboard
+          .writeText(session.term.getSelection())
+          .catch(() => undefined);
+      }),
+      "terminal.paste": () => withFocusedTerminal((session) => {
+        void (async () => {
+          try {
+            const text = await navigator.clipboard.readText();
+            if (!text) return;
+            const { writePty, encodeForPty } = await import(
+              "@/modules/terminal/usePtySession"
+            );
+            await writePty(session.sessionId, encodeForPty(text));
+          } catch {
+            // ignore — clipboard read may be blocked
+          }
+        })();
+      }),
+      "terminal.clear": () => withFocusedTerminal((s) => s.term.clear()),
+      "terminal.fontSizeUp": () => {
+        const cur = usePreferencesStore.getState().terminalFontSize;
+        void import("@/modules/settings/store").then(({ setTerminalFontSize }) =>
+          setTerminalFontSize(cur + 1),
+        );
+      },
+      "terminal.fontSizeDown": () => {
+        const cur = usePreferencesStore.getState().terminalFontSize;
+        void import("@/modules/settings/store").then(({ setTerminalFontSize }) =>
+          setTerminalFontSize(cur - 1),
+        );
+      },
       "tab.close": () => {
         const target = focusedActiveId();
         if (target != null) useTabsStore.getState().closeTab(target);
@@ -990,8 +1045,17 @@ function AppShell() {
                 side="bottom"
                 align="end"
                 sideOffset={6}
-                className="w-64 gap-0 rounded-lg p-1"
+                className="w-72 gap-0 rounded-lg p-1"
               >
+                <NewTabMenuItem
+                  icon={SparklesIcon}
+                  label="New generation"
+                  description="Generate test cases from a feature spec — the QA workflow this app was built for."
+                  onSelect={() => {
+                    setNewTabMenuOpen(false);
+                    openGeneratorTab();
+                  }}
+                />
                 <NewTabMenuItem
                   icon={CommandLineIcon}
                   label="New terminal"
@@ -1010,7 +1074,7 @@ function AppShell() {
                   label="Review my changes"
                   description={
                     sourceRoot
-                      ? "Streamed code review of your branch diff"
+                      ? "AI code review of your branch diff vs main — clickable file:line citations"
                       : "Set a source directory in Settings first"
                   }
                   disabled={!sourceRoot}
