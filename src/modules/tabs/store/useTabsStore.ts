@@ -223,14 +223,12 @@ export const useTabsStore = create<TabsState>()(
               // surface the existing one. Multi-terminal is a feature.
               return false;
             case "code-review":
-              // Dedup by cwd+base — re-running "Review my changes" against
-              // the same baseline should reuse the existing thread instead
-              // of stacking a new tab. Different base → different tab.
-              return (
-                t.kind === "code-review" &&
-                t.cwd === input.cwd &&
-                (t.base ?? null) === (input.base ?? null)
-              );
+              // Never dedup. Each "Review my changes" should be a fresh
+              // pane — the user explicitly asked for the ability to keep
+              // multiple parallel reviews open (different bases, different
+              // questions, side-by-side comparison). Same model as the
+              // terminal: opening N times yields N tabs.
+              return false;
           }
           return false;
         });
