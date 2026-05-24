@@ -38,6 +38,7 @@ import {
   AiBrain01Icon,
   AlertCircleIcon,
   ArrowLeft02Icon,
+  BubbleChatIcon,
   Cancel01Icon,
   CheckmarkCircle02Icon,
   CodeIcon,
@@ -286,29 +287,42 @@ export function GeneratorPane({
     onResolved: setPlanSuiteNames,
   });
 
+  // Ask panel visibility. Lives here (not inside ReviewChat) so the toggle
+  // in the ProgressStrip can flip layout from a single scroll column to
+  // a [content | ask] flex row — the chat sits *beside* the review content
+  // rather than floating over it. Defaults closed; the user's first sight
+  // of review should be the draft, not a chat empty state.
+  const [chatOpen, setChatOpen] = useState(false);
+
   return (
-    // `relative` so the ReviewChat side drawer can position itself against
-    // this container instead of the viewport. Drawer-style instead of a
-    // floating FAB means it never overlaps the bottom status bar or the
-    // progress strip.
-    <div className="relative flex h-full flex-col bg-background">
-      <ProgressStrip phase={phase} />
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-4xl px-5 py-4">
-          {phase === "input" && <InputPhase />}
-          {phase === "analyzing" && <AnalyzingPhase />}
-          {phase === "review" && <ReviewPhase onOpenCase={onOpenCase} />}
-          {phase === "publishing" && <PublishingPhase />}
-          {phase === "done" && <DonePhase />}
-          {phase === "error" && <ErrorPhase />}
+    // @container marks this as the responsive root — Tailwind v4 container
+    // queries (@sm, @md, @lg below) react to the pane width instead of the
+    // viewport width, so splitting the workspace narrow no longer collapses
+    // the layout: it adapts to its actual room. Mirrors the pattern card.tsx
+    // already uses.
+    <div className="@container flex h-full flex-col bg-background">
+      <ProgressStrip
+        phase={phase}
+        chatOpen={chatOpen}
+        onToggleChat={() => setChatOpen((v) => !v)}
+      />
+      <div className="flex min-h-0 flex-1">
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {/* px-3 on narrow panes, px-5 once we have the room — the
+              old px-5 was eating chrome inside a 320 px column. */}
+          <div className="mx-auto w-full max-w-4xl px-3 py-4 @md:px-5">
+            {phase === "input" && <InputPhase />}
+            {phase === "analyzing" && <AnalyzingPhase />}
+            {phase === "review" && <ReviewPhase onOpenCase={onOpenCase} />}
+            {phase === "publishing" && <PublishingPhase />}
+            {phase === "done" && <DonePhase />}
+            {phase === "error" && <ErrorPhase />}
+          </div>
         </div>
+        {phase === "review" && chatOpen ? (
+          <ReviewChat onClose={() => setChatOpen(false)} />
+        ) : null}
       </div>
-      {/* Lift ReviewChat to a GeneratorPane child (was inside ReviewPhase).
-          As a sibling of the scroll container, the drawer can be absolutely
-          positioned against the relative outer div — staying pinned while
-          the user scrolls the review content, and naturally bounded so it
-          never covers the bottom status bar. */}
-      {phase === "review" ? <ReviewChat /> : null}
     </div>
   );
 }
@@ -323,8 +337,15 @@ export function GeneratorPane({
  */
 function ProgressStrip({
   phase,
+  chatOpen,
+  onToggleChat,
 }: {
   phase: SessionState["phase"];
+  /** Whether the Ask side panel is currently visible. The toggle lives in
+   *  this header (no more floating right-edge tab) so the user can see at
+   *  a glance whether the chat would consume their pane width on toggle. */
+  chatOpen: boolean;
+  onToggleChat: () => void;
 }) {
   const startNew = useGenerationSession((s) => s.startNew);
   const goToInput = useGenerationSession((s) => s.goToInput);
@@ -337,13 +358,18 @@ function ProgressStrip({
     if (phase === "error") return 0;
     return STEPS.findIndex((s) => s.id === phase);
   }, [phase]);
+  // Whether each step has *actually* happened in this run, independent of
+  // where the user is right now. A breadcrumb-back to input shouldn't make
+  // analyze look "future" — it already ran for this draft. Same for publish
+  // once the publish log has entries.
+  const hasDraft = cases.length > 0 || bugs.length > 0;
+  const hasPublished = publishLog.length > 0;
 
   // Decide which breadcrumb steps the user can actually jump to. We never
   // permit jumping INTO analyze / publishing — those are in-flight phases
   // and bouncing into them mid-run would corrupt state. Review, input, and
   // done are safe targets as long as the prerequisite data exists.
   const canReachInput = phase !== "analyzing" && phase !== "publishing";
-  const hasDraft = cases.length > 0 || bugs.length > 0;
   const canReachReview =
     hasDraft && phase !== "analyzing" && phase !== "publishing";
   // Done is reachable once publish has actually run — without a publish log
@@ -373,15 +399,31 @@ function ProgressStrip({
   }
 
   return (
-    <header className="flex h-9 shrink-0 items-center justify-between gap-4 border-b border-border/60 bg-card/40 px-5">
+    <header className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-border/60 bg-card/40 px-3 @md:gap-4 @md:px-5">
+      {/* Breadcrumb: full chain on @md+, collapsed to just the active step
+          on narrow panes. The intermediate steps don't communicate enough
+          to justify the line wrap they'd cause below ~440 px. */}
       <div className="flex min-w-0 items-center gap-2 font-mono text-[11px]">
-        <span className="font-semibold tracking-tight text-foreground/85">
+        <span className="hidden font-semibold tracking-tight text-foreground/85 @md:inline">
           testgen
         </span>
-        <span className="text-muted-foreground/60">→</span>
-        <ol className="flex items-center gap-0">
+        <span className="hidden text-muted-foreground/60 @md:inline">→</span>
+        <ol className="hidden items-center gap-0 @md:flex">
           {STEPS.map((step, i) => {
-            const completed = i < currentIdx;
+            // Two paths to "completed":
+            //  1. The current phase is past this step in the canonical order.
+            //  2. The user has navigated *back* (input/review breadcrumbs)
+            //     to a phase that's behind this step, but the work for this
+            //     step has already happened in this run — analyze produced
+            //     cases, or publish wrote at least one ADO row. Without
+            //     this second clause, jumping back to input made analyze
+            //     render as a "future" step even though there's a draft
+            //     on screen, which the user (correctly) read as a bug.
+            const completedByOrder = i < currentIdx;
+            const completedByEvidence =
+              (step.id === "analyzing" && hasDraft) ||
+              (step.id === "publishing" && hasPublished);
+            const completed = completedByOrder || completedByEvidence;
             const active = i === currentIdx;
             const nav = active ? undefined : navigators[step.id];
             const label = (
@@ -431,30 +473,68 @@ function ProgressStrip({
             );
           })}
         </ol>
+        {/* Narrow-pane fallback: just the active step in primary mint —
+            same chip styling as the expanded breadcrumb's active state so
+            the visual rhythm stays consistent. */}
+        <span className="rounded-sm bg-primary/15 px-1.5 py-0.5 font-semibold text-primary @md:hidden">
+          {STEPS[Math.max(0, currentIdx)]?.label ?? phase}
+        </span>
       </div>
-      {/* The error phase has its own Retry / Start over pair — surfacing
-          another "New session" affordance at the top of the same screen was
-          a foot-gun: a quick click here looks like "go back to retry" but
-          actually wipes the spec. Limit the header button to review / done
-          phases where it unambiguously means "throw this away". */}
-      {phase === "review" || phase === "done" ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              size="xs"
-              variant="ghost"
-              onClick={startNew}
-              aria-label="New session"
-            >
-              <HugeiconsIcon icon={ArrowLeft02Icon} size={11} strokeWidth={1.75} />
-              New session
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">
-            Clear and start a fresh generation.
-          </TooltipContent>
-        </Tooltip>
-      ) : null}
+      <div className="flex items-center gap-1">
+        {/* Ask toggle. Only shows in review — that's where the panel
+            actually mounts. Putting it next to "New session" gives the
+            user a clear control surface for both "do another thing"
+            and "stop chatting" without forcing them to find a floating
+            edge-tab on the right. */}
+        {phase === "review" ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="xs"
+                variant={chatOpen ? "secondary" : "ghost"}
+                onClick={onToggleChat}
+                aria-label={chatOpen ? "Hide Ask panel" : "Show Ask panel"}
+                aria-pressed={chatOpen}
+              >
+                <HugeiconsIcon
+                  icon={BubbleChatIcon}
+                  size={11}
+                  strokeWidth={1.75}
+                />
+                Ask
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="max-w-[260px] text-[11px]">
+              {chatOpen
+                ? "Close the chat — you'll get the full pane back for review."
+                : "Open a read-only Q&A panel beside this draft. Useful for “do these cover X?” — use Refine to actually change cases."}
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
+        {/* The error phase has its own Retry / Start over pair — surfacing
+            another "New session" affordance at the top of the same screen was
+            a foot-gun: a quick click here looks like "go back to retry" but
+            actually wipes the spec. Limit the header button to review / done
+            phases where it unambiguously means "throw this away". */}
+        {phase === "review" || phase === "done" ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="xs"
+                variant="ghost"
+                onClick={startNew}
+                aria-label="New session"
+              >
+                <HugeiconsIcon icon={ArrowLeft02Icon} size={11} strokeWidth={1.75} />
+                New session
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              Clear and start a fresh generation.
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
+      </div>
     </header>
   );
 }
@@ -587,7 +667,11 @@ function InputPhase() {
   const git = useSourceDirGitInfo();
 
   return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_280px]">
+    // Container-query-driven layout: stack vertically on narrow panes, side-
+    // by-side once the GeneratorPane has room (@xl ≈ 36rem container width).
+    // The old `lg:` viewport breakpoint kept the two-col layout even in a
+    // 320 px split pane, which produced overflow + crammed inputs.
+    <div className="grid grid-cols-1 gap-4 @xl:grid-cols-[1fr_280px]">
       <section className="flex min-w-0 flex-col gap-3">
         <Field label="Requirements / feature spec">
           {planId !== null && suiteId !== null ? (
