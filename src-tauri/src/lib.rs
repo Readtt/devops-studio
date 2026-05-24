@@ -1,6 +1,6 @@
 mod modules;
 
-use modules::{ado, chat_threads, claude, fs, git, history, net, secrets, staleness, workspace};
+use modules::{ado, chat_threads, claude, fs, git, history, net, pty, secrets, staleness, workspace};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::sync::Mutex;
@@ -430,6 +430,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(secrets::SecretsState::default())
         .manage(claude::ClaudeState::default())
+        .manage(pty::PtyState::default())
         .manage(ado::client::AdoState::default())
         .manage(staleness::StalenessState::default())
         .manage(chat_threads::ChatThreadsState::default())
@@ -529,6 +530,12 @@ pub fn run() {
             claude::claude_check_auth,
             // --- Source-dir git introspection ---
             git::git_repo_info,
+            // --- PTY / embedded terminal ---
+            pty::pty_spawn,
+            pty::pty_write,
+            pty::pty_resize,
+            pty::pty_kill,
+            pty::detect_shells,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
