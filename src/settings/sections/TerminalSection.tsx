@@ -1,5 +1,5 @@
-import { BrandIcon, type BrandName } from "@/components/BrandIcon";
 import { Input } from "@/components/ui/input";
+import { ShellBrandIcon } from "@/modules/terminal/ShellBrandIcon";
 import {
   Select,
   SelectContent,
@@ -8,7 +8,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { cn } from "@/lib/utils";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   setDefaultShell,
@@ -46,61 +45,6 @@ const LETTER_SPACING_OPTIONS = [
   { value: 2, label: "Roomy (+2)" },
 ] as const;
 
-// Mapping from the Rust-side `kind` string to a BrandIcon brand. simple-icons
-// doesn't ship glyphs for Microsoft's shells (trademark restrictions — same
-// reason OpenAI is missing from the pack), so pwsh / powershell / cmd / sh
-// fall back to a hand-rendered terminal glyph below.
-const SHELL_BRAND: Record<string, BrandName | null> = {
-  pwsh: null,
-  powershell: null,
-  cmd: null,
-  bash: "bash",
-  zsh: "zsh",
-  "git-bash": "git-bash",
-  fish: "fish",
-  sh: null,
-  other: null,
-};
-
-/** Pill-shaped fallback glyph for shells with no simple-icons brand mark. A
- *  tiny terminal "prompt arrow" stays on-aesthetic with the brand icons
- *  without pretending to be a real logo. Colour-tinted per kind so PowerShell
- *  still reads sky-blue and cmd reads neutral. */
-function ShellFallbackGlyph({ kind, size }: { kind: string; size: number }) {
-  const tone: Record<string, string> = {
-    pwsh: "text-sky-500",
-    powershell: "text-sky-700 dark:text-sky-400",
-    cmd: "text-zinc-500 dark:text-zinc-400",
-    sh: "text-zinc-500",
-    other: "text-zinc-500",
-  };
-  return (
-    <svg
-      role="img"
-      viewBox="0 0 24 24"
-      width={size}
-      height={size}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2.2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={cn("shrink-0", tone[kind] ?? "text-foreground/70")}
-      aria-hidden
-    >
-      <path d="M4 7l4 5-4 5" />
-      <path d="M12 17h8" />
-    </svg>
-  );
-}
-
-function ShellGlyph({ kind, size = 13 }: { kind: string; size?: number }) {
-  const brand = SHELL_BRAND[kind] ?? null;
-  if (brand) {
-    return <BrandIcon name={brand} size={size} />;
-  }
-  return <ShellFallbackGlyph kind={kind} size={size} />;
-}
 
 export function TerminalSection() {
   const defaultShellId = usePreferencesStore((s) => s.defaultShellId);
@@ -191,7 +135,7 @@ export function TerminalSection() {
                 {(shells ?? []).map((s) => (
                   <SelectItem key={s.id} value={s.id}>
                     <span className="flex items-center gap-2">
-                      <ShellGlyph kind={s.kind} />
+                      <ShellBrandIcon kind={s.kind} size={13} />
                       <span className="truncate">{s.label}</span>
                     </span>
                   </SelectItem>
