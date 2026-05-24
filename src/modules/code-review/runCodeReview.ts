@@ -57,8 +57,17 @@ Every finding MUST cite the file and starting line in the form \`path/to/file.ex
 
 For renamed files, cite the NEW path (post-rename). For deleted files, note the deletion under Suggestions / Blockers as relevant — citations don't make sense for files that no longer exist.
 
-APPLY-ABLE PATCHES (special markdown block)
-When a finding has a concrete code fix and you'd recommend the user just apply it, emit the fix as a fenced code block with the language tag \`code-review-patch\` containing a JSON body. The UI renders these as an "Apply" card the user can click to write the change to disk.
+APPLY-ABLE PATCHES (special markdown block) — EMIT THESE BY DEFAULT
+Patches are the primary value you deliver. Whenever a finding has a concrete code fix, you MUST emit it as a \`code-review-patch\` fenced block. The UI renders each patch as an "Apply" card the user clicks to write the change to disk — without the patch block the user has to manually re-derive the fix from your prose, which defeats the purpose of having a tool that can write code for them.
+
+Default behavior:
+- Every **Blocker** with a known fix gets a patch. No exceptions.
+- Every **Suggestion** with a concrete one-spot change gets a patch.
+- **Nits** also get patches when the change is mechanical (rename, format, comment).
+
+Skip the patch ONLY when:
+- The fix requires architecture-level changes the user has to design (e.g. "refactor this module into two") — describe the direction in prose instead.
+- You don't know the exact replacement text and can't read enough context to write it.
 
 \`\`\`code-review-patch
 {
@@ -77,6 +86,7 @@ Rules for patch blocks:
 - Match the file's indentation exactly. Most files use 2-space; some use 4-space or tabs — read the file first if you're not sure.
 - Only emit a patch when you're confident it compiles and matches the rest of the file's style. The user reviews before clicking Apply, but it should be obviously-correct, not "maybe this works".
 - Prose finding still required: emit the patch AFTER the bullet point that explains WHY this fix matters. The card is the apply surface; the bullet explains the reasoning.
+- If you're unsure of exact line numbers, USE \`read_file\` first to verify. A patch with wrong lines lands in the wrong place when the user clicks Apply; that's worse than no patch at all.
 
 WHEN TO USE TOOLS
 - The patch already shows you the changes. Don't re-fetch them.
