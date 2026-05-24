@@ -3,6 +3,7 @@ import type { CSSProperties } from "react";
 import {
   Cancel01Icon,
   PinIcon,
+  PinOffIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -13,6 +14,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@/lib/utils";
 import type { AppTab, TabKind } from "./store/types";
+import { useTabsStore } from "./store/useTabsStore";
 import { TabContextMenu } from "./TabContextMenu";
 import { tabDragId } from "./dnd/dndIds";
 
@@ -183,6 +185,36 @@ function SortableTabChip(props: ChipProps) {
         >
           {props.tab.title}
         </span>
+        {/* Pin toggle — appears on hover. Pinned tabs still show the
+            small leading PinIcon above so users can see the state at a
+            glance; this button is the action surface for changing it. */}
+        <button
+          type="button"
+          aria-label={props.tab.pinned ? "Unpin tab" : "Pin tab"}
+          title={props.tab.pinned ? "Unpin tab" : "Pin tab"}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            useTabsStore.getState().togglePin(props.tab.id);
+          }}
+          className={cn(
+            "ml-1 inline-flex size-4 items-center justify-center rounded text-muted-foreground",
+            "hover:bg-foreground/10 hover:text-foreground",
+            // Hide unless the chip is hovered OR the tab is pinned (we
+            // need the unpin affordance ALWAYS visible for pinned tabs
+            // since they have no close button to telegraph "here's where
+            // actions live").
+            !props.tab.pinned && "opacity-0 transition-opacity group-hover:opacity-100",
+          )}
+        >
+          <HugeiconsIcon
+            icon={props.tab.pinned ? PinOffIcon : PinIcon}
+            size={10}
+            strokeWidth={1.75}
+          />
+        </button>
         {!props.tab.pinned ? (
           <button
             type="button"
@@ -198,7 +230,7 @@ function SortableTabChip(props: ChipProps) {
               e.stopPropagation();
               props.onClose(props.tab.id);
             }}
-            className="ml-1 inline-flex size-4 items-center justify-center rounded text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+            className="inline-flex size-4 items-center justify-center rounded text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
           >
             <HugeiconsIcon icon={Cancel01Icon} size={10} strokeWidth={2} />
           </button>

@@ -11,6 +11,20 @@ import { TabStrip } from "./TabStrip";
 import { TabContent } from "./TabContent";
 import { leafCenterDropId } from "./dnd/dndIds";
 import { DropEdges } from "./dnd/DropEdges";
+import { LaunchMenu } from "./LaunchMenu";
+import {
+  launchCodeReview,
+  launchGenerator,
+  launchTerminal,
+} from "./launchActions";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 type Props = {
   leaf: LeafNode;
@@ -82,10 +96,11 @@ export const LeafPane = memo(function LeafPane({
       )}
       onPointerDownCapture={onFocus}
     >
-      {/* Tab strip. Hidden when the leaf has no tabs — root leaf's empty
-          state owns the whole area. */}
+      {/* Tab strip + inline "+" launcher. Hidden when the leaf has no
+          tabs — the workspace empty state owns the whole area and
+          carries its own launcher. */}
       {hasTabs ? (
-        <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border/40 bg-card/40 px-1">
+        <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/40 bg-card/40 px-1">
           <TabStrip
             tabs={tabs}
             activeTabId={activeId}
@@ -96,6 +111,7 @@ export const LeafPane = memo(function LeafPane({
             onMiddleClick={onMiddleClick}
             onFocus={onFocus}
           />
+          <NewTabInlineLauncher />
         </div>
       ) : null}
 
@@ -125,3 +141,42 @@ export const LeafPane = memo(function LeafPane({
     </div>
   );
 });
+
+/** End-of-strip "+" launcher. Always visible when at least one tab is
+ *  open in this leaf — gives the user a Chrome-style new-tab affordance
+ *  without making them hunt for the top-bar button. Shares the same
+ *  popover content as the top bar via LaunchMenu. */
+function NewTabInlineLauncher() {
+  const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
+  return (
+    <LaunchMenu
+      actions={{
+        onGenerator: launchGenerator,
+        onTerminal: launchTerminal,
+        onCodeReview: launchCodeReview,
+        sourceRoot,
+      }}
+      align="start"
+      side="bottom"
+    >
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label="New tab"
+            className={cn(
+              "grid h-6 w-6 shrink-0 place-items-center rounded-md",
+              "text-muted-foreground transition-colors",
+              "hover:bg-foreground/[0.06] hover:text-foreground",
+            )}
+          >
+            <HugeiconsIcon icon={PlusSignIcon} size={11} strokeWidth={1.75} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="text-[11px]">
+          New tab — Generate, Terminal, or Review
+        </TooltipContent>
+      </Tooltip>
+    </LaunchMenu>
+  );
+}
