@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { WindowControls } from "@/components/WindowControls";
 import { IS_MAC, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
 import { cn } from "@/lib/utils";
+import { windowDragProps } from "@/lib/windowDrag";
 import { CommandPalette } from "@/modules/command-palette";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
@@ -970,7 +971,7 @@ function AppShell() {
               tab/pane UX upgrade — gives each pane its own strip and
               opens the room needed for drag-to-split. */}
           <header
-            data-tauri-drag-region
+            {...windowDragProps}
             className={cn(
               "flex h-9 shrink-0 items-center gap-1 border-b border-border/60 bg-card/60 select-none",
               // macOS keeps the native traffic lights at the left via the
@@ -979,7 +980,7 @@ function AppShell() {
             )}
           >
             <div
-              data-tauri-drag-region
+              {...windowDragProps}
               className="min-w-0 flex-1 px-2 text-[11px] text-muted-foreground"
             >
               DevOps Studio

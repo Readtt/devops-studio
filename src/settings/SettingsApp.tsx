@@ -3,6 +3,7 @@ import { WindowControls } from "@/components/WindowControls";
 import { AzureDevOpsBrand } from "@/components/AzureDevOpsBrand";
 import { IS_MAC, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
 import { useZoom } from "@/lib/useZoom";
+import { windowDragPropsFixed } from "@/lib/windowDrag";
 import { useGlobalShortcuts } from "@/modules/shortcuts";
 import type { SettingsTab } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
@@ -136,7 +137,7 @@ export function SettingsApp() {
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground select-none">
       <header
-        data-tauri-drag-region
+        {...windowDragPropsFixed}
         className={`flex h-11 shrink-0 items-center border-b border-border/60 bg-card/60 ${IS_MAC ? "pr-3 pl-22" : "pr-0 pl-3"
           }`}
       >
@@ -145,7 +146,7 @@ export function SettingsApp() {
           onValueChange={(v) => setActive(v as SettingsTab)}
           orientation="horizontal"
           className="flex-1 items-center"
-          data-tauri-drag-region
+          {...windowDragPropsFixed}
         >
           <TabsList className="mx-auto h-7 bg-muted/40 px-2">
             {TABS.map((t) => (
