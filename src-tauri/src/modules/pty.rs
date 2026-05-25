@@ -229,7 +229,17 @@ pub async fn pty_spawn(
     }
 
     let resolved_shell = match input.shell_path.as_deref() {
-        Some(p) if !p.trim().is_empty() => ResolvedShell::from_path(p),
+        // Honour an explicit shell only if that binary still exists on THIS
+        // device. The saved `defaultShellPath` is an absolute path captured
+        // when the user picked it — a settings file carried to another
+        // machine (or a different OS, or a moved binary) would otherwise
+        // make spawn hard-fail with a path that means nothing here. Falling
+        // through to `default_shell()` keeps the shell choice device-local:
+        // each machine resolves the platform-appropriate shell that's
+        // actually installed on it.
+        Some(p) if !p.trim().is_empty() && std::path::Path::new(p).is_file() => {
+            ResolvedShell::from_path(p)
+        }
         _ => default_shell().ok_or(PtyError::NoShellAvailable)?,
     };
 
