@@ -7,6 +7,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.3.2] - 2026-05-25
+
+- **Title bar no longer sticks to the cursor.** Clicking the window title bar could drop the window into a drag that kept following the pointer after the mouse button was released. Window dragging now begins only after real pointer movement, so a plain click stays a click.
+- **Terminal falls back to an installed shell.** When the saved default-shell path didn't exist on the current machine (settings copied between devices, a different OS, or a moved binary), opening a terminal failed outright. It now falls back to the platform's default shell so a terminal tab always opens.
+
 ## [0.3.1] - 2026-05-24
 
 - **Updater toast no longer fills the workspace height when expanded.** Clicking "Show all N changes" on a release with a long changelog used to stretch the bottom-left toast all the way to the top of the workspace. The sections list is now capped at `min(55vh, 420px)` with internal scrolling, so the card stays a glanceable corner notification even on releases with a lot of changes.
