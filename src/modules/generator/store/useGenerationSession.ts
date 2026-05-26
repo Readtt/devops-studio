@@ -239,7 +239,7 @@ export type SessionState = {
   /** Re-prompt the model with the current draft + a follow-up instruction.
    *  Replaces cases/bugs on success and stashes the previous state for
    *  undoRefine(). Errors are surfaced via refineError without leaving review. */
-  refine: (instruction: string) => Promise<void>;
+  refine: (instruction: string, workItemIds?: number[]) => Promise<void>;
   /** Kill the in-flight refine subprocess and return the UI to the composer.
    *  ESC during refine wires here. Tolerated when nothing is running. */
   cancelRefine: () => void;
@@ -1219,7 +1219,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
   reset: () => set({ ...initialState }),
   startNew: () => set({ ...initialState }),
 
-  refine: async (instruction: string) => {
+  refine: async (instruction: string, workItemIds?: number[]) => {
     const s = get();
     if (s.phase !== "review" || s.isRefining) return;
     const text = instruction.trim();
@@ -1310,6 +1310,12 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     if (bpWarnings.length > 0) {
       console.warn("[generator] best-practices skipped:", bpWarnings);
     }
+    // Attach any #id-mentioned work items as read-only grounding context.
+    const bugBlocks =
+      workItemIds && workItemIds.length > 0
+        ? await bugsToContextBlocks(workItemIds)
+        : [];
+    const contextBlocks = [...bpBlocks, ...bugBlocks];
 
     try {
       let result: RunResult;
@@ -1325,7 +1331,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           sourceRoot: s.allowCodeSearch ? prefs.sourceRoot : null,
           authMode: engineSel.authMode ?? "api-key",
           bareMode: prefs.claudeBareMode,
-          contextBlocks: bpBlocks,
+          contextBlocks,
           onActivity,
           userPromptOverride: userPrompt,
           // Hand the runId up to the store so cancelRefine() has a target
@@ -1344,7 +1350,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           mode: s.mode,
           keys,
           modelId,
-          contextBlocks: bpBlocks,
+          contextBlocks,
           onActivity,
           userPromptOverride: userPrompt,
         });

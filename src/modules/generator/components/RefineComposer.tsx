@@ -41,6 +41,12 @@ import {
 import { AnalyzeActivityLog } from "./AnalyzeActivityLog";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
+  MentionDropdown,
+  WorkItemChips,
+  useWorkItemMention,
+} from "@/modules/ado/components/WorkItemMention";
+import { useBugContext } from "@/modules/ado/hooks/useBugContext";
+import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -183,6 +189,15 @@ export function RefineComposer({ isRefining }: Props) {
   );
 
   const [text, setText] = useState("");
+  // Inline `#id` work-item mention — same affordance as the Ask chat, so a
+  // refine instruction can attach a bug / work item as grounding context.
+  const bugCtx = useBugContext();
+  const mention = useWorkItemMention({
+    value: text,
+    onValueChange: setText,
+    onAdd: bugCtx.add,
+    selectedIds: bugCtx.selected.map((b) => b.id),
+  });
   const [showHelp, setShowHelp] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -226,12 +241,19 @@ export function RefineComposer({ isRefining }: Props) {
   const submit = useCallback(() => {
     const value = text.trim();
     if (!value || isRefining) return;
-    void refine(value);
+    void refine(
+      value,
+      bugCtx.selected.map((b) => b.id),
+    );
     setText("");
-  }, [text, isRefining, refine]);
+    bugCtx.clear();
+    mention.dismiss();
+  }, [text, isRefining, refine, bugCtx, mention]);
 
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      // Let the mention dropdown consume arrows/enter/escape first.
+      if (mention.onKeyDown(e)) return;
       const submitCombo =
         (e.metaKey || e.ctrlKey) && (e.key === "Enter" || e.key === "Return");
       if (submitCombo) {
@@ -239,7 +261,7 @@ export function RefineComposer({ isRefining }: Props) {
         submit();
       }
     },
-    [submit],
+    [submit, mention],
   );
 
   const applyPreset = (prompt: string) => {
@@ -541,6 +563,12 @@ export function RefineComposer({ isRefining }: Props) {
         className="mb-2"
       />
 
+      {bugCtx.selected.length > 0 ? (
+        <div className="mb-1.5">
+          <WorkItemChips items={bugCtx.selected} onRemove={bugCtx.remove} />
+        </div>
+      ) : null}
+
       {/* The composer itself — wrapped to look like a fenced code block so
           it visually belongs to the "this app is your editor" voice. */}
       <div
@@ -551,6 +579,8 @@ export function RefineComposer({ isRefining }: Props) {
           "focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-ring/30",
         )}
       >
+        {mention.active ? <MentionDropdown mention={mention} /> : null}
+
         {/* Left rail — mint glyph signals "this is the prompt line". */}
         <div className="absolute inset-y-0 left-0 flex w-7 select-none flex-col items-center justify-start pt-2 font-mono text-[11px] text-primary/80">
           <span aria-hidden>▍</span>
@@ -559,11 +589,23 @@ export function RefineComposer({ isRefining }: Props) {
         <textarea
           ref={textareaRef}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            mention.noteInput(
+              e.target.value,
+              e.target.selectionStart ?? e.target.value.length,
+            );
+          }}
+          onSelect={(e) =>
+            mention.noteCaret(
+              e.currentTarget.value,
+              e.currentTarget.selectionStart ?? e.currentTarget.value.length,
+            )
+          }
           onKeyDown={onKeyDown}
           onPaste={onPaste}
           rows={4}
-          placeholder="ask a follow-up — e.g. &quot;step 3 in case #2 doesn't match auth.ts, fix it&quot; or &quot;add an edge case for empty input&quot;"
+          placeholder="ask a follow-up — e.g. &quot;step 3 in case #2 doesn't match auth.ts, fix it&quot; · #id to attach a work item"
           className="block min-h-[96px] w-full resize-y bg-transparent py-2.5 pl-7 pr-3 font-mono text-[11.5px] leading-relaxed outline-none placeholder:text-muted-foreground/55"
         />
 
