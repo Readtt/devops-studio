@@ -191,6 +191,11 @@ pub struct Bug {
     pub id: i64,
     pub title: String,
     pub state: String,
+    /// ADO work-item type ("Bug", "Task", "User Story", …). Lets a generic
+    /// work-item attachment label itself correctly even though this struct is
+    /// still named Bug for historical reasons.
+    #[serde(default)]
+    pub work_item_type: String,
     /// "1 - Critical" | "2 - High" | "3 - Medium" | "4 - Low" (or empty).
     #[serde(default)]
     pub severity: Option<String>,
@@ -227,6 +232,22 @@ pub struct BugRef {
     pub title: String,
     pub state: String,
     /// "1 - Critical" | "2 - High" | "3 - Medium" | "4 - Low" (or empty).
+    #[serde(default)]
+    pub severity: Option<String>,
+}
+
+/// Lightweight work-item projection for the inline `#id` mention. Like BugRef
+/// but spans every work-item type and carries the type so the picker can show
+/// it. Full bodies come from `get_bug` (which works for any type) on selection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkItemRef {
+    pub id: i64,
+    pub title: String,
+    pub state: String,
+    /// "Bug" | "Task" | "User Story" | "Feature" | "Epic" | …
+    pub work_item_type: String,
+    /// Only meaningful for Bugs; None for other types.
     #[serde(default)]
     pub severity: Option<String>,
 }

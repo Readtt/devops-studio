@@ -20,7 +20,9 @@ use super::client::{
 };
 use super::errors::{AdoError, AdoResult};
 use super::test_cases::{display_name_field, friendly_rel_name, relation_to_linked};
-use super::types::{Bug, BugRef, CodeLink, Connection, CreatedWorkItem, DraftBug, LinkedWorkItem};
+use super::types::{
+    Bug, BugRef, CodeLink, Connection, CreatedWorkItem, DraftBug, LinkedWorkItem, WorkItemRef,
+};
 
 const CODE_LINKS_OPEN: &str = "<!-- devops-studio:code-links:v1 -->";
 const CODE_LINKS_CLOSE: &str = "<!-- /devops-studio:code-links -->";
@@ -266,6 +268,132 @@ async fn hydrate_bug_refs(
     Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
 }
 
+/// Work-item picker source for the inline `#id` mention. Same WIQL shape as
+/// `list_bugs` but spans every work-item type (minus the pure test-management
+/// artifacts, which would drown the list in a Test Plans project) and carries
+/// the type through so the picker can label each row. Newest-changed first.
+pub async fn list_work_items(
+    state: &AdoState,
+    area_path: Option<&str>,
+    query: Option<&str>,
+    top: i64,
+) -> AdoResult<Vec<WorkItemRef>> {
+    let (conn, _) = state.snapshot();
+    let conn = conn.ok_or(AdoError::NotConfigured)?;
+    let top = top.clamp(1, 200);
+
+    let mut wiql = format!(
+        "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '{}' AND [System.WorkItemType] NOT IN ('Test Case','Test Suite','Test Plan','Shared Steps','Shared Parameter')",
+        wiql_escape(&conn.project)
+    );
+    if let Some(area) = area_path.map(str::trim).filter(|s| !s.is_empty()) {
+        wiql.push_str(&format!(" AND [System.AreaPath] UNDER '{}'", wiql_escape(area)));
+    }
+    if let Some(q) = query.map(str::trim).filter(|s| !s.is_empty()) {
+        wiql.push_str(&format!(" AND [System.Title] CONTAINS '{}'", wiql_escape(q)));
+    }
+    wiql.push_str(" ORDER BY [System.ChangedDate] DESC");
+
+    let url = project_api(&conn, &format!("wit/wiql?$top={top}"));
+    let body = json!({ "query": wiql });
+    let resp: Value =
+        post_json(state, &url, &body, "application/json", "list work items (wiql)").await?;
+
+    let ids: Vec<i64> = resp
+        .get("workItems")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|w| w.get("id").and_then(|v| v.as_i64()))
+                .take(top as usize)
+                .collect()
+        })
+        .unwrap_or_default();
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    hydrate_work_item_refs(state, &conn, &ids).await
+}
+
+/// Single work-item lookup for resolving `#123` by exact id (WIQL title search
+/// can't match ids). Errors when the id doesn't resolve so the caller can fall
+/// back to an empty result.
+pub async fn get_work_item_ref(state: &AdoState, id: i64) -> AdoResult<WorkItemRef> {
+    let (conn, _) = state.snapshot();
+    let conn = conn.ok_or(AdoError::NotConfigured)?;
+    hydrate_work_item_refs(state, &conn, &[id])
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| AdoError::local(format!("work item {id} not found")))
+}
+
+/// Batch-hydrate WorkItemRef rows (adds System.WorkItemType to the bug field
+/// set). Preserves caller order so the WIQL sort survives.
+async fn hydrate_work_item_refs(
+    state: &AdoState,
+    conn: &Connection,
+    ids: &[i64],
+) -> AdoResult<Vec<WorkItemRef>> {
+    use std::collections::HashMap;
+    let mut by_id: HashMap<i64, WorkItemRef> = HashMap::with_capacity(ids.len());
+    for chunk in ids.chunks(200) {
+        let ids_csv: String = chunk
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let url = project_api(
+            conn,
+            &format!(
+                "wit/workitems?ids={ids_csv}&fields=System.Title,System.State,System.WorkItemType,Microsoft.VSTS.Common.Severity"
+            ),
+        );
+        let raw: Value = get_json(state, &url, "work item details").await?;
+        let arr = raw
+            .get("value")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for item in arr {
+            let Some(id) = item.get("id").and_then(|v| v.as_i64()) else {
+                continue;
+            };
+            let fields = item.get("fields");
+            let title = fields
+                .and_then(|f| f.get("System.Title"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let state_str = fields
+                .and_then(|f| f.get("System.State"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let work_item_type = fields
+                .and_then(|f| f.get("System.WorkItemType"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let severity = fields
+                .and_then(|f| f.get("Microsoft.VSTS.Common.Severity"))
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            by_id.insert(
+                id,
+                WorkItemRef {
+                    id,
+                    title,
+                    state: state_str,
+                    work_item_type,
+                    severity,
+                },
+            );
+        }
+    }
+    Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
+}
+
 /// Fields a bug update can change. Any `None` is left untouched.
 #[derive(Default)]
 pub struct BugUpdate {
@@ -364,6 +492,11 @@ fn work_item_to_bug(raw: Value, conn_org: &str, conn_project: &str) -> AdoResult
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let work_item_type = fields
+        .get("System.WorkItemType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let severity = fields
         .get("Microsoft.VSTS.Common.Severity")
         .and_then(|v| v.as_str())
@@ -425,6 +558,7 @@ fn work_item_to_bug(raw: Value, conn_org: &str, conn_project: &str) -> AdoResult
         id,
         title,
         state: state_str,
+        work_item_type,
         severity,
         priority,
         area_path,

@@ -29,7 +29,7 @@ use errors::AdoError;
 use types::{
     BranchRef, Bug, BugRef, CaseSuiteMembership, CommitInfo, Connection, ConnectionStatus,
     CreatedWorkItem, DraftBug, DraftCase, FileContent, ProjectRef, PullRequestRef, RepoRef,
-    SuiteRef, TestCase, TestCaseRef, TestConnectionResult, TestPlanRef, TestPointInfo,
+    SuiteRef, TestCase, TestCaseRef, TestConnectionResult, TestPlanRef, TestPointInfo, WorkItemRef,
 };
 
 const STORE_PATH: &str = "devops-studio-settings.json";
@@ -462,6 +462,31 @@ pub async fn ado_list_bugs(
         input.top.unwrap_or(50),
     )
     .await
+}
+
+/// List work items of any type for the inline `#id` mention. Same input shape
+/// as `ado_list_bugs`; returns `WorkItemRef`s carrying the work-item type.
+#[tauri::command]
+pub async fn ado_list_work_items(
+    state: State<'_, AdoState>,
+    input: ListBugsInput,
+) -> Result<Vec<WorkItemRef>, AdoError> {
+    bugs::list_work_items(
+        &state,
+        input.area_path.as_deref(),
+        input.query.as_deref(),
+        input.top.unwrap_or(50),
+    )
+    .await
+}
+
+/// Resolve a single work item by id (for `#123` exact matches in the mention).
+#[tauri::command]
+pub async fn ado_get_work_item_ref(
+    state: State<'_, AdoState>,
+    id: i64,
+) -> Result<WorkItemRef, AdoError> {
+    bugs::get_work_item_ref(&state, id).await
 }
 
 #[derive(Deserialize)]

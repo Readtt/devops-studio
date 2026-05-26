@@ -27,10 +27,12 @@ export function stripHtml(html: string): string {
     .trim();
 }
 
-/** One context block for a fully-loaded bug. */
+/** One context block for a fully-loaded work item (any type — labelled by its
+ *  work-item type; severity only shows for Bugs). */
 export function bugToContextBlock(bug: Bug): ContextBlock {
+  const type = (bug.workItemType || "Work item").toUpperCase();
   const sev = bug.severity ? `, ${bug.severity}` : "";
-  const heading = `BUG #${bug.id} (${bug.state || "Unknown state"}${sev})`;
+  const heading = `${type} #${bug.id} (${bug.state || "Unknown state"}${sev})`;
   const lines: string[] = [`Title: ${bug.title}`];
   const repro = stripHtml(bug.reproStepsHtml);
   if (repro) {

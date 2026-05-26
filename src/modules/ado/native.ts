@@ -28,11 +28,13 @@ import {
   TestConnectionResultSchema,
   TestPlanRefSchema,
   TestPointInfoSchema,
+  WorkItemRefSchema,
   type AdoError,
   type AdoDiffSummary,
   type BranchRef,
   type Bug,
   type BugRef,
+  type WorkItemRef,
   type CaseSuiteMembership,
   type CommitInfo,
   type PullRequestRef,
@@ -306,6 +308,30 @@ export async function listBugs(input?: {
     },
   });
   return BugRefSchema.array().parse(raw);
+}
+
+/** Search work items of ANY type for the inline `#id` mention. WIQL-backed,
+ *  newest-changed first; full bodies come from `getBug` (works for any type)
+ *  on selection. */
+export async function searchWorkItems(input?: {
+  areaPath?: string | null;
+  query?: string | null;
+  top?: number;
+}): Promise<WorkItemRef[]> {
+  const raw = await invoke("ado_list_work_items", {
+    input: {
+      areaPath: input?.areaPath ?? null,
+      query: input?.query ?? null,
+      top: input?.top ?? null,
+    },
+  });
+  return WorkItemRefSchema.array().parse(raw);
+}
+
+/** Resolve a single work item by id (for `#123` exact matches). */
+export async function getWorkItem(id: number): Promise<WorkItemRef> {
+  const raw = await invoke("ado_get_work_item_ref", { id });
+  return WorkItemRefSchema.parse(raw);
 }
 
 /** Patch a bug's title / repro steps / severity / state. Only the fields you

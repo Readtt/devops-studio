@@ -171,6 +171,10 @@ export const BugSchema = z.object({
   id: z.number().int(),
   title: z.string(),
   state: z.string(),
+  /** ADO work-item type ("Bug", "Task", "User Story", …). Present so a
+   *  generic work-item attachment can label itself even though this fetch is
+   *  still shaped as a Bug. */
+  workItemType: z.string().optional().default(""),
   severity: z.string().nullable().optional(),
   priority: z.number().int().min(1).max(4).nullable().optional(),
   areaPath: z.string().nullable().optional(),
@@ -196,6 +200,19 @@ export const BugRefSchema = z.object({
   severity: z.string().nullable().optional(),
 });
 export type BugRef = z.infer<typeof BugRefSchema>;
+
+/** Lightweight work-item projection for the inline `#id` mention — like
+ *  BugRef but spans every work-item type and carries the type so the picker
+ *  can label each row. */
+export const WorkItemRefSchema = z.object({
+  id: z.number().int(),
+  title: z.string(),
+  state: z.string(),
+  /** "Bug" | "Task" | "User Story" | "Feature" | "Epic" | … */
+  workItemType: z.string(),
+  severity: z.string().nullable().optional(),
+});
+export type WorkItemRef = z.infer<typeof WorkItemRefSchema>;
 
 export const ProjectRefSchema = z.object({
   id: z.string(),

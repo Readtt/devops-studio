@@ -5,7 +5,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { getBug, listBugs, type BugRef } from "@/modules/ado";
+import {
+  getWorkItem,
+  searchWorkItems as adoSearchWorkItems,
+  type WorkItemRef,
+} from "@/modules/ado";
 import { Cancel01Icon, Loading03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useState } from "react";
@@ -25,13 +29,55 @@ import { useCallback, useEffect, useState } from "react";
  * input, and renders <WorkItemChips> for the attached set.
  */
 
-/** Severity → dot color. Severity strings are "1 - Critical" … "4 - Low". */
-function severityDot(sev?: string | null): string {
-  if (!sev) return "bg-muted-foreground/40";
-  if (sev.startsWith("1")) return "bg-rose-500";
-  if (sev.startsWith("2")) return "bg-amber-500";
-  if (sev.startsWith("3")) return "bg-sky-500";
-  return "bg-muted-foreground/50";
+// Work-item type → a tiny abbreviation + tint. Kept minimal: one small mono
+// tag per row/chip so the type reads at a glance without a heavy badge.
+const TYPE_ABBR: Record<string, string> = {
+  Bug: "BUG",
+  Task: "TASK",
+  "User Story": "STORY",
+  "Product Backlog Item": "PBI",
+  Feature: "FEAT",
+  Epic: "EPIC",
+  Issue: "ISSUE",
+};
+const TYPE_TINT: Record<string, string> = {
+  Bug: "text-rose-500 dark:text-rose-400",
+  Task: "text-amber-600 dark:text-amber-400",
+  "User Story": "text-sky-600 dark:text-sky-400",
+  "Product Backlog Item": "text-sky-600 dark:text-sky-400",
+  Feature: "text-violet-600 dark:text-violet-400",
+  Epic: "text-fuchsia-600 dark:text-fuchsia-400",
+  Issue: "text-emerald-600 dark:text-emerald-400",
+};
+
+function typeAbbr(type: string): string {
+  return TYPE_ABBR[type] ?? (type ? type.slice(0, 4).toUpperCase() : "ITEM");
+}
+function typeTint(type: string): string {
+  return TYPE_TINT[type] ?? "text-muted-foreground";
+}
+
+/** Minimal type marker: a small tinted mono abbreviation. `compact` drops the
+ *  fixed width for inline use on chips. */
+function TypeTag({
+  type,
+  compact,
+}: {
+  type: string;
+  compact?: boolean;
+}) {
+  return (
+    <span
+      title={type || "Work item"}
+      className={cn(
+        "shrink-0 font-mono text-[8.5px] font-semibold uppercase tracking-wider tabular-nums",
+        compact ? "" : "w-9",
+        typeTint(type),
+      )}
+    >
+      {typeAbbr(type)}
+    </span>
+  );
 }
 
 type Token = { start: number; query: string };
@@ -49,11 +95,11 @@ function detectToken(value: string, caret: number): Token | null {
 export type WorkItemMention = {
   active: boolean;
   query: string;
-  results: BugRef[];
+  results: WorkItemRef[];
   loading: boolean;
   highlight: number;
   setHighlight: (i: number) => void;
-  accept: (item: BugRef) => void;
+  accept: (item: WorkItemRef) => void;
   dismiss: () => void;
   /** Call from the textarea's onChange (after propagating the value up). */
   noteInput: (value: string, caret: number) => void;
@@ -73,12 +119,12 @@ export function useWorkItemMention({
 }: {
   value: string;
   onValueChange: (v: string) => void;
-  onAdd: (item: BugRef) => void;
+  onAdd: (item: WorkItemRef) => void;
   selectedIds: number[];
   areaPath?: string | null;
 }): WorkItemMention {
   const [token, setToken] = useState<Token | null>(null);
-  const [results, setResults] = useState<BugRef[]>([]);
+  const [results, setResults] = useState<WorkItemRef[]>([]);
   const [loading, setLoading] = useState(false);
   const [highlight, setHighlight] = useState(0);
   const selectedSet = new Set(selectedIds);
@@ -95,7 +141,7 @@ export function useWorkItemMention({
     setHighlight(0);
     const q = token.query;
     const t = setTimeout(() => {
-      void searchWorkItems(q, areaPath ?? null)
+      void fetchMentionItems(q, areaPath ?? null)
         .then((items) => {
           if (alive) setResults(items.filter((b) => !selectedSet.has(b.id)));
         })
@@ -113,7 +159,7 @@ export function useWorkItemMention({
   const dismiss = useCallback(() => setToken(null), []);
 
   const accept = useCallback(
-    (item: BugRef) => {
+    (item: WorkItemRef) => {
       if (token) {
         const after = token.start + 1 + token.query.length;
         const next = value.slice(0, token.start) + value.slice(after);
@@ -180,21 +226,21 @@ export function useWorkItemMention({
 }
 
 /** Resolve work items for a mention query. Numeric → exact fetch by id (ADO's
- *  title search can't match ids); text → title search; empty → recent bugs. */
-async function searchWorkItems(
+ *  title search can't match ids); text → title search; empty → recent items.
+ *  Spans every work-item type, not just Bugs. */
+async function fetchMentionItems(
   query: string,
   areaPath: string | null,
-): Promise<BugRef[]> {
+): Promise<WorkItemRef[]> {
   const q = query.trim();
   if (/^\d+$/.test(q)) {
     try {
-      const b = await getBug(Number(q));
-      return [{ id: b.id, title: b.title, state: b.state, severity: b.severity ?? null }];
+      return [await getWorkItem(Number(q))];
     } catch {
       return [];
     }
   }
-  return listBugs({ areaPath, query: q || null, top: 8 });
+  return adoSearchWorkItems({ areaPath, query: q || null, top: 8 });
 }
 
 export function MentionDropdown({
@@ -213,7 +259,7 @@ export function MentionDropdown({
             pick a work item
           </>
         ) : (
-          "Recent bugs — type an id or keywords"
+          "Recent work items — type an id or keywords"
         )}
       </div>
       <div className="max-h-[240px] overflow-y-auto py-1">
@@ -225,7 +271,7 @@ export function MentionDropdown({
           </div>
         ) : results.length === 0 ? (
           <p className="px-2.5 py-2 text-[11px] text-muted-foreground">
-            {query ? "No work items match." : "No bugs found."}
+            {query ? "No work items match." : "No work items found."}
           </p>
         ) : (
           results.map((b, i) => (
@@ -243,12 +289,7 @@ export function MentionDropdown({
                 i === highlight ? "bg-foreground/[0.06]" : "hover:bg-foreground/[0.04]",
               )}
             >
-              <span
-                className={cn(
-                  "h-1.5 w-1.5 shrink-0 rounded-full",
-                  severityDot(b.severity),
-                )}
-              />
+              <TypeTag type={b.workItemType} />
               <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
                 #{b.id}
               </span>
@@ -272,7 +313,7 @@ export function WorkItemChips({
   items,
   onRemove,
 }: {
-  items: BugRef[];
+  items: WorkItemRef[];
   onRemove: (id: number) => void;
 }) {
   if (items.length === 0) return null;
@@ -281,13 +322,8 @@ export function WorkItemChips({
       {items.map((b) => (
         <Tooltip key={b.id}>
           <TooltipTrigger asChild>
-            <span className="inline-flex h-6 items-center gap-1 rounded-md border border-border/50 bg-card px-1.5 text-[10.5px]">
-              <span
-                className={cn(
-                  "h-1.5 w-1.5 shrink-0 rounded-full",
-                  severityDot(b.severity),
-                )}
-              />
+            <span className="inline-flex h-6 items-center gap-1.5 rounded-md border border-border/50 bg-card px-1.5 text-[10.5px]">
+              <TypeTag type={b.workItemType} compact />
               <span className="font-mono text-muted-foreground">#{b.id}</span>
               <span className="max-w-[10rem] truncate text-foreground/80">
                 {b.title}
@@ -302,8 +338,23 @@ export function WorkItemChips({
               </button>
             </span>
           </TooltipTrigger>
-          <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
-            {b.title} — attached as context (read-only)
+          <TooltipContent
+            variant="panel"
+            side="bottom"
+            className="max-w-[280px] px-3 py-2 text-[11px] leading-relaxed"
+          >
+            <div className="flex flex-col gap-0.5">
+              <div className="flex items-baseline gap-1.5">
+                <span className={cn("font-mono text-[9px] font-semibold uppercase tracking-wider", typeTint(b.workItemType))}>
+                  {b.workItemType || "Work item"}
+                </span>
+                <span className="font-mono text-muted-foreground">#{b.id}</span>
+              </div>
+              <span className="text-foreground/85">{b.title}</span>
+              <span className="text-[10px] text-muted-foreground/70">
+                Attached as read-only context.
+              </span>
+            </div>
           </TooltipContent>
         </Tooltip>
       ))}

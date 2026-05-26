@@ -523,6 +523,8 @@ pub fn run() {
             ado::ado_create_bug,
             ado::ado_get_bug,
             ado::ado_list_bugs,
+            ado::ado_list_work_items,
+            ado::ado_get_work_item_ref,
             ado::ado_update_bug,
             ado::ado_delete_bug,
             ado::ado_get_work_item_titles,
