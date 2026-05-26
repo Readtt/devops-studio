@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ModelId } from "@/modules/ai/config";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import type { Attachment } from "@/components/chat/attachments";
 import {
   streamCodeReview,
   type CodeReviewMessage,
@@ -51,7 +52,11 @@ type State = {
   refreshDiff: (tabId: number) => Promise<void>;
   changeBase: (tabId: number, base: string) => Promise<void>;
   setModel: (tabId: number, modelId: ModelId | null) => void;
-  send: (tabId: number, text: string) => Promise<void>;
+  send: (
+    tabId: number,
+    text: string,
+    attachments?: Attachment[],
+  ) => Promise<void>;
   stop: (tabId: number) => void;
   clear: (tabId: number) => void;
 };
@@ -163,7 +168,7 @@ export const useCodeReview = create<State>((set, get) => ({
     await get().refreshDiff(tabId);
   },
 
-  send: async (tabId, text) => {
+  send: async (tabId, text, attachments) => {
     const slice = get().byTab.get(tabId);
     if (!slice || slice.busy) return;
     if (!slice.diff) {
@@ -171,11 +176,13 @@ export const useCodeReview = create<State>((set, get) => ({
       return;
     }
 
+    const atts = attachments && attachments.length > 0 ? attachments : undefined;
     const userMsg: CodeReviewMessage = {
       id: newId(),
       role: "user",
       content: text,
       timestamp: new Date().toISOString(),
+      attachments: atts,
     };
     const assistantId = newId();
     const assistantMsg: CodeReviewMessage = {
@@ -224,6 +231,7 @@ export const useCodeReview = create<State>((set, get) => ({
         diff: slice.diff,
         history: priorMessages,
         newQuestion: text,
+        attachments: atts,
         onText: appendDelta,
         signal: abort.signal,
       });

@@ -21,6 +21,9 @@ export type CodeReviewMessage = {
   role: "user" | "assistant";
   content: string;
   timestamp: string;
+  /** Files/images attached to this turn. Persisted inline (base64 for images)
+   *  so they survive a reload. Only set on user messages. */
+  attachments?: Attachment[];
 };
 
 /** Lighter-weight echo of the Rust `GitDiff` payload (camelCase here). */

@@ -1,6 +1,13 @@
 import { BranchPicker } from "@/components/BranchPicker";
 import { Button } from "@/components/ui/button";
 import { ChatMarkdown } from "@/components/ChatMarkdown";
+import {
+  AttachButton,
+  AttachmentDropZone,
+  AttachmentList,
+  useAttachments,
+  type Attachment,
+} from "@/components/chat/attachments";
 import { Kbd } from "@/components/ui/kbd";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
@@ -74,6 +81,7 @@ export function CodeReviewPane({
 
   const [branches, setBranches] = useState<string[]>([]);
   const [draft, setDraft] = useState(DEFAULT_FIRST_PROMPT);
+  const att = useAttachments();
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -136,9 +144,10 @@ export function CodeReviewPane({
 
   const handleSend = () => {
     const text = draft.trim();
-    if (!text || busy) return;
-    void send(tabId, text);
+    if ((!text && att.attachments.length === 0) || busy) return;
+    void send(tabId, text, att.attachments);
     setDraft("");
+    att.clear();
   };
 
   const baseList = useMemo(() => {
@@ -356,6 +365,7 @@ export function CodeReviewPane({
                 key={m.id}
                 role={m.role}
                 content={m.content}
+                attachments={m.attachments}
                 streaming={busy && i === messages.length - 1}
                 assistantProvider={activeModel.provider}
               />
@@ -404,6 +414,13 @@ export function CodeReviewPane({
             ? "Review prompt — Enter to send · Shift+Enter for newline"
             : "Follow up on the review… (Enter to send · Shift+Enter for newline)"
         }
+        attachments={att.attachments}
+        attachmentErrors={att.errors}
+        onPaste={att.onPaste}
+        onDrop={att.onDrop}
+        onFilePicker={att.onFilePicker}
+        onRemoveAttachment={att.remove}
+        onDismissAttachmentError={att.dismissError}
       />
     </div>
   );
@@ -425,6 +442,13 @@ function ChatComposer({
   busy,
   disabled,
   hint,
+  attachments,
+  attachmentErrors,
+  onPaste,
+  onDrop,
+  onFilePicker,
+  onRemoveAttachment,
+  onDismissAttachmentError,
 }: {
   draft: string;
   onChange: (v: string) => void;
@@ -433,6 +457,13 @@ function ChatComposer({
   busy: boolean;
   disabled: boolean;
   hint: string;
+  attachments: Attachment[];
+  attachmentErrors: { id: string; message: string }[];
+  onPaste: (e: React.ClipboardEvent) => void;
+  onDrop: (e: React.DragEvent) => void;
+  onFilePicker: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onRemoveAttachment: (id: string) => void;
+  onDismissAttachmentError: (id: string) => void;
 }) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -448,17 +479,28 @@ function ChatComposer({
   return (
     <div className="shrink-0 border-t border-border/40 bg-card/40 px-5 py-3">
       <div className="mx-auto max-w-3xl">
+        <AttachmentDropZone
+          attachments={attachments}
+          errors={attachmentErrors}
+          remove={onRemoveAttachment}
+          dismissError={onDismissAttachmentError}
+          className="mb-2"
+        />
         <div
+          onDrop={onDrop}
+          onDragOver={(e) => e.preventDefault()}
           className={cn(
             "group relative flex items-end gap-2 rounded-md border border-border/60 bg-input/40 px-2.5 py-1.5 transition-colors",
             "focus-within:border-primary/55 focus-within:ring-2 focus-within:ring-ring/25",
             busy && "border-primary/35 bg-primary/[0.03]",
           )}
         >
+          <AttachButton onFilePicker={onFilePicker} disabled={disabled} />
           <textarea
             ref={inputRef}
             value={draft}
             onChange={(e) => onChange(e.target.value)}
+            onPaste={onPaste}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !e.metaKey) {
                 e.preventDefault();
@@ -498,7 +540,7 @@ function ChatComposer({
                   size="icon-xs"
                   aria-label="Send"
                   onClick={onSubmit}
-                  disabled={!draft.trim() || disabled}
+                  disabled={(!draft.trim() && attachments.length === 0) || disabled}
                   className="shrink-0"
                 >
                   <HugeiconsIcon
@@ -638,11 +680,13 @@ function EmptyState({
 function MessageBubble({
   role,
   content,
+  attachments,
   streaming,
   assistantProvider,
 }: {
   role: "user" | "assistant";
   content: string;
+  attachments?: Attachment[];
   streaming: boolean;
   assistantProvider: import("@/modules/ai/config").ProviderId | null;
 }) {
@@ -663,10 +707,18 @@ function MessageBubble({
 
   if (role === "user") {
     return (
-      <div className="flex justify-end">
-        <div className="group/msg relative max-w-[80%] rounded-2xl rounded-br-sm bg-primary/12 px-3.5 py-2 text-[12px] leading-[1.55] text-foreground">
-          <p className="whitespace-pre-wrap break-words">{content}</p>
-        </div>
+      <div className="flex flex-col items-end gap-1.5">
+        {attachments && attachments.length > 0 ? (
+          <AttachmentList
+            attachments={attachments}
+            className="max-w-[80%] justify-end"
+          />
+        ) : null}
+        {content ? (
+          <div className="group/msg relative max-w-[80%] rounded-2xl rounded-br-sm bg-primary/12 px-3.5 py-2 text-[12px] leading-[1.55] text-foreground">
+            <p className="whitespace-pre-wrap break-words">{content}</p>
+          </div>
+        ) : null}
       </div>
     );
   }
