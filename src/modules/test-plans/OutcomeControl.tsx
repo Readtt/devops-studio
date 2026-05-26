@@ -19,6 +19,7 @@ import {
   adoErrorMessage,
   listSuitesForCase,
   listTestPoints,
+  OUTCOMES,
   setTestPointOutcome,
   toAdoError,
   type CaseSuiteMembership,
@@ -38,15 +39,6 @@ type Props = {
    *  re-reads from ADO alongside the rest of the case. */
   refreshKey: number;
 };
-
-/** The outcomes offered, in ADO's order. `Active` (reset) is rendered
- *  separately at the bottom. */
-const OUTCOMES: { value: Exclude<ExecutionOutcome, "Active">; label: string; dot: string }[] = [
-  { value: "Passed", label: "Passed", dot: "bg-emerald-500" },
-  { value: "Failed", label: "Failed", dot: "bg-rose-500" },
-  { value: "Blocked", label: "Blocked", dot: "bg-amber-500" },
-  { value: "NotApplicable", label: "Not applicable", dot: "bg-muted-foreground/60" },
-];
 
 /**
  * Ultra-minimal execution control: a single dropdown in the test-case header,
