@@ -84,6 +84,7 @@ export type PublishLogEntry = {
 import { supportsVision, type ModelId } from "@/modules/ai/config";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import { bugsToContextBlocks } from "@/modules/ado/lib/bugContextBlock";
+import type { ConfidenceVerdict } from "@/modules/test-plans/lib/confidence";
 
 // Attachment types + id minting live in the shared chat-attachment module.
 // Re-export here so existing call sites that import these from the session
@@ -186,6 +187,8 @@ export type SessionState = {
     uid: string,
     outcome: Exclude<ExecutionOutcome, "Active"> | null,
   ) => void;
+  /** Attach an AI confidence verdict to a draft case (persisted in the draft). */
+  setCaseVerdict: (uid: string, verdict: ConfidenceVerdict) => void;
   /** Edit a single test step's action OR expected result. Pass the case
    *  uid + step index; either field can be undefined to leave unchanged. */
   setCaseStep: (
@@ -332,6 +335,7 @@ const initialState: Omit<
   | "setCaseTitle"
   | "setCaseRationale"
   | "setCaseOutcome"
+  | "setCaseVerdict"
   | "setCaseStep"
   | "addCaseStep"
   | "removeCaseStep"
@@ -906,6 +910,12 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       cases: s.cases.map((c) =>
         c.uid === uid ? { ...c, desiredOutcome: outcome ?? undefined } : c,
       ),
+    }));
+    schedulePersistDraft();
+  },
+  setCaseVerdict: (uid, verdict) => {
+    set((s) => ({
+      cases: s.cases.map((c) => (c.uid === uid ? { ...c, verdict } : c)),
     }));
     schedulePersistDraft();
   },

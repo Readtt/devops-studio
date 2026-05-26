@@ -30,6 +30,8 @@ import { cn } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ConfidenceChip } from "@/modules/test-plans/components/ConfidenceChip";
+import { evaluateCaseConfidence } from "@/modules/test-plans/lib/evaluateCaseConfidence";
 import {
   type GenerationMode,
   type PublishLogEntry,
@@ -1426,6 +1428,7 @@ function ReviewPhase({
   const setCaseTitle = useGenerationSession((s) => s.setCaseTitle);
   const setCaseRationale = useGenerationSession((s) => s.setCaseRationale);
   const setCaseOutcome = useGenerationSession((s) => s.setCaseOutcome);
+  const setCaseVerdict = useGenerationSession((s) => s.setCaseVerdict);
   const setCaseStep = useGenerationSession((s) => s.setCaseStep);
   const addCaseStep = useGenerationSession((s) => s.addCaseStep);
   const removeCaseStep = useGenerationSession((s) => s.removeCaseStep);
@@ -1436,6 +1439,32 @@ function ReviewPhase({
   const durationMs = useGenerationSession((s) => s.durationMs);
   const isRefining = useGenerationSession((s) => s.isRefining);
   const publishLog = useGenerationSession((s) => s.publishLog);
+
+  const [evaluatingUids, setEvaluatingUids] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const runEval = useCallback(
+    async (
+      uid: string,
+      title: string,
+      steps: { action: string; expected: string }[],
+    ) => {
+      setEvaluatingUids((s) => new Set(s).add(uid));
+      try {
+        const v = await evaluateCaseConfidence({ title, steps });
+        setCaseVerdict(uid, v);
+      } catch (e) {
+        console.error("[confidence] review eval failed:", e);
+      } finally {
+        setEvaluatingUids((s) => {
+          const n = new Set(s);
+          n.delete(uid);
+          return n;
+        });
+      }
+    },
+    [setCaseVerdict],
+  );
 
   const kept = useMemo(
     () => cases.filter((c) => c.decision === "keep").length,
@@ -1741,6 +1770,11 @@ function ReviewPhase({
                       Expand &ldquo;Show steps&rdquo; below to read or edit them
                     </TooltipContent>
                   </Tooltip>
+                  <ConfidenceChip
+                    verdict={c.verdict}
+                    loading={evaluatingUids.has(c.uid)}
+                    onEvaluate={() => void runEval(c.uid, c.title, c.steps)}
+                  />
                   <ReviewOutcomePicker
                     value={c.desiredOutcome ?? null}
                     onChange={(next) => setCaseOutcome(c.uid, next)}

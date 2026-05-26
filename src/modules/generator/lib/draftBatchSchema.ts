@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ExecutionOutcome } from "@/modules/ado";
+import type { ConfidenceVerdict } from "@/modules/test-plans/lib/confidence";
 
 export const TestStepDraftSchema = z.object({
   action: z.string().min(1),
@@ -86,6 +87,9 @@ export type ReviewedCase = DraftCaseLLM & {
    *  case's test point right after publish. Excludes "Active" — undefined
    *  means "leave unset / not run". */
   desiredOutcome?: Exclude<ExecutionOutcome, "Active">;
+  /** AI confidence verdict for this draft case. Persists in the draft payload
+   *  so it survives reopening a run from generation history. */
+  verdict?: ConfidenceVerdict;
 };
 
 export type ReviewedBug = DraftBugLLM & {
