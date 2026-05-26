@@ -473,64 +473,62 @@ export const useTabsStore = create<TabsState>()(
       },
 
       duplicateTab: (id) => {
-        const t = get().tabs[id];
+        const { tabs, paneTree, focusedLeafId } = get();
+        const t = tabs[id];
         if (!t) return null;
-        switch (t.kind) {
-          case "test-case":
-            return get().openTab({
-              kind: "test-case",
-              caseId: t.caseId,
-              title: t.title,
-              planId: t.planId,
-              suiteId: t.suiteId,
-            });
-          case "code-viewer":
-            return get().openTab({
-              kind: "code-viewer",
-              path: t.path,
-              startLine: t.startLine,
-              endLine: t.endLine,
-              title: t.title,
-            });
-          case "bug":
-            return get().openTab({ kind: "bug", bugId: t.bugId, title: t.title });
-          case "suite-chat":
-            return get().openTab({
-              kind: "suite-chat",
-              planId: t.planId,
-              suiteId: t.suiteId,
-              title: t.title,
-              threadId: t.threadId ?? null,
-            });
-          case "generator":
-            // Duplicate as a fresh generator (no runId carry-over — drafts
-            // are 1:1 with runIds, can't share). Same plan/suite seed.
-            return get().openTab({
-              kind: "generator",
-              title: `${t.title} (copy)`,
-              initialPlanId: t.initialPlanId,
-              initialSuiteId: t.initialSuiteId,
-            });
-          case "terminal":
-            // Duplicate spawns a fresh shell in the same cwd with the same
-            // shell pick. New sessionId, new PTY — terminals can't share.
-            return get().openTab({
-              kind: "terminal",
-              title: t.title,
-              cwd: t.cwd,
-              shellId: t.shellId,
-            });
-          case "code-review":
-            // Same cwd+base would dedup to the original tab — so we
-            // synthesize a fresh open against an explicit-null base to
-            // bypass the dedup and start a separate review thread.
-            return get().openTab({
-              kind: "code-review",
-              cwd: t.cwd,
-              base: t.base,
-              title: `${t.title} (copy)`,
-            });
+
+        // Kinds that need fresh per-tab resources can't be cloned by copying
+        // the tab object — they open a brand-new tab instead:
+        //  - terminal: a new PTY session (cloning the sessionId would attach
+        //    two tabs to the same shell).
+        //  - generator: a cloned session store + fresh runId (store-aware,
+        //    handled at the App level; the context menu routes there. This is
+        //    just the ctrl-drag fallback — a fresh seeded generator).
+        //  - code-review: a fresh review thread.
+        if (t.kind === "terminal") {
+          return get().openTab({
+            kind: "terminal",
+            title: t.title,
+            cwd: t.cwd,
+            shellId: t.shellId,
+          });
         }
+        if (t.kind === "generator") {
+          return get().openTab({
+            kind: "generator",
+            title: `${t.title} (copy)`,
+            initialPlanId: t.initialPlanId,
+            initialSuiteId: t.initialSuiteId,
+          });
+        }
+        if (t.kind === "code-review") {
+          return get().openTab({
+            kind: "code-review",
+            cwd: t.cwd,
+            base: t.base,
+            title: `${t.title} (copy)`,
+          });
+        }
+
+        // test-case / bug / code-viewer / suite-chat DEDUP in openTab, so
+        // re-opening the same identity would just reactivate the original —
+        // a no-op, which is the "Duplicate does nothing" bug. Duplicate is an
+        // explicit request for a SECOND independent view (e.g. the same case
+        // in a split, or the same file scrolled to two places), so clone the
+        // tab object directly with a fresh id and insert it next to the
+        // original, bypassing dedup entirely.
+        const owner = findLeafByTab(paneTree, id);
+        const leafId = owner?.id ?? focusedLeafId;
+        const insertIndex = owner ? owner.tabIds.indexOf(id) + 1 : undefined;
+        const newId = get().nextId;
+        const clone = { ...t, id: newId, pinned: false } as AppTab;
+        set((s) => ({
+          tabs: { ...s.tabs, [newId]: clone },
+          nextId: newId + 1,
+          paneTree: insertTabIntoLeaf(s.paneTree, leafId, newId, insertIndex),
+          focusedLeafId: leafId,
+        }));
+        return newId;
       },
 
       renameTab: (id, title) =>
