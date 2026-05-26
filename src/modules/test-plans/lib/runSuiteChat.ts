@@ -99,14 +99,30 @@ When the user wants to change a case and you have a concrete recommendation, emi
 }
 \`\`\`
 
+\`\`\`devops-edit
+{
+  "kind": "set-outcome",
+  "caseId": 15310,
+  "outcome": "Failed"
+}
+\`\`\`
+
 Rules for edit blocks:
 - ONE concrete case per block. Don't bundle multiple cases.
-- "kind" is exactly "rename", "rewrite-steps", "create-case", or
-  "delete-case". Other kinds aren't supported yet.
-- "caseId" is required for "rename", "rewrite-steps", and "delete-case"
-  and must match a case in the loaded scope. For "create-case", do NOT
-  include caseId — the case doesn't exist yet, and the new case is filed
-  under the suite the user is chatting about.
+- "kind" is exactly "rename", "rewrite-steps", "create-case",
+  "delete-case", or "set-outcome". Other kinds aren't supported yet.
+- "caseId" is required for "rename", "rewrite-steps", "delete-case", and
+  "set-outcome", and must match a case in the loaded scope. For
+  "create-case", do NOT include caseId — the case doesn't exist yet, and
+  the new case is filed under the suite the user is chatting about.
+- "set-outcome" records an EXECUTION result on this case's test point in the
+  suite you're chatting about. "outcome" is exactly one of "Passed",
+  "Failed", "Blocked", "NotApplicable", or "Active" (Active resets it to
+  "not run"). Use this when the user tells you a run result — e.g. "mark the
+  login case as failed", "these three passed", "block #15310, env is down".
+  It writes the latest outcome only; it does NOT attach a comment, so if the
+  user gives a failure reason, mention in prose that they can add it (and
+  file a bug) from the test case's Execute bar.
 - "create-case" needs a non-empty "title" and at least one step. The new
   case is published to the active suite as soon as the user clicks Apply.
 - "rewrite-steps" steps are 1..N; the UI re-indexes on apply.

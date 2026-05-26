@@ -31,11 +31,15 @@ import {
   adoErrorMessage,
   createCaseInSuite,
   deleteTestCase,
+  EXECUTION_OUTCOMES,
   getConnection,
+  listTestPoints,
+  setTestPointOutcome,
   toAdoError,
   updateCaseSteps,
   updateWorkItemTitle,
   type ConnectionStatus,
+  type ExecutionOutcome,
 } from "@/modules/ado";
 import { MODELS, type ModelId } from "@/modules/ai/config";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
@@ -314,9 +318,45 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
           };
         }
       }
+      if (kind === "set-outcome") {
+        const outcome = typeof p.outcome === "string" ? p.outcome : "";
+        if (!(EXECUTION_OUTCOMES as readonly string[]).includes(outcome)) {
+          return {
+            ok: false,
+            message: `Unsupported outcome "${outcome}". Expected Passed, Failed, Blocked, NotApplicable, or Active.`,
+          };
+        }
+        // Outcomes live on the test point — resolve it from this suite. The
+        // chat has no config picker, so we record against the first point
+        // (the default configuration) and note it when more exist.
+        const pts = await listTestPoints(planId, suiteId, caseId);
+        if (pts.length === 0) {
+          return {
+            ok: false,
+            message: `#${caseId} has no runnable test point in this suite — can't record an outcome.`,
+          };
+        }
+        const point = pts[0];
+        await setTestPointOutcome({
+          planId,
+          suiteId,
+          pointId: point.id,
+          caseId,
+          outcome: outcome as ExecutionOutcome,
+        });
+        void loadCases(planId, suiteId, true);
+        const suffix =
+          pts.length > 1
+            ? ` (default configuration — ${pts.length} configs exist; set the others from the case's Execute bar)`
+            : "";
+        return {
+          ok: true,
+          message: `Recorded #${caseId} as ${outcome}${suffix}.`,
+        };
+      }
       return {
         ok: false,
-        message: `Unknown edit kind "${kind}". Supported: rename, rewrite-steps, create-case, delete-case.`,
+        message: `Unknown edit kind "${kind}". Supported: rename, rewrite-steps, create-case, delete-case, set-outcome.`,
       };
     } catch (e) {
       // ADO failures are easy to miss when the card just shows "Couldn't

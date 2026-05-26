@@ -43,6 +43,7 @@ type ParsedEdit =
         | "rewrite-steps"
         | "create-case"
         | "delete-case"
+        | "set-outcome"
         | "unknown";
       caseId: number | null;
       title: string | null;
@@ -50,8 +51,59 @@ type ParsedEdit =
       /** Optional model-provided reason — used by delete-case to surface
        *  "why is this being removed?" in the confirm step. */
       reason: string | null;
+      /** Canonical execution outcome for set-outcome blocks — one of
+       *  Passed / Failed / Blocked / NotApplicable / Active, or null when the
+       *  model emitted something we don't recognize. */
+      outcome: string | null;
     }
   | { ok: false; error: string };
+
+/** Map a loose model-supplied outcome string onto the canonical ADO value.
+ *  Tolerates "pass"/"fail"/"n/a"/"reset" etc. so a chatty payload still
+ *  applies. Returns null for anything unrecognized. */
+function normalizeOutcome(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  switch (raw.trim().toLowerCase().replace(/[\s_]/g, "")) {
+    case "pass":
+    case "passed":
+      return "Passed";
+    case "fail":
+    case "failed":
+      return "Failed";
+    case "block":
+    case "blocked":
+      return "Blocked";
+    case "na":
+    case "n/a":
+    case "notapplicable":
+      return "NotApplicable";
+    case "active":
+    case "reset":
+    case "notrun":
+    case "unspecified":
+      return "Active";
+    default:
+      return null;
+  }
+}
+
+/** Display label + dot colour for an outcome chip on a set-outcome card. */
+function outcomeChip(outcome: string | null): { label: string; className: string } {
+  switch (outcome) {
+    case "Passed":
+      return { label: "Passed", className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300" };
+    case "Failed":
+      return { label: "Failed", className: "bg-rose-500/15 text-rose-600 dark:text-rose-300" };
+    case "Blocked":
+      return { label: "Blocked", className: "bg-amber-500/15 text-amber-700 dark:text-amber-300" };
+    case "NotApplicable":
+      return { label: "Not applicable", className: "bg-foreground/[0.08] text-muted-foreground" };
+    case "Active":
+      return { label: "Reset to not-run", className: "bg-foreground/[0.08] text-muted-foreground" };
+    default:
+      return { label: "Unknown", className: "bg-destructive/15 text-destructive" };
+  }
+}
 
 type ApplyState = "idle" | "applying" | "undoing" | "error";
 
@@ -121,6 +173,7 @@ export function ApplyEditCard({
       };
       if (parsed.kind === "rename") payload.title = parsed.title ?? "";
       if (parsed.kind === "rewrite-steps") payload.steps = parsed.steps;
+      if (parsed.kind === "set-outcome") payload.outcome = parsed.outcome;
       if (parsed.kind === "create-case") {
         payload.title = parsed.title ?? "";
         payload.steps = parsed.steps;
@@ -226,7 +279,9 @@ export function ApplyEditCard({
           ? "Create case"
           : parsed.kind === "delete-case"
             ? "Delete case"
-            : `Edit (${parsed.kind})`;
+            : parsed.kind === "set-outcome"
+              ? "Set outcome"
+              : `Edit (${parsed.kind})`;
 
   // --- Already-applied (persisted across sessions) -------------------------
 
@@ -345,6 +400,16 @@ export function ApplyEditCard({
                 no caseId
               </span>
             )}
+            {parsed.kind === "set-outcome" ? (
+              <span
+                className={cn(
+                  "rounded-sm px-1.5 py-px text-[9.5px] font-medium uppercase tracking-wider",
+                  outcomeChip(parsed.outcome).className,
+                )}
+              >
+                {outcomeChip(parsed.outcome).label}
+              </span>
+            ) : null}
           </div>
           <p
             className={cn(
@@ -380,8 +445,12 @@ export function ApplyEditCard({
             onClick={apply}
             // create-case is the one kind where caseId is optionally null
             // — the case doesn't exist yet. Every other kind requires a
-            // caseId to target the right work item.
-            disabled={parsed.kind !== "create-case" && parsed.caseId == null}
+            // caseId to target the right work item. set-outcome also needs a
+            // recognized outcome before it can be applied.
+            disabled={
+              (parsed.kind !== "create-case" && parsed.caseId == null) ||
+              (parsed.kind === "set-outcome" && !parsed.outcome)
+            }
           />
         </div>
       </div>
@@ -978,6 +1047,15 @@ function buildSubtitle(
     }
     return `Move #${parsed.caseId} to the ADO Recycle Bin (recoverable for 30 days)`;
   }
+  if (parsed.kind === "set-outcome") {
+    if (parsed.caseId == null) return "Missing caseId — cannot record.";
+    if (!parsed.outcome) {
+      return "Unsupported outcome — expected Passed, Failed, Blocked, N/A, or Active.";
+    }
+    return parsed.outcome === "Active"
+      ? `Reset #${parsed.caseId} to "not run" on its test point`
+      : `Record #${parsed.caseId} as ${outcomeChip(parsed.outcome).label} on its test point`;
+  }
   return `Unsupported edit kind "${parsed.kind}"`;
 }
 
@@ -1013,7 +1091,18 @@ function parseEdit(body: string): ParsedEdit {
   const reason = typeof obj.reason === "string" ? obj.reason : null;
   if (kind === "rename") {
     const title = typeof obj.title === "string" ? obj.title : null;
-    return { ok: true, kind: "rename", caseId, title, steps: [], reason };
+    return { ok: true, kind: "rename", caseId, title, steps: [], reason, outcome: null };
+  }
+  if (kind === "set-outcome") {
+    return {
+      ok: true,
+      kind: "set-outcome",
+      caseId,
+      title: null,
+      steps: [],
+      reason,
+      outcome: normalizeOutcome(obj.outcome),
+    };
   }
   if (kind === "rewrite-steps") {
     const stepsArr = Array.isArray(obj.steps) ? obj.steps : [];
@@ -1026,7 +1115,7 @@ function parseEdit(body: string): ParsedEdit {
         expected: typeof so.expected === "string" ? so.expected : "",
       });
     }
-    return { ok: true, kind: "rewrite-steps", caseId, title: null, steps, reason };
+    return { ok: true, kind: "rewrite-steps", caseId, title: null, steps, reason, outcome: null };
   }
   if (kind === "create-case") {
     const title = typeof obj.title === "string" ? obj.title : null;
@@ -1040,10 +1129,10 @@ function parseEdit(body: string): ParsedEdit {
         expected: typeof so.expected === "string" ? so.expected : "",
       });
     }
-    return { ok: true, kind: "create-case", caseId, title, steps, reason };
+    return { ok: true, kind: "create-case", caseId, title, steps, reason, outcome: null };
   }
   if (kind === "delete-case") {
-    return { ok: true, kind: "delete-case", caseId, title: null, steps: [], reason };
+    return { ok: true, kind: "delete-case", caseId, title: null, steps: [], reason, outcome: null };
   }
-  return { ok: true, kind: "unknown", caseId, title: null, steps: [], reason };
+  return { ok: true, kind: "unknown", caseId, title: null, steps: [], reason, outcome: null };
 }
