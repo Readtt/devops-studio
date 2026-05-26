@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::client::{get_json, get_raw_json, project_api, AdoState};
 use super::errors::{AdoError, AdoResult};
 use super::types::{
-    CommitInfo, Connection, FileContent, PagedResponse, PullRequestRef, RepoRef,
+    BranchRef, CommitInfo, Connection, FileContent, PagedResponse, PullRequestRef, RepoRef,
 };
 
 /// Cap on the synthesized patch text we hand the reviewer model. ADO's diff
@@ -106,6 +106,65 @@ pub async fn list_commits_since(
         });
     }
     Ok(out)
+}
+
+/// List a repo's branches (heads), tip-first is not guaranteed so the caller
+/// sorts. Lightweight — one API call, no per-branch detail. Powers the Code
+/// Review source picker's branch combobox.
+pub async fn list_branches(state: &AdoState, repo_id: &str) -> AdoResult<Vec<BranchRef>> {
+    let (conn, _) = state.snapshot();
+    let conn = conn.ok_or(AdoError::NotConfigured)?;
+    let url = project_api(
+        &conn,
+        &format!("git/repositories/{repo_id}/refs?filter=heads/&$top=500"),
+    );
+    let resp: PagedResponse<RawRef> = get_json(state, &url, "git branches").await?;
+    Ok(resp
+        .value
+        .into_iter()
+        .map(|r| BranchRef {
+            name: r
+                .name
+                .trim_start_matches("refs/heads/")
+                .to_string(),
+            object_id: r.object_id,
+        })
+        .filter(|b| !b.name.is_empty())
+        .collect())
+}
+
+/// Recent commits on a branch for the source picker — id, message, author and
+/// date only. Unlike `list_commits_since` this skips the per-commit "changes"
+/// call (N+1), so it stays fast enough to drive a dropdown.
+pub async fn list_recent_commits(
+    state: &AdoState,
+    repo_id: &str,
+    branch: &str,
+    top: i64,
+) -> AdoResult<Vec<CommitInfo>> {
+    let (conn, _) = state.snapshot();
+    let conn = conn.ok_or(AdoError::NotConfigured)?;
+    let top = top.clamp(1, 100);
+    let url = project_api(
+        &conn,
+        &format!(
+            "git/repositories/{repo}/commits?searchCriteria.itemVersion.version={br}&searchCriteria.itemVersion.versionType=branch&$top={top}",
+            repo = repo_id,
+            br = url_encode(branch),
+        ),
+    );
+    let resp: PagedResponse<RawCommit> = get_json(state, &url, "git commits").await?;
+    Ok(resp
+        .value
+        .into_iter()
+        .map(|c| CommitInfo {
+            commit_id: c.commit_id,
+            author_name: c.author.as_ref().and_then(|a| a.name.clone()),
+            comment: c.comment,
+            committed_date: c.committer.as_ref().and_then(|a| a.date.clone()),
+            changed_files: Vec::new(),
+        })
+        .collect())
 }
 
 fn url_encode(s: &str) -> String {
@@ -451,6 +510,15 @@ impl RawRepo {
             web_url: self.web_url,
         }
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawRef {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    object_id: Option<String>,
 }
 
 #[derive(Deserialize)]

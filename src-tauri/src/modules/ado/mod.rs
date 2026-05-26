@@ -27,9 +27,9 @@ use tauri_plugin_store::StoreExt;
 use client::{keyring_service, pat_account, normalize_org_url, AdoState};
 use errors::AdoError;
 use types::{
-    Bug, BugRef, CaseSuiteMembership, CommitInfo, Connection, ConnectionStatus, CreatedWorkItem,
-    DraftBug, DraftCase, FileContent, ProjectRef, PullRequestRef, RepoRef, SuiteRef, TestCase,
-    TestCaseRef, TestConnectionResult, TestPlanRef, TestPointInfo,
+    BranchRef, Bug, BugRef, CaseSuiteMembership, CommitInfo, Connection, ConnectionStatus,
+    CreatedWorkItem, DraftBug, DraftCase, FileContent, ProjectRef, PullRequestRef, RepoRef,
+    SuiteRef, TestCase, TestCaseRef, TestConnectionResult, TestPlanRef, TestPointInfo,
 };
 
 const STORE_PATH: &str = "devops-studio-settings.json";
@@ -638,6 +638,41 @@ pub async fn ado_list_commits_since(
     input: CommitsSinceInput,
 ) -> Result<Vec<CommitInfo>, AdoError> {
     repos::list_commits_since(&state, &input.repo_id, &input.branch, input.since_sha.as_deref())
+        .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListBranchesInput {
+    pub repo_id: String,
+}
+
+/// List a repo's branches (Code Review source picker branch combobox).
+#[tauri::command]
+pub async fn ado_list_branches(
+    state: State<'_, AdoState>,
+    input: ListBranchesInput,
+) -> Result<Vec<BranchRef>, AdoError> {
+    repos::list_branches(&state, &input.repo_id).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentCommitsInput {
+    pub repo_id: String,
+    pub branch: String,
+    #[serde(default)]
+    pub top: Option<i64>,
+}
+
+/// Recent commits on a branch — lightweight (no per-commit changes), for the
+/// source picker's recent-commits list.
+#[tauri::command]
+pub async fn ado_list_recent_commits(
+    state: State<'_, AdoState>,
+    input: RecentCommitsInput,
+) -> Result<Vec<CommitInfo>, AdoError> {
+    repos::list_recent_commits(&state, &input.repo_id, &input.branch, input.top.unwrap_or(25))
         .await
 }
 

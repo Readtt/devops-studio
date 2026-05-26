@@ -239,6 +239,12 @@ export const CommitInfoSchema = z.object({
 });
 export type CommitInfo = z.infer<typeof CommitInfoSchema>;
 
+export const BranchRefSchema = z.object({
+  name: z.string(),
+  objectId: z.string().nullable().optional(),
+});
+export type BranchRef = z.infer<typeof BranchRefSchema>;
+
 export const PullRequestRefSchema = z.object({
   id: z.number().int(),
   title: z.string(),

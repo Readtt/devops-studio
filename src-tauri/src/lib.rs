@@ -535,6 +535,8 @@ pub fn run() {
             ado::ado_list_repos,
             ado::ado_get_file,
             ado::ado_list_commits_since,
+            ado::ado_list_branches,
+            ado::ado_list_recent_commits,
             ado::ado_diff_commit,
             ado::ado_diff_branches,
             ado::ado_list_pull_requests,

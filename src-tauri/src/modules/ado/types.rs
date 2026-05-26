@@ -361,6 +361,16 @@ pub struct CommitInfo {
     pub changed_files: Vec<String>,
 }
 
+/// Lightweight branch projection for the Code Review source picker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchRef {
+    /// Short branch name with the refs/heads/ prefix stripped.
+    pub name: String,
+    /// Tip commit SHA the ref points at.
+    pub object_id: Option<String>,
+}
+
 // --- Generic paged response from ADO REST ---
 
 #[derive(Debug, Deserialize)]

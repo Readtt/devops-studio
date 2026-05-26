@@ -11,6 +11,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
   AdoDiffSummarySchema,
+  BranchRefSchema,
   BugSchema,
   BugRefSchema,
   ConnectionStatusSchema,
@@ -29,6 +30,7 @@ import {
   TestPointInfoSchema,
   type AdoError,
   type AdoDiffSummary,
+  type BranchRef,
   type Bug,
   type BugRef,
   type CaseSuiteMembership,
@@ -405,6 +407,24 @@ export async function listCommitsSince(
 ): Promise<CommitInfo[]> {
   const raw = await invoke("ado_list_commits_since", {
     input: { repoId, branch, sinceSha },
+  });
+  return CommitInfoSchema.array().parse(raw);
+}
+
+/** List a repo's branches (Code Review source picker). */
+export async function adoListBranches(repoId: string): Promise<BranchRef[]> {
+  const raw = await invoke("ado_list_branches", { input: { repoId } });
+  return BranchRefSchema.array().parse(raw);
+}
+
+/** Recent commits on a branch — lightweight, for the source picker list. */
+export async function adoListRecentCommits(
+  repoId: string,
+  branch: string,
+  top?: number,
+): Promise<CommitInfo[]> {
+  const raw = await invoke("ado_list_recent_commits", {
+    input: { repoId, branch, top: top ?? null },
   });
   return CommitInfoSchema.array().parse(raw);
 }
