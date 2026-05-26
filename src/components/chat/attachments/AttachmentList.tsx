@@ -23,7 +23,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import type { Attachment } from "../store/useGenerationSession";
+import type { Attachment } from "./types";
 
 type Props = {
   attachments: Attachment[];

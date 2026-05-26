@@ -67,7 +67,6 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { AnalyzeActivityLog } from "./components/AnalyzeActivityLog";
-import { AttachmentList } from "./components/AttachmentList";
 import { EditableText } from "./components/EditableText";
 import { RefineComposer } from "./components/RefineComposer";
 import { ReviewChat } from "./components/ReviewChat";
@@ -76,9 +75,10 @@ import { BugCaseLinkPicker } from "./components/BugCaseLinkPicker";
 import { CopyableSectionHeader } from "@/components/CopyableSectionHeader";
 import { RefineChangesPanel } from "./RefineChangesPanel";
 import {
+  AttachmentList,
   ingestFile,
   synthesizeClipboardImageName,
-} from "./lib/ingestAttachment";
+} from "@/components/chat/attachments";
 import { Attachment01Icon } from "@hugeicons/core-free-icons";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";

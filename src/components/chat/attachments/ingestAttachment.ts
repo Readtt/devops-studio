@@ -1,8 +1,8 @@
 // Browser-side helpers that turn `File` / `Blob` / DataTransferItem objects
-// into the session's Attachment shape. Used by the requirements drag-drop
-// zone and the textarea paste handler.
+// into the shared Attachment shape. Used by every chat surface's drag-drop
+// zone and paste handler.
 
-import { newAttachmentId, type Attachment } from "../store/useGenerationSession";
+import { newAttachmentId, type Attachment } from "./types";
 
 const TEXT_BYTE_CAP = 200 * 1024; // 200 KB
 const IMAGE_BYTE_CAP = 2 * 1024 * 1024; // 2 MB
@@ -186,4 +186,17 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n}B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
   return `${(n / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+/** Strip the `data:<mime>;base64,` prefix from an image attachment's data URL,
+ *  returning the raw base64 payload + media type — the shape the Anthropic
+ *  Messages API (and the Claude CLI's stream-json input) expects for an image
+ *  content block. Returns null for non-image attachments or malformed URLs. */
+export function imageAttachmentToBase64(
+  a: Attachment,
+): { mediaType: string; dataBase64: string } | null {
+  if (a.kind !== "image") return null;
+  const match = /^data:([^;]+);base64,(.*)$/s.exec(a.content);
+  if (!match) return null;
+  return { mediaType: a.mime ?? match[1] ?? "image/png", dataBase64: match[2] };
 }
