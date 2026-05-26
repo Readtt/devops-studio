@@ -138,7 +138,7 @@ export const LeafPane = memo(function LeafPane({
                   style={{ visibility: visible ? "visible" : "hidden" }}
                   aria-hidden={!visible}
                 >
-                  <TabContent tab={t} sourceRoot={sourceRoot} leafId={leaf.id} />
+                  <TabContent tab={t} sourceRoot={sourceRoot} />
                 </div>
               );
             })}

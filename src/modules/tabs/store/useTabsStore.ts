@@ -4,7 +4,6 @@ import { useShallow } from "zustand/react/shallow";
 import type {
   AppTab,
   ClosedTabSnapshot,
-  ConfidenceTab,
   PaneNode,
   TabKind,
   TestCaseTab,
@@ -97,14 +96,6 @@ export type OpenTabInput =
       rehydrateThreadId?: string | null;
       title?: string;
       pinned?: boolean;
-    }
-  | {
-      kind: "confidence";
-      caseTitle: string;
-      verdict: import("@/modules/test-plans/lib/confidence").ConfidenceVerdict;
-      evalKey: string;
-      caseId?: number | null;
-      pinned?: boolean;
     };
 
 export type TabsState = {
@@ -148,11 +139,6 @@ export type TabsState = {
       base?: string | null;
       modelId?: import("@/modules/ai/config").ModelId | null;
     },
-  ) => void;
-  /** Replace a confidence tab's verdict snapshot (after a Re-evaluate). */
-  updateConfidenceVerdict: (
-    id: number,
-    verdict: import("@/modules/test-plans/lib/confidence").ConfidenceVerdict,
   ) => void;
 
   setActiveInLeaf: (leafId: string, tabId: number | null) => void;
@@ -301,10 +287,6 @@ export const useTabsStore = create<TabsState>()(
                 !t.rehydrateThreadId &&
                 t.cwd === input.cwd
               );
-            case "confidence":
-              // One detail pane per evaluated case/draft — re-clicking the
-              // chip re-focuses it (and refreshes its verdict snapshot below).
-              return t.kind === "confidence" && t.evalKey === input.evalKey;
           }
           return false;
         });
@@ -321,10 +303,6 @@ export const useTabsStore = create<TabsState>()(
             (input.planId != null || input.suiteId != null) &&
             (existing.planId !== input.planId ||
               existing.suiteId !== input.suiteId);
-          // A reused confidence pane should show the latest verdict — the user
-          // may have re-evaluated since it was first opened.
-          const refreshConfidence =
-            input.kind === "confidence" && existing.kind === "confidence";
           set((s) => ({
             tabs: retarget
               ? {
@@ -335,16 +313,7 @@ export const useTabsStore = create<TabsState>()(
                     suiteId: input.suiteId ?? null,
                   },
                 }
-              : refreshConfidence
-                ? {
-                    ...s.tabs,
-                    [existing.id]: {
-                      ...(s.tabs[existing.id] as ConfidenceTab),
-                      verdict: input.verdict,
-                      caseTitle: input.caseTitle,
-                    },
-                  }
-                : s.tabs,
+              : s.tabs,
             paneTree: setLeafActive(s.paneTree, leafId, existing.id),
             focusedLeafId: leafId,
           }));
@@ -428,18 +397,6 @@ export const useTabsStore = create<TabsState>()(
               source: input.source ?? null,
               modelId: input.modelId ?? null,
               rehydrateThreadId: input.rehydrateThreadId ?? null,
-              pinned: input.pinned ?? false,
-            };
-            break;
-          case "confidence":
-            tab = {
-              id,
-              kind: "confidence",
-              title: input.caseTitle,
-              caseTitle: input.caseTitle,
-              verdict: input.verdict,
-              evalKey: input.evalKey,
-              caseId: input.caseId ?? null,
               pinned: input.pinned ?? false,
             };
             break;
@@ -651,13 +608,6 @@ export const useTabsStore = create<TabsState>()(
           if ("base" in patch) next.base = patch.base ?? null;
           if ("modelId" in patch) next.modelId = patch.modelId ?? null;
           return { tabs: { ...s.tabs, [id]: next } };
-        }),
-
-      updateConfidenceVerdict: (id, verdict) =>
-        set((s) => {
-          const t = s.tabs[id];
-          if (!t || t.kind !== "confidence") return s;
-          return { tabs: { ...s.tabs, [id]: { ...t, verdict } } };
         }),
 
       setActiveInLeaf: (leafId, tabId) =>

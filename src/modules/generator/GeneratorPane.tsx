@@ -31,7 +31,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfidenceChip } from "@/modules/test-plans/components/ConfidenceChip";
-import { useTabsStore } from "@/modules/tabs/store/useTabsStore";
+import { ConfidenceDetailPanel } from "@/modules/test-plans/components/ConfidenceDetailPanel";
 import { evaluateCaseConfidence } from "@/modules/test-plans/lib/evaluateCaseConfidence";
 import {
   type GenerationMode,
@@ -311,6 +311,9 @@ export function GeneratorPane({
   // rather than floating over it. Defaults closed; the user's first sight
   // of review should be the draft, not a chat empty state.
   const [chatOpen, setChatOpen] = useState(false);
+  // Confidence detail side panel — opens beside the review for the clicked
+  // draft case (by uid), Ask-style, instead of a new workspace tab.
+  const [confidenceUid, setConfidenceUid] = useState<string | null>(null);
 
   return (
     // @container marks this as the responsive root — Tailwind v4 container
@@ -331,7 +334,12 @@ export function GeneratorPane({
           <div className="mx-auto w-full max-w-4xl px-3 py-4 @md:px-5">
             {phase === "input" && <InputPhase />}
             {phase === "analyzing" && <AnalyzingPhase />}
-            {phase === "review" && <ReviewPhase onOpenCase={onOpenCase} />}
+            {phase === "review" && (
+              <ReviewPhase
+                onOpenCase={onOpenCase}
+                onOpenConfidence={setConfidenceUid}
+              />
+            )}
             {phase === "publishing" && <PublishingPhase />}
             {phase === "done" && <DonePhase />}
             {phase === "error" && <ErrorPhase />}
@@ -340,8 +348,59 @@ export function GeneratorPane({
         {phase === "review" && chatOpen ? (
           <ReviewChat onClose={() => setChatOpen(false)} />
         ) : null}
+        {phase === "review" && confidenceUid ? (
+          <GeneratorConfidencePanel
+            uid={confidenceUid}
+            onClose={() => setConfidenceUid(null)}
+          />
+        ) : null}
       </div>
     </div>
+  );
+}
+
+/** Bridges a draft case (by uid) to the shared confidence panel: reads the
+ *  live verdict from the session store so a re-evaluation reflects back into
+ *  the review card, and drives Re-evaluate via the same path the chip uses. */
+function GeneratorConfidencePanel({
+  uid,
+  onClose,
+}: {
+  uid: string;
+  onClose: () => void;
+}) {
+  const cases = useGenerationSession((s) => s.cases);
+  const setCaseVerdict = useGenerationSession((s) => s.setCaseVerdict);
+  const c = cases.find((x) => x.uid === uid);
+  const [evaluating, setEvaluating] = useState(false);
+
+  // The case vanished (removed in review) — nothing to show.
+  useEffect(() => {
+    if (!c) onClose();
+  }, [c, onClose]);
+  if (!c) return null;
+
+  const onReevaluate = async () => {
+    if (evaluating) return;
+    setEvaluating(true);
+    try {
+      const v = await evaluateCaseConfidence({ title: c.title, steps: c.steps });
+      setCaseVerdict(uid, v);
+    } catch (e) {
+      console.error("[confidence] panel re-eval failed:", e);
+    } finally {
+      setEvaluating(false);
+    }
+  };
+
+  return (
+    <ConfidenceDetailPanel
+      title={c.title}
+      verdict={c.verdict ?? null}
+      evaluating={evaluating}
+      onReevaluate={() => void onReevaluate()}
+      onClose={onClose}
+    />
   );
 }
 
@@ -1421,8 +1480,11 @@ function ReviewOutcomePicker({
 
 function ReviewPhase({
   onOpenCase,
+  onOpenConfidence,
 }: {
   onOpenCase?: (input: { caseId: number; title: string }) => void;
+  /** Open the confidence detail side panel for a draft case (by uid). */
+  onOpenConfidence?: (uid: string) => void;
 }) {
   const cases = useGenerationSession((s) => s.cases);
   const bugs = useGenerationSession((s) => s.bugs);
@@ -1879,18 +1941,7 @@ function ReviewPhase({
                     loading={evaluatingUids.has(c.uid)}
                     onEvaluate={() => void runEval(c.uid, c.title, c.steps)}
                     onOpenDetail={
-                      c.verdict
-                        ? () => {
-                            const v = c.verdict;
-                            if (!v) return;
-                            useTabsStore.getState().openTab({
-                              kind: "confidence",
-                              evalKey: `draft-${c.uid}`,
-                              caseTitle: c.title,
-                              verdict: v,
-                            });
-                          }
-                        : undefined
+                      c.verdict ? () => onOpenConfidence?.(c.uid) : undefined
                     }
                   />
                   <ReviewOutcomePicker

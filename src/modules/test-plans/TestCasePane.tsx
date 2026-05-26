@@ -31,7 +31,7 @@ import type { LinkedWorkItem } from "@/modules/ado";
 import { EditableText } from "@/modules/generator/components/EditableText";
 import { OutcomeControl } from "./OutcomeControl";
 import { ConfidenceChip } from "./components/ConfidenceChip";
-import { useTabsStore } from "@/modules/tabs/store/useTabsStore";
+import { ConfidenceDetailPanel } from "./components/ConfidenceDetailPanel";
 import { fromTestCase } from "./lib/runConfidenceEval";
 import { evaluateCaseConfidence } from "./lib/evaluateCaseConfidence";
 import { getConfidence, saveConfidence } from "./lib/confidenceApi";
@@ -62,6 +62,8 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
   // AI confidence verdict for this case (predicted pass + calibrated %).
   const [verdict, setVerdict] = useState<ConfidenceVerdict | null>(null);
   const [evaluating, setEvaluating] = useState(false);
+  // Inline confidence detail side panel (opens beside the case, not a new tab).
+  const [confidenceOpen, setConfidenceOpen] = useState(false);
 
   // Load any persisted verdict for this case on open. Recomputable, so a stale
   // verdict just sits until the user re-evaluates.
@@ -232,7 +234,8 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
   const adoWebUrl = buildWorkItemWebUrl(conn, tc.id);
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto">
+    <div className="flex h-full min-h-0">
+      <div className="flex h-full min-w-0 flex-1 flex-col overflow-y-auto">
       <header className="border-b border-border/60 bg-card/40 px-6 py-4">
         <div className="flex items-center justify-between gap-3">
           <h1 className="flex min-w-0 flex-1 items-baseline gap-1.5 text-[16px] font-semibold tracking-tight">
@@ -254,18 +257,7 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
               loading={evaluating}
               size="md"
               onEvaluate={() => void handleEvaluate()}
-              onOpenDetail={
-                verdict
-                  ? () =>
-                      useTabsStore.getState().openTab({
-                        kind: "confidence",
-                        evalKey: `case-${tc.id}`,
-                        caseId: tc.id,
-                        caseTitle: tc.title,
-                        verdict,
-                      })
-                  : undefined
-              }
+              onOpenDetail={verdict ? () => setConfidenceOpen(true) : undefined}
             />
             <OutcomeControl
               caseId={tc.id}
@@ -427,6 +419,16 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
           )}
         </Section>
       </main>
+      </div>
+      {confidenceOpen ? (
+        <ConfidenceDetailPanel
+          title={tc.title}
+          verdict={verdict}
+          evaluating={evaluating}
+          onReevaluate={() => void handleEvaluate()}
+          onClose={() => setConfidenceOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }

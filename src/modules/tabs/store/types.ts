@@ -86,20 +86,6 @@ export type TerminalTab = TabBase & {
   sessionId: string;
 };
 
-export type ConfidenceTab = TabBase & {
-  kind: "confidence";
-  /** Title of the case the verdict is for (header + tab label). */
-  caseTitle: string;
-  /** The verdict snapshot. Persisted so the detail survives a reload without
-   *  needing the originating draft/case to still be open. */
-  verdict: import("@/modules/test-plans/lib/confidence").ConfidenceVerdict;
-  /** Dedup identity: `case-<id>` for a published case, `draft-<uid>` for a
-   *  generator review draft. Re-opening the chip re-focuses this pane. */
-  evalKey: string;
-  /** Set for a published case — enables Re-evaluate (fetch → eval → save). */
-  caseId?: number | null;
-};
-
 export type AppTab =
   | TestCaseTab
   | GeneratorTab
@@ -107,8 +93,7 @@ export type AppTab =
   | BugTab
   | SuiteChatTab
   | TerminalTab
-  | CodeReviewTab
-  | ConfidenceTab;
+  | CodeReviewTab;
 
 export type TabKind = AppTab["kind"];
 
