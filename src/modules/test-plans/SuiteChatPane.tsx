@@ -23,6 +23,8 @@ import {
   useAttachments,
   type Attachment,
 } from "@/components/chat/attachments";
+import { BugContextPicker } from "@/modules/ado/components/BugContextPicker";
+import { useBugContext } from "@/modules/ado/hooks/useBugContext";
 import {
   Popover,
   PopoverContent,
@@ -126,6 +128,7 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
 
   const [draft, setDraft] = useState("");
   const att = useAttachments();
+  const bugCtx = useBugContext();
   const [conn, setConn] = useState<ConnectionStatus | null>(null);
 
   useEffect(() => {
@@ -483,9 +486,16 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
   const submit = () => {
     const text = draft.trim();
     if ((!text && att.attachments.length === 0) || busy || !cases) return;
-    void sendMessage(planId, suiteId, text, att.attachments);
+    void sendMessage(
+      planId,
+      suiteId,
+      text,
+      att.attachments,
+      bugCtx.selected.map((b) => b.id),
+    );
     setDraft("");
     att.clear();
+    bugCtx.clear();
   };
 
   return (
@@ -592,6 +602,13 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
         onFilePicker={att.onFilePicker}
         onRemoveAttachment={att.remove}
         onDismissAttachmentError={att.dismissError}
+        bugPicker={
+          <BugContextPicker
+            selected={bugCtx.selected}
+            onAdd={bugCtx.add}
+            onRemove={bugCtx.remove}
+          />
+        }
       />
     </div>
   );
@@ -1242,6 +1259,7 @@ function Composer({
   onFilePicker,
   onRemoveAttachment,
   onDismissAttachmentError,
+  bugPicker,
 }: {
   draft: string;
   onChange: (v: string) => void;
@@ -1257,6 +1275,8 @@ function Composer({
   onFilePicker: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onRemoveAttachment: (id: string) => void;
   onDismissAttachmentError: (id: string) => void;
+  /** Optional bug-context picker rendered in the composer toolbar. */
+  bugPicker?: React.ReactNode;
 }) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -1281,6 +1301,7 @@ function Composer({
           dismissError={onDismissAttachmentError}
           className="mb-2"
         />
+        {bugPicker ? <div className="mb-1.5">{bugPicker}</div> : null}
         <div
           onDrop={onDrop}
           onDragOver={(e) => e.preventDefault()}

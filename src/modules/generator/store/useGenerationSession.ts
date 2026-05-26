@@ -83,6 +83,7 @@ export type PublishLogEntry = {
 
 import { supportsVision, type ModelId } from "@/modules/ai/config";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
+import { bugsToContextBlocks } from "@/modules/ado/lib/bugContextBlock";
 
 // Attachment types + id minting live in the shared chat-attachment module.
 // Re-export here so existing call sites that import these from the session
@@ -265,7 +266,7 @@ export type SessionState = {
   /** Send a question to the chat thread. Optimistically appends a user
    *  message + a placeholder assistant message, then resolves the
    *  assistant content when the model returns. */
-  sendChatMessage: (question: string) => Promise<void>;
+  sendChatMessage: (question: string, bugIds?: number[]) => Promise<void>;
   /** Cancel the in-flight chat round (Claude CLI only). The user's message
    *  stays in the thread; the assistant placeholder is dropped. */
   cancelChat: () => void;
@@ -1475,7 +1476,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
 
   dismissRefineError: () => set({ refineError: null }),
 
-  sendChatMessage: async (question: string) => {
+  sendChatMessage: async (question: string, bugIds?: number[]) => {
     const text = question.trim();
     if (!text) return;
     const s = get();
@@ -1524,6 +1525,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     if (bpWarnings.length > 0) {
       console.warn("[generator] best-practices skipped:", bpWarnings);
     }
+    const bugBlocks =
+      bugIds && bugIds.length > 0 ? await bugsToContextBlocks(bugIds) : [];
+    const chatContextBlocks = [...bpBlocks, ...bugBlocks];
 
     try {
       if (usingClaude) {
@@ -1543,7 +1547,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           sourceRoot: s.allowCodeSearch ? prefs.sourceRoot : null,
           authMode: engineSel.authMode ?? "api-key",
           bareMode: prefs.claudeBareMode,
-          contextBlocks: bpBlocks,
+          contextBlocks: chatContextBlocks,
           onText: appendDelta,
         });
       } else {
@@ -1558,7 +1562,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           newQuestion: text,
           keys,
           modelId,
-          contextBlocks: bpBlocks,
+          contextBlocks: chatContextBlocks,
           onText: appendDelta,
         });
       }

@@ -11,6 +11,8 @@ import {
 import { Kbd } from "@/components/ui/kbd";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
+import { BugContextPicker } from "@/modules/ado/components/BugContextPicker";
+import { useBugContext } from "@/modules/ado/hooks/useBugContext";
 import { getModel } from "@/modules/ai/config";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
 import {
@@ -82,6 +84,7 @@ export function CodeReviewPane({
   const [branches, setBranches] = useState<string[]>([]);
   const [draft, setDraft] = useState(DEFAULT_FIRST_PROMPT);
   const att = useAttachments();
+  const bugCtx = useBugContext();
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -145,9 +148,15 @@ export function CodeReviewPane({
   const handleSend = () => {
     const text = draft.trim();
     if ((!text && att.attachments.length === 0) || busy) return;
-    void send(tabId, text, att.attachments);
+    void send(
+      tabId,
+      text,
+      att.attachments,
+      bugCtx.selected.map((b) => b.id),
+    );
     setDraft("");
     att.clear();
+    bugCtx.clear();
   };
 
   const baseList = useMemo(() => {
@@ -421,6 +430,13 @@ export function CodeReviewPane({
         onFilePicker={att.onFilePicker}
         onRemoveAttachment={att.remove}
         onDismissAttachmentError={att.dismissError}
+        bugPicker={
+          <BugContextPicker
+            selected={bugCtx.selected}
+            onAdd={bugCtx.add}
+            onRemove={bugCtx.remove}
+          />
+        }
       />
     </div>
   );
@@ -449,6 +465,7 @@ function ChatComposer({
   onFilePicker,
   onRemoveAttachment,
   onDismissAttachmentError,
+  bugPicker,
 }: {
   draft: string;
   onChange: (v: string) => void;
@@ -464,6 +481,8 @@ function ChatComposer({
   onFilePicker: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onRemoveAttachment: (id: string) => void;
   onDismissAttachmentError: (id: string) => void;
+  /** Optional bug-context picker rendered in the composer toolbar. */
+  bugPicker?: React.ReactNode;
 }) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -486,6 +505,7 @@ function ChatComposer({
           dismissError={onDismissAttachmentError}
           className="mb-2"
         />
+        {bugPicker ? <div className="mb-1.5">{bugPicker}</div> : null}
         <div
           onDrop={onDrop}
           onDragOver={(e) => e.preventDefault()}

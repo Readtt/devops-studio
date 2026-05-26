@@ -4,6 +4,7 @@ import { supportsVision, type ModelId } from "@/modules/ai/config";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
+import { bugsToContextBlocks } from "@/modules/ado/lib/bugContextBlock";
 import type { Attachment } from "@/components/chat/attachments";
 import {
   streamCodeReview,
@@ -57,6 +58,8 @@ type State = {
     tabId: number,
     text: string,
     attachments?: Attachment[],
+    /** Existing ADO bug ids to attach as read-only context for this turn. */
+    bugIds?: number[],
   ) => Promise<void>;
   stop: (tabId: number) => void;
   clear: (tabId: number) => void;
@@ -169,7 +172,7 @@ export const useCodeReview = create<State>((set, get) => ({
     await get().refreshDiff(tabId);
   },
 
-  send: async (tabId, text, attachments) => {
+  send: async (tabId, text, attachments, bugIds) => {
     const slice = get().byTab.get(tabId);
     if (!slice || slice.busy) return;
     if (!slice.diff) {
@@ -225,13 +228,15 @@ export const useCodeReview = create<State>((set, get) => ({
       const prefs = usePreferencesStore.getState();
       // Per-tab pinned model wins; otherwise inherit the global default.
       const effectiveModelId = slice.modelId ?? prefs.defaultModelId;
-      const { blocks: contextBlocks, warnings } = await loadBestPracticeBlocks(
+      const { blocks: bpBlocks, warnings } = await loadBestPracticeBlocks(
         prefs.bestPracticeFiles,
         { visionCapable: supportsVision(effectiveModelId) },
       );
       if (warnings.length > 0) {
         console.warn("[code-review] best-practices skipped:", warnings);
       }
+      const bugBlocks =
+        bugIds && bugIds.length > 0 ? await bugsToContextBlocks(bugIds) : [];
       await streamCodeReview({
         modelId: effectiveModelId,
         keys: chat.apiKeys,
@@ -240,7 +245,7 @@ export const useCodeReview = create<State>((set, get) => ({
         history: priorMessages,
         newQuestion: text,
         attachments: atts,
-        contextBlocks,
+        contextBlocks: [...bpBlocks, ...bugBlocks],
         onText: appendDelta,
         signal: abort.signal,
       });

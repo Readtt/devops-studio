@@ -10,6 +10,8 @@ import {
 } from "react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { BugContextPicker } from "@/modules/ado/components/BugContextPicker";
+import { useBugContext } from "@/modules/ado/hooks/useBugContext";
 import { useGenerationSession } from "../store/useGenerationSession";
 import { ChatMarkdown } from "@/components/ChatMarkdown";
 import {
@@ -56,6 +58,7 @@ export function ReviewChat({ onClose }: Props) {
   const streamingId = useGenerationSession((s) => s.chatStreamingId);
   const error = useGenerationSession((s) => s.chatError);
   const send = useGenerationSession((s) => s.sendChatMessage);
+  const bugCtx = useBugContext();
   const cancel = useGenerationSession((s) => s.cancelChat);
   const clear = useGenerationSession((s) => s.clearChat);
   const dismissError = useGenerationSession((s) => s.dismissChatError);
@@ -155,8 +158,12 @@ export function ReviewChat({ onClose }: Props) {
   const submit = () => {
     const text = draft.trim();
     if (!text || busy) return;
-    void send(text);
+    void send(
+      text,
+      bugCtx.selected.map((b) => b.id),
+    );
     setDraft("");
+    bugCtx.clear();
   };
 
   return (
@@ -295,6 +302,13 @@ export function ReviewChat({ onClose }: Props) {
           }
           className="mb-2"
         />
+        <div className="mb-1.5">
+          <BugContextPicker
+            selected={bugCtx.selected}
+            onAdd={bugCtx.add}
+            onRemove={bugCtx.remove}
+          />
+        </div>
         {/* Single autosizing row — attach / input / send sit on one baseline
             (items-end) so the controls track the text as it grows instead of
             floating at the bottom of a fixed two-line box. */}

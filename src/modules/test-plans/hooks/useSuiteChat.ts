@@ -23,6 +23,7 @@ import {
 } from "@/modules/ado";
 import { supportsVision, type ModelId } from "@/modules/ai/config";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
+import { bugsToContextBlocks } from "@/modules/ado/lib/bugContextBlock";
 import type { Attachment } from "@/components/chat/attachments";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
@@ -152,6 +153,8 @@ type Store = {
     suiteId: number,
     q: string,
     attachments?: Attachment[],
+    /** Existing ADO bug ids to attach as read-only context for this turn. */
+    bugIds?: number[],
   ) => Promise<void>;
   cancel: (planId: number, suiteId: number) => void;
   clearMessages: (planId: number, suiteId: number) => void;
@@ -570,7 +573,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
     patchSuite(set, planId, suiteId, { filter });
   },
 
-  sendMessage: async (planId, suiteId, q, attachments) => {
+  sendMessage: async (planId, suiteId, q, attachments, bugIds) => {
     const text = q.trim();
     const atts = attachments && attachments.length > 0 ? attachments : undefined;
     if (!text && !atts) return;
@@ -659,13 +662,16 @@ export const useSuiteChat = create<Store>((set, get) => ({
       engineSel.engine === "claude-agent-sdk" && engineSel.active;
     // Best-practices standards injected as context. Claude CLI models are
     // vision-capable; the BYOK path depends on the chosen model.
-    const { blocks: contextBlocks, warnings: bpWarnings } =
+    const { blocks: bpBlocks, warnings: bpWarnings } =
       await loadBestPracticeBlocks(prefs.bestPracticeFiles, {
         visionCapable: usingClaude ? true : supportsVision(modelId),
       });
     if (bpWarnings.length > 0) {
       console.warn("[suite-chat] best-practices skipped:", bpWarnings);
     }
+    const bugBlocks =
+      bugIds && bugIds.length > 0 ? await bugsToContextBlocks(bugIds) : [];
+    const contextBlocks = [...bpBlocks, ...bugBlocks];
 
     try {
       if (usingClaude) {
