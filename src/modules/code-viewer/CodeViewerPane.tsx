@@ -18,6 +18,7 @@ import { copilot } from "@uiw/codemirror-theme-copilot";
 import { nord } from "@uiw/codemirror-theme-nord";
 import { xcodeDark, xcodeLight } from "@uiw/codemirror-theme-xcode";
 import { devopsStudioDark } from "./themes/devopsStudioDark";
+import { displaySourcePath } from "./resolveSourcePath";
 import { devopsStudioLight } from "./themes/devopsStudioLight";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { invoke } from "@tauri-apps/api/core";
@@ -187,7 +188,9 @@ export function CodeViewerPane({ path, startLine, endLine }: Props) {
   return (
     <div className="cv-pane flex h-full flex-col overflow-hidden">
       <header className="flex h-9 shrink-0 items-center gap-2 border-b border-border/60 bg-card/40 px-3">
-        <span className="min-w-0 truncate font-mono text-[11.5px]">{path}</span>
+        <span className="min-w-0 truncate font-mono text-[11.5px]">
+          {displaySourcePath(path)}
+        </span>
         {startLine ? (
           <span className="rounded bg-foreground/[0.06] px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
             {endLine && endLine !== startLine
@@ -244,7 +247,7 @@ export function CodeViewerPane({ path, startLine, endLine }: Props) {
           <div className="flex h-full flex-col items-center justify-center gap-1.5 px-6 text-center text-[12px]">
             <p className="font-medium text-destructive">Couldn't open this file.</p>
             <p className="max-w-md break-all font-mono text-[10.5px] text-muted-foreground">
-              {path}
+              {displaySourcePath(path)}
             </p>
             {/(not found|no such file|cannot find|os error 2|enoent)/i.test(
               state.message,

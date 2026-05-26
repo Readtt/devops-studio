@@ -757,9 +757,16 @@ function FileChip({
           <span className="truncate">{display}</span>
         </button>
       </TooltipTrigger>
-      <TooltipContent side="top" className="text-[11px]">
-        <div className="font-mono">{path}{lineLabel}</div>
-        <div className="mt-0.5 text-[10px] text-muted-foreground">
+      <TooltipContent
+        variant="panel"
+        side="top"
+        className="max-w-[340px] px-3 py-2 text-[11px] leading-relaxed"
+      >
+        <div className="break-all font-mono text-[10.5px] text-foreground/90">
+          {path}
+          {lineLabel}
+        </div>
+        <div className="mt-1 text-[10px] text-muted-foreground/80">
           Open in the in-app code viewer
         </div>
       </TooltipContent>
