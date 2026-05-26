@@ -1364,7 +1364,7 @@ function ReviewOutcomePicker({
             <button
               type="button"
               className={cn(
-                "mt-0.5 inline-flex shrink-0 items-center rounded-sm border px-1.5 py-px text-[9.5px] font-medium uppercase tracking-wide transition-colors",
+                "inline-flex shrink-0 items-center rounded-sm border px-1.5 py-px text-[9.5px] font-medium uppercase tracking-wide transition-colors",
                 current
                   ? cn("border-transparent", OUTCOME_CHIP[current.value])
                   : "border-dashed border-border/60 text-muted-foreground/70 hover:border-border hover:text-foreground",
@@ -1726,20 +1726,26 @@ function ReviewPhase({
                     />
                   </div>
                 </div>
-                <ReviewOutcomePicker
-                  value={c.desiredOutcome ?? null}
-                  onChange={(next) => setCaseOutcome(c.uid, next)}
-                />
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span className="cursor-help text-[10px] text-muted-foreground/70">
-                      {c.steps.length} step{c.steps.length === 1 ? "" : "s"}
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent side="left" className="text-[11px]">
-                    Expand &ldquo;Show steps&rdquo; below to read or edit them
-                  </TooltipContent>
-                </Tooltip>
+                {/* Right-edge metadata cluster — step count then the run-
+                    outcome chip, vertically centered together and aligned to
+                    the title line. The chip sits at the row's edge as the
+                    consistent per-case status target. */}
+                <div className="mt-px flex shrink-0 items-center gap-2">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="cursor-help text-[10px] text-muted-foreground/70">
+                        {c.steps.length} step{c.steps.length === 1 ? "" : "s"}
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="left" className="text-[11px]">
+                      Expand &ldquo;Show steps&rdquo; below to read or edit them
+                    </TooltipContent>
+                  </Tooltip>
+                  <ReviewOutcomePicker
+                    value={c.desiredOutcome ?? null}
+                    onChange={(next) => setCaseOutcome(c.uid, next)}
+                  />
+                </div>
               </div>
 
               {c.similarMatches.length > 0 ? (

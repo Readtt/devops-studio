@@ -4,6 +4,7 @@ import {
   DragEvent,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -128,6 +129,15 @@ export function ReviewChat({ onClose }: Props) {
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
+
+  // Autosize the single-row textarea up to a cap so the composer grows with
+  // the text instead of starting tall and leaving the controls floating.
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [draft]);
 
   // Close-on-Escape — natural for a side panel. Skip when the composer has
   // focus so Esc there can cancel autocomplete / text selection instead of
@@ -285,11 +295,24 @@ export function ReviewChat({ onClose }: Props) {
           }
           className="mb-2"
         />
+        {/* Single autosizing row — attach / input / send sit on one baseline
+            (items-end) so the controls track the text as it grows instead of
+            floating at the bottom of a fixed two-line box. */}
         <div
-          className="relative"
           onDrop={onDrop}
           onDragOver={(e) => e.preventDefault()}
+          className={cn(
+            "group flex items-end gap-1.5 rounded-sm border border-border/40 bg-input/40 px-1.5 py-1 transition-colors",
+            "focus-within:border-primary/55 focus-within:ring-2 focus-within:ring-ring/25",
+            busy && "border-primary/35 bg-primary/[0.03]",
+          )}
         >
+          <AttachButton
+            onFilePicker={onFilePicker}
+            disabled={busy}
+            iconSize={13}
+            className="size-6 rounded-sm"
+          />
           <textarea
             ref={inputRef}
             value={draft}
@@ -301,25 +324,17 @@ export function ReviewChat({ onClose }: Props) {
                 submit();
               }
             }}
-            rows={2}
+            rows={1}
             disabled={busy}
-            placeholder="Ask about the draft… (Enter to send, Shift+Enter for newline)"
-            className="w-full resize-none rounded-sm border border-border/40 bg-input/40 px-2 py-1.5 pl-8 pr-8 text-[11.5px] leading-relaxed outline-none focus:ring-2 focus:ring-ring/30"
+            placeholder="Ask about the draft…  (Enter to send · Shift+Enter for newline)"
+            className="min-h-[20px] w-full resize-none bg-transparent py-1 text-[11.5px] leading-[1.55] outline-none placeholder:text-muted-foreground/55"
           />
-          <div className="absolute bottom-1.5 left-1.5">
-            <AttachButton
-              onFilePicker={onFilePicker}
-              disabled={busy}
-              iconSize={13}
-              className="size-6 rounded-sm"
-            />
-          </div>
           {busy ? (
             <button
               type="button"
               onClick={() => cancel()}
               aria-label="Stop"
-              className="absolute bottom-1.5 right-1.5 grid size-6 place-items-center rounded-sm bg-foreground/[0.08] text-foreground/80 transition-colors hover:bg-foreground/[0.14]"
+              className="grid size-6 shrink-0 place-items-center rounded-sm bg-foreground/[0.08] text-foreground/80 transition-colors hover:bg-foreground/[0.14]"
             >
               <span className="size-2.5 rounded-[2px] bg-current" />
             </button>
@@ -330,7 +345,7 @@ export function ReviewChat({ onClose }: Props) {
               disabled={!draft.trim()}
               aria-label="Send message"
               className={cn(
-                "absolute bottom-1.5 right-1.5 grid size-6 place-items-center rounded-sm transition-colors",
+                "grid size-6 shrink-0 place-items-center rounded-sm transition-colors",
                 draft.trim()
                   ? "bg-primary text-primary-foreground hover:bg-primary/85"
                   : "bg-foreground/[0.06] text-muted-foreground/55",
