@@ -181,10 +181,12 @@ export const useCodeReview = create<State>((set, get) => ({
       patch(set, tabId, {
         diff,
         diffLoading: false,
-        // If the Rust side resolved a different base than we requested
-        // (fallback chain), reflect it in the picker so the user sees the
-        // truth.
-        base: diff.base,
+        // Mirror the resolved base into the picker ONLY for the local diff —
+        // there `diff.base` is a real branch the fallback chain picked. For an
+        // ADO source `diff.base` is a synthetic label ("<sha>^", a target ref,
+        // etc.); writing it into slice.base would corrupt the local base so
+        // switching back to Local fails with "base branch '<sha>^' not found".
+        ...(src ? {} : { base: diff.base }),
       });
     } catch (e) {
       patch(set, tabId, {
@@ -203,16 +205,21 @@ export const useCodeReview = create<State>((set, get) => ({
   setSource: async (tabId, source) => {
     const slice = get().byTab.get(tabId);
     if (!slice) return;
+    // Switching back to the local diff re-detects the base — otherwise a base
+    // left over from an ADO source (a "<sha>^" label) would break git_diff.
+    // Switching to an ADO source leaves base alone (it's hidden + unused).
+    const nextBase = source ? slice.base : "";
     // Switching the reviewed change invalidates the prior conversation.
     patch(set, tabId, {
       source,
+      base: nextBase,
       messages: [],
       error: null,
       diff: null,
       threadId: null,
     });
     // Mirror onto the persisted tab so reload + Duplicate keep this source.
-    useTabsStore.getState().patchCodeReviewTab(tabId, { source });
+    useTabsStore.getState().patchCodeReviewTab(tabId, { source, base: nextBase });
     await get().refreshDiff(tabId);
   },
 
@@ -406,7 +413,10 @@ function persistToHistory(tabId: number, threadId: string): void {
   useCodeReviewHistory.getState().upsert({
     id: threadId,
     cwd: slice.cwd,
-    base: slice.diff.base,
+    // For an ADO source the diff.base is a synthetic label — don't persist it
+    // as a branch (reopening would feed it to the local base picker). The
+    // source carries everything an ADO reopen needs.
+    base: slice.source ? "" : slice.diff.base,
     head: slice.diff.head,
     title: deriveCodeReviewTitle(
       slice.messages,
