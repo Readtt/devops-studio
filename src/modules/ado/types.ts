@@ -66,6 +66,43 @@ export const TestStepSchema = z.object({
 });
 export type TestStep = z.infer<typeof TestStepSchema>;
 
+// --- Test execution (Execute tab) ---
+
+/** Outcomes the Execute bar can set. `Active` resets a point to "not run". */
+export const EXECUTION_OUTCOMES = [
+  "Passed",
+  "Failed",
+  "Blocked",
+  "NotApplicable",
+  "Active",
+] as const;
+export const ExecutionOutcomeSchema = z.enum(EXECUTION_OUTCOMES);
+export type ExecutionOutcome = z.infer<typeof ExecutionOutcomeSchema>;
+
+/** A test point: a case × configuration inside one suite of one plan. The
+ *  Pass/Fail/Blocked outcome lives here, not on the case work item. */
+export const TestPointInfoSchema = z.object({
+  id: z.number().int(),
+  configurationId: z.number().int().nullable().optional(),
+  configurationName: z.string().nullable().optional(),
+  /** Raw ADO outcome string — may be any of the EXECUTION_OUTCOMES plus
+   *  "Unspecified" / "NotExecuted" for a point that's never been run. */
+  outcome: z.string(),
+  tester: z.string().nullable().optional(),
+  lastUpdated: z.string().nullable().optional(),
+});
+export type TestPointInfo = z.infer<typeof TestPointInfoSchema>;
+
+/** A (plan, suite) that contains a given case — for the target picker shown
+ *  when a case is opened without suite context. */
+export const CaseSuiteMembershipSchema = z.object({
+  planId: z.number().int(),
+  planName: z.string().nullable().optional(),
+  suiteId: z.number().int(),
+  suiteName: z.string().nullable().optional(),
+});
+export type CaseSuiteMembership = z.infer<typeof CaseSuiteMembershipSchema>;
+
 export const LinkedWorkItemSchema = z.object({
   id: z.number().int(),
   /** Friendly label: "Parent" / "Child" / "Related" / "Tested by" / "Tests" / "Other". */

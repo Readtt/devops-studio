@@ -13,6 +13,7 @@ import {
   BugSchema,
   ConnectionStatusSchema,
   CommitInfoSchema,
+  CaseSuiteMembershipSchema,
   CreatedWorkItemSchema,
   FileContentSchema,
   ProjectRefSchema,
@@ -23,13 +24,16 @@ import {
   TestCaseSchema,
   TestConnectionResultSchema,
   TestPlanRefSchema,
+  TestPointInfoSchema,
   type AdoError,
   type Bug,
+  type CaseSuiteMembership,
   type CommitInfo,
   type ConnectionStatus,
   type CreatedWorkItem,
   type DraftBug,
   type DraftCase,
+  type ExecutionOutcome,
   type FileContent,
   type ProjectRef,
   type RepoRef,
@@ -39,6 +43,7 @@ import {
   type TestCaseRef,
   type TestConnectionResult,
   type TestPlanRef,
+  type TestPointInfo,
 } from "./types";
 
 /** Convert an unknown Tauri rejection value into a typed AdoError when possible. */
@@ -171,6 +176,52 @@ export async function updatePlanName(
 export async function getCase(caseId: number): Promise<TestCase> {
   const raw = await invoke("ado_get_case", { caseId });
   return TestCaseSchema.parse(raw);
+}
+
+// --- Test execution (Execute tab) ---
+
+/** Read the test point(s) for a case inside a specific plan + suite. One row
+ *  per test configuration — usually just the default config. */
+export async function listTestPoints(
+  planId: number,
+  suiteId: number,
+  caseId: number,
+): Promise<TestPointInfo[]> {
+  const raw = await invoke("ado_list_test_points", { planId, suiteId, caseId });
+  return TestPointInfoSchema.array().parse(raw);
+}
+
+/** Which (plan, suite) pairs contain this case — for the execution-target
+ *  picker shown when a case is opened without suite context. */
+export async function listSuitesForCase(
+  caseId: number,
+): Promise<CaseSuiteMembership[]> {
+  const raw = await invoke("ado_list_suites_for_case", { caseId });
+  return CaseSuiteMembershipSchema.array().parse(raw);
+}
+
+/** Record an outcome on a test point. An optional `comment` is appended to
+ *  the case's ADO discussion so a failure reason is preserved. Returns the
+ *  point's refreshed state. */
+export async function setTestPointOutcome(input: {
+  planId: number;
+  suiteId: number;
+  pointId: number;
+  caseId: number;
+  outcome: ExecutionOutcome;
+  comment?: string | null;
+}): Promise<TestPointInfo> {
+  const raw = await invoke("ado_set_test_point_outcome", {
+    input: {
+      planId: input.planId,
+      suiteId: input.suiteId,
+      pointId: input.pointId,
+      caseId: input.caseId,
+      outcome: input.outcome,
+      comment: input.comment ?? null,
+    },
+  });
+  return TestPointInfoSchema.parse(raw);
 }
 
 // --- Publishing ---

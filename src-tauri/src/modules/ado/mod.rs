@@ -16,6 +16,7 @@ pub mod repos;
 pub mod tags;
 pub mod test_cases;
 pub mod test_plans;
+pub mod test_points;
 pub mod types;
 pub mod work_items;
 
@@ -26,9 +27,9 @@ use tauri_plugin_store::StoreExt;
 use client::{keyring_service, pat_account, normalize_org_url, AdoState};
 use errors::AdoError;
 use types::{
-    Bug, CommitInfo, Connection, ConnectionStatus, CreatedWorkItem, DraftBug, DraftCase,
-    FileContent, ProjectRef, RepoRef, SuiteRef, TestCase, TestCaseRef, TestConnectionResult,
-    TestPlanRef,
+    Bug, CaseSuiteMembership, CommitInfo, Connection, ConnectionStatus, CreatedWorkItem, DraftBug,
+    DraftCase, FileContent, ProjectRef, RepoRef, SuiteRef, TestCase, TestCaseRef,
+    TestConnectionResult, TestPlanRef, TestPointInfo,
 };
 
 const STORE_PATH: &str = "devops-studio-settings.json";
@@ -226,6 +227,73 @@ pub async fn ado_get_case(
     case_id: i64,
 ) -> Result<TestCase, AdoError> {
     test_plans::get_case(&state, case_id).await
+}
+
+// --- Test execution (Execute tab) ---
+
+#[tauri::command]
+pub async fn ado_list_test_points(
+    state: State<'_, AdoState>,
+    plan_id: i64,
+    suite_id: i64,
+    case_id: i64,
+) -> Result<Vec<TestPointInfo>, AdoError> {
+    test_points::list_test_points(&state, plan_id, suite_id, case_id).await
+}
+
+#[tauri::command]
+pub async fn ado_list_suites_for_case(
+    state: State<'_, AdoState>,
+    case_id: i64,
+) -> Result<Vec<CaseSuiteMembership>, AdoError> {
+    test_points::list_suites_for_case(&state, case_id).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetOutcomeInput {
+    pub plan_id: i64,
+    pub suite_id: i64,
+    pub point_id: i64,
+    /// The work-item id of the case the point belongs to — only used to attach
+    /// the optional `comment` to the case's discussion.
+    pub case_id: i64,
+    /// "Passed" | "Failed" | "Blocked" | "NotApplicable" | "Active".
+    pub outcome: String,
+    /// Optional failure note; recorded on the case's discussion when present.
+    pub comment: Option<String>,
+}
+
+#[tauri::command]
+pub async fn ado_set_test_point_outcome(
+    state: State<'_, AdoState>,
+    input: SetOutcomeInput,
+) -> Result<TestPointInfo, AdoError> {
+    let point = test_points::set_test_point_outcome(
+        &state,
+        input.plan_id,
+        input.suite_id,
+        input.point_id,
+        &input.outcome,
+    )
+    .await?;
+    // A comment is best-effort: the outcome is already recorded, so a failed
+    // discussion write shouldn't surface as a failure of the whole action.
+    if let Some(comment) = input.comment.as_deref() {
+        let trimmed = comment.trim();
+        if !trimmed.is_empty() {
+            let note = format!(
+                "Execution outcome set to {} via DevOps Studio.\n\n{}",
+                input.outcome, trimmed
+            );
+            if let Err(e) = test_points::add_case_comment(&state, input.case_id, &note).await {
+                log::warn!(
+                    "ado_set_test_point_outcome: outcome saved but discussion comment failed: {e:?}"
+                );
+            }
+        }
+    }
+    Ok(point)
 }
 
 #[derive(Deserialize)]

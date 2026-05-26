@@ -58,7 +58,11 @@ type State = {
   refreshConnection: () => Promise<void>;
   refreshPlans: () => Promise<void>;
   loadSuites: (planId: number, opts?: { force?: boolean }) => Promise<void>;
-  loadSuiteCases: (planId: number, suiteId: number) => Promise<void>;
+  loadSuiteCases: (
+    planId: number,
+    suiteId: number,
+    opts?: { force?: boolean },
+  ) => Promise<void>;
   /** Fetch full case data (state, priority, linked work items, etc.) on
    *  demand. Idempotent — repeat calls return the cached value. */
   loadCaseDetails: (caseId: number) => Promise<void>;
@@ -190,14 +194,25 @@ export const useTestPlans = create<State>((set, get) => ({
     }
   },
 
-  loadSuiteCases: async (planId: number, suiteId: number) => {
+  loadSuiteCases: async (
+    planId: number,
+    suiteId: number,
+    opts?: { force?: boolean },
+  ) => {
     const key = caseKey(planId, suiteId);
     if (inFlightCases.has(key)) return;
 
     const curr = get().bySuite.get(planId);
     const existing = curr?.suiteCases.get(suiteId);
-    if (existing?.cases !== undefined && existing?.cases !== null && !existing?.error) {
-      return; // already loaded
+    // `force` skips the cache short-circuit — used by "Refresh cases" so newly
+    // published cases show up without a hard app reload.
+    if (
+      !opts?.force &&
+      existing?.cases !== undefined &&
+      existing?.cases !== null &&
+      !existing?.error
+    ) {
+      return; // cached + clean
     }
 
     const controller = new AbortController();

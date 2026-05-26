@@ -3,6 +3,15 @@ type TabBase = { id: number; title: string; pinned: boolean };
 export type TestCaseTab = TabBase & {
   kind: "test-case";
   caseId: number;
+  /** Execution context: the plan + suite this case was opened from. Lets the
+   *  TestCasePane record a Pass/Fail/Blocked outcome against the right test
+   *  point without a picker. Absent when the case was opened from a surface
+   *  with no suite context (search, history, a bug's linked items) — the
+   *  Execute bar then offers a suite picker. Dedup is still by caseId alone
+   *  (one case == one tab); reopening from a different suite retargets the
+   *  existing tab's context. */
+  planId?: number | null;
+  suiteId?: number | null;
 };
 
 export type GeneratorTab = TabBase & {

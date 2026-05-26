@@ -101,6 +101,35 @@ pub struct TestCaseRef {
     pub state: Option<String>,
 }
 
+// --- Test execution (test points) ---
+
+/// A test point — the (test case × configuration) pair inside one suite of
+/// one plan. Pass/Fail/Blocked outcomes live on the POINT, never on the case
+/// work item, so the same case in two suites carries two independent results.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestPointInfo {
+    pub id: i64,
+    pub configuration_id: Option<i64>,
+    pub configuration_name: Option<String>,
+    /// Latest outcome as ADO reports it: "Passed" | "Failed" | "Blocked" |
+    /// "NotApplicable" | "Unspecified" | "NotExecuted" | "Active" | …
+    pub outcome: String,
+    pub tester: Option<String>,
+    pub last_updated: Option<String>,
+}
+
+/// A (plan, suite) pair that contains a given test case. Powers the
+/// execution-target picker when a case is opened without suite context.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaseSuiteMembership {
+    pub plan_id: i64,
+    pub plan_name: Option<String>,
+    pub suite_id: i64,
+    pub suite_name: Option<String>,
+}
+
 // --- Work Items (Test Case, Bug) ---
 
 #[derive(Debug, Clone, Serialize)]

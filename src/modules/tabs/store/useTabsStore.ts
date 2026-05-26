@@ -6,6 +6,7 @@ import type {
   ClosedTabSnapshot,
   PaneNode,
   TabKind,
+  TestCaseTab,
 } from "./types";
 import {
   dropLeaf,
@@ -27,7 +28,17 @@ export const ROOT_LEAF_ID = "root";
 const RECENTLY_CLOSED_LIMIT = 10;
 
 export type OpenTabInput =
-  | { kind: "test-case"; caseId: number; title: string; pinned?: boolean }
+  | {
+      kind: "test-case";
+      caseId: number;
+      title: string;
+      /** Plan + suite the case was opened from, so the Execute bar can target
+       *  the right test point. Optional — surfaces without suite context
+       *  (search, history) omit them and the pane shows a suite picker. */
+      planId?: number | null;
+      suiteId?: number | null;
+      pinned?: boolean;
+    }
   | {
       kind: "generator";
       title?: string;
@@ -249,7 +260,27 @@ export const useTabsStore = create<TabsState>()(
         if (existing) {
           const owner = findLeafByTab(paneTree, existing.id);
           const leafId = owner?.id ?? focusedLeafId;
+          // Retarget a reused test-case tab to the suite it was just opened
+          // from. Dedup keeps one tab per case, but the user may open the
+          // same case from a different suite to run it there — honour the
+          // newer execution context when the caller supplies one.
+          const retarget =
+            input.kind === "test-case" &&
+            existing.kind === "test-case" &&
+            (input.planId != null || input.suiteId != null) &&
+            (existing.planId !== input.planId ||
+              existing.suiteId !== input.suiteId);
           set((s) => ({
+            tabs: retarget
+              ? {
+                  ...s.tabs,
+                  [existing.id]: {
+                    ...(s.tabs[existing.id] as TestCaseTab),
+                    planId: input.planId ?? null,
+                    suiteId: input.suiteId ?? null,
+                  },
+                }
+              : s.tabs,
             paneTree: setLeafActive(s.paneTree, leafId, existing.id),
             focusedLeafId: leafId,
           }));
@@ -265,6 +296,8 @@ export const useTabsStore = create<TabsState>()(
               kind: "test-case",
               title: input.title,
               caseId: input.caseId,
+              planId: input.planId ?? null,
+              suiteId: input.suiteId ?? null,
               pinned: input.pinned ?? false,
             };
             break;
@@ -448,6 +481,8 @@ export const useTabsStore = create<TabsState>()(
               kind: "test-case",
               caseId: t.caseId,
               title: t.title,
+              planId: t.planId,
+              suiteId: t.suiteId,
             });
           case "code-viewer":
             return get().openTab({

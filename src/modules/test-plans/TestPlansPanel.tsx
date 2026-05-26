@@ -47,7 +47,14 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { SuiteRef, TestCaseRef, TestPlanRef } from "@/modules/ado";
 
 type Props = {
-  onOpenCase: (input: { caseId: number; title: string }) => void;
+  onOpenCase: (input: {
+    caseId: number;
+    title: string;
+    /** Plan + suite this case lives under, so the opened tab's Execute bar
+     *  can record outcomes against the right test point without a picker. */
+    planId?: number | null;
+    suiteId?: number | null;
+  }) => void;
   onStartGenerator: (input?: {
     planId?: number | null;
     suiteId?: number | null;
@@ -958,8 +965,11 @@ function SuiteRow({
         <ContextMenuContent>
           <ContextMenuItem
             icon={<HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />}
+            description="Re-fetch this suite's cases from Azure DevOps — picks up newly published or deleted cases."
             onSelect={() =>
-              void useTestPlans.getState().loadSuiteCases(planId, suite.id)
+              void useTestPlans
+                .getState()
+                .loadSuiteCases(planId, suite.id, { force: true })
             }
           >
             Refresh cases
@@ -1119,7 +1129,13 @@ function CaseRow({
     : null;
   const buttonRef = useRef<HTMLButtonElement | null>(null);
 
-  const open = () => onOpenCase({ caseId: tc.id, title: `#${tc.id} · ${tc.title}` });
+  const open = () =>
+    onOpenCase({
+      caseId: tc.id,
+      title: `#${tc.id} · ${tc.title}`,
+      planId,
+      suiteId,
+    });
 
   useEffect(() => {
     if (active) {

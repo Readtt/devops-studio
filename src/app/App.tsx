@@ -287,11 +287,21 @@ function AppShell() {
   }, []);
 
   const openTestCaseTab = useCallback(
-    (input: { caseId: number; title: string }) => {
+    (input: {
+      caseId: number;
+      title: string;
+      /** Plan + suite the case was opened from — forwarded so the Execute
+       *  bar can target the right test point. Callers without suite context
+       *  (search, command palette, a bug's linked items) omit them. */
+      planId?: number | null;
+      suiteId?: number | null;
+    }) => {
       const id = useTabsStore.getState().openTab({
         kind: "test-case",
         caseId: input.caseId,
         title: input.title,
+        planId: input.planId,
+        suiteId: input.suiteId,
       });
       // Refresh the title on re-open (ADO title may have changed).
       useTabsStore.getState().renameTab(id, input.title);

@@ -29,12 +29,19 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useWorkItemTitles } from "@/modules/ado/hooks/useWorkItemTitles";
 import type { LinkedWorkItem } from "@/modules/ado";
 import { EditableText } from "@/modules/generator/components/EditableText";
+import { OutcomeControl } from "./OutcomeControl";
 
 type Props = {
   caseId: number;
+  /** Plan + suite the case was opened from, threaded through the tab so the
+   *  Execute bar can record a Pass/Fail/Blocked outcome against the right
+   *  test point. Null when opened without suite context — the bar then
+   *  offers a suite picker. */
+  planId?: number | null;
+  suiteId?: number | null;
 };
 
-export function TestCasePane({ caseId }: Props) {
+export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
   const [tc, setTc] = useState<TestCase | null>(null);
   const [conn, setConn] = useState<ConnectionStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -43,6 +50,9 @@ export function TestCasePane({ caseId }: Props) {
   const [savingTitle, setSavingTitle] = useState(false);
   const [stepsSaveError, setStepsSaveError] = useState<string | null>(null);
   const [savingSteps, setSavingSteps] = useState(false);
+  // Bumped on every case reload (button + window focus) so the header outcome
+  // control re-reads its test point alongside the rest of the case.
+  const [reloadKey, setReloadKey] = useState(0);
 
   // Optimistic title commit: update local state first so the UI feels live,
   // revert on a wire-level failure. ADO's response carries the new System.Title
@@ -126,6 +136,9 @@ export function TestCasePane({ caseId }: Props) {
       setError(toAdoError(e));
     } finally {
       setLoading(false);
+      // Re-read the recorded outcome too — a manual Refresh should reflect a
+      // Pass/Fail set elsewhere (ADO web, another tab), not just the fields.
+      setReloadKey((k) => k + 1);
     }
   }, [caseId]);
 
@@ -196,7 +209,13 @@ export function TestCasePane({ caseId }: Props) {
               className="min-w-0 flex-1 truncate"
             />
           </h1>
-          <div className="flex shrink-0 gap-1">
+          <div className="flex shrink-0 items-center gap-1">
+            <OutcomeControl
+              caseId={tc.id}
+              planId={planId}
+              suiteId={suiteId}
+              refreshKey={reloadKey}
+            />
             <Button
               size="sm"
               variant="ghost"

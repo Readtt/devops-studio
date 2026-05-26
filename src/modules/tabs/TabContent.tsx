@@ -25,7 +25,13 @@ type Props = {
 export const TabContent = memo(function TabContent({ tab, sourceRoot }: Props) {
   switch (tab.kind) {
     case "test-case":
-      return <TestCasePane caseId={tab.caseId} />;
+      return (
+        <TestCasePane
+          caseId={tab.caseId}
+          planId={tab.planId ?? null}
+          suiteId={tab.suiteId ?? null}
+        />
+      );
     case "bug":
       return <BugPane bugId={tab.bugId} sourceRoot={sourceRoot} />;
     case "code-viewer":
