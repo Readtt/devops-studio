@@ -15,10 +15,12 @@
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::client::{get_json, patch_json_patch, project_api, AdoState};
+use super::client::{
+    delete_request, get_json, patch_json_patch, post_json, project_api, AdoState,
+};
 use super::errors::{AdoError, AdoResult};
 use super::test_cases::{display_name_field, friendly_rel_name, relation_to_linked};
-use super::types::{Bug, CodeLink, CreatedWorkItem, DraftBug, LinkedWorkItem};
+use super::types::{Bug, BugRef, CodeLink, Connection, CreatedWorkItem, DraftBug, LinkedWorkItem};
 
 const CODE_LINKS_OPEN: &str = "<!-- devops-studio:code-links:v1 -->";
 const CODE_LINKS_CLOSE: &str = "<!-- /devops-studio:code-links -->";
@@ -152,6 +154,189 @@ pub async fn get_bug(state: &AdoState, bug_id: i64) -> AdoResult<Bug> {
     );
     let raw: Value = get_json(state, &url, "bug").await?;
     work_item_to_bug(raw, &conn.org_url, &conn.project)
+}
+
+/// Lightweight bug picker source. Runs a WIQL query (optionally scoped by area
+/// path and/or a free-text title match), then batch-hydrates id/title/state/
+/// severity for the matched ids. Newest-changed first; WIQL ordering preserved
+/// through the hydrate step.
+pub async fn list_bugs(
+    state: &AdoState,
+    area_path: Option<&str>,
+    query: Option<&str>,
+    top: i64,
+) -> AdoResult<Vec<BugRef>> {
+    let (conn, _) = state.snapshot();
+    let conn = conn.ok_or(AdoError::NotConfigured)?;
+    let top = top.clamp(1, 200);
+
+    // Single quotes in user input are doubled so the WIQL string literals stay
+    // well-formed (WIQL escapes ' as '').
+    let mut wiql = format!(
+        "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '{}' AND [System.WorkItemType] = 'Bug'",
+        wiql_escape(&conn.project)
+    );
+    if let Some(area) = area_path.map(str::trim).filter(|s| !s.is_empty()) {
+        wiql.push_str(&format!(" AND [System.AreaPath] UNDER '{}'", wiql_escape(area)));
+    }
+    if let Some(q) = query.map(str::trim).filter(|s| !s.is_empty()) {
+        wiql.push_str(&format!(" AND [System.Title] CONTAINS '{}'", wiql_escape(q)));
+    }
+    wiql.push_str(" ORDER BY [System.ChangedDate] DESC");
+
+    let url = project_api(&conn, &format!("wit/wiql?$top={top}"));
+    let body = json!({ "query": wiql });
+    let resp: Value =
+        post_json(state, &url, &body, "application/json", "list bugs (wiql)").await?;
+
+    let ids: Vec<i64> = resp
+        .get("workItems")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|w| w.get("id").and_then(|v| v.as_i64()))
+                .take(top as usize)
+                .collect()
+        })
+        .unwrap_or_default();
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    hydrate_bug_refs(state, &conn, &ids).await
+}
+
+/// Batch-fetch the picker fields for `ids` and return them in the same order
+/// `ids` were given (so the caller's WIQL sort survives). ADO caps a single
+/// `ids=` call at ~200, so we chunk.
+async fn hydrate_bug_refs(
+    state: &AdoState,
+    conn: &Connection,
+    ids: &[i64],
+) -> AdoResult<Vec<BugRef>> {
+    use std::collections::HashMap;
+    let mut by_id: HashMap<i64, BugRef> = HashMap::with_capacity(ids.len());
+    for chunk in ids.chunks(200) {
+        let ids_csv: String = chunk
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let url = project_api(
+            conn,
+            &format!(
+                "wit/workitems?ids={ids_csv}&fields=System.Title,System.State,Microsoft.VSTS.Common.Severity"
+            ),
+        );
+        let raw: Value = get_json(state, &url, "bug details").await?;
+        let arr = raw
+            .get("value")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for item in arr {
+            let Some(id) = item.get("id").and_then(|v| v.as_i64()) else {
+                continue;
+            };
+            let fields = item.get("fields");
+            let title = fields
+                .and_then(|f| f.get("System.Title"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let state_str = fields
+                .and_then(|f| f.get("System.State"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let severity = fields
+                .and_then(|f| f.get("Microsoft.VSTS.Common.Severity"))
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            by_id.insert(
+                id,
+                BugRef {
+                    id,
+                    title,
+                    state: state_str,
+                    severity,
+                },
+            );
+        }
+    }
+    Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
+}
+
+/// Fields a bug update can change. Any `None` is left untouched.
+#[derive(Default)]
+pub struct BugUpdate {
+    pub title: Option<String>,
+    pub repro_steps: Option<String>,
+    pub severity: Option<String>,
+    pub state: Option<String>,
+}
+
+/// Patch a bug work item. Repro steps are re-rendered through the same HTML
+/// emitter as `create_bug` (no code-links on a chat-driven update). An all-None
+/// patch is a no-op and returns Ok without a round-trip.
+pub async fn update_bug(state: &AdoState, bug_id: i64, patch: &BugUpdate) -> AdoResult<()> {
+    let (conn, _) = state.snapshot();
+    let conn = conn.ok_or(AdoError::NotConfigured)?;
+
+    let mut ops: Vec<JsonPatchOp> = Vec::new();
+    if let Some(title) = &patch.title {
+        ops.push(JsonPatchOp {
+            op: "add",
+            path: "/fields/System.Title".into(),
+            value: Value::String(title.clone()),
+        });
+    }
+    if let Some(repro) = &patch.repro_steps {
+        let html = build_repro_steps_html(repro, &[]);
+        ops.push(JsonPatchOp {
+            op: "add",
+            path: "/fields/Microsoft.VSTS.TCM.ReproSteps".into(),
+            value: Value::String(html),
+        });
+    }
+    if let Some(sev) = &patch.severity {
+        ops.push(JsonPatchOp {
+            op: "add",
+            path: "/fields/Microsoft.VSTS.Common.Severity".into(),
+            value: Value::String(sev.clone()),
+        });
+    }
+    if let Some(st) = &patch.state {
+        ops.push(JsonPatchOp {
+            op: "add",
+            path: "/fields/System.State".into(),
+            value: Value::String(st.clone()),
+        });
+    }
+    if ops.is_empty() {
+        return Ok(());
+    }
+    let url = project_api(&conn, &format!("wit/workitems/{bug_id}"));
+    let _: Value = patch_json_patch(state, &url, &ops, "update bug").await?;
+    Ok(())
+}
+
+/// Delete a bug work item. Soft-delete (Recycle Bin, recoverable) unless
+/// `destroy` is true. A Bug is a work item like any other, so this mirrors
+/// `test_cases::delete_test_case`.
+pub async fn delete_bug(state: &AdoState, bug_id: i64, destroy: bool) -> AdoResult<()> {
+    let (conn, _) = state.snapshot();
+    let conn = conn.ok_or(AdoError::NotConfigured)?;
+    let path = if destroy {
+        format!("wit/workitems/{bug_id}&destroy=true")
+    } else {
+        format!("wit/workitems/{bug_id}")
+    };
+    let url = project_api(&conn, &path);
+    delete_request(state, &url, "delete bug").await
+}
+
+fn wiql_escape(s: &str) -> String {
+    s.replace('\'', "''")
 }
 
 fn work_item_to_bug(raw: Value, conn_org: &str, conn_project: &str) -> AdoResult<Bug> {
@@ -453,6 +638,15 @@ mod tests {
         let html = build_repro_steps_html("x", &links);
         assert!(html.contains("f.rs:7</LI>"));
         assert!(!html.contains(":7-"));
+    }
+
+    #[test]
+    fn wiql_escape_doubles_single_quotes() {
+        // WIQL string literals escape ' as '' — an area path or search term
+        // with an apostrophe must not break out of the quoted literal.
+        assert_eq!(wiql_escape("O'Brien\\Area"), "O''Brien\\Area");
+        assert_eq!(wiql_escape("plain"), "plain");
+        assert_eq!(wiql_escape("''"), "''''");
     }
 
     #[test]

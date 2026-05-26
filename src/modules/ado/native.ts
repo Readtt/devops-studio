@@ -11,6 +11,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
   BugSchema,
+  BugRefSchema,
   ConnectionStatusSchema,
   CommitInfoSchema,
   CaseSuiteMembershipSchema,
@@ -26,6 +27,7 @@ import {
   TestPointInfoSchema,
   type AdoError,
   type Bug,
+  type BugRef,
   type CaseSuiteMembership,
   type CommitInfo,
   type ConnectionStatus,
@@ -280,6 +282,56 @@ export async function linkBugToCase(
 export async function getBug(bugId: number): Promise<Bug> {
   const raw = await invoke("ado_get_bug", { bugId });
   return BugSchema.parse(raw);
+}
+
+/** List bugs for the bug-context picker. WIQL-backed; optionally scope by
+ *  `areaPath` and/or a free-text `query` on the title. Returns lightweight
+ *  rows newest-changed first — full bodies come from `getBug` on selection. */
+export async function listBugs(input?: {
+  areaPath?: string | null;
+  query?: string | null;
+  top?: number;
+}): Promise<BugRef[]> {
+  const raw = await invoke("ado_list_bugs", {
+    input: {
+      areaPath: input?.areaPath ?? null,
+      query: input?.query ?? null,
+      top: input?.top ?? null,
+    },
+  });
+  return BugRefSchema.array().parse(raw);
+}
+
+/** Patch a bug's title / repro steps / severity / state. Only the fields you
+ *  pass are changed; everything omitted is left untouched. */
+export async function updateBug(input: {
+  bugId: number;
+  title?: string;
+  reproSteps?: string;
+  severity?: string;
+  state?: string;
+}): Promise<void> {
+  await invoke("ado_update_bug", {
+    input: {
+      bugId: input.bugId,
+      title: input.title ?? null,
+      reproSteps: input.reproSteps ?? null,
+      severity: input.severity ?? null,
+      state: input.state ?? null,
+    },
+  });
+}
+
+/** Soft-delete a bug (moves it to ADO's Recycle Bin — recoverable). Pass
+ *  `destroy: true` only for permanent deletion; the chat-driven path defaults
+ *  to soft so accidents are reversible. */
+export async function deleteBug(input: {
+  bugId: number;
+  destroy?: boolean;
+}): Promise<void> {
+  await invoke("ado_delete_bug", {
+    input: { bugId: input.bugId, destroy: input.destroy ?? false },
+  });
 }
 
 export async function updateCaseDescription(

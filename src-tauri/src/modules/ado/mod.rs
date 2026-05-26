@@ -27,8 +27,8 @@ use tauri_plugin_store::StoreExt;
 use client::{keyring_service, pat_account, normalize_org_url, AdoState};
 use errors::AdoError;
 use types::{
-    Bug, CaseSuiteMembership, CommitInfo, Connection, ConnectionStatus, CreatedWorkItem, DraftBug,
-    DraftCase, FileContent, ProjectRef, RepoRef, SuiteRef, TestCase, TestCaseRef,
+    Bug, BugRef, CaseSuiteMembership, CommitInfo, Connection, ConnectionStatus, CreatedWorkItem,
+    DraftBug, DraftCase, FileContent, ProjectRef, RepoRef, SuiteRef, TestCase, TestCaseRef,
     TestConnectionResult, TestPlanRef, TestPointInfo,
 };
 
@@ -434,6 +434,86 @@ pub async fn ado_link_bug_to_case(
 #[tauri::command]
 pub async fn ado_get_bug(state: State<'_, AdoState>, bug_id: i64) -> Result<Bug, AdoError> {
     bugs::get_bug(&state, bug_id).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListBugsInput {
+    #[serde(default)]
+    pub area_path: Option<String>,
+    #[serde(default)]
+    pub query: Option<String>,
+    #[serde(default)]
+    pub top: Option<i64>,
+}
+
+/// List bugs for the bug-context picker (WIQL-backed, optionally scoped by area
+/// path / free-text title). Returns lightweight `BugRef`s; full bodies come
+/// from `ado_get_bug` when a bug is selected.
+#[tauri::command]
+pub async fn ado_list_bugs(
+    state: State<'_, AdoState>,
+    input: ListBugsInput,
+) -> Result<Vec<BugRef>, AdoError> {
+    bugs::list_bugs(
+        &state,
+        input.area_path.as_deref(),
+        input.query.as_deref(),
+        input.top.unwrap_or(50),
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateBugInput {
+    pub bug_id: i64,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub repro_steps: Option<String>,
+    #[serde(default)]
+    pub severity: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
+}
+
+/// Patch a bug's title / repro steps / severity / state. Unset fields are left
+/// untouched.
+#[tauri::command]
+pub async fn ado_update_bug(
+    state: State<'_, AdoState>,
+    input: UpdateBugInput,
+) -> Result<(), AdoError> {
+    bugs::update_bug(
+        &state,
+        input.bug_id,
+        &bugs::BugUpdate {
+            title: input.title,
+            repro_steps: input.repro_steps,
+            severity: input.severity,
+            state: input.state,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteBugInput {
+    pub bug_id: i64,
+    #[serde(default)]
+    pub destroy: bool,
+}
+
+/// Delete a bug. Soft-delete to the Recycle Bin by default (recoverable);
+/// `destroy: true` permanently removes it.
+#[tauri::command]
+pub async fn ado_delete_bug(
+    state: State<'_, AdoState>,
+    input: DeleteBugInput,
+) -> Result<(), AdoError> {
+    bugs::delete_bug(&state, input.bug_id, input.destroy).await
 }
 
 #[tauri::command]

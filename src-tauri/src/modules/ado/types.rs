@@ -218,6 +218,19 @@ pub struct Bug {
     pub linked_work_items: Vec<LinkedWorkItem>,
 }
 
+/// Lightweight bug projection for the bug-context picker — just the fields a
+/// row shows. Full repro/relations come from `get_bug` when a bug is selected.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BugRef {
+    pub id: i64,
+    pub title: String,
+    pub state: String,
+    /// "1 - Critical" | "2 - High" | "3 - Medium" | "4 - Low" (or empty).
+    #[serde(default)]
+    pub severity: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TestStep {

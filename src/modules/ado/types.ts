@@ -187,6 +187,16 @@ export const BugSchema = z.object({
 });
 export type Bug = z.infer<typeof BugSchema>;
 
+/** Lightweight bug projection for the bug-context picker — id + the few fields
+ *  a row shows. Full repro/relations come from `getBug` when a bug is selected. */
+export const BugRefSchema = z.object({
+  id: z.number().int(),
+  title: z.string(),
+  state: z.string(),
+  severity: z.string().nullable().optional(),
+});
+export type BugRef = z.infer<typeof BugRefSchema>;
+
 export const ProjectRefSchema = z.object({
   id: z.string(),
   name: z.string(),
