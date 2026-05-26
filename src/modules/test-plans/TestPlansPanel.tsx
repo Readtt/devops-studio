@@ -35,6 +35,7 @@ import {
   Link01Icon,
   PlusSignIcon,
   RefreshIcon,
+  Search01Icon,
   Settings01Icon,
   TaskDone01Icon,
   UnfoldLessIcon,
@@ -72,7 +73,12 @@ type Props = {
 
 type ConnInfo = { orgUrl: string; project: string };
 
-const FILTER_DEBOUNCE_MS = 250;
+/** Platform-appropriate label for the command-palette shortcut. */
+function paletteHint(): string {
+  const mac =
+    typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
+  return mac ? "⌘K" : "Ctrl K";
+}
 
 // --- Suite tree --------------------------------------------------------------
 
@@ -171,8 +177,6 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
   const [expandedPlans, setExpandedPlans] = useState<Set<number>>(new Set());
   const [expandedSuites, setExpandedSuites] = useState<Set<number>>(new Set());
   const [expandedCases, setExpandedCases] = useState<Set<number>>(new Set());
-  const [filterDraft, setFilterDraft] = useState("");
-  const [filter, setFilter] = useState(""); // debounced
   const [conn, setConn] = useState<ConnInfo | null>(null);
   const [newSuiteRequest, setNewSuiteRequest] = useState<NewSuiteRequest>(null);
   // Suite-rename in flight. Only ONE suite is editable at a time — the UI
@@ -214,34 +218,12 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
     }
   }, [configured, expandedPlans, refreshPlans, loadSuites]);
 
-  useEffect(() => {
-    const id = window.setTimeout(() => {
-      setFilter(filterDraft);
-    }, FILTER_DEBOUNCE_MS);
-    return () => window.clearTimeout(id);
-  }, [filterDraft]);
-
-  const needle = useMemo(() => filter.trim().toLowerCase(), [filter]);
-  const matches = useMemo(() => {
-    if (!needle) return null;
-    return (s: string) => s.toLowerCase().includes(needle);
-  }, [needle]);
-
-  // Eager-load when filtering, so a suite-title-only match isn't hidden
-  // behind a collapsed plan. We deliberately STOP at suites — fanning out
-  // case loads per suite on every keystroke (potentially hundreds of ADO
-  // calls) was the dominant cost at scale. For deep case-title search,
-  // the Ctrl/Cmd+K palette has a proper in-memory index that's instant.
-  useEffect(() => {
-    if (!needle || plans.length === 0) return;
-    for (const p of plans) {
-      if (p.name.toLowerCase().includes(needle)) continue;
-      void loadSuites(p.id);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [needle, plans, loadSuites]);
-
-  const forceExpand = needle.length > 0;
+  // Inline tree filtering was removed in favour of the Ctrl/Cmd+K command
+  // palette (which searches every plan/suite/case + all ADO work items, not
+  // just what's loaded). The tree render still takes these, so feed inert
+  // constants: never match-filter, never force-expand.
+  const matches = null;
+  const forceExpand = false;
 
   const togglePlan = useCallback(
     (id: number) => {
@@ -369,12 +351,28 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
       <ProjectHeader projectName={conn?.project ?? ""} />
 
       <div className="flex items-center gap-1.5 border-b border-border/60 px-2 py-1.5">
-        <input
-          value={filterDraft}
-          onChange={(e) => setFilterDraft(e.target.value)}
-          placeholder="Search plans, suites, cases…"
-          className="min-w-0 flex-1 rounded-md border border-border/60 bg-background/70 px-2 py-1 text-[11.5px] outline-none transition-colors focus:border-primary/55 focus:ring-2 focus:ring-ring/25"
-        />
+        <button
+          type="button"
+          onClick={() =>
+            window.dispatchEvent(
+              new CustomEvent("devops-studio:open-command-palette"),
+            )
+          }
+          className="group flex min-w-0 flex-1 items-center gap-1.5 rounded-md border border-border/60 bg-background/70 px-2 py-1 text-left text-[11.5px] text-muted-foreground transition-colors hover:border-border hover:bg-background hover:text-foreground"
+        >
+          <HugeiconsIcon
+            icon={Search01Icon}
+            size={12}
+            strokeWidth={1.75}
+            className="shrink-0"
+          />
+          <span className="min-w-0 flex-1 truncate">
+            Search plans, suites &amp; work items…
+          </span>
+          <kbd className="shrink-0 rounded border border-border/60 bg-card px-1 font-mono text-[9.5px] text-muted-foreground/80">
+            {paletteHint()}
+          </kbd>
+        </button>
         {anythingExpanded ? (
           <Tooltip>
             <TooltipTrigger asChild>

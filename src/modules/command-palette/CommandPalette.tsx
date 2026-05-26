@@ -8,7 +8,14 @@ import {
   CommandSeparator,
 } from "@/components/ui/command";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getBug, getCase, type Bug, type TestCase } from "@/modules/ado";
+import {
+  getBug,
+  getCase,
+  searchWorkItems,
+  type Bug,
+  type TestCase,
+  type WorkItemRef,
+} from "@/modules/ado";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { useTestPlans } from "@/modules/test-plans";
 import {
@@ -47,6 +54,9 @@ type Props = {
    *  No-op when no source dir is set — the callback handles routing the
    *  user to settings in that case. */
   onOpenCodeReview?: () => void;
+  /** Open any ADO work item (not just cases/bugs) found by the text search.
+   *  Bugs/test cases open their pane; other types open in Azure DevOps. */
+  onOpenWorkItem?: (wi: WorkItemRef) => void;
   /** Absolute path of the user's source directory — surfaced in the
    *  "Open Terminal at source root" command's subtitle. */
   sourceRoot?: string | null;
@@ -70,6 +80,7 @@ export function CommandPalette({
   onOpenBug,
   onOpenTerminal,
   onOpenCodeReview,
+  onOpenWorkItem,
   sourceRoot,
 }: Props) {
   const [query, setQuery] = useState("");
@@ -98,6 +109,41 @@ export function CommandPalette({
     if (numericId !== null || bugOnlyId !== null) return [];
     return search(query, 30);
   }, [search, query, numericId, bugOnlyId]);
+
+  // Live ADO work-item search (any type) for text queries — broader than the
+  // in-memory index, which only knows what's been loaded in the explorer.
+  const [workItems, setWorkItems] = useState<WorkItemRef[]>([]);
+  const [wiLoading, setWiLoading] = useState(false);
+  const wiToken = useRef(0);
+  useEffect(() => {
+    const q = query.trim();
+    if (
+      !onOpenWorkItem ||
+      !configured ||
+      numericId !== null ||
+      bugOnlyId !== null ||
+      q.length < 2
+    ) {
+      setWorkItems([]);
+      setWiLoading(false);
+      return;
+    }
+    const token = ++wiToken.current;
+    setWiLoading(true);
+    const t = window.setTimeout(() => {
+      void searchWorkItems({ query: q, top: 12 })
+        .then((items) => {
+          if (token === wiToken.current) setWorkItems(items);
+        })
+        .catch(() => {
+          if (token === wiToken.current) setWorkItems([]);
+        })
+        .finally(() => {
+          if (token === wiToken.current) setWiLoading(false);
+        });
+    }, 250);
+    return () => window.clearTimeout(t);
+  }, [query, configured, numericId, bugOnlyId, onOpenWorkItem]);
 
   const run = (fn: () => void | Promise<void>) => {
     onOpenChange(false);
@@ -193,6 +239,29 @@ export function CommandPalette({
                   }
                 />
               ))}
+            </CommandGroup>
+            <CommandSeparator />
+          </>
+        ) : null}
+
+        {onOpenWorkItem && (wiLoading || workItems.length > 0) ? (
+          <>
+            <CommandGroup heading="Azure DevOps work items">
+              {wiLoading && workItems.length === 0 ? (
+                <div className="flex flex-col gap-1 px-2 py-1">
+                  {[0, 1, 2].map((i) => (
+                    <Skeleton key={i} className="h-7 w-full rounded-md" />
+                  ))}
+                </div>
+              ) : (
+                workItems.map((wi) => (
+                  <WorkItemRow
+                    key={wi.id}
+                    wi={wi}
+                    onSelect={() => run(() => onOpenWorkItem(wi))}
+                  />
+                ))
+              )}
             </CommandGroup>
             <CommandSeparator />
           </>
@@ -442,6 +511,43 @@ function SearchRow({
       <span className="ml-auto text-[10px] text-muted-foreground">
         #{result.id}
       </span>
+    </CommandItem>
+  );
+}
+
+const WORK_ITEM_ABBR: Record<string, string> = {
+  Bug: "BUG",
+  Task: "TASK",
+  "User Story": "STORY",
+  "Product Backlog Item": "PBI",
+  Feature: "FEAT",
+  Epic: "EPIC",
+  Issue: "ISSUE",
+  "Test Case": "CASE",
+};
+
+function WorkItemRow({
+  wi,
+  onSelect,
+}: {
+  wi: WorkItemRef;
+  onSelect: () => void;
+}) {
+  const abbr =
+    WORK_ITEM_ABBR[wi.workItemType] ??
+    (wi.workItemType ? wi.workItemType.slice(0, 4).toUpperCase() : "ITEM");
+  return (
+    <CommandItem value={`wi-${wi.id}-${wi.title}`} onSelect={onSelect}>
+      <span className="w-10 shrink-0 font-mono text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {abbr}
+      </span>
+      <div className="flex min-w-0 flex-col">
+        <span className="truncate">{wi.title}</span>
+        <span className="truncate text-[10.5px] text-muted-foreground">
+          <span className="font-mono">#{wi.id}</span>
+          {wi.state ? ` · ${wi.state}` : ""}
+        </span>
+      </div>
     </CommandItem>
   );
 }

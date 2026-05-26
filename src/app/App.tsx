@@ -54,7 +54,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useSourceDirGitInfo } from "@/modules/git";
-import { getConnection } from "@/modules/ado";
+import { getConnection, type WorkItemRef } from "@/modules/ado";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { AzureDevOpsBrand } from "@/components/AzureDevOpsBrand";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
@@ -468,6 +469,34 @@ function AppShell() {
     [],
   );
 
+  // Open any ADO work item from the command palette. Bugs and test cases have
+  // dedicated panes; every other type (Task, User Story, Feature…) has no pane
+  // here, so we open it in Azure DevOps.
+  const openWorkItem = useCallback(
+    (wi: WorkItemRef) => {
+      if (wi.workItemType === "Bug") {
+        openBugTab({ bugId: wi.id, title: `Bug #${wi.id} · ${wi.title}` });
+        return;
+      }
+      if (wi.workItemType === "Test Case") {
+        openTestCaseTab({ caseId: wi.id, title: `#${wi.id} · ${wi.title}` });
+        return;
+      }
+      void (async () => {
+        try {
+          const c = await getConnection();
+          const url = `${c.orgUrl.replace(/\/$/, "")}/${encodeURIComponent(
+            c.project,
+          )}/_workitems/edit/${wi.id}`;
+          await openUrl(url);
+        } catch (e) {
+          console.error("[work-item] open failed:", e);
+        }
+      })();
+    },
+    [openBugTab, openTestCaseTab],
+  );
+
   const openTerminalTab = useCallback(
     (input?: { cwd?: string | null; shellId?: string | null }) => {
       // Resolve cwd at call time. If the caller didn't pass one, fall back
@@ -840,6 +869,16 @@ function AppShell() {
   const { zoomIn, zoomOut, zoomReset } = useZoom();
 
   const [paletteOpen, setPaletteOpen] = useState(false);
+
+  // Side channel: open the command palette (the Test Plans search button
+  // dispatches this instead of hosting its own inline filter input).
+  useEffect(() => {
+    const onOpen = () => setPaletteOpen(true);
+    window.addEventListener("devops-studio:open-command-palette", onOpen);
+    return () =>
+      window.removeEventListener("devops-studio:open-command-palette", onOpen);
+  }, []);
+
   // Global keyboard shortcuts. Wired through useGlobalShortcuts so the
   // Settings → Shortcuts page can customize bindings — declaring them
   // there but not handling them here would let users "rebind" keys that
@@ -1444,6 +1483,7 @@ function AppShell() {
             onOpenCodeReview={() => {
               openCodeReviewTab();
             }}
+            onOpenWorkItem={openWorkItem}
             sourceRoot={sourceRoot}
           />
 
