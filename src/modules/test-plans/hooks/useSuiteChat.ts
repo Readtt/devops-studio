@@ -701,8 +701,17 @@ export const useSuiteChat = create<Store>((set, get) => ({
     if (bpWarnings.length > 0) {
       console.warn("[suite-chat] best-practices skipped:", bpWarnings);
     }
+    // Bugs LINKED to the in-scope cases are auto-injected as context the same
+    // way the cases themselves are — the model sees the open defects without
+    // the user attaching anything. Merged with any work items the user
+    // mentioned with #id, deduped, and capped so a huge suite can't blow the
+    // prompt budget.
+    const linkedBugIds = collectLinkedBugIds(promptCases, 25);
+    const mergedBugIds = Array.from(
+      new Set([...(bugIds ?? []), ...linkedBugIds]),
+    );
     const bugBlocks =
-      bugIds && bugIds.length > 0 ? await bugsToContextBlocks(bugIds) : [];
+      mergedBugIds.length > 0 ? await bugsToContextBlocks(mergedBugIds) : [];
     const contextBlocks = [...bpBlocks, ...bugBlocks];
 
     try {
@@ -899,6 +908,27 @@ export const useSuiteChat = create<Store>((set, get) => ({
     patchThread(set, planId, suiteId, threadId, { error: null });
   },
 }));
+
+/** Bug-shaped link kinds on a test case. ADO surfaces a case↔bug link as
+ *  "Tested by" (the case tests this bug) or "Tests" (inverse); both mean a
+ *  defect related to the case, which is what we want to auto-inject. */
+const BUG_LINK_KINDS = new Set(["Tested by", "Tests"]);
+
+/** Collect unique bug ids linked to the given cases, capped. Drives the
+ *  auto-injection of linked bugs into suite-chat context. */
+function collectLinkedBugIds(cases: TestCase[], cap: number): number[] {
+  const seen = new Set<number>();
+  const out: number[] = [];
+  for (const c of cases) {
+    for (const lwi of c.linkedWorkItems) {
+      if (!BUG_LINK_KINDS.has(lwi.kind) || seen.has(lwi.id)) continue;
+      seen.add(lwi.id);
+      out.push(lwi.id);
+      if (out.length >= cap) return out;
+    }
+  }
+  return out;
+}
 
 /** Apply the suite's free-text filter to the case list before it's
  *  serialized into the prompt. Matches against id, title, tags, and step
