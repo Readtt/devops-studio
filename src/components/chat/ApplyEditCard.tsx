@@ -44,17 +44,29 @@ export type ParsedEdit =
         | "create-case"
         | "delete-case"
         | "set-outcome"
+        | "create-bug"
+        | "update-bug"
+        | "delete-bug"
+        | "link-bug-to-case"
         | "unknown";
       caseId: number | null;
       title: string | null;
       steps: { action: string; expected: string }[];
-      /** Optional model-provided reason — used by delete-case to surface
-       *  "why is this being removed?" in the confirm step. */
+      /** Optional model-provided reason — used by delete-case / delete-bug to
+       *  surface "why is this being removed?" in the confirm step. */
       reason: string | null;
       /** Canonical execution outcome for set-outcome blocks — one of
        *  Passed / Failed / Blocked / NotApplicable / Active, or null when the
        *  model emitted something we don't recognize. */
       outcome: string | null;
+      /** Target bug for create/update/delete/link-bug kinds. */
+      bugId: number | null;
+      /** Bug severity ("1 - Critical" … "4 - Low") for create/update-bug. */
+      severity: string | null;
+      /** Bug workflow state for update-bug (e.g. "Active", "Resolved"). */
+      state: string | null;
+      /** Repro-steps text for create/update-bug. */
+      reproSteps: string | null;
     }
   | { ok: false; error: string };
 
@@ -104,6 +116,16 @@ function outcomeChip(outcome: string | null): { label: string; className: string
       return { label: "Unknown", className: "bg-destructive/15 text-destructive" };
   }
 }
+
+/** Edit kinds that target an existing case and therefore require a caseId.
+ *  Used to decide when a missing caseId is an error worth flagging vs. when
+ *  the kind legitimately has no case (create-bug / update-bug / delete-bug). */
+const CASE_TARGET_KINDS = new Set([
+  "rename",
+  "rewrite-steps",
+  "set-outcome",
+  "delete-case",
+]);
 
 type ApplyState = "idle" | "applying" | "undoing" | "error";
 
@@ -193,6 +215,36 @@ export function ApplyEditCard({
         }
         if (parsed.reason) payload.reason = parsed.reason;
       }
+      // --- Bug kinds ---
+      if (parsed.kind === "create-bug") {
+        payload.title = parsed.title ?? "";
+        payload.reproSteps = parsed.reproSteps ?? "";
+        if (parsed.severity) payload.severity = parsed.severity;
+        if (parsed.caseId != null) payload.linkCaseId = parsed.caseId;
+      }
+      if (parsed.kind === "update-bug") {
+        payload.bugId = parsed.bugId;
+        if (parsed.title != null) payload.title = parsed.title;
+        if (parsed.reproSteps != null) payload.reproSteps = parsed.reproSteps;
+        if (parsed.severity != null) payload.severity = parsed.severity;
+        if (parsed.state != null) payload.state = parsed.state;
+      }
+      if (parsed.kind === "link-bug-to-case") {
+        payload.bugId = parsed.bugId;
+      }
+      if (parsed.kind === "delete-bug") {
+        payload.bugId = parsed.bugId;
+        const confirmed = window.confirm(
+          parsed.bugId
+            ? `Delete bug #${parsed.bugId}? It moves to the ADO Recycle Bin and is recoverable for 30 days.`
+            : "Delete this bug?",
+        );
+        if (!confirmed) {
+          setState("idle");
+          return;
+        }
+        if (parsed.reason) payload.reason = parsed.reason;
+      }
       const result: ApplyEditResult = await onApply(payload);
       if (result.ok) {
         // Snapshot the pre-apply state so Undo can revive it later. We
@@ -200,8 +252,12 @@ export function ApplyEditCard({
         // moment of apply) rather than re-reading at undo-time, so the
         // undo target is deterministic regardless of any concurrent
         // edits that happen between apply and undo.
+        // Bug edits can't read prior state locally (lookupCase covers cases
+        // only), so the handler returns the snapshot in result.before; prefer
+        // it when present and fall back to the case-derived snapshot.
         const before: EditBeforeSnapshot | undefined =
-          current && parsed.kind === "rename"
+          result.before ??
+          (current && parsed.kind === "rename"
             ? { kind: "rename", title: current.title }
             : current && parsed.kind === "rewrite-steps"
               ? {
@@ -211,7 +267,7 @@ export function ApplyEditCard({
                     expected: s.expected,
                   })),
                 }
-              : undefined;
+              : undefined);
         const record: AppliedEditRecord = {
           appliedAt: new Date().toISOString(),
           message: result.message ?? "Applied.",
@@ -281,7 +337,15 @@ export function ApplyEditCard({
             ? "Delete case"
             : parsed.kind === "set-outcome"
               ? "Set outcome"
-              : `Edit (${parsed.kind})`;
+              : parsed.kind === "create-bug"
+                ? "Create bug"
+                : parsed.kind === "update-bug"
+                  ? "Update bug"
+                  : parsed.kind === "delete-bug"
+                    ? "Delete bug"
+                    : parsed.kind === "link-bug-to-case"
+                      ? "Link bug to case"
+                      : `Edit (${parsed.kind})`;
 
   // --- Already-applied (persisted across sessions) -------------------------
 
@@ -314,6 +378,7 @@ export function ApplyEditCard({
               <span className="text-[11.5px] font-medium leading-tight text-foreground">
                 {`Applied · ${kindLabel.toLowerCase()}`}
               </span>
+              {parsed.bugId != null ? <BugRefBadge bugId={parsed.bugId} /> : null}
               {parsed.caseId != null ? (
                 <CaseRefBadge
                   caseId={parsed.caseId}
@@ -386,22 +451,24 @@ export function ApplyEditCard({
             <span className="text-[11.5px] font-medium leading-tight text-foreground">
               {kindLabel}
             </span>
-            {parsed.kind === "create-case" ? (
+            {parsed.kind === "create-case" || parsed.kind === "create-bug" ? (
               <span className="rounded-sm bg-emerald-500/15 px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
-                new
+                {parsed.kind === "create-bug" ? "new bug" : "new"}
               </span>
-            ) : parsed.caseId != null ? (
+            ) : null}
+            {parsed.bugId != null ? <BugRefBadge bugId={parsed.bugId} /> : null}
+            {parsed.caseId != null ? (
               <CaseRefBadge
                 caseId={parsed.caseId}
                 title={current?.title ?? null}
                 webUrl={current?.webUrl ?? null}
                 suite={current?.suite ?? null}
               />
-            ) : (
+            ) : CASE_TARGET_KINDS.has(parsed.kind) ? (
               <span className="font-mono text-[10px] text-destructive">
                 no caseId
               </span>
-            )}
+            ) : null}
             {parsed.kind === "set-outcome" ? (
               <span
                 className={cn(
@@ -445,13 +512,18 @@ export function ApplyEditCard({
           <ApplyButton
             state={state}
             onClick={apply}
-            // create-case is the one kind where caseId is optionally null
-            // — the case doesn't exist yet. Every other kind requires a
-            // caseId to target the right work item. set-outcome also needs a
-            // recognized outcome before it can be applied.
+            // Each kind targets a different work item: case kinds need a
+            // caseId, bug update/delete/link kinds need a bugId, link also
+            // needs the case, set-outcome needs a recognized outcome. create-*
+            // kinds make a new item so they don't require a target id.
             disabled={
-              (parsed.kind !== "create-case" && parsed.caseId == null) ||
-              (parsed.kind === "set-outcome" && !parsed.outcome)
+              (CASE_TARGET_KINDS.has(parsed.kind) && parsed.caseId == null) ||
+              (parsed.kind === "set-outcome" && !parsed.outcome) ||
+              ((parsed.kind === "update-bug" ||
+                parsed.kind === "delete-bug" ||
+                parsed.kind === "link-bug-to-case") &&
+                parsed.bugId == null) ||
+              (parsed.kind === "link-bug-to-case" && parsed.caseId == null)
             }
           />
         </div>
@@ -1005,6 +1077,17 @@ export function CaseRefBadge({
   );
 }
 
+/** Minimal non-interactive reference chip for a bug id. Bugs don't have the
+ *  in-scope lookup cases get, so this is just the id — enough to anchor the
+ *  card to a specific work item. */
+export function BugRefBadge({ bugId }: { bugId: number }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-sm border border-border/55 bg-foreground/[0.04] px-1 py-px font-mono text-[10px] text-foreground/85">
+      bug #{bugId}
+    </span>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Subtitle + payload parsing
 // ---------------------------------------------------------------------------
@@ -1065,11 +1148,63 @@ export function buildSubtitle(
       ? `Reset #${parsed.caseId} to "not run" on its test point`
       : `Record #${parsed.caseId} as ${outcomeChip(parsed.outcome).label} on its test point`;
   }
+  if (parsed.kind === "create-bug") {
+    const title = parsed.title?.trim();
+    if (!title) return "Missing title — cannot create bug.";
+    const sev = parsed.severity ? ` · ${parsed.severity}` : "";
+    const link = parsed.caseId != null ? ` · links to #${parsed.caseId}` : "";
+    return `"${truncate(title, 48)}"${sev}${link}`;
+  }
+  if (parsed.kind === "update-bug") {
+    if (parsed.bugId == null) return "Missing bugId — cannot update.";
+    const parts: string[] = [];
+    if (parsed.title != null) parts.push("title");
+    if (parsed.severity != null) parts.push(`severity → ${parsed.severity}`);
+    if (parsed.state != null) parts.push(`state → ${parsed.state}`);
+    if (parsed.reproSteps != null) parts.push("repro steps");
+    if (parts.length === 0) return "No fields to update.";
+    return `Update bug #${parsed.bugId}: ${parts.join(", ")}`;
+  }
+  if (parsed.kind === "delete-bug") {
+    if (parsed.bugId == null) return "Missing bugId — cannot delete.";
+    if (parsed.reason) {
+      return `Move bug to Recycle Bin · ${truncate(parsed.reason, 48)}`;
+    }
+    return `Move bug #${parsed.bugId} to the ADO Recycle Bin (recoverable for 30 days)`;
+  }
+  if (parsed.kind === "link-bug-to-case") {
+    if (parsed.bugId == null || parsed.caseId == null) {
+      return "Need both a bugId and a caseId to link.";
+    }
+    return `Link bug #${parsed.bugId} to case #${parsed.caseId}`;
+  }
   return `Unsupported edit kind "${parsed.kind}"`;
 }
 
 function truncate(s: string, n: number): string {
   return s.length <= n ? s : `${s.slice(0, n - 1)}…`;
+}
+
+function numOrNull(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (typeof raw === "string" && /^\d+$/.test(raw.trim())) {
+    return Number.parseInt(raw.trim(), 10);
+  }
+  return null;
+}
+
+function parseSteps(raw: unknown): { action: string; expected: string }[] {
+  const arr = Array.isArray(raw) ? raw : [];
+  const out: { action: string; expected: string }[] = [];
+  for (const s of arr) {
+    if (!s || typeof s !== "object") continue;
+    const so = s as Record<string, unknown>;
+    out.push({
+      action: typeof so.action === "string" ? so.action : "",
+      expected: typeof so.expected === "string" ? so.expected : "",
+    });
+  }
+  return out;
 }
 
 export function parseEdit(body: string): ParsedEdit {
@@ -1090,58 +1225,46 @@ export function parseEdit(body: string): ParsedEdit {
   }
   const obj = raw as Record<string, unknown>;
   const kind = typeof obj.kind === "string" ? obj.kind : "unknown";
-  const caseIdRaw = obj.caseId;
-  const caseId =
-    typeof caseIdRaw === "number" && Number.isFinite(caseIdRaw)
-      ? caseIdRaw
-      : typeof caseIdRaw === "string" && /^\d+$/.test(caseIdRaw.trim())
-        ? Number.parseInt(caseIdRaw.trim(), 10)
-        : null;
   const reason = typeof obj.reason === "string" ? obj.reason : null;
-  if (kind === "rename") {
-    const title = typeof obj.title === "string" ? obj.title : null;
-    return { ok: true, kind: "rename", caseId, title, steps: [], reason, outcome: null };
-  }
-  if (kind === "set-outcome") {
+  const title = typeof obj.title === "string" ? obj.title : null;
+  const reproSteps = typeof obj.reproSteps === "string" ? obj.reproSteps : null;
+  const severity = typeof obj.severity === "string" ? obj.severity : null;
+  const state = typeof obj.state === "string" ? obj.state : null;
+  // Shared defaults for every "ok" member so each branch only overrides what
+  // it cares about.
+  const base = {
+    ok: true as const,
+    caseId: numOrNull(obj.caseId),
+    title: null as string | null,
+    steps: [] as { action: string; expected: string }[],
+    reason,
+    outcome: null as string | null,
+    bugId: numOrNull(obj.bugId),
+    severity,
+    state,
+    reproSteps,
+  };
+
+  if (kind === "rename") return { ...base, kind: "rename", title };
+  if (kind === "set-outcome")
+    return { ...base, kind: "set-outcome", outcome: normalizeOutcome(obj.outcome) };
+  if (kind === "rewrite-steps")
+    return { ...base, kind: "rewrite-steps", steps: parseSteps(obj.steps) };
+  if (kind === "create-case")
+    return { ...base, kind: "create-case", title, steps: parseSteps(obj.steps) };
+  if (kind === "delete-case") return { ...base, kind: "delete-case" };
+  // Bug kinds. create-bug optionally carries linkCaseId (stored in caseId so
+  // the linked case surfaces in the UI + handler payload).
+  if (kind === "create-bug")
     return {
-      ok: true,
-      kind: "set-outcome",
-      caseId,
-      title: null,
-      steps: [],
-      reason,
-      outcome: normalizeOutcome(obj.outcome),
+      ...base,
+      kind: "create-bug",
+      title,
+      caseId: numOrNull(obj.linkCaseId) ?? base.caseId,
     };
-  }
-  if (kind === "rewrite-steps") {
-    const stepsArr = Array.isArray(obj.steps) ? obj.steps : [];
-    const steps: { action: string; expected: string }[] = [];
-    for (const s of stepsArr) {
-      if (!s || typeof s !== "object") continue;
-      const so = s as Record<string, unknown>;
-      steps.push({
-        action: typeof so.action === "string" ? so.action : "",
-        expected: typeof so.expected === "string" ? so.expected : "",
-      });
-    }
-    return { ok: true, kind: "rewrite-steps", caseId, title: null, steps, reason, outcome: null };
-  }
-  if (kind === "create-case") {
-    const title = typeof obj.title === "string" ? obj.title : null;
-    const stepsArr = Array.isArray(obj.steps) ? obj.steps : [];
-    const steps: { action: string; expected: string }[] = [];
-    for (const s of stepsArr) {
-      if (!s || typeof s !== "object") continue;
-      const so = s as Record<string, unknown>;
-      steps.push({
-        action: typeof so.action === "string" ? so.action : "",
-        expected: typeof so.expected === "string" ? so.expected : "",
-      });
-    }
-    return { ok: true, kind: "create-case", caseId, title, steps, reason, outcome: null };
-  }
-  if (kind === "delete-case") {
-    return { ok: true, kind: "delete-case", caseId, title: null, steps: [], reason, outcome: null };
-  }
-  return { ok: true, kind: "unknown", caseId, title: null, steps: [], reason, outcome: null };
+  if (kind === "update-bug") return { ...base, kind: "update-bug", title };
+  if (kind === "delete-bug") return { ...base, kind: "delete-bug" };
+  if (kind === "link-bug-to-case")
+    return { ...base, kind: "link-bug-to-case" };
+  return { ...base, kind: "unknown" };
 }

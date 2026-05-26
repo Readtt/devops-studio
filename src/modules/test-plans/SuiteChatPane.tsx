@@ -38,13 +38,19 @@ import type {
 } from "@/components/ChatMarkdown";
 import {
   adoErrorMessage,
+  createBug,
+  createBugAndLink,
   createCaseInSuite,
+  deleteBug,
   deleteTestCase,
   EXECUTION_OUTCOMES,
+  getBug,
   getConnection,
+  linkBugToCase,
   listTestPoints,
   setTestPointOutcome,
   toAdoError,
+  updateBug,
   updateCaseSteps,
   updateWorkItemTitle,
   type ConnectionStatus,
@@ -225,6 +231,113 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
     const p = payload as Record<string, unknown>;
     const kind = typeof p.kind === "string" ? p.kind : null;
 
+    const toNum = (raw: unknown): number | null =>
+      typeof raw === "number" && Number.isFinite(raw)
+        ? raw
+        : typeof raw === "string" && /^\d+$/.test(raw.trim())
+          ? Number.parseInt(raw.trim(), 10)
+          : null;
+    const normalizeSeverity = (
+      raw: unknown,
+    ): "1 - Critical" | "2 - High" | "3 - Medium" | "4 - Low" => {
+      const s = typeof raw === "string" ? raw.trim() : "";
+      if (s.startsWith("1")) return "1 - Critical";
+      if (s.startsWith("2")) return "2 - High";
+      if (s.startsWith("4")) return "4 - Low";
+      return "3 - Medium";
+    };
+
+    // --- Bug operations: target a bugId (or create a new bug), so handle them
+    // before the caseId validation that the case kinds go through below. ---
+    if (kind === "create-bug") {
+      const title = typeof p.title === "string" ? p.title.trim() : "";
+      if (!title) return { ok: false, message: "Empty bug title — refusing to create." };
+      const reproSteps = typeof p.reproSteps === "string" ? p.reproSteps : "";
+      const severity = normalizeSeverity(p.severity);
+      const linkCaseId = toNum(p.linkCaseId);
+      try {
+        const draft = { title, reproSteps, severity, codeLinks: [] };
+        const result = linkCaseId
+          ? await createBugAndLink(linkCaseId, draft)
+          : await createBug(draft);
+        if (linkCaseId) void loadCases(planId, suiteId, true);
+        return {
+          ok: true,
+          message: linkCaseId
+            ? `Created bug #${result.id} and linked it to #${linkCaseId}.`
+            : `Created bug #${result.id}.`,
+          before: { kind: "create-bug", bugId: result.id },
+        };
+      } catch (e) {
+        console.error("[suite-chat] create-bug failed:", e);
+        return { ok: false, message: adoErrorMessage(toAdoError(e)) || String(e) };
+      }
+    }
+    if (kind === "update-bug") {
+      const bugId = toNum(p.bugId);
+      if (!bugId) return { ok: false, message: "Missing bugId — cannot update." };
+      const title = typeof p.title === "string" ? p.title : undefined;
+      const reproSteps = typeof p.reproSteps === "string" ? p.reproSteps : undefined;
+      const severity = typeof p.severity === "string" ? p.severity : undefined;
+      const state = typeof p.state === "string" ? p.state : undefined;
+      if (title == null && reproSteps == null && severity == null && state == null) {
+        return { ok: false, message: "No fields to update on the bug." };
+      }
+      try {
+        // Snapshot the prior scalar fields so the update is reversible. The
+        // suite-chat case cache doesn't track bugs, so we read the bug here.
+        let before:
+          | { kind: "update-bug"; bugId: number; title?: string; severity?: string; state?: string }
+          | undefined;
+        try {
+          const prev = await getBug(bugId);
+          before = {
+            kind: "update-bug",
+            bugId,
+            ...(title != null ? { title: prev.title } : {}),
+            ...(severity != null ? { severity: prev.severity ?? undefined } : {}),
+            ...(state != null ? { state: prev.state } : {}),
+          };
+        } catch {
+          // Best-effort snapshot — undo simply won't be offered without it.
+        }
+        await updateBug({ bugId, title, reproSteps, severity, state });
+        return { ok: true, message: `Updated bug #${bugId}.`, before };
+      } catch (e) {
+        console.error("[suite-chat] update-bug failed:", e);
+        return { ok: false, message: adoErrorMessage(toAdoError(e)) || String(e) };
+      }
+    }
+    if (kind === "delete-bug") {
+      const bugId = toNum(p.bugId);
+      if (!bugId) return { ok: false, message: "Missing bugId — cannot delete." };
+      try {
+        await deleteBug({ bugId });
+        return {
+          ok: true,
+          message: `Moved bug #${bugId} to the Recycle Bin (recoverable in ADO for 30 days).`,
+        };
+      } catch (e) {
+        console.error("[suite-chat] delete-bug failed:", e);
+        return { ok: false, message: adoErrorMessage(toAdoError(e)) || String(e) };
+      }
+    }
+    if (kind === "link-bug-to-case") {
+      const bugId = toNum(p.bugId);
+      const linkCase = toNum(p.caseId);
+      if (!bugId || !linkCase) {
+        return { ok: false, message: "Need both a bugId and a caseId to link." };
+      }
+      try {
+        await linkBugToCase(bugId, linkCase);
+        void loadCases(planId, suiteId, true);
+        return { ok: true, message: `Linked bug #${bugId} to case #${linkCase}.` };
+      } catch (e) {
+        console.error("[suite-chat] link-bug-to-case failed:", e);
+        return { ok: false, message: adoErrorMessage(toAdoError(e)) || String(e) };
+      }
+    }
+
     // create-case is the only kind that doesn't require a target caseId
     // — the case doesn't exist yet. Handle it first and short-circuit
     // before the caseId validation below kicks in.
@@ -393,22 +506,44 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
   const handleUndoEdit = useCallback(async (
     record: AppliedEditRecord,
   ): Promise<ApplyEditResult> => {
-    if (!record.before || record.caseId == null) {
+    if (!record.before) {
       return {
         ok: false,
         message:
           "This edit doesn't carry an undo snapshot — re-apply isn't reversible.",
       };
     }
-    const caseId = record.caseId;
+    const before = record.before;
     try {
-      if (record.before.kind === "rename") {
-        await updateWorkItemTitle(caseId, record.before.title);
+      // Bug snapshots target a bugId, not a caseId.
+      if (before.kind === "create-bug") {
+        await deleteBug({ bugId: before.bugId });
+        return {
+          ok: true,
+          message: `Deleted bug #${before.bugId} (the one this edit created).`,
+        };
+      }
+      if (before.kind === "update-bug") {
+        await updateBug({
+          bugId: before.bugId,
+          title: before.title,
+          severity: before.severity,
+          state: before.state,
+        });
+        return { ok: true, message: `Reverted bug #${before.bugId}.` };
+      }
+      // Case snapshots need the target case id.
+      if (record.caseId == null) {
+        return { ok: false, message: "Undo snapshot is missing its target case." };
+      }
+      const caseId = record.caseId;
+      if (before.kind === "rename") {
+        await updateWorkItemTitle(caseId, before.title);
         void loadCases(planId, suiteId, true);
         return { ok: true, message: `Reverted title on #${caseId}.` };
       }
-      if (record.before.kind === "rewrite-steps") {
-        const normalized = record.before.steps.map((s, i) => ({
+      if (before.kind === "rewrite-steps") {
+        const normalized = before.steps.map((s, i) => ({
           index: i + 1,
           action: s.action,
           expected: s.expected,

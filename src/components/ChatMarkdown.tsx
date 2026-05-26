@@ -34,6 +34,11 @@ export type ApplyEditHandler = (payload: unknown) => Promise<ApplyEditResult>;
 export type ApplyEditResult = {
   ok: boolean;
   message?: string;
+  /** Optional pre-apply snapshot supplied by the handler. Used for bug edits,
+   *  where the card can't read the bug's prior state locally (lookupCase only
+   *  covers cases) — the handler captures it via getBug before patching. When
+   *  set, it overrides the snapshot the card would build from `lookupCase`. */
+  before?: EditBeforeSnapshot;
 };
 
 export type CaseLookup = (caseId: number) =>
@@ -57,7 +62,20 @@ export type EditBeforeSnapshot =
   | {
       kind: "rewrite-steps";
       steps: { action: string; expected: string }[];
-    };
+    }
+  /** Prior scalar fields of a bug, captured before an update-bug patch so the
+   *  edit can be reverted. (reproSteps isn't snapshotted — its HTML doesn't
+   *  round-trip cleanly through the plain-text update path.) */
+  | {
+      kind: "update-bug";
+      bugId: number;
+      title?: string;
+      severity?: string;
+      state?: string;
+    }
+  /** Records the id of a bug created by a create-bug edit so undo can delete
+   *  it (soft-delete to the Recycle Bin). */
+  | { kind: "create-bug"; bugId: number };
 
 export type AppliedEditRecord = {
   appliedAt: string;

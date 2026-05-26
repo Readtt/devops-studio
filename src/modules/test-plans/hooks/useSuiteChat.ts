@@ -320,6 +320,37 @@ function schedulePersist(
   persistTimers.set(k, timer);
 }
 
+/** Persist immediately (no throttle window). Used right after an edit is
+ *  applied or undone so closing the tab a beat later can't drop the applied
+ *  state — a throttled write could still be pending when the pane unmounts. */
+function flushPersist(
+  planId: number,
+  suiteId: number,
+  threadId: string,
+  get: () => Store,
+) {
+  const k = threadKey(planId, suiteId, threadId);
+  const existing = persistTimers.get(k);
+  if (existing) {
+    clearTimeout(existing);
+    persistTimers.delete(k);
+  }
+  const slice = get().byThread.get(k);
+  if (!slice) return;
+  if (slice.messages.length === 0 && slice.modelId === null && !slice.title)
+    return;
+  void saveChatThread({
+    planId,
+    suiteId,
+    threadId,
+    title: slice.title,
+    modelId: slice.modelId,
+    messages: slice.messages,
+  }).catch((e) => {
+    console.warn("[suite-chat] eager persist failed:", e);
+  });
+}
+
 export const useSuiteChat = create<Store>((set, get) => ({
   bySuite: new Map(),
   byThread: new Map(),
@@ -599,6 +630,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
       content: text,
       timestamp: new Date().toISOString(),
       attachments: atts,
+      bugContext: bugIds && bugIds.length > 0 ? bugIds : undefined,
     };
     const assistantId = newSuiteChatMessageId();
     const assistantMsg: SuiteChatMessage = {
@@ -791,7 +823,8 @@ export const useSuiteChat = create<Store>((set, get) => ({
       next.set(tk, { ...slice, messages });
       return { byThread: next };
     });
-    schedulePersist(planId, suiteId, threadId, get, 50);
+    // Eager flush — an applied edit must survive an immediate tab close.
+    flushPersist(planId, suiteId, threadId, get);
   },
 
   clearEditApplied: (planId, suiteId, messageId, blockHash) => {
@@ -821,7 +854,8 @@ export const useSuiteChat = create<Store>((set, get) => ({
       next.set(tk, { ...slice, messages });
       return { byThread: next };
     });
-    schedulePersist(planId, suiteId, threadId, get, 50);
+    // Eager flush — an undo must survive an immediate tab close too.
+    flushPersist(planId, suiteId, threadId, get);
   },
 
   cancel: (planId, suiteId) => {

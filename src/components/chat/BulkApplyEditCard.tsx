@@ -11,6 +11,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   buildSubtitle,
+  BugRefBadge,
   CaseRefBadge,
   CreateCasePreview,
   diffSteps,
@@ -157,6 +158,32 @@ export function BulkApplyEditCard({
             p.caseId
               ? `Delete case #${p.caseId}? It moves to the ADO Recycle Bin and is recoverable for 30 days.`
               : "Delete this case?",
+          );
+          if (!ok) continue;
+          if (p.reason) payload.reason = p.reason;
+        }
+        if (p.kind === "create-bug") {
+          payload.title = p.title ?? "";
+          payload.reproSteps = p.reproSteps ?? "";
+          if (p.severity) payload.severity = p.severity;
+          if (p.caseId != null) payload.linkCaseId = p.caseId;
+        }
+        if (p.kind === "update-bug") {
+          payload.bugId = p.bugId;
+          if (p.title != null) payload.title = p.title;
+          if (p.reproSteps != null) payload.reproSteps = p.reproSteps;
+          if (p.severity != null) payload.severity = p.severity;
+          if (p.state != null) payload.state = p.state;
+        }
+        if (p.kind === "link-bug-to-case") {
+          payload.bugId = p.bugId;
+        }
+        if (p.kind === "delete-bug") {
+          payload.bugId = p.bugId;
+          const ok = window.confirm(
+            p.bugId
+              ? `Delete bug #${p.bugId}? It moves to the ADO Recycle Bin and is recoverable for 30 days.`
+              : "Delete this bug?",
           );
           if (!ok) continue;
           if (p.reason) payload.reason = p.reason;
@@ -337,20 +364,20 @@ function BulkRow({
             <span className="text-[11px] font-medium leading-tight text-foreground">
               {kindLabel(parsed.kind)}
             </span>
-            {parsed.kind === "create-case" ? (
+            {parsed.kind === "create-case" || parsed.kind === "create-bug" ? (
               <span className="rounded-sm bg-emerald-500/15 px-1 py-px font-mono text-[9px] uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
-                new
+                {parsed.kind === "create-bug" ? "new bug" : "new"}
               </span>
-            ) : parsed.caseId != null ? (
+            ) : null}
+            {parsed.bugId != null ? <BugRefBadge bugId={parsed.bugId} /> : null}
+            {parsed.caseId != null ? (
               <CaseRefBadge
                 caseId={parsed.caseId}
                 title={current?.title ?? null}
                 webUrl={current?.webUrl ?? null}
                 suite={current?.suite ?? null}
               />
-            ) : (
-              <span className="font-mono text-[10px] text-destructive">no caseId</span>
-            )}
+            ) : null}
           </div>
           <p
             className={cn(
@@ -486,6 +513,20 @@ function parseBulk(body: string): ParsedBulk {
 function appliable(parsed: ParsedEdit): boolean {
   if (!parsed.ok) return false;
   if (parsed.kind === "create-case") return !!parsed.title && parsed.steps.length > 0;
+  // Bug kinds target a bugId (or create a new bug) — checked before the
+  // case-id gate below so they aren't rejected for lacking a caseId.
+  if (parsed.kind === "create-bug") return !!parsed.title;
+  if (parsed.kind === "update-bug")
+    return (
+      parsed.bugId != null &&
+      (parsed.title != null ||
+        parsed.severity != null ||
+        parsed.state != null ||
+        parsed.reproSteps != null)
+    );
+  if (parsed.kind === "delete-bug") return parsed.bugId != null;
+  if (parsed.kind === "link-bug-to-case")
+    return parsed.bugId != null && parsed.caseId != null;
   if (parsed.caseId == null) return false;
   if (parsed.kind === "set-outcome") return !!parsed.outcome;
   if (parsed.kind === "unknown") return false;
@@ -504,6 +545,14 @@ function kindLabel(kind: string): string {
       return "Delete case";
     case "set-outcome":
       return "Set outcome";
+    case "create-bug":
+      return "Create bug";
+    case "update-bug":
+      return "Update bug";
+    case "delete-bug":
+      return "Delete bug";
+    case "link-bug-to-case":
+      return "Link bug to case";
     default:
       return `Edit (${kind})`;
   }

@@ -47,13 +47,21 @@ export type AppliedEditRecord = {
   /** Case the edit targeted. Stored so undo doesn't have to re-parse the
    *  devops-edit body to find the id. */
   caseId?: number;
-  /** Pre-apply state of the case. `kind` mirrors the edit kind. */
+  /** Pre-apply state of the case/bug. `kind` mirrors the edit kind. */
   before?:
     | { kind: "rename"; title: string }
     | {
         kind: "rewrite-steps";
         steps: { action: string; expected: string }[];
-      };
+      }
+    | {
+        kind: "update-bug";
+        bugId: number;
+        title?: string;
+        severity?: string;
+        state?: string;
+      }
+    | { kind: "create-bug"; bugId: number };
 };
 
 export type SuiteChatMessage = {
@@ -67,6 +75,9 @@ export type SuiteChatMessage = {
   /** Files/images the user attached to this turn. Persisted inline (base64
    *  for images) so they survive a reload. Only set on user messages. */
   attachments?: Attachment[];
+  /** Ids of ADO bugs attached as context on this turn. Persisted so a
+   *  reopened thread shows which bugs grounded the answer. User messages only. */
+  bugContext?: number[];
 };
 
 const SUITE_CHAT_SYSTEM_PROMPT = `You are a senior QA engineer chatting with the user about a SUITE OF TEST CASES that already exist in Azure DevOps. The cases have been published; this conversation is for analysis, review, suggested edits, and "does this actually cover what the spec says it does".
@@ -120,10 +131,59 @@ When the user wants to change a case and you have a concrete recommendation, emi
 }
 \`\`\`
 
+You can also CRUD bugs. These target a bug work item (\`bugId\`), not a case:
+
+\`\`\`devops-edit
+{
+  "kind": "create-bug",
+  "title": "[Auth] SMS fallback ignores the rate-limit",
+  "reproSteps": "PRECONDITION:\\nSigned-in user.\\n\\nSTEPS TO REPRODUCE:\\n1. Trigger SMS code 6 times in 60s.\\n\\nEXPECTED RESULT:\\nThrottled after 3.\\n\\nACTUAL RESULT:\\nAll 6 sent.",
+  "severity": "2 - High",
+  "linkCaseId": 15310
+}
+\`\`\`
+
+\`\`\`devops-edit
+{
+  "kind": "update-bug",
+  "bugId": 16001,
+  "severity": "1 - Critical",
+  "state": "Active"
+}
+\`\`\`
+
+\`\`\`devops-edit
+{
+  "kind": "delete-bug",
+  "bugId": 16001,
+  "reason": "Duplicate of #15999"
+}
+\`\`\`
+
+\`\`\`devops-edit
+{
+  "kind": "link-bug-to-case",
+  "bugId": 16001,
+  "caseId": 15310
+}
+\`\`\`
+
 Rules for edit blocks:
-- ONE concrete case per block. Don't bundle multiple cases.
+- ONE concrete case or bug per block. Don't bundle multiple items.
 - "kind" is exactly "rename", "rewrite-steps", "create-case",
-  "delete-case", or "set-outcome". Other kinds aren't supported yet.
+  "delete-case", "set-outcome", "create-bug", "update-bug", "delete-bug",
+  or "link-bug-to-case". Other kinds aren't supported yet.
+- Bug kinds: "create-bug" needs a non-empty "title"; "reproSteps" is plain
+  text (use the PRECONDITION/STEPS/EXPECTED/ACTUAL layout), "severity" is one
+  of "1 - Critical", "2 - High", "3 - Medium", "4 - Low", and optional
+  "linkCaseId" files the bug as tested-by that case. "update-bug" needs a
+  "bugId" plus any of title / reproSteps / severity / state. "delete-bug"
+  needs a "bugId" + short "reason" and soft-deletes to the Recycle Bin (the UI
+  confirms first). "link-bug-to-case" needs both "bugId" and "caseId".
+- Only create or modify bugs when the user clearly asked, or when you found a
+  concrete defect (spec contradiction, code clearly violating the spec, or a
+  divergence from a comparable implementation elsewhere). Describe the bug in
+  prose first, then emit the block.
 - "caseId" is required for "rename", "rewrite-steps", "delete-case", and
   "set-outcome", and must match a case in the loaded scope. For
   "create-case", do NOT include caseId — the case doesn't exist yet, and
