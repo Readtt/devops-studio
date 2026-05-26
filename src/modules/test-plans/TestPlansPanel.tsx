@@ -372,8 +372,8 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
         <input
           value={filterDraft}
           onChange={(e) => setFilterDraft(e.target.value)}
-          placeholder="Filter plans, suites, cases…"
-          className="min-w-0 flex-1 rounded-md border border-border/60 bg-background/70 px-2 py-1 text-[11.5px] outline-none focus:border-primary/50"
+          placeholder="Search plans, suites, cases…"
+          className="min-w-0 flex-1 rounded-md border border-border/60 bg-background/70 px-2 py-1 text-[11.5px] outline-none transition-colors focus:border-primary/55 focus:ring-2 focus:ring-ring/25"
         />
         {anythingExpanded ? (
           <Tooltip>
@@ -890,6 +890,16 @@ function SuiteRow({
   const cases = sc?.cases ?? null;
   const error = sc?.error ?? null;
   const hasChildren = children.length > 0;
+
+  // While filtering, force-expanded suites need their cases in memory so a
+  // case-title match actually surfaces (and suites with no match drop out).
+  // Load once per suite — the store caches, so this doesn't refire on every
+  // keystroke, and only suites still visible in the filtered tree pay the cost.
+  useEffect(() => {
+    if (forceExpand && cases === null && !loading && !error) {
+      void useTestPlans.getState().loadSuiteCases(planId, suite.id);
+    }
+  }, [forceExpand, cases, loading, error, planId, suite.id]);
   const isRenaming = renamingSuiteId === suite.id;
   const [renameError, setRenameError] = useState<string | null>(null);
   // Clear any lingering rename error when the user exits rename mode by
@@ -1074,7 +1084,11 @@ function SuiteRow({
             </li>
           ) : null}
           {cases
-            ?.filter((c) => !matches || matches(c.title))
+            // When the suite NAME matches, show all its cases; otherwise show
+            // only the cases whose title matches the search.
+            ?.filter(
+              (c) => !matches || matches(suite.name) || matches(c.title),
+            )
             .map((c) => (
               <CaseRow
                 key={c.id}
