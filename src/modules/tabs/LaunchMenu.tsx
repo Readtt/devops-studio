@@ -113,10 +113,10 @@ export function LaunchMenuItems({
       />
       <LaunchMenuItem
         icon={Search01Icon}
-        label="Review my changes"
+        label="Code Review"
         description={
           actions.sourceRoot
-            ? "AI code review of your branch diff vs main — clickable file:line citations"
+            ? "AI review of your local branch diff vs main — clickable file:line citations"
             : "Set a source directory in Settings first"
         }
         disabled={!actions.sourceRoot}
