@@ -729,7 +729,7 @@ function InputPhase() {
               "relative rounded-md border bg-input/40 transition-colors",
               isDragOver
                 ? "border-primary/60 bg-primary/[0.06] ring-1 ring-primary/30"
-                : "border-border/60",
+                : "border-border/60 focus-within:border-primary/55 focus-within:ring-2 focus-within:ring-ring/25",
             )}
           >
             <textarea
@@ -740,7 +740,7 @@ function InputPhase() {
                 "Paste the Asana task / Jira ticket / spec wiki here. Drop files or paste images directly — the analyzer reads them along with the spec.\n\nIf you have changeset notes (commit messages, PR description, diff, ADO changeset URL), paste them at the bottom — the analyzer uses them to narrow scope."
               }
               rows={10}
-              className="w-full resize-y bg-transparent px-2.5 py-2 font-mono text-[11.5px] leading-relaxed outline-none focus:ring-2 focus:ring-ring/30"
+              className="w-full resize-y rounded-md bg-transparent px-2.5 py-2 font-mono text-[11.5px] leading-relaxed outline-none"
             />
             {isDragOver ? (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-md bg-primary/[0.08] text-[12px] font-medium text-primary">
