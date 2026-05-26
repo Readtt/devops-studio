@@ -101,9 +101,21 @@ BUG SUGGESTIONS (bug-hunt mode only)
 - Only flag a bug when:
   (a) the spec contradicts itself, OR
   (b) the spec has a load-bearing gap that will lead to incorrect behavior, OR
-  (c) the source code clearly violates the spec.
+  (c) the source code clearly violates the spec, OR
+  (d) a behavior diverges from how a comparable or shared implementation
+      elsewhere in the same app handles the same concern (see CROSS-MODULE
+      CONSISTENCY below).
 - Never flag a "bug" for "this case has no automated test" or
   "the spec could be clearer".
+
+CROSS-MODULE CONSISTENCY
+- When a behavior you examine diverges from how a comparable or shared
+  implementation elsewhere in the app handles the same concern, treat the
+  inconsistency itself as a likely bug — modules that solve the same problem
+  (or share a common module) should produce consistent results. Cite BOTH
+  locations with file:line so the engineer can compare them.
+- Do NOT flag divergence when the two are fundamentally different in purpose
+  at their core; only when they ought to agree and don't.
 - Severity: "1 - Critical" | "2 - High" | "3 - Medium" | "4 - Low".
 - Always link the bug to its parent test case via \`linkedDraftCaseIndex\`
   (an index into the cases array you generate). If multiple cases relate,

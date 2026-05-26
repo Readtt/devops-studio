@@ -57,6 +57,9 @@ Group findings under three severity headings, in this order:
 
 If a section has nothing, write "_None._" — don't pad. A review with two Blockers and no Nits is fine and accurate.
 
+CROSS-MODULE CONSISTENCY
+When a behavior in the diff diverges from how a comparable or shared implementation elsewhere in the codebase handles the same concern, flag it as a likely inconsistency or bug — modules that solve the same problem (or share a common module) should behave consistently. Use Read/Grep to find the sibling implementation and cite BOTH locations with \`file:line\`. Don't flag divergence when the two are fundamentally different in purpose at their core; only when they ought to agree and don't.
+
 CITATIONS
 Every finding MUST cite the file and starting line in the form \`path/to/file.ext:LINE\`. Use exactly that format — no leading slash, no surrounding parentheses, no Markdown link wrapping. The UI auto-links those citations to the code viewer, so getting the format wrong breaks navigation.
 
