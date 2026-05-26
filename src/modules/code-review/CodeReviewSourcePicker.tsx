@@ -64,6 +64,10 @@ export function CodeReviewSourcePicker({
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  // Tooltip is controlled so it can be force-closed while the popover is open —
+  // otherwise Radix Tooltip and Popover both portal over the trigger and the
+  // hover tooltip overlaps the open dropdown.
+  const [tipOpen, setTipOpen] = useState(false);
 
   // Navigation: null repo ⇒ root (local + repo list). Set ⇒ inside a repo.
   const [repo, setRepo] = useState<RepoRef | null>(null);
@@ -185,7 +189,7 @@ export function CodeReviewSourcePicker({
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <Tooltip>
+      <Tooltip open={open ? false : tipOpen} onOpenChange={setTipOpen}>
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>
             <button
@@ -215,9 +219,29 @@ export function CodeReviewSourcePicker({
             </button>
           </PopoverTrigger>
         </TooltipTrigger>
-        <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
-          What this review is reading — your local working-copy diff, or an
-          Azure DevOps commit / pull request. Switching wipes the conversation.
+        <TooltipContent
+          variant="panel"
+          side="bottom"
+          align="start"
+          className="max-w-[300px] px-3 py-2 text-[11px] leading-relaxed"
+        >
+          <div className="flex flex-col gap-1">
+            <div className="flex items-baseline gap-1.5">
+              <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
+                source
+              </span>
+              <span className="font-medium text-foreground/90">
+                What this review reads
+              </span>
+            </div>
+            <p className="text-foreground/80">
+              Your local working-copy diff, or a commit / pull request / branch
+              pulled straight from Azure DevOps.
+            </p>
+            <p className="mt-0.5 text-[10px] text-muted-foreground/70">
+              Switching wipes the conversation.
+            </p>
+          </div>
         </TooltipContent>
       </Tooltip>
 

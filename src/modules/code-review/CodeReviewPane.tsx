@@ -219,75 +219,60 @@ export function CodeReviewPane({
           onChange={(s) => void setSource(tabId, s)}
           disabled={busy}
         />
-        {!slice?.source ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span>
-                <BranchPicker
-                  value={slice?.base ?? base ?? ""}
-                  placeholder={diffLoading ? "Detecting base…" : "Select base"}
-                  branches={baseList}
-                  onChange={(v) => void changeBase(tabId, v)}
-                  disabled={busy}
-                  ariaLabel="Base branch"
-                />
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
-              Base branch — the diff shows everything that's on your current
-              branch but not on this one. Defaults to whatever git finds
-              first: main → master → origin/HEAD. Changing it wipes the
-              conversation (different baseline = different review). Type to
-              filter the list.
-            </TooltipContent>
-          </Tooltip>
-        ) : null}
+        {/* Source-aware descriptor — reads differently for a local diff vs an
+            ADO commit / PR / branch so the header never claims your local
+            branch is involved when it isn't. Truncates on narrow widths. */}
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <SourceDescriptor
+            source={slice?.source ?? null}
+            diff={diff}
+            liveBranch={liveGit.branch ?? liveGit.commit ?? null}
+            diffLoading={diffLoading}
+            basePicker={
+              <BranchPicker
+                value={slice?.base ?? base ?? ""}
+                placeholder={diffLoading ? "Detecting base…" : "Select base"}
+                branches={baseList}
+                onChange={(v) => void changeBase(tabId, v)}
+                disabled={busy}
+                ariaLabel="Base branch"
+              />
+            }
+          />
 
-        <span className="text-[11px] text-muted-foreground">→</span>
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="font-mono text-[11.5px] text-foreground/85">
-              {diff?.head ?? liveGit.branch ?? "…"}
-            </span>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
-            Your current branch (matches the one shown in the bottom status
-            bar). Checkout a different branch and this auto-refreshes.
-          </TooltipContent>
-        </Tooltip>
-
-        {totals ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="text-[11px] text-muted-foreground">
-                · {totals.count} file{totals.count === 1 ? "" : "s"}{" "}
-                <span className="text-emerald-600 dark:text-emerald-400">
-                  +{totals.adds}
-                </span>{" "}
-                <span className="text-rose-600 dark:text-rose-400">
-                  −{totals.dels}
+          {totals ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="shrink-0 whitespace-nowrap text-[11px] tabular-nums text-muted-foreground">
+                  {totals.count} file{totals.count === 1 ? "" : "s"}
+                  <span className="ml-1.5 text-emerald-600 dark:text-emerald-400">
+                    +{totals.adds}
+                  </span>
+                  <span className="ml-1 text-rose-600 dark:text-rose-400">
+                    −{totals.dels}
+                  </span>
                 </span>
-              </span>
-            </TooltipTrigger>
-            <TooltipContent
-              side="bottom"
-              className="max-w-[320px] text-[11px] leading-relaxed"
-            >
-              {totals.count} file{totals.count === 1 ? "" : "s"} changed —{" "}
-              {totals.adds} line{totals.adds === 1 ? "" : "s"} added,{" "}
-              {totals.dels} removed. The diff is fed to the reviewer model
-              along with Read/Glob/Grep tools so it can dig into context
-              outside the changed lines.
-            </TooltipContent>
-          </Tooltip>
-        ) : diffLoading ? (
-          <span className="text-[11px] text-muted-foreground">
-            · loading diff…
-          </span>
-        ) : null}
+              </TooltipTrigger>
+              <TooltipContent
+                variant="panel"
+                side="bottom"
+                className="max-w-[300px] px-3 py-2 text-[11px] leading-relaxed"
+              >
+                {totals.count} file{totals.count === 1 ? "" : "s"} changed —{" "}
+                {totals.adds} line{totals.adds === 1 ? "" : "s"} added,{" "}
+                {totals.dels} removed. The diff is fed to the reviewer model
+                along with Read/Glob/Grep tools so it can dig into context
+                outside the changed lines.
+              </TooltipContent>
+            </Tooltip>
+          ) : diffLoading ? (
+            <span className="shrink-0 whitespace-nowrap text-[11px] text-muted-foreground">
+              loading diff…
+            </span>
+          ) : null}
+        </div>
 
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex shrink-0 items-center gap-1">
           {/* Model picker — matches SuiteChatPane: chip that shows the
               active model, click to choose another. Pinning here only
               scopes to this tab; "Unpin" footer returns to the global
@@ -530,6 +515,126 @@ export function CodeReviewPane({
 // diverged subtly before (model labels, attachment hooks) and a shared
 // component would create coupling neither pane benefits from yet.
 // ─────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────
+// Source-aware header descriptor. The diff means something different for each
+// source, so the label does too — and for ADO sources we never imply the
+// user's LOCAL branch is involved (the prior "base → your current branch"
+// layout was the confusing part).
+// ─────────────────────────────────────────────────────────────────────────
+function SourceDescriptor({
+  source,
+  diff,
+  liveBranch,
+  diffLoading,
+  basePicker,
+}: {
+  source: import("./source").CodeReviewSource | null;
+  diff: import("./runCodeReview").DiffSummary | null;
+  liveBranch: string | null;
+  diffLoading: boolean;
+  basePicker: React.ReactNode;
+}) {
+  // LOCAL — base branch → your current branch.
+  if (!source) {
+    return (
+      <div className="flex min-w-0 items-center gap-1.5">
+        {basePicker}
+        <span className="shrink-0 text-[11px] text-muted-foreground">→</span>
+        <span className="min-w-0 truncate font-mono text-[11.5px] text-foreground/85">
+          {diff?.head ?? liveBranch ?? "…"}
+        </span>
+      </div>
+    );
+  }
+
+  // ADO COMMIT — its own changes vs its parent. No arrow, no local branch.
+  if (source.unit === "commit") {
+    const sha = (source.commitId ?? "").slice(0, 8);
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="flex min-w-0 items-center gap-1.5 truncate text-[11.5px] text-muted-foreground">
+            <span className="shrink-0 font-mono text-foreground/85">{sha}</span>
+            <span className="truncate">· changes vs parent</span>
+          </span>
+        </TooltipTrigger>
+        <AdoTip>
+          Reviewing commit <b>{sha}</b> — the changes it introduced against its
+          parent commit. Pulled from Azure DevOps; your local checkout isn't
+          part of this diff.
+        </AdoTip>
+      </Tooltip>
+    );
+  }
+
+  // ADO PULL REQUEST — the PR's own source → target branches.
+  if (source.unit === "pr") {
+    const src = diff?.head;
+    const tgt = diff?.base;
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="flex min-w-0 items-center gap-1 truncate font-mono text-[11px] text-foreground/85">
+            {src ? (
+              <>
+                <span className="truncate">{src}</span>
+                <span className="shrink-0 text-muted-foreground">→</span>
+                <span className="truncate">{tgt}</span>
+              </>
+            ) : diffLoading ? (
+              <span className="text-muted-foreground">loading PR…</span>
+            ) : (
+              <span>PR #{source.prId}</span>
+            )}
+          </span>
+        </TooltipTrigger>
+        <AdoTip>
+          Reviewing <b>PR #{source.prId}</b>
+          {src ? (
+            <>
+              {" "}
+              — the changes that merge <b>{src}</b> into <b>{tgt}</b>
+            </>
+          ) : null}
+          . Pulled from Azure DevOps; your local checkout isn't part of this
+          diff.
+        </AdoTip>
+      </Tooltip>
+    );
+  }
+
+  // ADO BRANCH — base … target.
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="flex min-w-0 items-center gap-1 truncate font-mono text-[11px] text-foreground/85">
+          <span className="truncate">{source.baseBranch}</span>
+          <span className="shrink-0 text-muted-foreground">…</span>
+          <span className="truncate">{source.targetBranch}</span>
+        </span>
+      </TooltipTrigger>
+      <AdoTip>
+        Reviewing what's on <b>{source.targetBranch}</b> but not on{" "}
+        <b>{source.baseBranch}</b>. Pulled from Azure DevOps; your local checkout
+        isn't part of this diff.
+      </AdoTip>
+    </Tooltip>
+  );
+}
+
+function AdoTip({ children }: { children: React.ReactNode }) {
+  return (
+    <TooltipContent
+      variant="panel"
+      side="bottom"
+      align="start"
+      className="max-w-[320px] px-3 py-2 text-[11px] leading-relaxed text-foreground/85"
+    >
+      {children}
+    </TooltipContent>
+  );
+}
 
 function ChatComposer({
   draft,
