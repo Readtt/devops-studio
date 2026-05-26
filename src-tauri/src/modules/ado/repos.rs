@@ -3,6 +3,7 @@
 //! Used by source-code linking to build code-link chips on published cases.
 
 use serde::{Deserialize, Serialize};
+use similar::{ChangeTag, TextDiff};
 
 use super::client::{get_json, get_raw_json, project_api, AdoState};
 use super::errors::{AdoError, AdoResult};
@@ -257,57 +258,102 @@ async fn get_item_content(
     raw.get("content").and_then(|c| c.as_str()).map(String::from)
 }
 
-/// Build the DiffSummary payload from a change list: the file list is always
-/// complete; the patch text is synthesized from each changed file's target
-/// content (capped). The model is told the patch may be truncated and to use
-/// its read tools — the complete file list is the reliable signal.
+/// Build the DiffSummary payload from a change list. Unlike ADO's REST API —
+/// which gives a change LIST with no per-file line stats and no unified patch —
+/// we fetch each changed file's content at BOTH the base and target version and
+/// run a real line diff (`similar`). That yields accurate +/- counts and a true
+/// unified patch, so the reviewer model sees what actually changed rather than
+/// whole-file dumps. Heavy files are bounded by `ADO_PATCH_CAP`: once the patch
+/// is full we stop fetching and list the remaining files with unknown (0/0)
+/// counts + `truncated = true`.
+#[allow(clippy::too_many_arguments)]
 async fn build_diff_payload(
     state: &AdoState,
     conn: &Connection,
     repo_id: &str,
     changes: Vec<ChangeEntry>,
-    version: &str,
-    version_type: &str,
+    target_version: &str,
+    target_version_type: &str,
+    // base_version: empty ⇒ no base (e.g. an initial commit), so every changed
+    // file reads as all-additions.
+    base_version: &str,
+    base_version_type: &str,
     base_label: String,
     head_label: String,
 ) -> AdoDiff {
-    let files: Vec<AdoDiffFile> = changes
-        .iter()
-        .filter(|c| c.is_blob)
-        .map(|c| AdoDiffFile {
-            path: c.path.clone(),
-            // ADO's change list doesn't carry per-file line counts.
-            additions: 0,
-            deletions: 0,
-            status: c.change_type.clone(),
-        })
-        .collect();
-
+    let mut files: Vec<AdoDiffFile> = Vec::new();
     let mut patch = String::new();
     let mut truncated = false;
+
     for c in changes.iter().filter(|c| c.is_blob) {
+        // Patch is full — keep the file list complete but stop the (paired)
+        // content fetches so a huge changeset can't stall the review.
         if patch.len() >= ADO_PATCH_CAP {
             truncated = true;
-            break;
-        }
-        let ct = c.change_type.to_lowercase();
-        if ct.contains("delete") {
-            patch.push_str(&format!("--- {} (deleted) ---\n\n", c.path));
+            files.push(AdoDiffFile {
+                path: c.path.clone(),
+                additions: 0,
+                deletions: 0,
+                status: c.change_type.clone(),
+            });
             continue;
         }
-        if let Some(content) =
-            get_item_content(state, conn, repo_id, &c.path, version, version_type).await
-        {
-            let remaining = ADO_PATCH_CAP.saturating_sub(patch.len());
-            let body: String = if content.len() > remaining {
-                truncated = true;
-                content.chars().take(remaining).collect()
-            } else {
-                content
-            };
-            patch.push_str(&format!("--- {} ({}) ---\n{}\n\n", c.path, c.change_type, body));
+
+        let ct = c.change_type.to_lowercase();
+        let is_delete = ct.contains("delete");
+        let is_add = ct.contains("add");
+
+        let target_content = if is_delete {
+            None
+        } else {
+            get_item_content(state, conn, repo_id, &c.path, target_version, target_version_type)
+                .await
+        };
+        let base_content = if is_add || base_version.is_empty() {
+            None
+        } else {
+            get_item_content(state, conn, repo_id, &c.path, base_version, base_version_type).await
+        };
+
+        let base_str = base_content.as_deref().unwrap_or("");
+        let target_str = target_content.as_deref().unwrap_or("");
+        let diff = TextDiff::from_lines(base_str, target_str);
+
+        let mut additions = 0u32;
+        let mut deletions = 0u32;
+        for change in diff.iter_all_changes() {
+            match change.tag() {
+                ChangeTag::Insert => additions += 1,
+                ChangeTag::Delete => deletions += 1,
+                ChangeTag::Equal => {}
+            }
+        }
+        files.push(AdoDiffFile {
+            path: c.path.clone(),
+            additions,
+            deletions,
+            status: c.change_type.clone(),
+        });
+
+        // Emit a real unified hunk. Header paths mirror git's a/ b/ convention
+        // so the model reads it like any other diff.
+        let header_old = format!("a/{}", c.path);
+        let header_new = format!("b/{}", c.path);
+        let udiff = diff
+            .unified_diff()
+            .context_radius(3)
+            .header(&header_old, &header_new)
+            .to_string();
+        let block = format!("diff --git {header_old} {header_new}\n{udiff}\n");
+        let remaining = ADO_PATCH_CAP.saturating_sub(patch.len());
+        if block.len() > remaining {
+            truncated = true;
+            patch.push_str(&block.chars().take(remaining).collect::<String>());
+        } else {
+            patch.push_str(&block);
         }
     }
+
     AdoDiff {
         base: base_label,
         head: head_label,
@@ -331,6 +377,23 @@ pub async fn diff_commit(
     );
     let changes_json = get_raw_json(state, &url, "commit changes").await?;
     let changes = parse_changes(&changes_json);
+
+    // Diff the commit against its first parent. The /commits/{id} resource
+    // carries the parent SHA; an empty parent (initial commit) makes every
+    // file read as all-additions.
+    let detail_url = project_api(&conn, &format!("git/repositories/{repo_id}/commits/{commit_id}"));
+    let parent = get_raw_json(state, &detail_url, "commit detail")
+        .await
+        .ok()
+        .and_then(|c| {
+            c.get("parents")
+                .and_then(|p| p.as_array())
+                .and_then(|a| a.first())
+                .and_then(|s| s.as_str())
+                .map(String::from)
+        })
+        .unwrap_or_default();
+
     let short = commit_id.chars().take(8).collect::<String>();
     Ok(build_diff_payload(
         state,
@@ -338,6 +401,8 @@ pub async fn diff_commit(
         repo_id,
         changes,
         commit_id,
+        "commit",
+        &parent,
         "commit",
         format!("{short}^"),
         short,
@@ -371,6 +436,8 @@ pub async fn diff_branches(
         repo_id,
         changes,
         target_branch,
+        "branch",
+        base_branch,
         "branch",
         base_branch.to_string(),
         target_branch.to_string(),
@@ -450,6 +517,8 @@ pub async fn diff_pull_request(
         repo_id,
         changes,
         source,
+        "commit",
+        target,
         "commit",
         if target_ref.is_empty() { "target".into() } else { target_ref },
         if source_ref.is_empty() {

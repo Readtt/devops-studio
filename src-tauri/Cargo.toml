@@ -56,6 +56,7 @@ base64 = "0.22"
 rusqlite = { version = "0.32", features = ["bundled"] }
 quick-xml = { version = "0.36", features = ["serialize"] }
 url = "2"
+similar = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
