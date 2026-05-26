@@ -13,6 +13,8 @@ import { getModel, type ModelId } from "@/modules/ai/config";
 import { buildLanguageModel } from "@/modules/ai/lib/agent";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
+import { buildUserTurn } from "@/modules/ai/lib/visionMessage";
+import type { Attachment } from "@/components/chat/attachments";
 
 export type CodeReviewMessage = {
   id: string;
@@ -115,6 +117,9 @@ export type StreamCodeReviewInput = {
   onText: (delta: string) => void;
   /** Abort signal for the renderer's cancel button. */
   signal?: AbortSignal;
+  /** Image/text attachments on the current turn. Images go to the model as
+   *  vision input; text is already folded into the prompt. */
+  attachments?: Attachment[];
 };
 
 export async function streamCodeReview(input: StreamCodeReviewInput): Promise<{
@@ -132,7 +137,7 @@ export async function streamCodeReview(input: StreamCodeReviewInput): Promise<{
   const result = streamText({
     model: lm,
     system: CODE_REVIEW_SYSTEM_PROMPT,
-    prompt,
+    ...buildUserTurn(prompt, input.attachments),
     abortSignal: input.signal,
     ...(tools ? { tools, stopWhen: stepCountIs(10) } : {}),
   });

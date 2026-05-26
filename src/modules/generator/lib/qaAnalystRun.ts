@@ -16,6 +16,7 @@ import {
   type ActivityEntry,
 } from "./activityLog";
 import { renderRelatedCases, type RelatedCase } from "./relatedCases";
+import { buildUserTurn } from "@/modules/ai/lib/visionMessage";
 
 const MAX_STEPS = 12;
 
@@ -118,7 +119,7 @@ export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
   const result = await generateText({
     model: lm,
     system: QA_ANALYST_PROMPT,
-    prompt: userPrompt,
+    ...buildUserTurn(userPrompt, input.attachments),
     stopWhen: stepCountIs(MAX_STEPS),
     onStepFinish: (step) => {
       const onActivity = input.onActivity;

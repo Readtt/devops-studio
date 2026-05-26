@@ -18,6 +18,8 @@ import { getKey } from "@/modules/ai/lib/keyring";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import type { TestCase } from "@/modules/ado";
 import { buildSuiteChatTools } from "./suiteChatTools";
+import { buildUserTurn } from "@/modules/ai/lib/visionMessage";
+import type { Attachment } from "@/components/chat/attachments";
 
 /** Persisted record of an ADO edit that the user applied from this message.
  *  Keyed in `SuiteChatMessage.appliedEdits` by a content hash of the
@@ -201,6 +203,9 @@ export type SuiteChatRunInput = {
   cases: TestCase[];
   history: SuiteChatMessage[];
   newQuestion: string;
+  /** Image/text attachments on the current turn. Images are sent to the
+   *  model as vision input; text was already folded into the prompt. */
+  attachments?: Attachment[];
 };
 
 export type SuiteChatRunResult = {
@@ -234,7 +239,7 @@ export async function runSuiteChat(
   const result = await generateText({
     model: lm,
     system: SUITE_CHAT_SYSTEM_PROMPT,
-    prompt: userPrompt,
+    ...buildUserTurn(userPrompt, input.attachments),
     ...(tools ? { tools, stopWhen: stepCountIs(8) } : {}),
   });
   return { text: result.text ?? "", durationMs: Date.now() - start };
@@ -261,7 +266,7 @@ export async function streamSuiteChat(
   const result = streamText({
     model: lm,
     system: SUITE_CHAT_SYSTEM_PROMPT,
-    prompt: userPrompt,
+    ...buildUserTurn(userPrompt, input.attachments),
     ...(tools ? { tools, stopWhen: stepCountIs(8) } : {}),
   });
   let acc = "";
