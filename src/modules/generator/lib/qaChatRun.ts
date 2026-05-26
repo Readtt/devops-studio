@@ -18,6 +18,18 @@ import {
   type RunAttachment,
   type TargetContext,
 } from "./qaAnalystRun";
+import { buildUserTurn } from "@/modules/ai/lib/visionMessage";
+import { imageAttachmentToBase64 } from "@/components/chat/attachments";
+
+/** Lift image attachments into stream-json image blocks for the CLI path. */
+function claudeImages(
+  attachments: RunAttachment[],
+): { mediaType: string; dataBase64: string }[] | undefined {
+  const imgs = attachments
+    .map(imageAttachmentToBase64)
+    .filter((x): x is { mediaType: string; dataBase64: string } => x !== null);
+  return imgs.length > 0 ? imgs : undefined;
+}
 
 /** One message in the review-pane chat thread. */
 export type ChatMessage = {
@@ -95,7 +107,7 @@ export async function runQaChat(input: VercelChatInput): Promise<ChatRunResult> 
   const result = await generateText({
     model: lm,
     system: CHAT_SYSTEM_PROMPT,
-    prompt: userPrompt,
+    ...buildUserTurn(userPrompt, input.attachments),
   });
   return { text: result.text ?? "", durationMs: Date.now() - start };
 }
@@ -116,7 +128,7 @@ export async function streamQaChat(
   const result = streamText({
     model: lm,
     system: CHAT_SYSTEM_PROMPT,
-    prompt: userPrompt,
+    ...buildUserTurn(userPrompt, input.attachments),
   });
   let acc = "";
   for await (const chunk of result.textStream) {
@@ -150,6 +162,7 @@ export async function runQaChatClaude(
   const result = await runClaudeQuery({
     runId: input.runId,
     prompt: userPrompt,
+    images: claudeImages(input.attachments),
     systemPrompt: CHAT_SYSTEM_PROMPT,
     cwd: input.sourceRoot ?? undefined,
     model: input.modelId,
@@ -202,6 +215,7 @@ export async function streamQaChatClaude(
     {
       runId: input.runId,
       prompt: userPrompt,
+      images: claudeImages(input.attachments),
       systemPrompt: CHAT_SYSTEM_PROMPT,
       cwd: input.sourceRoot ?? undefined,
       model: input.modelId,

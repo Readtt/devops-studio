@@ -1,4 +1,7 @@
 import {
+  ChangeEvent,
+  ClipboardEvent,
+  DragEvent,
   KeyboardEvent,
   useCallback,
   useEffect,
@@ -7,6 +10,12 @@ import {
   useState,
 } from "react";
 import { cn } from "@/lib/utils";
+import {
+  AttachButton,
+  AttachmentDropZone,
+  ingestFile,
+  synthesizeClipboardImageName,
+} from "@/components/chat/attachments";
 import { Button } from "@/components/ui/button";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Spinner } from "@/components/ui/spinner";
@@ -113,8 +122,65 @@ export function RefineComposer({ isRefining }: Props) {
   const refineHistory = useGenerationSession((s) => s.refineHistory);
   const refineRounds = useGenerationSession((s) => s.refineRounds);
   const cancelRefine = useGenerationSession((s) => s.cancelRefine);
+  const attachments = useGenerationSession((s) => s.attachments);
+  const addRichAttachment = useGenerationSession((s) => s.addRichAttachment);
+  const removeAttachment = useGenerationSession((s) => s.removeAttachment);
   const [roundsOpen, setRoundsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [attErrors, setAttErrors] = useState<{ id: string; message: string }[]>(
+    [],
+  );
+
+  const ingestFiles = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return;
+      const errs: { id: string; message: string }[] = [];
+      for (const f of files) {
+        const result = await ingestFile(f);
+        if (result.ok) addRichAttachment(result.attachment);
+        else
+          errs.push({
+            id: `e-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            message: result.error.message,
+          });
+      }
+      if (errs.length) setAttErrors((p) => [...p, ...errs]);
+    },
+    [addRichAttachment],
+  );
+
+  const onPaste = useCallback(
+    (e: ClipboardEvent) => {
+      const items = Array.from(e.clipboardData?.files ?? []) as File[];
+      if (items.length === 0) return;
+      e.preventDefault();
+      const named = items.map((f) =>
+        f.name
+          ? f
+          : new File([f], synthesizeClipboardImageName(f.type || "image/png"), {
+              type: f.type,
+            }),
+      );
+      void ingestFiles(named);
+    },
+    [ingestFiles],
+  );
+
+  const onDrop = useCallback(
+    (e: DragEvent) => {
+      e.preventDefault();
+      void ingestFiles(Array.from(e.dataTransfer?.files ?? []));
+    },
+    [ingestFiles],
+  );
+
+  const onFilePicker = useCallback(
+    (e: ChangeEvent<HTMLInputElement>) => {
+      void ingestFiles(Array.from(e.target.files ?? []));
+      e.target.value = "";
+    },
+    [ingestFiles],
+  );
 
   const [text, setText] = useState("");
   const [showHelp, setShowHelp] = useState(false);
@@ -465,9 +531,21 @@ export function RefineComposer({ isRefining }: Props) {
         rounds={refineRounds}
       />
 
+      <AttachmentDropZone
+        attachments={attachments}
+        errors={attErrors}
+        remove={removeAttachment}
+        dismissError={(id) =>
+          setAttErrors((p) => p.filter((e) => e.id !== id))
+        }
+        className="mb-2"
+      />
+
       {/* The composer itself — wrapped to look like a fenced code block so
           it visually belongs to the "this app is your editor" voice. */}
       <div
+        onDrop={onDrop}
+        onDragOver={(e) => e.preventDefault()}
         className={cn(
           "group relative overflow-hidden rounded-md border border-border/60 bg-card/40 transition-colors",
           "focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-ring/30",
@@ -483,6 +561,7 @@ export function RefineComposer({ isRefining }: Props) {
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           rows={4}
           placeholder="ask a follow-up — e.g. &quot;step 3 in case #2 doesn't match auth.ts, fix it&quot; or &quot;add an edge case for empty input&quot;"
           className="block min-h-[96px] w-full resize-y bg-transparent py-2.5 pl-7 pr-3 font-mono text-[11.5px] leading-relaxed outline-none placeholder:text-muted-foreground/55"
@@ -511,6 +590,7 @@ export function RefineComposer({ isRefining }: Props) {
             </span>
           </div>
           <div className="flex items-center gap-2">
+            <AttachButton onFilePicker={onFilePicker} />
             {text.trim().length > 0 ? (
               <Tooltip>
                 <TooltipTrigger asChild>

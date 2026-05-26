@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ReviewedBug, ReviewedCase } from "./draftBatchSchema";
 import type { ActivityEntry } from "./activityLog";
 import type { GenerationMode } from "./qaAnalystRun";
+import type { Attachment } from "@/components/chat/attachments";
 
 /**
  * One refine round captured for later inspection. The user asked us to keep
@@ -65,6 +66,9 @@ export type DraftPayload = {
     bugs: ReviewedBug[];
     rawText: string;
   } | null;
+  /** Files/images attached to the session. Persisted (base64 for images) so a
+   *  reopened draft keeps the same attachment context the model saw. */
+  attachments?: Attachment[];
 };
 
 export type CaseSummary = {

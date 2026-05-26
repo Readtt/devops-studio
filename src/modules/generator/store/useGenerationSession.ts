@@ -455,6 +455,7 @@ function makeSchedulePersistDraft(getter: () => SessionState) {
           suiteName: s.suiteName,
           refineRounds: s.refineRounds,
           refineUndoSnapshot: s.refineUndoSnapshot,
+          attachments: s.attachments,
         },
       };
       // Fire-and-forget; the post-save event lets the History pane refresh.
@@ -758,6 +759,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
             suiteName: targetContext?.suiteName ?? null,
             refineRounds: s.refineRounds,
             refineUndoSnapshot: s.refineUndoSnapshot,
+            attachments: s.attachments,
           },
         };
         // Awaited (not fire-and-forget) so the draft is on disk before the
@@ -1171,6 +1173,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           suiteName: s.suiteName,
           refineRounds: s.refineRounds,
           refineUndoSnapshot: s.refineUndoSnapshot,
+          attachments: s.attachments,
         },
       };
       void saveRun(run);
@@ -1652,6 +1655,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       // Restore the pre-refine snapshot so the "Last refine" changes panel
       // reappears exactly as it was when the draft was saved.
       refineUndoSnapshot: payload.refineUndoSnapshot ?? null,
+      // Bring back the session attachments so a reopened draft refines with
+      // the same images/files the model originally saw.
+      attachments: payload.attachments ?? [],
     });
     return true;
   },

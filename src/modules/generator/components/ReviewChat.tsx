@@ -1,8 +1,22 @@
-import { useEffect, useRef, useState } from "react";
+import {
+  ChangeEvent,
+  ClipboardEvent,
+  DragEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useGenerationSession } from "../store/useGenerationSession";
 import { ChatMarkdown } from "@/components/ChatMarkdown";
+import {
+  AttachButton,
+  AttachmentDropZone,
+  ingestFile,
+  synthesizeClipboardImageName,
+} from "@/components/chat/attachments";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowTurnUpIcon,
@@ -44,6 +58,63 @@ export function ReviewChat({ onClose }: Props) {
   const cancel = useGenerationSession((s) => s.cancelChat);
   const clear = useGenerationSession((s) => s.clearChat);
   const dismissError = useGenerationSession((s) => s.dismissChatError);
+  const attachments = useGenerationSession((s) => s.attachments);
+  const addRichAttachment = useGenerationSession((s) => s.addRichAttachment);
+  const removeAttachment = useGenerationSession((s) => s.removeAttachment);
+  const [attErrors, setAttErrors] = useState<{ id: string; message: string }[]>(
+    [],
+  );
+
+  const ingestFiles = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return;
+      const errs: { id: string; message: string }[] = [];
+      for (const f of files) {
+        const result = await ingestFile(f);
+        if (result.ok) addRichAttachment(result.attachment);
+        else
+          errs.push({
+            id: `e-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            message: result.error.message,
+          });
+      }
+      if (errs.length) setAttErrors((p) => [...p, ...errs]);
+    },
+    [addRichAttachment],
+  );
+
+  const onPaste = useCallback(
+    (e: ClipboardEvent) => {
+      const items = Array.from(e.clipboardData?.files ?? []) as File[];
+      if (items.length === 0) return;
+      e.preventDefault();
+      const named = items.map((f) =>
+        f.name
+          ? f
+          : new File([f], synthesizeClipboardImageName(f.type || "image/png"), {
+              type: f.type,
+            }),
+      );
+      void ingestFiles(named);
+    },
+    [ingestFiles],
+  );
+
+  const onDrop = useCallback(
+    (e: DragEvent) => {
+      e.preventDefault();
+      void ingestFiles(Array.from(e.dataTransfer?.files ?? []));
+    },
+    [ingestFiles],
+  );
+
+  const onFilePicker = useCallback(
+    (e: ChangeEvent<HTMLInputElement>) => {
+      void ingestFiles(Array.from(e.target.files ?? []));
+      e.target.value = "";
+    },
+    [ingestFiles],
+  );
 
   const threadRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -205,11 +276,25 @@ export function ReviewChat({ onClose }: Props) {
       ) : null}
 
       <div className="shrink-0 border-t border-border/40 bg-card/40 p-2">
-        <div className="relative">
+        <AttachmentDropZone
+          attachments={attachments}
+          errors={attErrors}
+          remove={removeAttachment}
+          dismissError={(id) =>
+            setAttErrors((p) => p.filter((e) => e.id !== id))
+          }
+          className="mb-2"
+        />
+        <div
+          className="relative"
+          onDrop={onDrop}
+          onDragOver={(e) => e.preventDefault()}
+        >
           <textarea
             ref={inputRef}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
+            onPaste={onPaste}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
@@ -219,8 +304,11 @@ export function ReviewChat({ onClose }: Props) {
             rows={2}
             disabled={busy}
             placeholder="Ask about the draft… (Enter to send, Shift+Enter for newline)"
-            className="w-full resize-none rounded-sm border border-border/40 bg-input/40 px-2 py-1.5 pr-8 text-[11.5px] leading-relaxed outline-none focus:ring-2 focus:ring-ring/30"
+            className="w-full resize-none rounded-sm border border-border/40 bg-input/40 px-2 py-1.5 pl-8 pr-8 text-[11.5px] leading-relaxed outline-none focus:ring-2 focus:ring-ring/30"
           />
+          <div className="absolute bottom-1.5 left-1.5">
+            <AttachButton onFilePicker={onFilePicker} disabled={busy} />
+          </div>
           {busy ? (
             <button
               type="button"
