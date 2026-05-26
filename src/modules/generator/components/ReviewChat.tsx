@@ -26,6 +26,7 @@ import {
 } from "@/components/chat/attachments";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  ArrowDown01Icon,
   ArrowTurnUpIcon,
   Cancel01Icon,
   RefreshIcon,
@@ -132,12 +133,14 @@ export function ReviewChat({ onClose }: Props) {
 
   const threadRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const [atBottom, setAtBottom] = useState(true);
 
   useEffect(() => {
+    if (!atBottom) return;
     const el = threadRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages, busy]);
+  }, [messages, busy, atBottom]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -238,9 +241,15 @@ export function ReviewChat({ onClose }: Props) {
         </Tooltip>
       </header>
 
-      <div
+      <div className="relative min-h-0 flex-1">
+       <div
         ref={threadRef}
-        className="flex-1 overflow-y-auto px-3 py-2.5 text-[11.5px]"
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          const near = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+          if (near !== atBottom) setAtBottom(near);
+        }}
+        className="h-full overflow-y-auto px-3 py-2.5 text-[11.5px]"
       >
         {messages.length === 0 && !busy ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 px-3 text-center">
@@ -288,6 +297,26 @@ export function ReviewChat({ onClose }: Props) {
             ))}
           </ul>
         )}
+       </div>
+
+        {!atBottom && messages.length > 0 ? (
+          <button
+            type="button"
+            onClick={() => {
+              const el = threadRef.current;
+              if (el) el.scrollTop = el.scrollHeight;
+              setAtBottom(true);
+            }}
+            className={cn(
+              "absolute bottom-3 left-1/2 z-10 flex h-6 -translate-x-1/2 items-center gap-1 rounded-full",
+              "border border-border/60 bg-card/95 px-2.5 text-[10.5px] text-foreground/85 shadow-md backdrop-blur",
+              "hover:bg-card hover:text-foreground",
+            )}
+          >
+            <HugeiconsIcon icon={ArrowDown01Icon} size={11} strokeWidth={1.75} />
+            {busy ? "Streaming · jump to latest" : "Jump to latest"}
+          </button>
+        ) : null}
       </div>
 
       {error ? (
