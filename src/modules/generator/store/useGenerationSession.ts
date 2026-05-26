@@ -14,6 +14,7 @@ import {
   type AdoError,
   type CreatedWorkItem,
   type DraftCase as AdoDraftCase,
+  type ExecutionOutcome,
   type SuiteRef,
   type TestPlanRef,
 } from "@/modules/ado";
@@ -194,6 +195,12 @@ export type SessionState = {
   setCaseTitle: (uid: string, title: string) => void;
   /** Edit a case's reviewer rationale in place. */
   setCaseRationale: (uid: string, rationale: string) => void;
+  /** Set (or clear, with null) the run outcome the reviewer wants recorded
+   *  for a case after it publishes. */
+  setCaseOutcome: (
+    uid: string,
+    outcome: Exclude<ExecutionOutcome, "Active"> | null,
+  ) => void;
   /** Edit a single test step's action OR expected result. Pass the case
    *  uid + step index; either field can be undefined to leave unchanged. */
   setCaseStep: (
@@ -339,6 +346,7 @@ const initialState: Omit<
   | "setBugParent"
   | "setCaseTitle"
   | "setCaseRationale"
+  | "setCaseOutcome"
   | "setCaseStep"
   | "addCaseStep"
   | "removeCaseStep"
@@ -892,6 +900,14 @@ export function createGenerationSessionStore(): GenerationSessionStore {
   setCaseRationale: (uid, rationale) => {
     set((s) => ({
       cases: s.cases.map((c) => (c.uid === uid ? { ...c, rationale } : c)),
+    }));
+    schedulePersistDraft();
+  },
+  setCaseOutcome: (uid, outcome) => {
+    set((s) => ({
+      cases: s.cases.map((c) =>
+        c.uid === uid ? { ...c, desiredOutcome: outcome ?? undefined } : c,
+      ),
     }));
     schedulePersistDraft();
   },

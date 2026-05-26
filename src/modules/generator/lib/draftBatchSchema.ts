@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ExecutionOutcome } from "@/modules/ado";
 
 export const TestStepDraftSchema = z.object({
   action: z.string().min(1),
@@ -81,6 +82,10 @@ export type ReviewedCase = DraftCaseLLM & {
   decision: "keep" | "skip";
   /** Existing cases with high title similarity (Jaro-Winkler ≥ 0.85). */
   similarMatches: SimilarMatch[];
+  /** Run outcome the reviewer picked for this case. Recorded against the
+   *  case's test point right after publish. Excludes "Active" — undefined
+   *  means "leave unset / not run". */
+  desiredOutcome?: Exclude<ExecutionOutcome, "Active">;
 };
 
 export type ReviewedBug = DraftBugLLM & {
