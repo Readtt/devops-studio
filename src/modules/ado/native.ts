@@ -10,6 +10,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import {
+  AdoDiffSummarySchema,
   BugSchema,
   BugRefSchema,
   ConnectionStatusSchema,
@@ -18,6 +19,7 @@ import {
   CreatedWorkItemSchema,
   FileContentSchema,
   ProjectRefSchema,
+  PullRequestRefSchema,
   RepoRefSchema,
   SuiteRefSchema,
   TestCaseRefSchema,
@@ -26,10 +28,12 @@ import {
   TestPlanRefSchema,
   TestPointInfoSchema,
   type AdoError,
+  type AdoDiffSummary,
   type Bug,
   type BugRef,
   type CaseSuiteMembership,
   type CommitInfo,
+  type PullRequestRef,
   type ConnectionStatus,
   type CreatedWorkItem,
   type DraftBug,
@@ -403,6 +407,49 @@ export async function listCommitsSince(
     input: { repoId, branch, sinceSha },
   });
   return CommitInfoSchema.array().parse(raw);
+}
+
+// --- ADO diffs (Code Review ADO source) ---
+
+/** Diff a single commit vs its parent. */
+export async function adoDiffCommit(
+  repoId: string,
+  commitId: string,
+): Promise<AdoDiffSummary> {
+  const raw = await invoke("ado_diff_commit", { input: { repoId, commitId } });
+  return AdoDiffSummarySchema.parse(raw);
+}
+
+/** Diff a target branch vs a base branch. */
+export async function adoDiffBranches(
+  repoId: string,
+  baseBranch: string,
+  targetBranch: string,
+): Promise<AdoDiffSummary> {
+  const raw = await invoke("ado_diff_branches", {
+    input: { repoId, baseBranch, targetBranch },
+  });
+  return AdoDiffSummarySchema.parse(raw);
+}
+
+/** List active pull requests for the PR picker. */
+export async function adoListPullRequests(
+  repoId: string,
+  top?: number,
+): Promise<PullRequestRef[]> {
+  const raw = await invoke("ado_list_pull_requests", {
+    input: { repoId, top: top ?? null },
+  });
+  return PullRequestRefSchema.array().parse(raw);
+}
+
+/** Diff a pull request (source vs target). */
+export async function adoDiffPullRequest(
+  repoId: string,
+  prId: number,
+): Promise<AdoDiffSummary> {
+  const raw = await invoke("ado_diff_pull_request", { input: { repoId, prId } });
+  return AdoDiffSummarySchema.parse(raw);
 }
 
 export type WorkItemTitle = {

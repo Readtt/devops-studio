@@ -535,6 +535,10 @@ pub fn run() {
             ado::ado_list_repos,
             ado::ado_get_file,
             ado::ado_list_commits_since,
+            ado::ado_diff_commit,
+            ado::ado_diff_branches,
+            ado::ado_list_pull_requests,
+            ado::ado_diff_pull_request,
             // --- Chat threads (suite chat persistence) ---
             chat_threads::chat_threads_save,
             chat_threads::chat_threads_get,

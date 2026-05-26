@@ -28,8 +28,8 @@ use client::{keyring_service, pat_account, normalize_org_url, AdoState};
 use errors::AdoError;
 use types::{
     Bug, BugRef, CaseSuiteMembership, CommitInfo, Connection, ConnectionStatus, CreatedWorkItem,
-    DraftBug, DraftCase, FileContent, ProjectRef, RepoRef, SuiteRef, TestCase, TestCaseRef,
-    TestConnectionResult, TestPlanRef, TestPointInfo,
+    DraftBug, DraftCase, FileContent, ProjectRef, PullRequestRef, RepoRef, SuiteRef, TestCase,
+    TestCaseRef, TestConnectionResult, TestPlanRef, TestPointInfo,
 };
 
 const STORE_PATH: &str = "devops-studio-settings.json";
@@ -639,4 +639,71 @@ pub async fn ado_list_commits_since(
 ) -> Result<Vec<CommitInfo>, AdoError> {
     repos::list_commits_since(&state, &input.repo_id, &input.branch, input.since_sha.as_deref())
         .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffCommitInput {
+    pub repo_id: String,
+    pub commit_id: String,
+}
+
+/// Diff a single commit (vs its parent) into the DiffSummary shape the Code
+/// Review pane consumes.
+#[tauri::command]
+pub async fn ado_diff_commit(
+    state: State<'_, AdoState>,
+    input: DiffCommitInput,
+) -> Result<repos::AdoDiff, AdoError> {
+    repos::diff_commit(&state, &input.repo_id, &input.commit_id).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffBranchesInput {
+    pub repo_id: String,
+    pub base_branch: String,
+    pub target_branch: String,
+}
+
+/// Diff target branch vs base branch.
+#[tauri::command]
+pub async fn ado_diff_branches(
+    state: State<'_, AdoState>,
+    input: DiffBranchesInput,
+) -> Result<repos::AdoDiff, AdoError> {
+    repos::diff_branches(&state, &input.repo_id, &input.base_branch, &input.target_branch).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPullRequestsInput {
+    pub repo_id: String,
+    #[serde(default)]
+    pub top: Option<i64>,
+}
+
+/// List active pull requests for the repo (Code Review PR picker).
+#[tauri::command]
+pub async fn ado_list_pull_requests(
+    state: State<'_, AdoState>,
+    input: ListPullRequestsInput,
+) -> Result<Vec<PullRequestRef>, AdoError> {
+    repos::list_pull_requests(&state, &input.repo_id, input.top.unwrap_or(30)).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffPullRequestInput {
+    pub repo_id: String,
+    pub pr_id: i64,
+}
+
+/// Diff a pull request (source vs target).
+#[tauri::command]
+pub async fn ado_diff_pull_request(
+    state: State<'_, AdoState>,
+    input: DiffPullRequestInput,
+) -> Result<repos::AdoDiff, AdoError> {
+    repos::diff_pull_request(&state, &input.repo_id, input.pr_id).await
 }

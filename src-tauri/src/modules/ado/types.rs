@@ -340,6 +340,16 @@ pub struct FileContent {
     pub sha: Option<String>,
 }
 
+/// Lightweight pull-request projection for the Code Review source picker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestRef {
+    pub id: i64,
+    pub title: String,
+    pub source_branch: String,
+    pub target_branch: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommitInfo {

@@ -239,6 +239,32 @@ export const CommitInfoSchema = z.object({
 });
 export type CommitInfo = z.infer<typeof CommitInfoSchema>;
 
+export const PullRequestRefSchema = z.object({
+  id: z.number().int(),
+  title: z.string(),
+  sourceBranch: z.string(),
+  targetBranch: z.string(),
+});
+export type PullRequestRef = z.infer<typeof PullRequestRefSchema>;
+
+/** Diff payload returned by the ADO diff commands. Structurally matches the
+ *  code-review pane's DiffSummary so an ADO diff feeds the same pipeline. */
+export const AdoDiffSummarySchema = z.object({
+  base: z.string(),
+  head: z.string(),
+  files: z.array(
+    z.object({
+      path: z.string(),
+      additions: z.number(),
+      deletions: z.number(),
+      status: z.string(),
+    }),
+  ),
+  rawPatch: z.string(),
+  truncated: z.boolean(),
+});
+export type AdoDiffSummary = z.infer<typeof AdoDiffSummarySchema>;
+
 // --- Source link (renderer-side shape, used by Phase 7) ---
 
 export const SourceLinkSchema = z.object({
