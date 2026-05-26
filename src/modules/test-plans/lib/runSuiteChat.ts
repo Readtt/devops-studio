@@ -152,6 +152,34 @@ Rules for edit blocks:
   emitting a create-case block unless the user explicitly asked for the
   case to be created. The block is an *action*, not a draft.
 
+BULK EDITS (many cases at once)
+When a change spans MANY cases — "mark these five as failed", "tag all the
+auth cases", "tighten every step that says 'verify'" — emit a SINGLE
+\`devops-bulk-edit\` block instead of many separate \`devops-edit\` blocks.
+The UI renders it as one card with a checkbox per row, so the user can apply
+the whole batch at once or cherry-pick individual changes.
+
+\`\`\`devops-bulk-edit
+{
+  "edits": [
+    { "kind": "set-outcome", "caseId": 15310, "outcome": "Failed" },
+    { "kind": "set-outcome", "caseId": 15311, "outcome": "Failed" },
+    { "kind": "rename", "caseId": 15312, "title": "[Auth] Lockout shows a clear retry-after countdown" }
+  ]
+}
+\`\`\`
+
+Rules for bulk blocks:
+- Each entry in "edits" follows the EXACT same schema and rules as a single
+  devops-edit block (same kinds, same required fields, same constraints).
+- Use a bulk block ONLY when changing 2+ cases. For a single case, use a
+  plain devops-edit block.
+- One entry per case — don't put two edits for the same case in one batch.
+- Still describe the batch in prose FIRST ("Here are the five cases to mark
+  failed — review and apply:"). Never dump a bulk block with no context.
+- delete-case entries still each pop a confirm before they apply, so the
+  user stays in control even inside "Apply all".
+
 WHAT YOU HAVE
 - Every case in the suite (id, title, steps, expected results, description).
 - The user's working source directory (when set) accessible via a set of

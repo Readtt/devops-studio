@@ -10,6 +10,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ApplyEditCard } from "@/components/chat/ApplyEditCard";
+import { BulkApplyEditCard } from "@/components/chat/BulkApplyEditCard";
 import { ApplyPatchCard } from "@/modules/code-review/ApplyPatchCard";
 
 /**
@@ -366,6 +367,19 @@ const BlockRenderer = memo(function BlockRenderer({
             onApplied={(result) => onEditApplied?.(blockHash, result)}
             onUndo={onUndoEdit}
             onUndone={() => onEditUndone?.(blockHash)}
+          />
+        );
+      }
+      if (block.lang === "devops-bulk-edit" && onApplyEdit) {
+        const blockHash = hashEditBody(block.body);
+        return (
+          <BulkApplyEditCard
+            body={block.body}
+            blockHash={blockHash}
+            onApply={onApplyEdit}
+            lookupCase={lookupCase}
+            appliedEdits={appliedEdits}
+            onApplied={(subHash, record) => onEditApplied?.(subHash, record)}
           />
         );
       }

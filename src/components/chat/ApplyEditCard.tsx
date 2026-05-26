@@ -35,7 +35,7 @@ import type {
  * after the user already pushed the change to ADO.
  */
 
-type ParsedEdit =
+export type ParsedEdit =
   | {
       ok: true;
       kind:
@@ -607,7 +607,7 @@ function ApplyButton({
 // Rename diff
 // ---------------------------------------------------------------------------
 
-function RenameDiff({
+export function RenameDiff({
   beforeTitle,
   afterTitle,
 }: {
@@ -641,7 +641,7 @@ function RenameDiff({
 // doesn't exist yet; the title + steps render as a single proposed body.
 // ---------------------------------------------------------------------------
 
-function CreateCasePreview({
+export function CreateCasePreview({
   title,
   steps,
 }: {
@@ -695,15 +695,15 @@ function CreateCasePreview({
 // Steps diff
 // ---------------------------------------------------------------------------
 
-type StepLine = { index: number; action: string; expected: string };
+export type StepLine = { index: number; action: string; expected: string };
 
-type DiffRow =
+export type DiffRow =
   | { kind: "unchanged"; before: StepLine; after: StepLine }
   | { kind: "changed"; before: StepLine; after: StepLine }
   | { kind: "added"; after: StepLine }
   | { kind: "removed"; before: StepLine };
 
-function StepsDiff({ rows }: { rows: DiffRow[] }) {
+export function StepsDiff({ rows }: { rows: DiffRow[] }) {
   return (
     <div>
       <div className="grid grid-cols-[24px_1fr_1fr] gap-2 bg-foreground/[0.02] px-3 py-1 font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/85">
@@ -836,7 +836,7 @@ function Placeholder() {
 }
 
 // LCS-style diff over step pairs. Small N*M (~30x30) so cost is irrelevant.
-function diffSteps(before: StepLine[], after: StepLine[]): DiffRow[] {
+export function diffSteps(before: StepLine[], after: StepLine[]): DiffRow[] {
   const norm = (s: StepLine) => `${s.action}∷${s.expected}`;
   const beforeKeys = before.map(norm);
   const afterKeys = after.map(norm);
@@ -1009,7 +1009,7 @@ function CaseRefBadge({
 // Subtitle + payload parsing
 // ---------------------------------------------------------------------------
 
-function buildSubtitle(
+export function buildSubtitle(
   parsed: Extract<ParsedEdit, { ok: true }>,
   current: { title: string } | null,
   stepRows: DiffRow[] | null,
@@ -1072,7 +1072,7 @@ function truncate(s: string, n: number): string {
   return s.length <= n ? s : `${s.slice(0, n - 1)}…`;
 }
 
-function parseEdit(body: string): ParsedEdit {
+export function parseEdit(body: string): ParsedEdit {
   let raw: unknown;
   try {
     raw = JSON.parse(body);
