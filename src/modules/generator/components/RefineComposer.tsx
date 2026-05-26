@@ -569,19 +569,23 @@ export function RefineComposer({ isRefining }: Props) {
         </div>
       ) : null}
 
-      {/* The composer itself — wrapped to look like a fenced code block so
-          it visually belongs to the "this app is your editor" voice. */}
-      <div
-        onDrop={onDrop}
-        onDragOver={(e) => e.preventDefault()}
-        className={cn(
-          "group relative overflow-hidden rounded-md border border-border/60 bg-card/40 transition-colors",
-          "focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-ring/30",
-        )}
-      >
+      {/* Relative (non-clipping) wrapper so the `#`-mention dropdown, which
+          floats above the composer, isn't cut off by the composer's
+          overflow-hidden rounded frame. */}
+      <div className="relative">
         {mention.active ? <MentionDropdown mention={mention} /> : null}
 
-        {/* Left rail — mint glyph signals "this is the prompt line". */}
+        {/* The composer itself — wrapped to look like a fenced code block so
+            it visually belongs to the "this app is your editor" voice. */}
+        <div
+          onDrop={onDrop}
+          onDragOver={(e) => e.preventDefault()}
+          className={cn(
+            "group relative overflow-hidden rounded-md border border-border/60 bg-card/40 transition-colors",
+            "focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-ring/30",
+          )}
+        >
+          {/* Left rail — mint glyph signals "this is the prompt line". */}
         <div className="absolute inset-y-0 left-0 flex w-7 select-none flex-col items-center justify-start pt-2 font-mono text-[11px] text-primary/80">
           <span aria-hidden>▍</span>
         </div>
@@ -667,6 +671,7 @@ export function RefineComposer({ isRefining }: Props) {
               refine
             </Button>
           </div>
+        </div>
         </div>
       </div>
     </section>
