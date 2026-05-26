@@ -1,8 +1,9 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import type { ModelId } from "@/modules/ai/config";
+import { supportsVision, type ModelId } from "@/modules/ai/config";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import type { Attachment } from "@/components/chat/attachments";
 import {
   streamCodeReview,
@@ -224,6 +225,13 @@ export const useCodeReview = create<State>((set, get) => ({
       const prefs = usePreferencesStore.getState();
       // Per-tab pinned model wins; otherwise inherit the global default.
       const effectiveModelId = slice.modelId ?? prefs.defaultModelId;
+      const { blocks: contextBlocks, warnings } = await loadBestPracticeBlocks(
+        prefs.bestPracticeFiles,
+        { visionCapable: supportsVision(effectiveModelId) },
+      );
+      if (warnings.length > 0) {
+        console.warn("[code-review] best-practices skipped:", warnings);
+      }
       await streamCodeReview({
         modelId: effectiveModelId,
         keys: chat.apiKeys,
@@ -232,6 +240,7 @@ export const useCodeReview = create<State>((set, get) => ({
         history: priorMessages,
         newQuestion: text,
         attachments: atts,
+        contextBlocks,
         onText: appendDelta,
         signal: abort.signal,
       });

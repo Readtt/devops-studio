@@ -14,6 +14,11 @@ import { buildLanguageModel } from "@/modules/ai/lib/agent";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
 import { buildUserTurn } from "@/modules/ai/lib/visionMessage";
+import {
+  collectContextImages,
+  formatContextBlocks,
+  type ContextBlock,
+} from "@/modules/ai/lib/contextBlocks";
 import type { Attachment } from "@/components/chat/attachments";
 
 export type CodeReviewMessage = {
@@ -126,6 +131,9 @@ export type StreamCodeReviewInput = {
   /** Image/text attachments on the current turn. Images go to the model as
    *  vision input; text is already folded into the prompt. */
   attachments?: Attachment[];
+  /** Extra context blocks (best-practices files, attached bugs) appended to
+   *  the prompt and lifted into vision input. Empty/absent ⇒ prompt unchanged. */
+  contextBlocks?: ContextBlock[];
 };
 
 export async function streamCodeReview(input: StreamCodeReviewInput): Promise<{
@@ -143,7 +151,10 @@ export async function streamCodeReview(input: StreamCodeReviewInput): Promise<{
   const result = streamText({
     model: lm,
     system: CODE_REVIEW_SYSTEM_PROMPT,
-    ...buildUserTurn(prompt, input.attachments),
+    ...buildUserTurn(prompt, [
+      ...(input.attachments ?? []),
+      ...collectContextImages(input.contextBlocks ?? []),
+    ]),
     abortSignal: input.signal,
     ...(tools ? { tools, stopWhen: stepCountIs(10) } : {}),
   });
@@ -179,6 +190,9 @@ function buildUserPrompt(input: StreamCodeReviewInput): string {
           .join("\n\n")
       : "";
 
+  const contextText = formatContextBlocks(input.contextBlocks ?? []);
+  const contextSection = contextText ? `\n\n---\n${contextText}` : "";
+
   return `**Branch:** \`${diff.head}\` vs \`${diff.base}\`
 **Files changed:** ${diff.files.length}  (+${totalAdds} / -${totalDels})
 
@@ -189,7 +203,7 @@ RAW PATCH:
 
 \`\`\`diff
 ${diff.rawPatch || "(empty)"}
-\`\`\`${truncationNote}${historyBlock}
+\`\`\`${truncationNote}${historyBlock}${contextSection}
 
 ---
 USER:

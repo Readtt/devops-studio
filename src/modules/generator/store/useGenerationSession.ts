@@ -81,7 +81,8 @@ export type PublishLogEntry = {
   error?: string;
 };
 
-import type { ModelId } from "@/modules/ai/config";
+import { supportsVision, type ModelId } from "@/modules/ai/config";
+import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 
 // Attachment types + id minting live in the shared chat-attachment module.
 // Re-export here so existing call sites that import these from the session
@@ -646,11 +647,20 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     const modelId = overrideModelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
     const engineSel = selectEngine(modelId);
+    const usingClaude =
+      engineSel.engine === "claude-agent-sdk" && engineSel.active;
+    const { blocks: bpBlocks, warnings: bpWarnings } =
+      await loadBestPracticeBlocks(prefs.bestPracticeFiles, {
+        visionCapable: usingClaude ? true : supportsVision(modelId),
+      });
+    if (bpWarnings.length > 0) {
+      console.warn("[generator] best-practices skipped:", bpWarnings);
+    }
 
     try {
       set({ stepLabel: "Calling model…" });
       let result: RunResult;
-      if (engineSel.engine === "claude-agent-sdk" && engineSel.active) {
+      if (usingClaude) {
         result = await runQaAnalystClaude({
           requirements,
           changesets,
@@ -670,6 +680,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           sourceRoot: allowCodeSearch ? prefs.sourceRoot : null,
           authMode: engineSel.authMode ?? "api-key",
           bareMode: prefs.claudeBareMode,
+          contextBlocks: bpBlocks,
           onActivity,
           onRunStart: (rid) => set({ activeClaudeRunId: rid }),
         });
@@ -685,6 +696,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           mode,
           keys,
           modelId,
+          contextBlocks: bpBlocks,
           onActivity,
         });
       }
@@ -1275,10 +1287,19 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     const modelId = s.overrideModelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
     const engineSel = selectEngine(modelId);
+    const usingClaude =
+      engineSel.engine === "claude-agent-sdk" && engineSel.active;
+    const { blocks: bpBlocks, warnings: bpWarnings } =
+      await loadBestPracticeBlocks(prefs.bestPracticeFiles, {
+        visionCapable: usingClaude ? true : supportsVision(modelId),
+      });
+    if (bpWarnings.length > 0) {
+      console.warn("[generator] best-practices skipped:", bpWarnings);
+    }
 
     try {
       let result: RunResult;
-      if (engineSel.engine === "claude-agent-sdk" && engineSel.active) {
+      if (usingClaude) {
         result = await runQaAnalystClaude({
           requirements: s.requirements,
           attachments: s.attachments,
@@ -1290,6 +1311,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           sourceRoot: s.allowCodeSearch ? prefs.sourceRoot : null,
           authMode: engineSel.authMode ?? "api-key",
           bareMode: prefs.claudeBareMode,
+          contextBlocks: bpBlocks,
           onActivity,
           userPromptOverride: userPrompt,
           // Hand the runId up to the store so cancelRefine() has a target
@@ -1308,6 +1330,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           mode: s.mode,
           keys,
           modelId,
+          contextBlocks: bpBlocks,
           onActivity,
           userPromptOverride: userPrompt,
         });
@@ -1492,9 +1515,18 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     const modelId = s.overrideModelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
     const engineSel = selectEngine(modelId);
+    const usingClaude =
+      engineSel.engine === "claude-agent-sdk" && engineSel.active;
+    const { blocks: bpBlocks, warnings: bpWarnings } =
+      await loadBestPracticeBlocks(prefs.bestPracticeFiles, {
+        visionCapable: usingClaude ? true : supportsVision(modelId),
+      });
+    if (bpWarnings.length > 0) {
+      console.warn("[generator] best-practices skipped:", bpWarnings);
+    }
 
     try {
-      if (engineSel.engine === "claude-agent-sdk" && engineSel.active) {
+      if (usingClaude) {
         const runId = `chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
         set({ chatActiveClaudeRunId: runId });
         await streamQaChatClaude({
@@ -1511,6 +1543,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           sourceRoot: s.allowCodeSearch ? prefs.sourceRoot : null,
           authMode: engineSel.authMode ?? "api-key",
           bareMode: prefs.claudeBareMode,
+          contextBlocks: bpBlocks,
           onText: appendDelta,
         });
       } else {
@@ -1525,6 +1558,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           newQuestion: text,
           keys,
           modelId,
+          contextBlocks: bpBlocks,
           onText: appendDelta,
         });
       }

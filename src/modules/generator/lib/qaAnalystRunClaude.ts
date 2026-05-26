@@ -6,6 +6,11 @@ import { getKey } from "@/modules/ai/lib/keyring";
 import { runClaudeQuery, type ClaudeEvent } from "@/modules/ai/lib/claude";
 import { imageAttachmentToBase64 } from "@/components/chat/attachments";
 import {
+  collectContextImages,
+  formatContextBlocks,
+  type ContextBlock,
+} from "@/modules/ai/lib/contextBlocks";
+import {
   DraftBatchLLMSchema,
   type DraftBatchLLM,
 } from "./draftBatchSchema";
@@ -65,6 +70,9 @@ export type RunClaudeInput = {
    *  refine() so the model sees a "follow-up against this draft" framing
    *  instead of "start from scratch". */
   userPromptOverride?: string;
+  /** Extra context blocks (best-practices files, attached bugs) appended to
+   *  the prompt and lifted into vision input. See qaAnalystRun.ts. */
+  contextBlocks?: ContextBlock[];
   /** Called once with the run id the moment we have one. The store stashes
    *  it so an ESC press can call cancelClaudeRun(runId) and abort the
    *  in-flight subprocess instead of waiting for the model to finish. */
@@ -81,10 +89,16 @@ export async function runQaAnalystClaude(
     if (key) env.ANTHROPIC_API_KEY = key;
   }
 
-  const userPrompt = input.userPromptOverride ?? buildUserPrompt(input);
+  const ctxText = formatContextBlocks(input.contextBlocks ?? []);
+  const basePrompt = input.userPromptOverride ?? buildUserPrompt(input);
+  const userPrompt = ctxText ? `${basePrompt}\n\n${ctxText}` : basePrompt;
   // Lift image attachments into real vision blocks for the CLI's stream-json
   // input. Text attachments stay embedded in the prompt (buildUserPrompt).
-  const images = input.attachments
+  // Best-practice / bug-context images ride along the same way.
+  const images = [
+    ...input.attachments,
+    ...collectContextImages(input.contextBlocks ?? []),
+  ]
     .map(imageAttachmentToBase64)
     .filter((x): x is { mediaType: string; dataBase64: string } => x !== null);
   const start = Date.now();

@@ -20,6 +20,11 @@ import type { TestCase } from "@/modules/ado";
 import { buildSuiteChatTools } from "./suiteChatTools";
 import { buildUserTurn } from "@/modules/ai/lib/visionMessage";
 import {
+  collectContextImages,
+  formatContextBlocks,
+  type ContextBlock,
+} from "@/modules/ai/lib/contextBlocks";
+import {
   imageAttachmentToBase64,
   type Attachment,
 } from "@/components/chat/attachments";
@@ -240,6 +245,9 @@ export type SuiteChatRunInput = {
   /** Image/text attachments on the current turn. Images are sent to the
    *  model as vision input; text was already folded into the prompt. */
   attachments?: Attachment[];
+  /** Extra context blocks (best-practices files, attached bugs) appended to
+   *  the prompt and lifted into vision input. Empty/absent ⇒ prompt unchanged. */
+  contextBlocks?: ContextBlock[];
 };
 
 export type SuiteChatRunResult = {
@@ -273,7 +281,10 @@ export async function runSuiteChat(
   const result = await generateText({
     model: lm,
     system: SUITE_CHAT_SYSTEM_PROMPT,
-    ...buildUserTurn(userPrompt, input.attachments),
+    ...buildUserTurn(userPrompt, [
+      ...(input.attachments ?? []),
+      ...collectContextImages(input.contextBlocks ?? []),
+    ]),
     ...(tools ? { tools, stopWhen: stepCountIs(8) } : {}),
   });
   return { text: result.text ?? "", durationMs: Date.now() - start };
@@ -300,7 +311,10 @@ export async function streamSuiteChat(
   const result = streamText({
     model: lm,
     system: SUITE_CHAT_SYSTEM_PROMPT,
-    ...buildUserTurn(userPrompt, input.attachments),
+    ...buildUserTurn(userPrompt, [
+      ...(input.attachments ?? []),
+      ...collectContextImages(input.contextBlocks ?? []),
+    ]),
     ...(tools ? { tools, stopWhen: stepCountIs(8) } : {}),
   });
   let acc = "";
@@ -345,7 +359,10 @@ export async function runSuiteChatClaude(
   const result = await runClaudeQuery({
     runId: input.runId,
     prompt: userPrompt,
-    images: claudeImages(input.attachments),
+    images: claudeImages([
+      ...(input.attachments ?? []),
+      ...collectContextImages(input.contextBlocks ?? []),
+    ]),
     systemPrompt: SUITE_CHAT_SYSTEM_PROMPT,
     cwd: input.sourceRoot ?? undefined,
     model: input.modelId,
@@ -405,7 +422,10 @@ export async function streamSuiteChatClaude(
     {
       runId: input.runId,
       prompt: userPrompt,
-      images: claudeImages(input.attachments),
+      images: claudeImages([
+      ...(input.attachments ?? []),
+      ...collectContextImages(input.contextBlocks ?? []),
+    ]),
       systemPrompt: SUITE_CHAT_SYSTEM_PROMPT,
       cwd: input.sourceRoot ?? undefined,
       model: input.modelId,
@@ -431,6 +451,7 @@ function buildSuiteChatUserPrompt(
     : "Source directory: NOT SET — code grounding isn't available. Tell the user if they ask for it.";
   const casesBlock = renderCasesBlock(input.cases);
   const historyBlock = renderHistoryBlock(input.history);
+  const contextText = formatContextBlocks(input.contextBlocks ?? []);
   return [
     suiteLine,
     sourceLine,
@@ -439,6 +460,8 @@ function buildSuiteChatUserPrompt(
     "",
     historyBlock || null,
     historyBlock ? "" : null,
+    contextText || null,
+    contextText ? "" : null,
     "USER:",
     input.newQuestion.trim(),
   ]

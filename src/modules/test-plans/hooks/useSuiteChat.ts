@@ -21,7 +21,8 @@ import {
   type SuiteRef,
   type TestCase,
 } from "@/modules/ado";
-import type { ModelId } from "@/modules/ai/config";
+import { supportsVision, type ModelId } from "@/modules/ai/config";
+import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import type { Attachment } from "@/components/chat/attachments";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
@@ -654,9 +655,20 @@ export const useSuiteChat = create<Store>((set, get) => ({
     const engineSel = selectEngine(modelId);
     const sourceRoot = prefs.sourceRoot ?? null;
     const priorMessages = curr.messages;
+    const usingClaude =
+      engineSel.engine === "claude-agent-sdk" && engineSel.active;
+    // Best-practices standards injected as context. Claude CLI models are
+    // vision-capable; the BYOK path depends on the chosen model.
+    const { blocks: contextBlocks, warnings: bpWarnings } =
+      await loadBestPracticeBlocks(prefs.bestPracticeFiles, {
+        visionCapable: usingClaude ? true : supportsVision(modelId),
+      });
+    if (bpWarnings.length > 0) {
+      console.warn("[suite-chat] best-practices skipped:", bpWarnings);
+    }
 
     try {
-      if (engineSel.engine === "claude-agent-sdk" && engineSel.active) {
+      if (usingClaude) {
         const runId = `sc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
         patchThread(set, planId, suiteId, threadId, {
           activeClaudeRunId: runId,
@@ -670,6 +682,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
           history: priorMessages,
           newQuestion: text,
           attachments: atts,
+          contextBlocks,
           modelId: resolveClaudeModelId(modelId) as typeof modelId,
           sourceRoot,
           authMode: engineSel.authMode ?? "api-key",
@@ -685,6 +698,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
           history: priorMessages,
           newQuestion: text,
           attachments: atts,
+          contextBlocks,
           keys,
           modelId,
           sourceRoot,

@@ -17,6 +17,11 @@ import {
 } from "./activityLog";
 import { renderRelatedCases, type RelatedCase } from "./relatedCases";
 import { buildUserTurn } from "@/modules/ai/lib/visionMessage";
+import {
+  collectContextImages,
+  formatContextBlocks,
+  type ContextBlock,
+} from "@/modules/ai/lib/contextBlocks";
 
 const MAX_STEPS = 12;
 
@@ -93,6 +98,10 @@ export type RunInput = {
    *  instead of "start from scratch". When set, the runner skips its own
    *  buildUserPrompt and passes this verbatim. */
   userPromptOverride?: string;
+  /** Extra context blocks (best-practices files, attached bugs) appended to
+   *  the prompt and lifted into vision input. Injected for both the initial
+   *  and refine paths. Empty/absent ⇒ prompt unchanged. */
+  contextBlocks?: ContextBlock[];
 };
 
 export type RunResult = {
@@ -107,7 +116,15 @@ export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
     lmstudioBaseURL: input.lmstudioBaseURL,
   });
 
-  const userPrompt = input.userPromptOverride ?? buildUserPrompt(input);
+  const ctxText = formatContextBlocks(input.contextBlocks ?? []);
+  const basePrompt = input.userPromptOverride ?? buildUserPrompt(input);
+  const userPrompt = ctxText ? `${basePrompt}\n\n${ctxText}` : basePrompt;
+  // Merge best-practice / bug-context images into the vision attachments so a
+  // standards screenshot reaches the model the same way a dropped image does.
+  const attachments = [
+    ...input.attachments,
+    ...collectContextImages(input.contextBlocks ?? []),
+  ];
   const start = Date.now();
 
   // SAFETY: the analyst path runs WITHOUT tools — text-in, JSON-out. The
@@ -119,7 +136,7 @@ export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
   const result = await generateText({
     model: lm,
     system: QA_ANALYST_PROMPT,
-    ...buildUserTurn(userPrompt, input.attachments),
+    ...buildUserTurn(userPrompt, attachments),
     stopWhen: stepCountIs(MAX_STEPS),
     onStepFinish: (step) => {
       const onActivity = input.onActivity;

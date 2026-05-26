@@ -20,6 +20,11 @@ import {
 } from "./qaAnalystRun";
 import { buildUserTurn } from "@/modules/ai/lib/visionMessage";
 import { imageAttachmentToBase64 } from "@/components/chat/attachments";
+import {
+  collectContextImages,
+  formatContextBlocks,
+  type ContextBlock,
+} from "@/modules/ai/lib/contextBlocks";
 
 /** Lift image attachments into stream-json image blocks for the CLI path. */
 function claudeImages(
@@ -82,6 +87,9 @@ export type ChatRunInput = {
    *  before the run starts, but passed separately so the prompt builder
    *  has it on hand without re-walking the array. */
   newQuestion: string;
+  /** Extra context blocks (best-practices files, attached bugs) appended to
+   *  the prompt and lifted into vision input. Empty/absent ⇒ prompt unchanged. */
+  contextBlocks?: ContextBlock[];
 };
 
 export type ChatRunResult = {
@@ -107,7 +115,10 @@ export async function runQaChat(input: VercelChatInput): Promise<ChatRunResult> 
   const result = await generateText({
     model: lm,
     system: CHAT_SYSTEM_PROMPT,
-    ...buildUserTurn(userPrompt, input.attachments),
+    ...buildUserTurn(userPrompt, [
+      ...input.attachments,
+      ...collectContextImages(input.contextBlocks ?? []),
+    ]),
   });
   return { text: result.text ?? "", durationMs: Date.now() - start };
 }
@@ -128,7 +139,10 @@ export async function streamQaChat(
   const result = streamText({
     model: lm,
     system: CHAT_SYSTEM_PROMPT,
-    ...buildUserTurn(userPrompt, input.attachments),
+    ...buildUserTurn(userPrompt, [
+      ...input.attachments,
+      ...collectContextImages(input.contextBlocks ?? []),
+    ]),
   });
   let acc = "";
   for await (const chunk of result.textStream) {
@@ -162,7 +176,10 @@ export async function runQaChatClaude(
   const result = await runClaudeQuery({
     runId: input.runId,
     prompt: userPrompt,
-    images: claudeImages(input.attachments),
+    images: claudeImages([
+      ...input.attachments,
+      ...collectContextImages(input.contextBlocks ?? []),
+    ]),
     systemPrompt: CHAT_SYSTEM_PROMPT,
     cwd: input.sourceRoot ?? undefined,
     model: input.modelId,
@@ -215,7 +232,10 @@ export async function streamQaChatClaude(
     {
       runId: input.runId,
       prompt: userPrompt,
-      images: claudeImages(input.attachments),
+      images: claudeImages([
+      ...input.attachments,
+      ...collectContextImages(input.contextBlocks ?? []),
+    ]),
       systemPrompt: CHAT_SYSTEM_PROMPT,
       cwd: input.sourceRoot ?? undefined,
       model: input.modelId,
@@ -236,6 +256,7 @@ function buildChatUserPrompt(input: ChatRunInput): string {
   const changesetsBlock = renderChangesetsBlock(input.changesets);
   const draftBlock = renderDraftBlock(input.cases, input.bugs);
   const historyBlock = renderHistoryBlock(input.history);
+  const contextText = formatContextBlocks(input.contextBlocks ?? []);
   const attached =
     input.attachments.length === 0
       ? ""
@@ -254,6 +275,8 @@ function buildChatUserPrompt(input: ChatRunInput): string {
     "",
     historyBlock,
     historyBlock ? "" : null,
+    contextText || null,
+    contextText ? "" : null,
     "USER:",
     input.newQuestion.trim(),
     attached,
