@@ -7,6 +7,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.4.0] - 2026-05-26
+
+This release brings test execution into the workflow — record Pass / Fail / Blocked outcomes from the test-case tab, Suite Chat, and the generator review tab — adds image & file attachments with real vision to every chat surface, bulk edits in Suite Chat, and a "what the last refine changed" diff in the generator. The stale-case detection feature is removed.
+
+- **Record run outcomes (Pass / Fail / Blocked / N/A).** A minimal outcome dropdown in the test-case header writes the case's test-point outcome in its plan + suite, backed by a new Rust `test_points` module (list points, set outcome, list a case's suites) — the write returns the outcome it set rather than ADO's lagging PATCH echo. Suite Chat can now propose an outcome as an Apply card, and the **generator review tab** lets you pick an outcome per case that's recorded against its test point right after the case publishes.
+- **Attachments in every chat.** Drag-drop, paste, or use the paperclip to attach images and text files in Suite Chat, Code Review, and the generator's Refine and Ask composers — matching the generator's input phase. Images are now sent to the model as real **vision** input (Vercel-SDK providers and the Claude CLI alike — the latter via `stream-json` image blocks), and every attachment is persisted, so it's still there when you reopen the chat thread or a saved generation draft.
+- **Bulk edits in Suite Chat.** When a change spans many cases, the assistant proposes them as a single card with a checkbox per edit and an expandable diff for each. Apply the whole batch with "Apply all" or cherry-pick with "Apply selected" — one failing edit doesn't abort the rest, and a partially-applied batch stays marked when you reopen the chat. Referenced `#case` chips are clickable.
+- **"What the last refine changed."** A review-tab panel diffs the pre-refine draft against the current one — field-labeled per case (description + step diffs) and per bug (severity + repro-steps) — and the snapshot persists in the saved draft, so the panel survives reopening a run from history.
+- **Live-streaming Ask chat.** The generator's review-pane Ask panel now streams tokens into the assistant bubble (caret + thinking dots) with a stop button, matching the Suite Chat and Code Review surfaces.
+- **Existing suite cases as generation context.** Analyze now feeds the target suite's existing cases — with their steps, capped at 20 — to the model, so it reads prior coverage and writes complementary, style-matched cases instead of deduping on titles alone.
+- **Generation History context menu.** Right-click a run to open it in review, open its publish summary, copy the spec, copy case & bug titles, or delete it. Duplicating a review/done generation now confirms first, since the copy becomes its own publishable History entry.
+
+- **The generator prompt demands exact, value-level reproduction steps** and treats the generated cases & bugs as a deliberately-ordered list.
+- **Dark mode eases off pure black** toward a softer near-black for more comfortable contrast.
+
+- **Duplicating a generator tab** now clones the full live draft (phase, publish log, cases, bugs, refine snapshot) into an independent session with a fresh run id — instead of dropping you on an empty input form — and the copy survives a reload. Duplicating a deduped tab (test case / bug / code-viewer / Suite Chat) now actually creates a distinct copy instead of reactivating the original.
+- **Reopening a draft or published run after a window reload** no longer snaps back to an empty input form.
+- **Opening a case from a Suite Chat link** now carries its plan + suite, so the Execute dropdown targets the right test point instead of falling back to the suite picker.
+- **The copy tooltip** no longer promises a link on an unpublished draft.
+
+- **Stale-case detection.** The per-branch staleness scanner, the Stale sidebar queue, the "Mark for review" action, and the related command-palette entries and `Ctrl+Shift+S` shortcut are gone. Branch awareness in the status bar and the branch-aware code-link chips on published cases are unaffected — the tracking-branch setting now solely drives those code links.
+
 ## [0.3.2] - 2026-05-25
 
 - **Title bar no longer sticks to the cursor.** Clicking the window title bar could drop the window into a drag that kept following the pointer after the mouse button was released. Window dragging now begins only after real pointer movement, so a plain click stays a click.
