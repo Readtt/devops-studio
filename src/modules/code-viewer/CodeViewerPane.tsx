@@ -192,10 +192,10 @@ export function CodeViewerPane({ path, startLine, endLine }: Props) {
           {displaySourcePath(path)}
         </span>
         {startLine ? (
-          <span className="rounded bg-foreground/[0.06] px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+          <span className="shrink-0 whitespace-nowrap rounded bg-foreground/[0.06] px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
             {endLine && endLine !== startLine
-              ? `lines ${startLine}–${endLine}`
-              : `line ${startLine}`}
+              ? `L${startLine}–${endLine}`
+              : `L${startLine}`}
           </span>
         ) : null}
         <div className="ml-auto flex shrink-0 gap-1">

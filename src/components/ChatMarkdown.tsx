@@ -590,7 +590,7 @@ function pushTextWithAutoLinks(
   // rather than a work-item id. `\B` keeps us from matching inside words
   // (e.g. "color: #abc").
   const re =
-    /(\B#(\d{3,7})\b)|((?:[\w./-]+\/)?[\w.-]+\.(?:tsx?|jsx?|cs|java|kt|go|py|rs|rb|php|swift|m|mm|c|cc|cpp|h|hpp|css|scss|html?|json|yaml|yml|md|sql|sh|toml|xml|vue|svelte|tauri|conf):(\d+)(?:[-–](\d+))?)/g;
+    /(\B#(\d{3,7})\b)|((?:[\w./-]+\/)?[\w.-]+\.(?:tsx?|jsx?|cshtml|razor|vbhtml|xaml|cs|vb|fs|java|kt|go|py|rs|rb|php|swift|m|mm|c|cc|cpp|h|hpp|css|scss|html?|json|yaml|yml|md|sql|sh|toml|xml|vue|svelte|tauri|conf):(\d+)(?:[-–](\d+))?)/g;
   let last = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text))) {

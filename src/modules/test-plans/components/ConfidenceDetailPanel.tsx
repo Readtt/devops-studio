@@ -313,13 +313,15 @@ function RefChip({ refStr }: { refStr: string }) {
 }
 
 /** Parse "src/foo.ts:42-58" / "src/foo.ts:42" / "src/foo.ts" into parts.
- *  Tolerates the en-dash the model sometimes emits for ranges. */
+ *  Tolerates the en-dash the model emits for ranges AND multi-range specs like
+ *  "src/foo.ts:1-2,62-94" — we jump to the first range (the trailing ranges
+ *  used to get appended to the path, which then failed to open). */
 function parseRef(
   ref: string,
 ): { path: string; startLine?: number; endLine?: number } | null {
   const trimmed = ref.trim();
   if (!trimmed) return null;
-  const m = trimmed.match(/^(.*?):L?(\d+)(?:[-–]L?(\d+))?$/);
+  const m = trimmed.match(/^(.*?):L?(\d+)(?:[-–]L?(\d+))?(?:\s*[,;].*)?$/);
   if (!m) return { path: trimmed };
   return {
     path: m[1],
