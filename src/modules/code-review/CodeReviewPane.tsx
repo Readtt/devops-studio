@@ -45,6 +45,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useCodeReview } from "./useCodeReview";
 import { CodeReviewSourcePicker } from "./CodeReviewSourcePicker";
+import { describeSource } from "./source";
 
 const DEFAULT_FIRST_PROMPT =
   "Please review my changes — flag blockers, suggestions, and nits with file:line citations.";
@@ -161,6 +162,20 @@ export function CodeReviewPane({
     const dels = diff.files.reduce((s, f) => s + f.deletions, 0);
     return { adds, dels, count: diff.files.length };
   }, [diff]);
+
+  // A short, source-aware nudge under "Couldn't load diff". For the local
+  // copy the usual culprit is a base branch that isn't fetched on disk; for
+  // an ADO source it's a connection / wrong-ref problem instead.
+  const diffErrorHint = useMemo(() => {
+    if (!diffError) return null;
+    if (slice?.source) {
+      return "Check the Azure DevOps connection in Settings and that the commit / PR / branch still exists.";
+    }
+    if (/base branch|default base/i.test(diffError)) {
+      return "That base branch may not be fetched locally — run `git fetch` in your source directory, or pick a base that's checked out.";
+    }
+    return null;
+  }, [diffError, slice?.source]);
 
   const handleSend = () => {
     const text = draft.trim();
@@ -359,7 +374,36 @@ export function CodeReviewPane({
       {/* Status banners ------------------------------------------------ */}
       {diffError ? (
         <div className="shrink-0 border-b border-rose-500/30 bg-rose-500/[0.06] px-3 py-1.5 text-[11px] text-rose-700 dark:text-rose-300">
-          Couldn't load diff: {diffError}
+          <span>Couldn't load diff: {diffError}</span>
+          {diffErrorHint ? (
+            <span className="mt-0.5 block text-rose-700/80 dark:text-rose-300/80">
+              {diffErrorHint}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+      {slice?.source ? (
+        <div className="flex shrink-0 items-start gap-1.5 border-b border-sky-500/25 bg-sky-500/[0.05] px-3 py-1.5 text-[11px] text-sky-800 dark:text-sky-200">
+          <HugeiconsIcon
+            icon={InformationCircleIcon}
+            size={12}
+            strokeWidth={1.75}
+            className="mt-0.5 shrink-0"
+          />
+          <span>
+            Reviewing{" "}
+            <span className="font-medium">{describeSource(slice.source)}</span>{" "}
+            from Azure DevOps. The reviewer's Read/Grep tools read your{" "}
+            <span className="font-medium">local</span> checkout
+            {liveGit.branch ? (
+              <>
+                {" "}
+                (<span className="font-mono">{liveGit.branch}</span>)
+              </>
+            ) : null}
+            , which may differ — for exact surrounding code, check out the
+            matching branch and <span className="font-mono">git pull</span>.
+          </span>
         </div>
       ) : null}
       {diff?.truncated ? (

@@ -6,7 +6,7 @@ import {
   adoDiffCommit,
   adoDiffPullRequest,
 } from "@/modules/ado";
-import type { CodeReviewSource } from "./source";
+import { describeSource, type CodeReviewSource } from "./source";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useTabsStore } from "@/modules/tabs/store/useTabsStore";
@@ -296,6 +296,9 @@ export const useCodeReview = create<State>((set, get) => ({
       const bugBlocks =
         bugIds && bugIds.length > 0 ? await bugsToContextBlocks(bugIds) : [];
       const contextBlocks = [...bpBlocks, ...bugBlocks];
+      // ADO source ⇒ tell the runner the diff (not the local checkout the
+      // Read/Grep tools see) is authoritative.
+      const adoSourceLabel = slice.source ? describeSource(slice.source) : null;
       const engineSel = selectEngine(effectiveModelId);
       if (engineSel.engine === "claude-agent-sdk" && engineSel.active) {
         // Claude Code (OAuth) path — works without a BYOK API key.
@@ -310,6 +313,7 @@ export const useCodeReview = create<State>((set, get) => ({
           newQuestion: text,
           attachments: atts,
           contextBlocks,
+          adoSourceLabel,
           onText: appendDelta,
           authMode: engineSel.authMode ?? "api-key",
           bareMode: prefs.claudeBareMode,
@@ -325,6 +329,7 @@ export const useCodeReview = create<State>((set, get) => ({
           newQuestion: text,
           attachments: atts,
           contextBlocks,
+          adoSourceLabel,
           onText: appendDelta,
           signal: abort.signal,
         });

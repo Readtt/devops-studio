@@ -70,6 +70,13 @@ If a section has nothing, write "_None._" — don't pad. A review with two Block
 CROSS-MODULE CONSISTENCY
 When a behavior in the diff diverges from how a comparable or shared implementation elsewhere in the codebase handles the same concern, flag it as a likely inconsistency or bug — modules that solve the same problem (or share a common module) should behave consistently. Use Read/Grep to find the sibling implementation and cite BOTH locations with \`file:line\`. Don't flag divergence when the two are fundamentally different in purpose at their core; only when they ought to agree and don't.
 
+REGRESSION & BLAST RADIUS
+This is the highest-value part of the review: don't only judge the changed lines in isolation — judge what they could BREAK elsewhere. For every changed symbol (function, method, type, constant, export, component prop, route, query, schema):
+- Grep for its callers / importers / dependents and decide whether the change is safe for each one. A changed signature, return shape, default value, thrown-error behavior, nullability, or async/ordering timing can silently break callers the diff never touches.
+- Flag removed or renamed exports, narrowed types, changed enum/string values, altered iteration order, and modified public contracts (IPC command names + payloads, persisted JSON/localStorage shapes, DB columns, API responses) — these ripple outward beyond the diff.
+- Call out back-compat / migration gaps: persisted state, stored rows, or older payloads the new code no longer reads correctly.
+When the review unit is a single commit or pull request, make this the primary lens — the author wants to know "does this delta break anything that already worked?" Put genuine breakage under **Blockers**, citing BOTH the changed location and the caller it breaks (each \`file:line\`), and emit a patch when the fix is concrete.
+
 CITATIONS
 Every finding MUST cite the file and starting line in the form \`path/to/file.ext:LINE\`. Use exactly that format — no leading slash, no surrounding parentheses, no Markdown link wrapping. The UI auto-links those citations to the code viewer, so getting the format wrong breaks navigation.
 
@@ -139,6 +146,10 @@ export type StreamCodeReviewInput = {
   /** Extra context blocks (best-practices files, attached bugs) appended to
    *  the prompt and lifted into vision input. Empty/absent ⇒ prompt unchanged. */
   contextBlocks?: ContextBlock[];
+  /** When the diff came from Azure DevOps, a human label (e.g.
+   *  "repo · PR #12"). Tells the model the diff — not the local working copy
+   *  its Read/Grep tools see — is the source of truth. Absent ⇒ local diff. */
+  adoSourceLabel?: string | null;
 };
 
 export async function streamCodeReview(input: StreamCodeReviewInput): Promise<{
@@ -276,7 +287,15 @@ function buildUserPrompt(input: StreamCodeReviewInput): string {
   const contextText = formatContextBlocks(input.contextBlocks ?? []);
   const contextSection = contextText ? `\n\n---\n${contextText}` : "";
 
-  return `**Branch:** \`${diff.head}\` vs \`${diff.base}\`
+  // When the diff is pulled from Azure DevOps, the agent's Read/Glob/Grep
+  // tools still read the user's LOCAL checkout — which may be on a different
+  // branch. Make the diff authoritative so the model doesn't "correct" itself
+  // against mismatched local files.
+  const adoNote = input.adoSourceLabel
+    ? `> **Review source: Azure DevOps — ${input.adoSourceLabel}.** The diff below is the source of truth for what changed. Your Read/Glob/Grep tools read the user's LOCAL working copy, which may be checked out to a different branch or commit — use them only to understand surrounding architecture and callers, never to re-derive the change. If a local file appears to contradict the diff, trust the diff.\n\n`
+    : "";
+
+  return `${adoNote}**Branch:** \`${diff.head}\` vs \`${diff.base}\`
 **Files changed:** ${diff.files.length}  (+${totalAdds} / -${totalDels})
 
 ${fileList || "_(no per-file stats — diff was empty?)_"}
