@@ -419,62 +419,67 @@ export function CodeReviewPane({
       ) : null}
 
       {/* Messages ------------------------------------------------------ */}
-      <div
-        ref={scrollRef}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          const near = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-          if (near !== atBottom) setAtBottom(near);
-        }}
-        className="min-h-0 flex-1 overflow-y-auto px-4 py-3"
-      >
-        {messages.length === 0 ? (
-          <EmptyState
-            base={slice?.base ?? base ?? "main"}
-            head={diff?.head ?? liveGit.branch ?? null}
-            fileCount={totals?.count ?? 0}
-            onPick={(prompt) => setDraft(prompt)}
-            canPick={!!diff}
-          />
-        ) : (
-          <div className="mx-auto flex max-w-3xl flex-col gap-3">
-            {messages.map((m, i) => (
-              <MessageBubble
-                key={m.id}
-                role={m.role}
-                content={m.content}
-                attachments={m.attachments}
-                streaming={busy && i === messages.length - 1}
-                assistantProvider={activeModel.provider}
-              />
-            ))}
-            {error ? (
-              <div className="rounded-md border border-rose-500/30 bg-rose-500/[0.06] px-3 py-2 text-[11.5px] text-rose-700 dark:text-rose-300">
-                {error}
-              </div>
-            ) : null}
-          </div>
-        )}
-      </div>
-
-      {!atBottom && messages.length > 0 ? (
-        <button
-          type="button"
-          onClick={() => {
-            const el = scrollRef.current;
-            if (el) el.scrollTop = el.scrollHeight;
-            setAtBottom(true);
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollRef}
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            const near = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+            if (near !== atBottom) setAtBottom(near);
           }}
-          className={cn(
-            "pointer-events-auto mx-auto mb-2 flex h-6 items-center gap-1 rounded-full",
-            "border border-border/60 bg-card/95 px-2.5 text-[10.5px] text-foreground/85 shadow-sm",
-            "hover:bg-card hover:text-foreground",
-          )}
+          className="h-full overflow-y-auto px-4 py-3"
         >
-          <HugeiconsIcon icon={ArrowDown01Icon} size={11} strokeWidth={1.75} />
-          {busy ? "Streaming · jump to latest" : "Jump to latest"}
-        </button>
-      ) : null}
+          {messages.length === 0 ? (
+            <EmptyState
+              base={slice?.base ?? base ?? "main"}
+              head={diff?.head ?? liveGit.branch ?? null}
+              fileCount={totals?.count ?? 0}
+              onPick={(prompt) => setDraft(prompt)}
+              canPick={!!diff}
+            />
+          ) : (
+            <div className="mx-auto flex max-w-3xl flex-col gap-3">
+              {messages.map((m, i) => (
+                <MessageBubble
+                  key={m.id}
+                  role={m.role}
+                  content={m.content}
+                  attachments={m.attachments}
+                  streaming={busy && i === messages.length - 1}
+                  assistantProvider={activeModel.provider}
+                />
+              ))}
+              {error ? (
+                <div className="rounded-md border border-rose-500/30 bg-rose-500/[0.06] px-3 py-2 text-[11.5px] text-rose-700 dark:text-rose-300">
+                  {error}
+                </div>
+              ) : null}
+            </div>
+          )}
+        </div>
+
+        {/* Floating scroll-to-bottom pill — absolute so it overlays the
+            messages instead of inserting a full-width band between the list
+            and the composer. */}
+        {!atBottom && messages.length > 0 ? (
+          <button
+            type="button"
+            onClick={() => {
+              const el = scrollRef.current;
+              if (el) el.scrollTop = el.scrollHeight;
+              setAtBottom(true);
+            }}
+            className={cn(
+              "absolute bottom-3 left-1/2 z-10 flex h-6 -translate-x-1/2 items-center gap-1 rounded-full",
+              "border border-border/60 bg-card/95 px-2.5 text-[10.5px] text-foreground/85 shadow-md backdrop-blur",
+              "hover:bg-card hover:text-foreground",
+            )}
+          >
+            <HugeiconsIcon icon={ArrowDown01Icon} size={11} strokeWidth={1.75} />
+            {busy ? "Streaming · jump to latest" : "Jump to latest"}
+          </button>
+        ) : null}
+      </div>
 
       {/* Composer — mirrors SuiteChatPane's chat composer so the two
           surfaces feel like one tool. Single rounded textarea with the
