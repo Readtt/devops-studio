@@ -1601,17 +1601,6 @@ function ReviewPhase({
                       : "Keep this case (will be published on Publish)"}
                   </TooltipContent>
                 </Tooltip>
-                <span
-                  className={cn(
-                    "mt-px w-5 shrink-0 select-none text-right font-mono text-[11px] tabular-nums",
-                    c.decision === "keep"
-                      ? "text-muted-foreground/70"
-                      : "text-muted-foreground/40",
-                  )}
-                  aria-hidden
-                >
-                  {i + 1}
-                </span>
                 <div className="min-w-0 flex-1">
                   <EditableText
                     value={c.title}
@@ -1889,17 +1878,6 @@ function ReviewPhase({
                           : "Keep this bug (will be filed as a child of its parent case)"}
                       </TooltipContent>
                     </Tooltip>
-                    <span
-                      className={cn(
-                        "mt-px w-5 shrink-0 select-none text-right font-mono text-[11px] tabular-nums",
-                        b.decision === "keep"
-                          ? "text-muted-foreground/70"
-                          : "text-muted-foreground/40",
-                      )}
-                      aria-hidden
-                    >
-                      {i + 1}
-                    </span>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-start gap-2">
                         <EditableText
