@@ -97,7 +97,21 @@ export const TabContextMenu = memo(function TabContextMenu({
         </ContextMenuItem>
         <ContextMenuItem
           icon={<HugeiconsIcon icon={Copy01Icon} size={12} strokeWidth={1.75} />}
-          onSelect={() => useTabsStore.getState().duplicateTab(tab.id)}
+          onSelect={() => {
+            // Generator tabs own a live per-tab session store the tabs store
+            // can't reach, so a plain duplicate would spawn an empty draft.
+            // Hand off to App, which clones the draft into an independent
+            // new session. Everything else duplicates in place.
+            if (tab.kind === "generator") {
+              window.dispatchEvent(
+                new CustomEvent("devops-studio:duplicate-generator", {
+                  detail: { tabId: tab.id },
+                }),
+              );
+            } else {
+              useTabsStore.getState().duplicateTab(tab.id);
+            }
+          }}
         >
           Duplicate
           <ShortcutKbd id="tab.duplicate" />

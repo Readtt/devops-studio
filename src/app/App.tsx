@@ -639,6 +639,84 @@ function AppShell() {
       window.removeEventListener("devops-studio:open-test-case", onOpen);
   }, [openTestCaseTab]);
 
+  // Side channel: duplicate a generator tab WITH its draft. The tabs store
+  // can't reach the per-tab session store, so the context menu hands the
+  // source tab id here; we clone its live state into a brand-new, independent
+  // session (fresh runId) so editing the copy doesn't touch the original.
+  useEffect(() => {
+    const onDup = (e: Event) => {
+      const ce = e as CustomEvent<{ tabId: number }>;
+      const srcTabId = ce.detail?.tabId;
+      if (srcTabId == null) return;
+      const src = genStoresApi.ref.current.get(srcTabId);
+      if (!src) {
+        // No live store (shouldn't happen for a rendered tab) — fall back.
+        useTabsStore.getState().duplicateTab(srcTabId);
+        return;
+      }
+      const s = src.getState();
+      const store = createGenerationSessionStore();
+      const hasDraft = s.cases.length > 0 || s.bugs.length > 0;
+      if (hasDraft) {
+        // Reconstruct a draft row from the source snapshot and load it into
+        // the fresh store under a NEW runId so the two never dedup or share
+        // an autosave slot.
+        const freshId = `dup-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        const ok = store.getState().loadDraft({
+          id: freshId,
+          timestamp: new Date().toISOString(),
+          planId: s.planId,
+          planName: s.planName,
+          suiteId: s.suiteId,
+          suiteName: s.suiteName,
+          mode: s.mode,
+          cases: [],
+          bugs: [],
+          publishLog: [],
+          status: "draft",
+          draftPayload: {
+            requirements: s.requirements,
+            changesets: s.changesets,
+            mode: s.mode,
+            cases: s.cases,
+            bugs: s.bugs,
+            rawText: s.rawText,
+            planId: s.planId,
+            planName: s.planName,
+            suiteId: s.suiteId,
+            suiteName: s.suiteName,
+            refineRounds: s.refineRounds,
+            refineUndoSnapshot: s.refineUndoSnapshot,
+          },
+        });
+        if (ok) {
+          openGeneratorTab({
+            planId: s.planId,
+            suiteId: s.suiteId,
+            hydrateFrom: store,
+            runId: freshId,
+          });
+          return;
+        }
+      }
+      // Input-phase (or empty) source: seed a fresh generator with the same
+      // target + spec text rather than a published draft.
+      const st = store.getState();
+      if (s.planId) st.setTarget(s.planId, s.suiteId);
+      if (s.requirements) st.setRequirements(s.requirements);
+      if (s.changesets) st.setChangesets(s.changesets);
+      st.setMode(s.mode);
+      openGeneratorTab({
+        planId: s.planId,
+        suiteId: s.suiteId,
+        hydrateFrom: store,
+      });
+    };
+    window.addEventListener("devops-studio:duplicate-generator", onDup);
+    return () =>
+      window.removeEventListener("devops-studio:duplicate-generator", onDup);
+  }, [genStoresApi, openGeneratorTab]);
+
   // Source-directory picker. Persists to preferences so the BugPane's code-link
   // rows can resolve relative paths the next time the user opens the app.
   const sourceRoot = usePreferencesStore((s) => s.sourceRoot);

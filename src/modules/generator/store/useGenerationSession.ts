@@ -770,7 +770,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
             refineUndoSnapshot: s.refineUndoSnapshot,
           },
         };
-        void saveRun(draftRun);
+        // Awaited (not fire-and-forget) so the draft is on disk before the
+        // user can reload — otherwise a reload right after generating races
+        // the write, getRun returns null on restore, and the tab snaps back
+        // to the input form ("refresh resets to input").
+        await saveRun(draftRun);
       } catch {
         // Persistence is best-effort.
       }
