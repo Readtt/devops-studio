@@ -68,6 +68,30 @@ export function confidenceTone(confidence: number): {
   };
 }
 
+/** Color grammar for the verdict pill — keyed by the PREDICTED OUTCOME, not
+ *  the raw confidence. (Coloring by confidence alone made a 93%-confident
+ *  *Fail* show green, which reads as "pass".) Pass is green only when it
+ *  clears the auto-pass bar; a lower-confidence Pass is amber ("likely, but
+ *  verify"); Fail is always red; Blocked amber; Unknown grey. */
+export function verdictTone(
+  outcome: PredictedOutcome,
+  confidence: number,
+): { className: string } {
+  switch (outcome) {
+    case "Pass":
+      return confidence >= AUTO_PASS_THRESHOLD
+        ? { className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300" }
+        : { className: "bg-amber-500/15 text-amber-700 dark:text-amber-300" };
+    case "Fail":
+      return { className: "bg-rose-500/15 text-rose-600 dark:text-rose-300" };
+    case "Blocked":
+      return { className: "bg-amber-500/15 text-amber-700 dark:text-amber-300" };
+    case "Unknown":
+    default:
+      return { className: "bg-foreground/[0.08] text-muted-foreground" };
+  }
+}
+
 /** Whether this verdict qualifies the case for a one-click auto-pass: a Pass
  *  prediction at or above the threshold. Everything else needs manual testing. */
 export function isAutoPassCandidate(v: ConfidenceVerdict | null | undefined): boolean {

@@ -6,7 +6,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   AUTO_PASS_THRESHOLD,
-  confidenceTone,
+  verdictTone,
   type ConfidenceVerdict,
 } from "../lib/confidence";
 import {
@@ -143,7 +143,7 @@ export function ConfidenceChip({
     );
   }
 
-  const tone = confidenceTone(verdict.confidence);
+  const tone = verdictTone(verdict.predictedOutcome, verdict.confidence);
   const pct = Math.round(verdict.confidence);
   const isAutoPass =
     verdict.confidence >= AUTO_PASS_THRESHOLD &&
