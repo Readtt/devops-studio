@@ -1,5 +1,6 @@
 import { Fragment, memo, useMemo, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { CodeRefChip, parseCodeRef } from "@/components/CodeRefChip";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -589,8 +590,11 @@ function pushTextWithAutoLinks(
   // like "#1" or "#42" that would commonly be a chapter or footnote ref
   // rather than a work-item id. `\B` keeps us from matching inside words
   // (e.g. "color: #abc").
+  // Group 3 captures the whole file ref INCLUDING a multi-range line spec
+  // ("foo.cs:376,594-600,1080"); parseCodeRef splits it. Trailing ranges used
+  // to fall outside the match and render as dangling plain text.
   const re =
-    /(\B#(\d{3,7})\b)|((?:[\w./-]+\/)?[\w.-]+\.(?:tsx?|jsx?|cshtml|razor|vbhtml|xaml|cs|vb|fs|java|kt|go|py|rs|rb|php|swift|m|mm|c|cc|cpp|h|hpp|css|scss|html?|json|yaml|yml|md|sql|sh|toml|xml|vue|svelte|tauri|conf):(\d+)(?:[-–](\d+))?)/g;
+    /(\B#(\d{3,7})\b)|((?:[\w./-]+\/)?[\w.-]+\.(?:tsx?|jsx?|cshtml|razor|vbhtml|xaml|cs|vb|fs|java|kt|go|py|rs|rb|php|swift|m|mm|c|cc|cpp|h|hpp|css|scss|html?|json|yaml|yml|md|sql|sh|toml|xml|vue|svelte|tauri|conf):\d+(?:[-–]\d+)?(?:\s*,\s*:?\d+(?:[-–]\d+)?)*)/g;
   let last = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text))) {
@@ -605,17 +609,16 @@ function pushTextWithAutoLinks(
         <CaseChip key={nextKey()} caseId={caseId} lookupCase={ctx.lookupCase} />,
       );
     } else if (m[3]) {
-      const path = m[3].replace(/:\d+(?:[-–]\d+)?$/, "");
-      const startLine = m[4] ? Number.parseInt(m[4], 10) : undefined;
-      const endLine = m[5] ? Number.parseInt(m[5], 10) : undefined;
-      out.push(
-        <FileChip
-          key={nextKey()}
-          path={path}
-          startLine={startLine}
-          endLine={endLine}
-        />,
-      );
+      const parsed = parseCodeRef(m[3]);
+      if (parsed) {
+        out.push(
+          <CodeRefChip
+            key={nextKey()}
+            path={parsed.path}
+            ranges={parsed.ranges}
+          />,
+        );
+      }
     }
     last = m.index + m[0].length;
   }
@@ -723,66 +726,6 @@ function CaseChip({
   );
 }
 
-function FileChip({
-  path,
-  startLine,
-  endLine,
-}: {
-  path: string;
-  startLine?: number;
-  endLine?: number;
-}) {
-  const onOpen = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    window.dispatchEvent(
-      new CustomEvent("devops-studio:open-code-viewer", {
-        detail: { path, startLine, endLine },
-      }),
-    );
-  };
-  const lineLabel = startLine
-    ? `:${startLine}${endLine && endLine !== startLine ? `–${endLine}` : ""}`
-    : "";
-  const display = `${shortenPath(path)}${lineLabel}`;
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          onClick={onOpen}
-          className="inline-flex max-w-[22rem] items-center gap-1 truncate rounded-sm border border-border/55 bg-foreground/[0.05] px-1 py-px align-baseline font-mono text-[10.5px] text-foreground/85 transition-colors hover:border-primary/50 hover:bg-primary/[0.08] hover:text-primary"
-        >
-          <HugeiconsIcon icon={CodeIcon} size={9} strokeWidth={1.75} />
-          <span className="truncate">{display}</span>
-        </button>
-      </TooltipTrigger>
-      <TooltipContent
-        variant="panel"
-        side="top"
-        className="max-w-[340px] px-3 py-2 text-[11px] leading-relaxed"
-      >
-        <div className="break-all font-mono text-[10.5px] text-foreground/90">
-          {path}
-          {lineLabel}
-        </div>
-        <div className="mt-1 text-[10px] text-muted-foreground/80">
-          Open in the in-app code viewer
-        </div>
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
-function shortenPath(p: string): string {
-  // Show last two segments when the path is long, so the chip stays scannable
-  // ("src/auth/loginController.ts" → "auth/loginController.ts").
-  if (p.length <= 32) return p;
-  const segs = p.replace(/\\/g, "/").split("/");
-  if (segs.length <= 2) return p;
-  return `…/${segs.slice(-2).join("/")}`;
-}
-
 function SmartLink({
   href,
   label,
@@ -832,20 +775,18 @@ function SmartLink({
       </button>
     );
   }
-  // File scheme: `file:path#L42-L58` or `file:path:42-58` — opens CodeViewer.
-  const fileMatch =
-    /^file:([^\s#]+?)(?:#L(\d+)(?:[-–]L?(\d+))?|:(\d+)(?:[-–](\d+))?)?$/i.exec(href);
-  if (fileMatch) {
-    const path = fileMatch[1];
-    const startLine = fileMatch[2] || fileMatch[4];
-    const endLine = fileMatch[3] || fileMatch[5];
-    return (
-      <FileChip
-        path={path}
-        startLine={startLine ? Number.parseInt(startLine, 10) : undefined}
-        endLine={endLine ? Number.parseInt(endLine, 10) : undefined}
-      />
-    );
+  // File scheme: `file:path#L42-L58` or `file:path:42-58[,…]` — opens the
+  // viewer. Normalise the `#L` form to the `:` form so parseCodeRef handles
+  // both (and multi-range).
+  if (/^file:/i.test(href)) {
+    const rest = href
+      .slice(5)
+      .replace(/#L/i, ":")
+      .replace(/-L/gi, "-");
+    const parsed = parseCodeRef(rest);
+    if (parsed) {
+      return <CodeRefChip path={parsed.path} ranges={parsed.ranges} />;
+    }
   }
   // External URL — open in the user's browser via Tauri opener. Label is
   // rendered as a plain string (matching how case/bug/file chips treat

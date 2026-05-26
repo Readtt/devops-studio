@@ -1,0 +1,155 @@
+import { Fragment } from "react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
+import { useTabsStore } from "@/modules/tabs/store/useTabsStore";
+import { CodeIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+
+/**
+ * One clickable code reference, rendered as a compact pill. Handles
+ * multi-range refs ("src/foo.cs:376,594-600,1080") — the path shows once and
+ * each line range is its own clickable segment that jumps the in-app viewer to
+ * that range. The path truncates at small widths; the ranges stay put, so the
+ * pill never overflows or dangles trailing line numbers as plain text.
+ *
+ * Used by chat citations (code review / suite chat / ask) and the confidence
+ * panel — pass `besideLeafId` to open the viewer in the leaf beside the host
+ * pane (the confidence panel) instead of the focused one.
+ */
+export type CodeRange = { start: number; end?: number };
+
+export function CodeRefChip({
+  path,
+  ranges,
+  beside,
+  className,
+}: {
+  path: string;
+  ranges: CodeRange[];
+  /** Open the viewer in the leaf beside the currently-focused one (resolved at
+   *  click time) instead of in the focused leaf. Used by the confidence panel
+   *  so code shows next to the reasoning. */
+  beside?: boolean;
+  className?: string;
+}) {
+  const open = (r?: CodeRange) => {
+    window.dispatchEvent(
+      new CustomEvent("devops-studio:open-code-viewer", {
+        detail: {
+          path,
+          startLine: r?.start,
+          endLine: r?.end,
+          ...(beside
+            ? { besideLeafId: useTabsStore.getState().focusedLeafId }
+            : {}),
+        },
+      }),
+    );
+  };
+  const short = shortenPath(path);
+  const full = `${path}${ranges.length ? `:${ranges.map(fmtRange).join(", ")}` : ""}`;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          className={cn(
+            "inline-flex max-w-full items-center gap-1 rounded-sm border border-border/55 bg-foreground/[0.05] px-1.5 py-px align-baseline font-mono text-[10.5px] text-foreground/85",
+            className,
+          )}
+        >
+          <HugeiconsIcon
+            icon={CodeIcon}
+            size={9}
+            strokeWidth={1.75}
+            className="shrink-0 text-muted-foreground"
+          />
+          <button
+            type="button"
+            onClick={() => open(ranges[0])}
+            className="min-w-0 truncate transition-colors hover:text-primary"
+            title={full}
+          >
+            {short}
+          </button>
+          {ranges.length > 0 ? (
+            <span className="flex shrink-0 items-center">
+              <span className="text-muted-foreground/60">:</span>
+              {ranges.map((r, i) => (
+                <Fragment key={i}>
+                  {i > 0 ? (
+                    <span className="text-muted-foreground/40">,</span>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => open(r)}
+                    className="px-0.5 tabular-nums transition-colors hover:text-primary"
+                  >
+                    {fmtRange(r)}
+                  </button>
+                </Fragment>
+              ))}
+            </span>
+          ) : null}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent
+        variant="panel"
+        side="top"
+        className="max-w-[340px] px-3 py-2 text-[11px] leading-relaxed"
+      >
+        <div className="break-all font-mono text-[10.5px] text-foreground/90">
+          {full}
+        </div>
+        <div className="mt-1 text-[10px] text-muted-foreground/80">
+          {ranges.length > 1
+            ? "Click a line number to jump to that range."
+            : "Open in the in-app code viewer."}
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function fmtRange(r: CodeRange): string {
+  return r.end && r.end !== r.start ? `${r.start}–${r.end}` : `${r.start}`;
+}
+
+/** Show the last two path segments when long, so the chip stays scannable
+ *  ("src/auth/loginController.ts" → "…/auth/loginController.ts"). */
+function shortenPath(p: string): string {
+  const norm = p.replace(/\\/g, "/");
+  if (norm.length <= 30) return norm;
+  const segs = norm.split("/");
+  if (segs.length <= 2) return norm;
+  return `…/${segs.slice(-2).join("/")}`;
+}
+
+/** Parse "src/foo.ts" / "src/foo.ts:42" / "src/foo.ts:42-58" /
+ *  "src/foo.ts:376,594-600,1080" (commas, optional leading ":" / "L" per range,
+ *  en-dashes) into a path + ordered ranges. Returns null only for empty input. */
+export function parseCodeRef(
+  raw: string,
+): { path: string; ranges: CodeRange[] } | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  // Split the path off at the first ":<digit>" (paths here are repo-relative,
+  // so the first colon is the line separator, not a Windows drive).
+  const m = trimmed.match(/^(.*?):(\s*L?\d.*)$/);
+  if (!m) return { path: trimmed, ranges: [] };
+  const path = m[1];
+  const ranges: CodeRange[] = [];
+  for (const part of m[2].split(",")) {
+    const rm = part
+      .trim()
+      .replace(/^:/, "")
+      .match(/^L?(\d+)(?:[-–]L?(\d+))?/);
+    if (rm) {
+      ranges.push({
+        start: Number.parseInt(rm[1], 10),
+        end: rm[2] ? Number.parseInt(rm[2], 10) : undefined,
+      });
+    }
+  }
+  return { path, ranges };
+}

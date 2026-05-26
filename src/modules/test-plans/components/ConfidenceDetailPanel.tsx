@@ -1,17 +1,16 @@
 import { useEffect } from "react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { useTabsStore } from "@/modules/tabs/store/useTabsStore";
+import { CodeRefChip, parseCodeRef } from "@/components/CodeRefChip";
 import {
   AUTO_PASS_THRESHOLD,
-  confidenceTone,
+  verdictTone,
   type ConfidenceVerdict,
   type EvidenceItem,
 } from "../lib/confidence";
 import {
   AlertCircleIcon,
   Cancel01Icon,
-  CodeIcon,
   Loading03Icon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
@@ -50,7 +49,9 @@ export function ConfidenceDetailPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const tone = verdict ? confidenceTone(verdict.confidence) : null;
+  const tone = verdict
+    ? verdictTone(verdict.predictedOutcome, verdict.confidence)
+    : null;
   const pct = verdict ? Math.round(verdict.confidence) : 0;
   const isAutoPass =
     !!verdict &&
@@ -248,7 +249,7 @@ function EvidenceRow({ item }: { item: EvidenceItem }) {
         {item.finding}
       </p>
       {item.ref ? (
-        <RefChip refStr={item.ref} />
+        <CodeRef refStr={item.ref} />
       ) : (
         <span className="inline-flex w-fit items-center gap-1 rounded-sm bg-rose-500/10 px-1.5 py-px text-[9.5px] font-medium text-rose-600 dark:text-rose-300">
           unverified — not grounded in code
@@ -258,11 +259,10 @@ function EvidenceRow({ item }: { item: EvidenceItem }) {
   );
 }
 
-/** Opens the in-app code viewer in the leaf beside the host pane (via
- *  `besideLeafId` = the currently focused leaf), so reasoning + code stay
- *  visible together. Reuses the same event every other code chip dispatches. */
-function RefChip({ refStr }: { refStr: string }) {
-  const parsed = parseRef(refStr);
+/** An evidence ref → the shared multi-range code-ref pill, opened in the leaf
+ *  beside this panel so reasoning + code stay visible together. */
+function CodeRef({ refStr }: { refStr: string }) {
+  const parsed = parseCodeRef(refStr);
   if (!parsed) {
     return (
       <span className="w-fit break-all font-mono text-[10px] text-foreground/65">
@@ -270,64 +270,7 @@ function RefChip({ refStr }: { refStr: string }) {
       </span>
     );
   }
-  const open = () => {
-    window.dispatchEvent(
-      new CustomEvent("devops-studio:open-code-viewer", {
-        detail: {
-          path: parsed.path,
-          startLine: parsed.startLine,
-          endLine: parsed.endLine,
-          besideLeafId: useTabsStore.getState().focusedLeafId,
-        },
-      }),
-    );
-  };
-  const lineLabel = parsed.startLine
-    ? `:${parsed.startLine}${parsed.endLine && parsed.endLine !== parsed.startLine ? `–${parsed.endLine}` : ""}`
-    : "";
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          onClick={open}
-          className="inline-flex w-fit max-w-full items-center gap-1 truncate rounded-sm border border-border/55 bg-foreground/[0.05] px-1.5 py-px font-mono text-[10px] text-foreground/85 transition-colors hover:border-primary/50 hover:bg-primary/[0.08] hover:text-primary"
-        >
-          <HugeiconsIcon icon={CodeIcon} size={9} strokeWidth={1.75} />
-          <span className="truncate">
-            {parsed.path}
-            {lineLabel}
-          </span>
-        </button>
-      </TooltipTrigger>
-      <TooltipContent
-        variant="panel"
-        side="top"
-        className="max-w-[280px] px-3 py-2 text-[11px] leading-relaxed"
-      >
-        Open this code beside the prediction — they stay visible together so
-        you can check the reasoning against the source.
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
-/** Parse "src/foo.ts:42-58" / "src/foo.ts:42" / "src/foo.ts" into parts.
- *  Tolerates the en-dash the model emits for ranges AND multi-range specs like
- *  "src/foo.ts:1-2,62-94" — we jump to the first range (the trailing ranges
- *  used to get appended to the path, which then failed to open). */
-function parseRef(
-  ref: string,
-): { path: string; startLine?: number; endLine?: number } | null {
-  const trimmed = ref.trim();
-  if (!trimmed) return null;
-  const m = trimmed.match(/^(.*?):L?(\d+)(?:[-–]L?(\d+))?(?:\s*[,;].*)?$/);
-  if (!m) return { path: trimmed };
-  return {
-    path: m[1],
-    startLine: Number.parseInt(m[2], 10),
-    endLine: m[3] ? Number.parseInt(m[3], 10) : undefined,
-  };
+  return <CodeRefChip path={parsed.path} ranges={parsed.ranges} beside />;
 }
 
 function formatWhen(iso: string): string {
