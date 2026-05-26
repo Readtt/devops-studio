@@ -604,6 +604,18 @@ export function getModel(id: ModelId): ModelInfo {
   return m;
 }
 
+/** Whether a model accepts image input. Used to gate sending image
+ *  attachments / best-practices images as real vision parts — non-vision
+ *  models would error, so callers fall back to a text-only reference. Unknown
+ *  model ids (custom / local endpoints) conservatively return false. */
+export function supportsVision(id: ModelId | string): boolean {
+  try {
+    return getModel(id as ModelId).tags?.includes("vision") ?? false;
+  } catch {
+    return false;
+  }
+}
+
 export const DEFAULT_MODEL_ID: ModelId = "gpt-5.4-mini";
 
 /** Approximate context window (in tokens) per model. Used for the

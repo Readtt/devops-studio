@@ -2,6 +2,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde::Serialize;
 use tauri::Emitter;
 use tempfile::NamedTempFile;
@@ -76,6 +77,69 @@ pub fn fs_read_file(path: String, workspace: Option<WorkspaceEnv>) -> Result<Rea
         Ok(content) => Ok(ReadResult::Text { content, size }),
         Err(_) => Ok(ReadResult::Binary { size }),
     }
+}
+
+/// A file's bytes base64-encoded, with a best-effort media type guessed from
+/// the extension. Used to lift best-practices image files into multimodal AI
+/// input (the TS side wraps it into a `data:` URL attachment).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileBase64 {
+    pub media_type: String,
+    pub data_base64: String,
+    pub size: u64,
+}
+
+/// Read a (small) file and return it base64-encoded. Errors when the file
+/// exceeds MAX_READ_BYTES — callers surface a "skipped, too large" warning
+/// rather than blowing up the prompt. Supports absolute and UNC paths via
+/// `resolve_path` (best-practices files may live on a network share).
+#[tauri::command]
+pub fn fs_read_file_b64(
+    path: String,
+    workspace: Option<WorkspaceEnv>,
+) -> Result<FileBase64, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    let p = resolve_path(&path, &workspace);
+    let meta = std::fs::metadata(&p).map_err(|e| {
+        log::debug!("fs_read_file_b64 stat({}) failed: {e}", p.display());
+        e.to_string()
+    })?;
+    let size = meta.len();
+    if size > MAX_READ_BYTES {
+        return Err(format!(
+            "file too large: {size} bytes (limit {MAX_READ_BYTES})"
+        ));
+    }
+    let bytes = std::fs::read(&p).map_err(|e| {
+        log::debug!("fs_read_file_b64 read({}) failed: {e}", p.display());
+        e.to_string()
+    })?;
+    Ok(FileBase64 {
+        media_type: guess_media_type(&p),
+        data_base64: B64.encode(&bytes),
+        size,
+    })
+}
+
+/// Best-effort MIME from the file extension. Only the image types we surface
+/// to vision models are mapped; everything else is octet-stream.
+fn guess_media_type(p: &Path) -> String {
+    let ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        _ => "application/octet-stream",
+    }
+    .to_string()
 }
 
 #[derive(Serialize, Clone)]

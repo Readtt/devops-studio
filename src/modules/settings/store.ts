@@ -73,6 +73,18 @@ function normalizeEditorTheme(raw: unknown): EditorThemeId {
   return EDITOR_THEME_LEGACY_MAP[raw] ?? DEFAULT_PREFERENCES.editorTheme;
 }
 
+/** A best-practices / coding-standards file the user registers in Settings.
+ *  Stored as a PATH REFERENCE (not a copy) so a shared network/UNC file stays
+ *  the single source of truth — the loader reads it live at AI-run time. */
+export type BestPracticeFile = {
+  /** Absolute path (local or UNC). Read fresh on each AI run. */
+  path: string;
+  /** Display label shown in Settings + used as the context-block heading. */
+  label: string;
+  /** When false the file is kept in the list but skipped during injection. */
+  enabled: boolean;
+};
+
 export type Preferences = {
   theme: ThemePref;
   defaultModelId: ModelId;
@@ -145,6 +157,9 @@ export type Preferences = {
    *  `{endLine}`. Empty string disables the action (Reveal still works).
    *  Examples: `"code --goto {file}:{line}"`, `"subl {file}:{line}"`. */
   externalEditorCommand: string;
+  /** Best-practices / coding-standards files injected as context into EVERY
+   *  AI feature. Path references read live at run time (network/UNC ok). */
+  bestPracticeFiles: BestPracticeFile[];
 };
 
 const STORE_PATH = "devops-studio-settings.json";
@@ -191,6 +206,7 @@ const KEY_EDITOR_WORD_WRAP = "editorWordWrap";
 const KEY_EDITOR_HIGHLIGHT_ACTIVE_LINE = "editorHighlightActiveLine";
 const KEY_EDITOR_TAB_SIZE = "editorTabSize";
 const KEY_EXTERNAL_EDITOR_COMMAND = "externalEditorCommand";
+const KEY_BEST_PRACTICE_FILES = "bestPracticeFiles";
 
 export const EDITOR_FONT_SIZE_DEFAULT = 12.5;
 export const EDITOR_FONT_SIZE_MIN = 10;
@@ -262,6 +278,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   editorHighlightActiveLine: true,
   editorTabSize: 2,
   externalEditorCommand: "",
+  bestPracticeFiles: [],
 };
 
 const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
@@ -389,6 +406,9 @@ export async function loadPreferences(): Promise<Preferences> {
     externalEditorCommand:
       get<string>(KEY_EXTERNAL_EDITOR_COMMAND) ??
       DEFAULT_PREFERENCES.externalEditorCommand,
+    bestPracticeFiles:
+      get<BestPracticeFile[]>(KEY_BEST_PRACTICE_FILES) ??
+      DEFAULT_PREFERENCES.bestPracticeFiles,
   };
 }
 
@@ -554,6 +574,12 @@ export async function setExternalEditorCommand(value: string): Promise<void> {
   await writePref(KEY_EXTERNAL_EDITOR_COMMAND, value.trim());
 }
 
+export async function setBestPracticeFiles(
+  value: BestPracticeFile[],
+): Promise<void> {
+  await writePref(KEY_BEST_PRACTICE_FILES, value);
+}
+
 export async function setEditorTabSize(value: number): Promise<void> {
   const clamped = EDITOR_TAB_SIZES.includes(value as (typeof EDITOR_TAB_SIZES)[number])
     ? value
@@ -653,6 +679,7 @@ export async function onPreferencesChange(
     [KEY_EDITOR_HIGHLIGHT_ACTIVE_LINE]: "editorHighlightActiveLine",
     [KEY_EDITOR_TAB_SIZE]: "editorTabSize",
     [KEY_EXTERNAL_EDITOR_COMMAND]: "externalEditorCommand",
+    [KEY_BEST_PRACTICE_FILES]: "bestPracticeFiles",
   };
   // Same-process writes still fire onChange immediately; cross-window writes
   // arrive via the Tauri event emitted by writePref().
