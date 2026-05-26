@@ -39,6 +39,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useCodeReview } from "./useCodeReview";
+import { CodeReviewSourcePicker } from "./CodeReviewSourcePicker";
 
 const DEFAULT_FIRST_PROMPT =
   "Please review my changes — flag blockers, suggestions, and nits with file:line citations.";
@@ -64,6 +65,7 @@ export function CodeReviewPane({
   const refreshDiff = useCodeReview((s) => s.refreshDiff);
   const changeBase = useCodeReview((s) => s.changeBase);
   const setModel = useCodeReview((s) => s.setModel);
+  const setSource = useCodeReview((s) => s.setSource);
   const send = useCodeReview((s) => s.send);
   const stop = useCodeReview((s) => s.stop);
   const clear = useCodeReview((s) => s.clear);
@@ -171,27 +173,34 @@ export function CodeReviewPane({
       {/* Header — every control gets a tooltip so users new to this feature
           can hover anything and read what it does. */}
       <header className="flex h-9 shrink-0 items-center gap-2 border-b border-border/50 bg-card/40 px-3">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span>
-              <BranchPicker
-                value={slice?.base ?? base ?? ""}
-                placeholder={diffLoading ? "Detecting base…" : "Select base"}
-                branches={baseList}
-                onChange={(v) => void changeBase(tabId, v)}
-                disabled={busy}
-                ariaLabel="Base branch"
-              />
-            </span>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
-            Base branch — the diff shows everything that's on your current
-            branch but not on this one. Defaults to whatever git finds
-            first: main → master → origin/HEAD. Changing it wipes the
-            conversation (different baseline = different review). Type to
-            filter the list.
-          </TooltipContent>
-        </Tooltip>
+        <CodeReviewSourcePicker
+          source={slice?.source ?? null}
+          onChange={(s) => void setSource(tabId, s)}
+          disabled={busy}
+        />
+        {!slice?.source ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span>
+                <BranchPicker
+                  value={slice?.base ?? base ?? ""}
+                  placeholder={diffLoading ? "Detecting base…" : "Select base"}
+                  branches={baseList}
+                  onChange={(v) => void changeBase(tabId, v)}
+                  disabled={busy}
+                  ariaLabel="Base branch"
+                />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
+              Base branch — the diff shows everything that's on your current
+              branch but not on this one. Defaults to whatever git finds
+              first: main → master → origin/HEAD. Changing it wipes the
+              conversation (different baseline = different review). Type to
+              filter the list.
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
 
         <span className="text-[11px] text-muted-foreground">→</span>
 

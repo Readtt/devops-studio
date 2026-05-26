@@ -1,6 +1,12 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { supportsVision, type ModelId } from "@/modules/ai/config";
+import {
+  adoDiffBranches,
+  adoDiffCommit,
+  adoDiffPullRequest,
+} from "@/modules/ado";
+import type { CodeReviewSource } from "./source";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
@@ -46,6 +52,9 @@ type TabSlice = {
    *  Setting this here doesn't touch the global default; it scopes only
    *  to this Code Review tab — same pattern as suite-chat's pin. */
   modelId: ModelId | null;
+  /** When set, the diff comes from Azure DevOps (commit/PR/branch) instead of
+   *  the local working copy. */
+  source: CodeReviewSource | null;
 };
 
 type State = {
@@ -61,6 +70,10 @@ type State = {
   refreshDiff: (tabId: number) => Promise<void>;
   changeBase: (tabId: number, base: string) => Promise<void>;
   setModel: (tabId: number, modelId: ModelId | null) => void;
+  /** Switch the review source (Local ⇄ Azure DevOps). Wipes the diff +
+   *  conversation (the prior thread was scoped to a different change) and
+   *  reloads. Pass null to return to the local working-copy diff. */
+  setSource: (tabId: number, source: CodeReviewSource | null) => Promise<void>;
   send: (
     tabId: number,
     text: string,
@@ -126,6 +139,7 @@ export const useCodeReview = create<State>((set, get) => ({
         error: null,
         threadId: hist?.id ?? null,
         modelId: null,
+        source: null,
       });
       return { byTab: next };
     });
@@ -137,12 +151,26 @@ export const useCodeReview = create<State>((set, get) => ({
     if (!slice) return;
     patch(set, tabId, { diffLoading: true, diffError: null });
     try {
-      // Empty base means "auto-detect" — pass undefined to Rust so it
-      // walks the main → master → origin/HEAD fallback chain.
-      const diff = await invoke<DiffSummary>("git_diff", {
-        cwd: slice.cwd,
-        base: slice.base ? slice.base : undefined,
-      });
+      const src = slice.source;
+      let diff: DiffSummary;
+      if (src?.kind === "ado") {
+        if (src.unit === "commit" && src.commitId) {
+          diff = await adoDiffCommit(src.repoId, src.commitId);
+        } else if (src.unit === "pr" && src.prId != null) {
+          diff = await adoDiffPullRequest(src.repoId, src.prId);
+        } else if (src.unit === "branch" && src.baseBranch && src.targetBranch) {
+          diff = await adoDiffBranches(src.repoId, src.baseBranch, src.targetBranch);
+        } else {
+          throw new Error("Pick a commit, pull request, or branch to review.");
+        }
+      } else {
+        // Empty base means "auto-detect" — pass undefined to Rust so it
+        // walks the main → master → origin/HEAD fallback chain.
+        diff = await invoke<DiffSummary>("git_diff", {
+          cwd: slice.cwd,
+          base: slice.base ? slice.base : undefined,
+        });
+      }
       patch(set, tabId, {
         diff,
         diffLoading: false,
@@ -161,6 +189,20 @@ export const useCodeReview = create<State>((set, get) => ({
 
   setModel: (tabId, modelId) => {
     patch(set, tabId, { modelId });
+  },
+
+  setSource: async (tabId, source) => {
+    const slice = get().byTab.get(tabId);
+    if (!slice) return;
+    // Switching the reviewed change invalidates the prior conversation.
+    patch(set, tabId, {
+      source,
+      messages: [],
+      error: null,
+      diff: null,
+      threadId: null,
+    });
+    await get().refreshDiff(tabId);
   },
 
   changeBase: async (tabId, base) => {
