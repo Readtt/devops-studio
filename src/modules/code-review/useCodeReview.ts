@@ -414,5 +414,6 @@ function persistToHistory(tabId: number, threadId: string): void {
     ),
     updatedAt: new Date().toISOString(),
     messages: slice.messages,
+    source: slice.source,
   });
 }

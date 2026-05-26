@@ -448,6 +448,7 @@ function AppShell() {
       base?: string | null;
       rehydrateThreadId?: string;
       title?: string;
+      source?: import("@/modules/code-review/source").CodeReviewSource | null;
     }) => {
       const liveSourceRoot = usePreferencesStore.getState().sourceRoot;
       const cwd = input?.cwd ?? liveSourceRoot;
@@ -459,6 +460,7 @@ function AppShell() {
         kind: "code-review",
         cwd,
         base: input?.base ?? null,
+        source: input?.source ?? null,
         rehydrateThreadId: input?.rehydrateThreadId ?? null,
         title: input?.title,
       });
@@ -1346,6 +1348,7 @@ function AppShell() {
                           openCodeReviewTab({
                             cwd: input.cwd,
                             base: input.base,
+                            source: input.source ?? null,
                             rehydrateThreadId: input.threadId,
                             title: input.title,
                           });

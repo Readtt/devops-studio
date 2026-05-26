@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { CodeReviewMessage } from "./runCodeReview";
+import type { CodeReviewSource } from "./source";
 
 /**
  * Persistent list of past code-review conversations, surfaced in the
@@ -30,6 +31,10 @@ export type CodeReviewThread = {
   updatedAt: string;
   /** Full message log. */
   messages: CodeReviewMessage[];
+  /** ADO source (commit/PR/branch) this thread reviewed, if any. Persisted so
+   *  reopening from the Chats sidebar restores the same source instead of
+   *  snapping back to the local working-copy diff. Absent ⇒ local. */
+  source?: CodeReviewSource | null;
 };
 
 const MAX_THREADS = 200;

@@ -286,12 +286,21 @@ export const useTabsStore = create<TabsState>()(
               // surface the existing one. Multi-terminal is a feature.
               return false;
             case "code-review":
-              // Never dedup. Each "Review my changes" should be a fresh
-              // pane — the user explicitly asked for the ability to keep
-              // multiple parallel reviews open (different bases, different
-              // questions, side-by-side comparison). Same model as the
-              // terminal: opening N times yields N tabs.
-              return false;
+              // Reopening a specific saved thread focuses its tab; the plain
+              // "Code Review" launcher / palette focuses the existing fresh
+              // review for this source dir instead of stacking duplicates.
+              // (Duplicate explicitly clones via duplicateTab, bypassing this.)
+              if (input.rehydrateThreadId) {
+                return (
+                  t.kind === "code-review" &&
+                  t.rehydrateThreadId === input.rehydrateThreadId
+                );
+              }
+              return (
+                t.kind === "code-review" &&
+                !t.rehydrateThreadId &&
+                t.cwd === input.cwd
+              );
             case "confidence":
               // One detail pane per evaluated case/draft — re-clicking the
               // chip re-focuses it (and refreshes its verdict snapshot below).
@@ -593,17 +602,10 @@ export const useTabsStore = create<TabsState>()(
             initialSuiteId: t.initialSuiteId,
           });
         }
-        if (t.kind === "code-review") {
-          return get().openTab({
-            kind: "code-review",
-            cwd: t.cwd,
-            base: t.base,
-            // Carry the ADO source so a duplicated review keeps reviewing the
-            // same commit/PR/branch instead of silently reverting to local.
-            source: t.source ?? null,
-            title: `${t.title} (copy)`,
-          });
-        }
+        // code-review now dedups by cwd in openTab, so a Duplicate must clone
+        // the tab object directly (below) rather than route through openTab —
+        // otherwise it would just reactivate the original. The direct clone
+        // copies cwd/base/source/modelId so the copy reviews the same thing.
 
         // test-case / bug / code-viewer / suite-chat DEDUP in openTab, so
         // re-opening the same identity would just reactivate the original —

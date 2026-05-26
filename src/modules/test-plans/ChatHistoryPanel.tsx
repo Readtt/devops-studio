@@ -41,6 +41,7 @@ type Props = {
     base: string;
     threadId: string;
     title: string;
+    source?: import("@/modules/code-review/source").CodeReviewSource | null;
   }) => void;
 };
 
@@ -195,6 +196,7 @@ export function ChatHistoryPanel({ onOpenChat, onOpenCodeReview }: Props) {
                           onOpenCodeReview({
                             cwd: t.cwd,
                             base: t.base,
+                            source: t.source ?? null,
                             threadId: t.id,
                             title: `Review · ${t.title}`,
                           })
