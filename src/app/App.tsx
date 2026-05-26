@@ -45,6 +45,16 @@ import {
   type SessionState,
 } from "@/modules/generator/store/useGenerationSession";
 import { saveRun } from "@/modules/generator/lib/history";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useSourceDirGitInfo } from "@/modules/git";
 import { getConnection } from "@/modules/ado";
 import { AzureDevOpsBrand } from "@/components/AzureDevOpsBrand";
@@ -650,15 +660,16 @@ function AppShell() {
       window.removeEventListener("devops-studio:open-test-case", onOpen);
   }, [openTestCaseTab]);
 
-  // Side channel: duplicate a generator tab WITH its draft. The tabs store
-  // can't reach the per-tab session store, so the context menu hands the
-  // source tab id here; we clone its live state into a brand-new, independent
-  // session (fresh runId) so editing the copy doesn't touch the original.
-  useEffect(() => {
-    const onDup = (e: Event) => {
-      const ce = e as CustomEvent<{ tabId: number }>;
-      const srcTabId = ce.detail?.tabId;
-      if (srcTabId == null) return;
+  // Duplicate a generator tab WITH its draft. The tabs store can't reach the
+  // per-tab session store, so the context menu / shortcut hand the source tab
+  // id here; we clone its live state into a brand-new, independent generation
+  // (fresh runId) so editing the copy doesn't touch the original. A real
+  // generation (review/done) confirms first — the copy lands in Generation
+  // History as its own publishable entry, so we make sure that's intended.
+  const [dupPrompt, setDupPrompt] = useState<{ srcTabId: number } | null>(null);
+
+  const performGeneratorDuplicate = useCallback(
+    (srcTabId: number) => {
       const src = genStoresApi.ref.current.get(srcTabId);
       if (!src) {
         // No live store (shouldn't happen for a rendered tab) — fall back.
@@ -781,11 +792,30 @@ function AppShell() {
         hydrateFrom: store,
         runId: bindRunId,
       });
+    },
+    [genStoresApi, openGeneratorTab],
+  );
+
+  useEffect(() => {
+    const onDup = (e: Event) => {
+      const ce = e as CustomEvent<{ tabId: number }>;
+      const srcTabId = ce.detail?.tabId;
+      if (srcTabId == null) return;
+      const src = genStoresApi.ref.current.get(srcTabId);
+      // A draft/published generation duplicates into its own History entry,
+      // so confirm first. Pre-generation tabs hold nothing worth tracking —
+      // just clone them.
+      const phase = src?.getState().phase;
+      if (phase === "review" || phase === "done") {
+        setDupPrompt({ srcTabId });
+      } else {
+        performGeneratorDuplicate(srcTabId);
+      }
     };
     window.addEventListener("devops-studio:duplicate-generator", onDup);
     return () =>
       window.removeEventListener("devops-studio:duplicate-generator", onDup);
-  }, [genStoresApi, openGeneratorTab]);
+  }, [genStoresApi, performGeneratorDuplicate]);
 
   // Source-directory picker. Persists to preferences so the BugPane's code-link
   // rows can resolve relative paths the next time the user opens the app.
@@ -880,7 +910,20 @@ function AppShell() {
       },
       "tab.duplicate": () => {
         const target = focusedActiveId();
-        if (target != null) useTabsStore.getState().duplicateTab(target);
+        if (target == null) return;
+        // Generator tabs route through App's duplicate handler (which can
+        // reach the per-tab session store and confirm), matching the context
+        // menu. Everything else clones in place.
+        const tab = useTabsStore.getState().tabs[target];
+        if (tab?.kind === "generator") {
+          window.dispatchEvent(
+            new CustomEvent("devops-studio:duplicate-generator", {
+              detail: { tabId: target },
+            }),
+          );
+        } else {
+          useTabsStore.getState().duplicateTab(target);
+        }
       },
       "tab.closeOthers": () =>
         useTabsStore
@@ -1426,6 +1469,36 @@ function AppShell() {
             }}
             sourceRoot={sourceRoot}
           />
+
+          <AlertDialog
+            open={dupPrompt !== null}
+            onOpenChange={(open) => {
+              if (!open) setDupPrompt(null);
+            }}
+          >
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Duplicate this generation?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This creates an independent copy as its own entry in
+                  Generation History — you can edit and publish it separately
+                  from the original.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => {
+                    const src = dupPrompt;
+                    setDupPrompt(null);
+                    if (src) performGeneratorDuplicate(src.srcTabId);
+                  }}
+                >
+                  Duplicate
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
 
     </div>
   );

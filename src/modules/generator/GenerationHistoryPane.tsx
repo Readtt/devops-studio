@@ -5,6 +5,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { cn } from "@/lib/utils";
 import {
   deleteRun,
@@ -17,6 +24,8 @@ import { CopyableSectionHeader } from "@/components/CopyableSectionHeader";
 import {
   Bug01Icon,
   Cancel01Icon,
+  Copy01Icon,
+  Delete02Icon,
   ExternalLink,
   FileEditIcon,
   RefreshIcon,
@@ -284,7 +293,10 @@ function RunCard({
   const { planLabel, suiteLabel } = useResolvedTargetLabels(run);
 
   return (
-    <li className="group/run rounded-md border border-border/40 bg-card/40 transition-colors hover:bg-foreground/[0.04]">
+    <li>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <div className="group/run rounded-md border border-border/40 bg-card/40 transition-colors hover:bg-foreground/[0.04]">
       {/* Row container is a div so the toggle "card" doesn't wrap the
           action buttons (button-in-button is invalid HTML and trips the
           React hydration validator). The expand toggle and the icon
@@ -502,6 +514,63 @@ function RunCard({
           ) : null}
         </div>
       ) : null}
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent className="w-56">
+          {isDraft ? (
+            <ContextMenuItem
+              icon={
+                <HugeiconsIcon icon={FileEditIcon} size={12} strokeWidth={1.75} />
+              }
+              description={
+                canRestoreDraft
+                  ? "Reopen this draft in Review to keep editing."
+                  : "Saved before drafts could be reopened — can't restore."
+              }
+              disabled={!canRestoreDraft || !onOpenDraft}
+              onSelect={() => onOpenDraft?.(run)}
+            >
+              Open in review
+            </ContextMenuItem>
+          ) : (
+            <ContextMenuItem
+              icon={
+                <HugeiconsIcon icon={ExternalLink} size={12} strokeWidth={1.75} />
+              }
+              description="Reopen the publish summary — drill into input, review, or done."
+              disabled={!canOpenPublished || !onOpenPublished}
+              onSelect={() => onOpenPublished?.(run)}
+            >
+              Open publish summary
+            </ContextMenuItem>
+          )}
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            icon={<HugeiconsIcon icon={Copy01Icon} size={12} strokeWidth={1.75} />}
+            disabled={!run.specExcerpt}
+            onSelect={() => void copyText(run.specExcerpt ?? "")}
+          >
+            Copy spec
+          </ContextMenuItem>
+          <ContextMenuItem
+            icon={<HugeiconsIcon icon={Copy01Icon} size={12} strokeWidth={1.75} />}
+            description="Copy every case and bug title, with ADO ids where published."
+            disabled={run.cases.length === 0 && run.bugs.length === 0}
+            onSelect={() => void copyText(formatRunTitles(run))}
+          >
+            Copy case &amp; bug titles
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            variant="destructive"
+            icon={<HugeiconsIcon icon={Delete02Icon} size={12} strokeWidth={1.75} />}
+            description="Remove from history — anything already published to ADO is untouched."
+            onSelect={onDelete}
+          >
+            Delete
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
     </li>
   );
 }
@@ -615,6 +684,37 @@ function useResolvedTargetLabels(run: GenerationRun): {
     (run.suiteId != null ? `Suite #${run.suiteId}` : "All suites");
 
   return { planLabel, suiteLabel };
+}
+
+/** Best-effort plain-text clipboard write. Silent on failure (some webviews
+ *  restrict clipboard access) — copying a history field is a convenience. */
+async function copyText(text: string): Promise<void> {
+  if (!text) return;
+  try {
+    await navigator.clipboard?.writeText(text);
+  } catch {
+    // ignore — clipboard may be unavailable in this context.
+  }
+}
+
+/** Assemble a copy-friendly block of a run's case + bug titles, prefixing the
+ *  ADO id where the item was published. */
+function formatRunTitles(run: GenerationRun): string {
+  const lines: string[] = [];
+  if (run.cases.length > 0) {
+    lines.push("Cases:");
+    for (const c of run.cases) {
+      lines.push(`${c.adoId ? `#${c.adoId} ` : ""}${c.title}`);
+    }
+  }
+  if (run.bugs.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("Bugs:");
+    for (const b of run.bugs) {
+      lines.push(`${b.adoId ? `#${b.adoId} ` : ""}${b.title}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 function formatTimestamp(iso: string): string {
