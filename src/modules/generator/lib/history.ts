@@ -57,6 +57,14 @@ export type DraftPayload = {
    *  the live session on loadDraft so the user picks up the conversation
    *  with the full thinking-process log intact. */
   refineRounds?: RefineRound[];
+  /** The pre-refine batch from the most recent refine, so the "Last refine"
+   *  changes diff can be reconstructed when a draft is reopened later. Null
+   *  when no refine has happened. */
+  refineUndoSnapshot?: {
+    cases: ReviewedCase[];
+    bugs: ReviewedBug[];
+    rawText: string;
+  } | null;
 };
 
 export type CaseSummary = {

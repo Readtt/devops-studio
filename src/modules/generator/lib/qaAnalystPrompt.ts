@@ -164,6 +164,19 @@ SOURCE LINKS
 - Format per link: \`{ "repoName": "MyApp", "filePath": "src/auth/login.cs", "symbol": "LoginController.Authenticate" }\`.
 - For cases generated from spec alone (no code), leave \`sourceLinks\` empty.
 
+ORDERING & NUMBERING
+- The cases and bugs you emit are presented to the reviewer as a NUMBERED
+  list (case 1, case 2, …; bug 1, bug 2, …) in array order, so order is
+  meaningful — emit them in a deliberate sequence:
+    - Cases: happy-path first, then negative/validation, then edge/boundary,
+      then regression. Group related scenarios so consecutive numbers read
+      as a coherent flow.
+    - Bugs: highest severity first (1 - Critical → 4 - Low).
+- Do NOT put ordinal numbers inside the title text itself (no "1. [Area]…").
+  The numbering is positional — the UI renders the index. Titles stay clean.
+- When \`linkedDraftCaseIndex\` points a bug at a case, it is the case's
+  zero-based position in the array you emit, so keep that array stable.
+
 OUTPUT RULES (STRICT)
 - Respond with ONLY a single JSON object matching the DraftBatch schema.
 - No prose before or after. No code fences. No commentary.

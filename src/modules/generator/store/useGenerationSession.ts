@@ -458,6 +458,7 @@ function makeSchedulePersistDraft(getter: () => SessionState) {
           suiteId: s.suiteId,
           suiteName: s.suiteName,
           refineRounds: s.refineRounds,
+          refineUndoSnapshot: s.refineUndoSnapshot,
         },
       };
       // Fire-and-forget; the post-save event lets the History pane refresh.
@@ -724,6 +725,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
             suiteId: s.suiteId,
             suiteName: targetContext?.suiteName ?? null,
             refineRounds: s.refineRounds,
+            refineUndoSnapshot: s.refineUndoSnapshot,
           },
         };
         void saveRun(draftRun);
@@ -1128,6 +1130,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           suiteId: s.suiteId,
           suiteName: s.suiteName,
           refineRounds: s.refineRounds,
+          refineUndoSnapshot: s.refineUndoSnapshot,
         },
       };
       void saveRun(run);
@@ -1583,6 +1586,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       runId: run.id,
       refineRounds: rounds,
       refineHistory: refineHistoryFromRounds,
+      // Restore the pre-refine snapshot so the "Last refine" changes panel
+      // reappears exactly as it was when the draft was saved.
+      refineUndoSnapshot: payload.refineUndoSnapshot ?? null,
     });
     return true;
   },
@@ -1648,6 +1654,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       bugs: payload?.bugs ?? [],
       rawText: payload?.rawText ?? "",
       refineRounds: rounds,
+      refineUndoSnapshot: payload?.refineUndoSnapshot ?? null,
     });
     return true;
   },
