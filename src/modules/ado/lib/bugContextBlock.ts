@@ -9,7 +9,7 @@ import type { ContextBlock } from "@/modules/ai/lib/contextBlocks";
 /** Minimal HTML → text for repro-step bodies. Block-level tags become line
  *  breaks; the rest is dropped and the handful of entities ADO emits are
  *  decoded. Good enough for prompt context — not a general HTML parser. */
-function stripHtml(html: string): string {
+export function stripHtml(html: string): string {
   return html
     .replace(/<\s*br\s*\/?\s*>/gi, "\n")
     .replace(/<\/\s*(p|li|ul|ol|div|h[1-6]|tr)\s*>/gi, "\n")

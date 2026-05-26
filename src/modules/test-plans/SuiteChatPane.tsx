@@ -33,6 +33,7 @@ import {
 import type {
   AppliedEditRecord,
   ApplyEditResult,
+  BugLookup,
   CaseLookup,
   UndoEditHandler,
 } from "@/components/ChatMarkdown";
@@ -56,6 +57,7 @@ import {
   type ConnectionStatus,
   type ExecutionOutcome,
 } from "@/modules/ado";
+import { stripHtml } from "@/modules/ado/lib/bugContextBlock";
 import { MODELS, type ModelId } from "@/modules/ai/config";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
@@ -215,6 +217,24 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
       };
     };
   }, [cases, conn]);
+
+  // Bug edits (create/update/delete-bug) diff against the bug's live ADO state.
+  // Bugs aren't in the suite's case cache, so this reads them on demand — the
+  // card only calls it when the user expands a bug edit's diff.
+  const fetchBug = useCallback<BugLookup>(async (bugId: number) => {
+    try {
+      const b = await getBug(bugId);
+      return {
+        id: b.id,
+        title: b.title,
+        state: b.state ?? null,
+        severity: b.severity ?? null,
+        reproText: stripHtml(b.reproStepsHtml) || null,
+      };
+    } catch {
+      return null;
+    }
+  }, []);
 
   // NOTE: handleApplyEdit must be declared BEFORE any conditional early
   // return to keep React's hook order stable across the "state is null"
@@ -685,6 +705,7 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
         messages={messages}
         busy={busy}
         lookupCase={lookupCase}
+        fetchBug={fetchBug}
         onApplyEdit={handleApplyEdit}
         onEditApplied={(messageId, blockHash, record) =>
           markEditApplied(planId, suiteId, messageId, blockHash, record)
@@ -1053,6 +1074,7 @@ function ChatThread({
   messages,
   busy,
   lookupCase,
+  fetchBug,
   onApplyEdit,
   onEditApplied,
   onUndoEdit,
@@ -1067,6 +1089,7 @@ function ChatThread({
   messages: Msg[];
   busy: boolean;
   lookupCase: CaseLookup;
+  fetchBug: BugLookup;
   onApplyEdit: (payload: unknown) => Promise<ApplyEditResult>;
   onEditApplied: (
     messageId: string,
@@ -1202,6 +1225,7 @@ function ChatThread({
             attachments={m.attachments}
             streaming={busy && m.role === "assistant" && idx === messages.length - 1}
             lookupCase={lookupCase}
+            fetchBug={fetchBug}
             onApplyEdit={onApplyEdit}
             appliedEdits={m.appliedEdits}
             onEditApplied={(blockHash, record) =>
@@ -1247,6 +1271,7 @@ function MessageBubble({
   attachments,
   streaming,
   lookupCase,
+  fetchBug,
   onApplyEdit,
   appliedEdits,
   onEditApplied,
@@ -1259,6 +1284,7 @@ function MessageBubble({
   attachments?: Attachment[];
   streaming: boolean;
   lookupCase: CaseLookup;
+  fetchBug: BugLookup;
   onApplyEdit: (payload: unknown) => Promise<ApplyEditResult>;
   appliedEdits?: Record<string, AppliedEditRecord>;
   onEditApplied: (blockHash: string, record: AppliedEditRecord) => void;
@@ -1316,6 +1342,7 @@ function MessageBubble({
           <ChatMarkdown
             source={content}
             lookupCase={lookupCase}
+            fetchBug={fetchBug}
             onApplyEdit={onApplyEdit}
             streaming={streaming}
             appliedEdits={appliedEdits}

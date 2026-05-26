@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -16,6 +17,8 @@ import type {
   AppliedEditRecord,
   ApplyEditHandler,
   ApplyEditResult,
+  BugLookup,
+  BugSnapshot,
   CaseLookup,
   EditBeforeSnapshot,
   UndoEditHandler,
@@ -133,6 +136,7 @@ export function ApplyEditCard({
   body,
   onApply,
   lookupCase,
+  fetchBug,
   applied,
   onApplied,
   onUndo,
@@ -141,6 +145,9 @@ export function ApplyEditCard({
   body: string;
   onApply: ApplyEditHandler;
   lookupCase?: CaseLookup;
+  /** Resolves a bug's current state so update/delete-bug edits can diff
+   *  against it. Optional — without it bug edits fall back to a text preview. */
+  fetchBug?: BugLookup;
   /** Persisted apply result from a previous session. When set, the card
    *  renders as already-applied — no Apply button. */
   applied?: AppliedEditRecord | null;
@@ -175,6 +182,19 @@ export function ApplyEditCard({
     }));
     return diffSteps(current?.steps ?? [], indexed);
   }, [parsed, current]);
+
+  // update-bug / delete-bug diff against the bug's CURRENT state, which lives
+  // in ADO rather than the local case cache. Fetch it lazily the first time the
+  // diff is expanded so the common (collapsed) path stays free.
+  const needsBugSnapshot =
+    parsed.ok &&
+    (parsed.kind === "update-bug" || parsed.kind === "delete-bug") &&
+    parsed.bugId != null;
+  const bugSnap = useBugSnapshot(
+    parsed.ok ? parsed.bugId : null,
+    fetchBug,
+    expanded && needsBugSnapshot,
+  );
 
   const apply = async () => {
     if (state === "applying" || state === "undoing") return;
@@ -435,7 +455,10 @@ export function ApplyEditCard({
   const canExpand =
     parsed.kind === "rename" ||
     (parsed.kind === "rewrite-steps" && (stepRows?.length ?? 0) > 0) ||
-    (parsed.kind === "create-case" && parsed.steps.length > 0);
+    (parsed.kind === "create-case" && parsed.steps.length > 0) ||
+    parsed.kind === "create-bug" ||
+    (parsed.kind === "update-bug" && parsed.bugId != null) ||
+    (parsed.kind === "delete-bug" && parsed.bugId != null);
 
   return (
     <div
@@ -543,11 +566,83 @@ export function ApplyEditCard({
               title={parsed.title ?? "(no title)"}
               steps={parsed.steps}
             />
+          ) : parsed.kind === "create-bug" ? (
+            <BugCreatePreview
+              title={parsed.title ?? "(no title)"}
+              severity={parsed.severity}
+              reproSteps={parsed.reproSteps}
+              linkCaseId={parsed.caseId}
+            />
+          ) : parsed.kind === "update-bug" ? (
+            <BugUpdateDiff
+              before={bugSnap.snapshot}
+              loading={bugSnap.loading}
+              error={bugSnap.error}
+              title={parsed.title}
+              severity={parsed.severity}
+              state={parsed.state}
+              reproSteps={parsed.reproSteps}
+            />
+          ) : parsed.kind === "delete-bug" ? (
+            <BugDeletePreview
+              before={bugSnap.snapshot}
+              loading={bugSnap.loading}
+              error={bugSnap.error}
+              reason={parsed.reason}
+            />
           ) : null}
         </div>
       ) : null}
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Bug snapshot fetch — bugs aren't in the local case cache, so update/delete
+// diffs read the bug's current state on demand via the parent-supplied
+// resolver. Fetch is gated on `enabled` so it only fires when the diff opens.
+// ---------------------------------------------------------------------------
+
+export type BugSnapState = {
+  snapshot: BugSnapshot | null;
+  loading: boolean;
+  error: string | null;
+};
+
+export function useBugSnapshot(
+  bugId: number | null,
+  fetchBug: BugLookup | undefined,
+  enabled: boolean,
+): BugSnapState {
+  const [state, setState] = useState<BugSnapState>({
+    snapshot: null,
+    loading: false,
+    error: null,
+  });
+  useEffect(() => {
+    if (!enabled || bugId == null || !fetchBug) return;
+    // Already have this bug — don't refetch on a collapse/expand toggle.
+    if (state.snapshot && state.snapshot.id === bugId) return;
+    let alive = true;
+    setState({ snapshot: null, loading: true, error: null });
+    fetchBug(bugId)
+      .then((snap) => {
+        if (alive) setState({ snapshot: snap, loading: false, error: null });
+      })
+      .catch((e) => {
+        if (alive)
+          setState({
+            snapshot: null,
+            loading: false,
+            error: e instanceof Error ? e.message : String(e),
+          });
+      });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, bugId, fetchBug]);
+  return state;
 }
 
 // ---------------------------------------------------------------------------
@@ -759,6 +854,247 @@ export function CreateCasePreview({
           ))
         )}
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Bug diffs — bugs don't have the local in-scope lookup cases get, so update
+// and delete diffs read the bug's current state via the parent's fetchBug.
+// create-bug has no "before" (it's new), so it renders a one-sided preview.
+// ---------------------------------------------------------------------------
+
+/** Single labelled field block (one-sided) — used by create/delete previews. */
+function BugFieldBlock({
+  label,
+  children,
+  emphasize,
+  struck,
+}: {
+  label: string;
+  children: React.ReactNode;
+  emphasize?: boolean;
+  struck?: boolean;
+}) {
+  return (
+    <div className="bg-foreground/[0.02] px-3 py-2">
+      <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/85">
+        {label}
+      </span>
+      <p
+        className={cn(
+          "mt-0.5 whitespace-pre-wrap break-words text-[11.5px] leading-snug",
+          emphasize ? "font-medium text-foreground" : "text-foreground/90",
+          struck && "text-foreground/55 line-through",
+        )}
+      >
+        {children}
+      </p>
+    </div>
+  );
+}
+
+/** One changed field rendered as a current → proposed pair. */
+function BugFieldDiff({
+  label,
+  before,
+  after,
+  unknownBefore,
+}: {
+  label: string;
+  before: string | null;
+  after: string;
+  /** true when we couldn't read the current value (no resolver / fetch failed)
+   *  vs. it being genuinely empty. */
+  unknownBefore?: boolean;
+}) {
+  const changed = (before ?? "") !== after;
+  return (
+    <div>
+      <div className="bg-foreground/[0.02] px-3 pt-2 pb-1 font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/85">
+        {label}
+      </div>
+      <div className="grid grid-cols-[1fr_auto_1fr] items-stretch">
+        <DiffSide label="Current">
+          <p className="whitespace-pre-wrap break-words text-[11.5px] leading-snug text-foreground/75">
+            {before ?? (
+              <span className="italic text-muted-foreground">
+                {unknownBefore ? "unavailable" : "(empty)"}
+              </span>
+            )}
+          </p>
+        </DiffSide>
+        <DiffArrow />
+        <DiffSide label="Proposed">
+          <p
+            className={cn(
+              "whitespace-pre-wrap break-words text-[11.5px] leading-snug",
+              changed ? "font-medium text-foreground" : "text-foreground/75",
+            )}
+          >
+            {after || <span className="italic text-muted-foreground">(empty)</span>}
+          </p>
+        </DiffSide>
+      </div>
+    </div>
+  );
+}
+
+function BugDiffSkeleton() {
+  return (
+    <div className="flex flex-col gap-2 px-3 py-3">
+      <Skeleton className="h-2.5 w-16" />
+      <Skeleton className="h-3 w-full" />
+      <Skeleton className="h-3 w-2/3" />
+    </div>
+  );
+}
+
+function BugFetchNote({ error }: { error: string }) {
+  return (
+    <div className="bg-foreground/[0.02] px-3 py-2 text-[10.5px] leading-snug text-muted-foreground">
+      Couldn&apos;t read the bug&apos;s current state to diff ({error}). The
+      change still applies on its own.
+    </div>
+  );
+}
+
+/** Proposed new bug — no "before" side because it doesn't exist yet. */
+export function BugCreatePreview({
+  title,
+  severity,
+  reproSteps,
+  linkCaseId,
+}: {
+  title: string;
+  severity: string | null;
+  reproSteps: string | null;
+  linkCaseId: number | null;
+}) {
+  return (
+    <div className="divide-y divide-border/25">
+      <BugFieldBlock label="Title" emphasize>
+        {title}
+      </BugFieldBlock>
+      {severity ? (
+        <BugFieldBlock label="Severity">{severity}</BugFieldBlock>
+      ) : null}
+      {linkCaseId != null ? (
+        <BugFieldBlock label="Links to">#{linkCaseId}</BugFieldBlock>
+      ) : null}
+      {reproSteps && reproSteps.trim() ? (
+        <BugFieldBlock label="Repro steps">{reproSteps}</BugFieldBlock>
+      ) : (
+        <BugFieldBlock label="Repro steps">
+          <span className="italic text-muted-foreground/70">(none)</span>
+        </BugFieldBlock>
+      )}
+    </div>
+  );
+}
+
+/** Current → proposed diff for the fields an update-bug edit changes. */
+export function BugUpdateDiff({
+  before,
+  loading,
+  error,
+  title,
+  severity,
+  state,
+  reproSteps,
+}: {
+  before: BugSnapshot | null;
+  loading: boolean;
+  error: string | null;
+  title: string | null;
+  severity: string | null;
+  state: string | null;
+  reproSteps: string | null;
+}) {
+  if (loading) return <BugDiffSkeleton />;
+  const fields: { label: string; before: string | null; after: string }[] = [];
+  if (title != null)
+    fields.push({ label: "Title", before: before?.title ?? null, after: title });
+  if (severity != null)
+    fields.push({
+      label: "Severity",
+      before: before?.severity ?? null,
+      after: severity,
+    });
+  if (state != null)
+    fields.push({ label: "State", before: before?.state ?? null, after: state });
+  if (reproSteps != null)
+    fields.push({
+      label: "Repro steps",
+      before: before?.reproText ?? null,
+      after: reproSteps,
+    });
+  if (fields.length === 0) {
+    return (
+      <div className="px-3 py-3 text-[11px] text-muted-foreground">
+        (no fields to update)
+      </div>
+    );
+  }
+  const unknownBefore = !before && !error;
+  return (
+    <div className="divide-y divide-border/25">
+      {error ? <BugFetchNote error={error} /> : null}
+      {fields.map((f) => (
+        <BugFieldDiff
+          key={f.label}
+          label={f.label}
+          before={f.before}
+          after={f.after}
+          unknownBefore={unknownBefore}
+        />
+      ))}
+    </div>
+  );
+}
+
+/** What gets removed by a delete-bug edit — the bug's current fields, struck. */
+export function BugDeletePreview({
+  before,
+  loading,
+  error,
+  reason,
+}: {
+  before: BugSnapshot | null;
+  loading: boolean;
+  error: string | null;
+  reason: string | null;
+}) {
+  if (loading) return <BugDiffSkeleton />;
+  if (error) return <BugFetchNote error={error} />;
+  if (!before) {
+    return (
+      <div className="px-3 py-3 text-[11px] text-muted-foreground">
+        Bug details unavailable — it may already be deleted.
+      </div>
+    );
+  }
+  return (
+    <div className="divide-y divide-border/25">
+      <BugFieldBlock label="Title" emphasize struck>
+        {before.title}
+      </BugFieldBlock>
+      {before.severity ? (
+        <BugFieldBlock label="Severity" struck>
+          {before.severity}
+        </BugFieldBlock>
+      ) : null}
+      {before.state ? (
+        <BugFieldBlock label="State" struck>
+          {before.state}
+        </BugFieldBlock>
+      ) : null}
+      {before.reproText ? (
+        <BugFieldBlock label="Repro steps" struck>
+          {before.reproText}
+        </BugFieldBlock>
+      ) : null}
+      {reason ? <BugFieldBlock label="Reason">{reason}</BugFieldBlock> : null}
     </div>
   );
 }

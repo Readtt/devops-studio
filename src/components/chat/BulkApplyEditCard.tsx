@@ -11,13 +11,17 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   buildSubtitle,
+  BugCreatePreview,
+  BugDeletePreview,
   BugRefBadge,
+  BugUpdateDiff,
   CaseRefBadge,
   CreateCasePreview,
   diffSteps,
   parseEdit,
   RenameDiff,
   StepsDiff,
+  useBugSnapshot,
   type DiffRow,
   type ParsedEdit,
 } from "./ApplyEditCard";
@@ -25,6 +29,7 @@ import type {
   AppliedEditRecord,
   AppliedEditsMap,
   ApplyEditHandler,
+  BugLookup,
   CaseLookup,
 } from "@/components/ChatMarkdown";
 
@@ -57,6 +62,7 @@ export function BulkApplyEditCard({
   blockHash,
   onApply,
   lookupCase,
+  fetchBug,
   appliedEdits,
   onApplied,
 }: {
@@ -65,6 +71,8 @@ export function BulkApplyEditCard({
   blockHash: string;
   onApply: ApplyEditHandler;
   lookupCase?: CaseLookup;
+  /** Resolves a bug's current state so bug rows can show a before/after diff. */
+  fetchBug?: BugLookup;
   appliedEdits?: AppliedEditsMap;
   /** Persist a row's applied state, keyed by the row's sub-hash. */
   onApplied?: (subHash: string, record: AppliedEditRecord) => void;
@@ -263,6 +271,7 @@ export function BulkApplyEditCard({
             key={row.index}
             row={row}
             lookupCase={lookupCase}
+            fetchBug={fetchBug}
             applied={isApplied(row.subHash) || rowState[row.index] === "ok"}
             state={rowState[row.index] ?? "idle"}
             error={rowError[row.index] ?? null}
@@ -280,6 +289,7 @@ export function BulkApplyEditCard({
 function BulkRow({
   row,
   lookupCase,
+  fetchBug,
   applied,
   state,
   error,
@@ -290,6 +300,7 @@ function BulkRow({
 }: {
   row: ParsedRow;
   lookupCase?: CaseLookup;
+  fetchBug?: BugLookup;
   applied: boolean;
   state: RowState;
   error: string | null;
@@ -312,6 +323,17 @@ function BulkRow({
     return diffSteps(current?.steps ?? [], indexed);
   }, [parsed, current]);
 
+  // Bug rows diff against the bug's live state, fetched lazily on expand.
+  const needsBugSnapshot =
+    parsed.ok &&
+    (parsed.kind === "update-bug" || parsed.kind === "delete-bug") &&
+    parsed.bugId != null;
+  const bugSnap = useBugSnapshot(
+    parsed.ok ? parsed.bugId : null,
+    fetchBug,
+    expanded && needsBugSnapshot,
+  );
+
   if (!parsed.ok) {
     return (
       <li className="flex items-center gap-2 px-3 py-2">
@@ -330,7 +352,10 @@ function BulkRow({
   const canExpand =
     parsed.kind === "rename" ||
     (parsed.kind === "rewrite-steps" && (stepRows?.length ?? 0) > 0) ||
-    (parsed.kind === "create-case" && parsed.steps.length > 0);
+    (parsed.kind === "create-case" && parsed.steps.length > 0) ||
+    parsed.kind === "create-bug" ||
+    (parsed.kind === "update-bug" && parsed.bugId != null) ||
+    (parsed.kind === "delete-bug" && parsed.bugId != null);
   const ok = appliable(parsed);
 
   return (
@@ -422,6 +447,30 @@ function BulkRow({
             <CreateCasePreview
               title={parsed.title ?? "(no title)"}
               steps={parsed.steps}
+            />
+          ) : parsed.kind === "create-bug" ? (
+            <BugCreatePreview
+              title={parsed.title ?? "(no title)"}
+              severity={parsed.severity}
+              reproSteps={parsed.reproSteps}
+              linkCaseId={parsed.caseId}
+            />
+          ) : parsed.kind === "update-bug" ? (
+            <BugUpdateDiff
+              before={bugSnap.snapshot}
+              loading={bugSnap.loading}
+              error={bugSnap.error}
+              title={parsed.title}
+              severity={parsed.severity}
+              state={parsed.state}
+              reproSteps={parsed.reproSteps}
+            />
+          ) : parsed.kind === "delete-bug" ? (
+            <BugDeletePreview
+              before={bugSnap.snapshot}
+              loading={bugSnap.loading}
+              error={bugSnap.error}
+              reason={parsed.reason}
             />
           ) : null}
         </div>

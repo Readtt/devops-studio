@@ -54,6 +54,23 @@ export type CaseLookup = (caseId: number) =>
     }
   | null;
 
+/** Plain-text snapshot of a bug's current scalar fields. Bugs aren't in the
+ *  local case cache, so the card fetches this on demand (via `fetchBug`) to
+ *  render a real before/after diff for update-bug / delete-bug. */
+export type BugSnapshot = {
+  id: number;
+  title: string;
+  state: string | null;
+  severity: string | null;
+  /** Repro steps as plain text (ADO stores HTML — caller strips it). */
+  reproText: string | null;
+};
+
+/** Resolver the parent provides so bug-edit cards can read a bug's prior state
+ *  to diff against. Async because the bug body lives in ADO, not in memory.
+ *  Returns null when the bug can't be read (deleted / permissions). */
+export type BugLookup = (bugId: number) => Promise<BugSnapshot | null>;
+
 /** Snapshot of a case's state before an edit was applied. Stored in the
  *  applied-edits map so the Undo button can revive the exact prior state
  *  even if the case has been further modified since. */
@@ -103,6 +120,9 @@ export type ChatMarkdownProps = {
   /** When provided, ApplyEditCard renders a real before/after diff and
    *  inline `#15310` chips can show the case title in their tooltip. */
   lookupCase?: CaseLookup;
+  /** When provided, bug-edit cards (create/update/delete-bug) render a diff:
+   *  the proposed change diffed against the bug's current state fetched here. */
+  fetchBug?: BugLookup;
   /** Tells the last block of a streaming message to render a soft caret —
    *  the caret is owned here (not by the parent) so it stays glued to the
    *  end of the actual text instead of dangling below it. */
@@ -125,6 +145,7 @@ export function ChatMarkdown({
   className,
   onApplyEdit,
   lookupCase,
+  fetchBug,
   streaming,
   appliedEdits,
   onEditApplied,
@@ -147,6 +168,7 @@ export function ChatMarkdown({
           block={b}
           onApplyEdit={onApplyEdit}
           lookupCase={lookupCase}
+          fetchBug={fetchBug}
           streamingTail={streaming && i === blocks.length - 1}
           appliedEdits={appliedEdits}
           onEditApplied={onEditApplied}
@@ -282,6 +304,7 @@ type BlockRendererProps = {
   block: Block;
   onApplyEdit?: ApplyEditHandler;
   lookupCase?: CaseLookup;
+  fetchBug?: BugLookup;
   streamingTail?: boolean;
   appliedEdits?: AppliedEditsMap;
   onEditApplied?: (blockHash: string, result: AppliedEditRecord) => void;
@@ -301,6 +324,7 @@ const blockRendererEqual = (a: BlockRendererProps, b: BlockRendererProps) =>
   a.streamingTail === b.streamingTail &&
   a.onApplyEdit === b.onApplyEdit &&
   a.lookupCase === b.lookupCase &&
+  a.fetchBug === b.fetchBug &&
   a.appliedEdits === b.appliedEdits &&
   a.onEditApplied === b.onEditApplied &&
   a.onUndoEdit === b.onUndoEdit &&
@@ -310,6 +334,7 @@ const BlockRenderer = memo(function BlockRenderer({
   block,
   onApplyEdit,
   lookupCase,
+  fetchBug,
   streamingTail,
   appliedEdits,
   onEditApplied,
@@ -381,6 +406,7 @@ const BlockRenderer = memo(function BlockRenderer({
             body={block.body}
             onApply={onApplyEdit}
             lookupCase={lookupCase}
+            fetchBug={fetchBug}
             applied={applied}
             onApplied={(result) => onEditApplied?.(blockHash, result)}
             onUndo={onUndoEdit}
@@ -396,6 +422,7 @@ const BlockRenderer = memo(function BlockRenderer({
             blockHash={blockHash}
             onApply={onApplyEdit}
             lookupCase={lookupCase}
+            fetchBug={fetchBug}
             appliedEdits={appliedEdits}
             onApplied={(subHash, record) => onEditApplied?.(subHash, record)}
           />
