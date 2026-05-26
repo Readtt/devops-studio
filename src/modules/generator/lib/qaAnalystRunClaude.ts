@@ -4,6 +4,7 @@
 
 import { getKey } from "@/modules/ai/lib/keyring";
 import { runClaudeQuery, type ClaudeEvent } from "@/modules/ai/lib/claude";
+import { imageAttachmentToBase64 } from "@/components/chat/attachments";
 import {
   DraftBatchLLMSchema,
   type DraftBatchLLM,
@@ -81,6 +82,11 @@ export async function runQaAnalystClaude(
   }
 
   const userPrompt = input.userPromptOverride ?? buildUserPrompt(input);
+  // Lift image attachments into real vision blocks for the CLI's stream-json
+  // input. Text attachments stay embedded in the prompt (buildUserPrompt).
+  const images = input.attachments
+    .map(imageAttachmentToBase64)
+    .filter((x): x is { mediaType: string; dataBase64: string } => x !== null);
   const start = Date.now();
   const tracker = new ActivityTracker(start, input.onActivity);
   // Hand the runId back to the caller before we await — that's the only
@@ -92,6 +98,7 @@ export async function runQaAnalystClaude(
     {
       runId,
       prompt: userPrompt,
+      images: images.length > 0 ? images : undefined,
       systemPrompt: QA_ANALYST_PROMPT,
       cwd: input.sourceRoot ?? undefined,
       model: input.modelId,

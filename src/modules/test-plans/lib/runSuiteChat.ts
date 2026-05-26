@@ -19,7 +19,10 @@ import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import type { TestCase } from "@/modules/ado";
 import { buildSuiteChatTools } from "./suiteChatTools";
 import { buildUserTurn } from "@/modules/ai/lib/visionMessage";
-import type { Attachment } from "@/components/chat/attachments";
+import {
+  imageAttachmentToBase64,
+  type Attachment,
+} from "@/components/chat/attachments";
 
 /** Persisted record of an ADO edit that the user applied from this message.
  *  Keyed in `SuiteChatMessage.appliedEdits` by a content hash of the
@@ -287,6 +290,17 @@ export type ClaudeSuiteChatInput = SuiteChatRunInput & {
   runId: string;
 };
 
+/** Lift image attachments into stream-json image blocks for the CLI path.
+ *  Returns undefined when there are none so the plain-text stdin path stays. */
+function claudeImages(
+  attachments: Attachment[] | undefined,
+): { mediaType: string; dataBase64: string }[] | undefined {
+  const imgs = (attachments ?? [])
+    .map(imageAttachmentToBase64)
+    .filter((x): x is { mediaType: string; dataBase64: string } => x !== null);
+  return imgs.length > 0 ? imgs : undefined;
+}
+
 export async function runSuiteChatClaude(
   input: ClaudeSuiteChatInput,
 ): Promise<SuiteChatRunResult> {
@@ -300,6 +314,7 @@ export async function runSuiteChatClaude(
   const result = await runClaudeQuery({
     runId: input.runId,
     prompt: userPrompt,
+    images: claudeImages(input.attachments),
     systemPrompt: SUITE_CHAT_SYSTEM_PROMPT,
     cwd: input.sourceRoot ?? undefined,
     model: input.modelId,
@@ -359,6 +374,7 @@ export async function streamSuiteChatClaude(
     {
       runId: input.runId,
       prompt: userPrompt,
+      images: claudeImages(input.attachments),
       systemPrompt: SUITE_CHAT_SYSTEM_PROMPT,
       cwd: input.sourceRoot ?? undefined,
       model: input.modelId,

@@ -191,9 +191,11 @@ function formatBytes(n: number): string {
 /** Strip the `data:<mime>;base64,` prefix from an image attachment's data URL,
  *  returning the raw base64 payload + media type — the shape the Anthropic
  *  Messages API (and the Claude CLI's stream-json input) expects for an image
- *  content block. Returns null for non-image attachments or malformed URLs. */
+ *  content block. Returns null for non-image attachments or malformed URLs.
+ *  Accepts any structurally-image-like value (the full Attachment or a
+ *  runner's lighter RunAttachment). */
 export function imageAttachmentToBase64(
-  a: Attachment,
+  a: { kind?: string; content: string; mime?: string },
 ): { mediaType: string; dataBase64: string } | null {
   if (a.kind !== "image") return null;
   const match = /^data:([^;]+);base64,(.*)$/s.exec(a.content);
