@@ -10,6 +10,8 @@ import {
   listPlans,
   listSuiteCases,
   listSuites,
+  listTestPoints,
+  setTestPointOutcome,
   toAdoError,
   type AdoError,
   type CreatedWorkItem,
@@ -1058,6 +1060,33 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         const created = await createCaseInSuite(planId, suiteId, draft);
         caseIdByDraftUid.set(c.uid, created.id);
         updateLog(set, c.uid, { status: "ok", result: created });
+
+        // Record the reviewer's chosen run outcome against the new case's
+        // test point. ADO can briefly lag creating the point for a just-added
+        // case, so retry once; on failure surface a non-fatal warning rather
+        // than failing the whole publish.
+        if (c.desiredOutcome) {
+          try {
+            let points = await listTestPoints(planId, suiteId, created.id);
+            if (points.length === 0) {
+              await new Promise((r) => setTimeout(r, 600));
+              points = await listTestPoints(planId, suiteId, created.id);
+            }
+            const point = points[0];
+            if (!point) throw new Error("no test point in this suite yet");
+            await setTestPointOutcome({
+              planId,
+              suiteId,
+              pointId: point.id,
+              caseId: created.id,
+              outcome: c.desiredOutcome,
+            });
+          } catch (e) {
+            updateLog(set, c.uid, {
+              error: `Published, but couldn't set the run outcome: ${errToString(e)}`,
+            });
+          }
+        }
       } catch (e) {
         updateLog(set, c.uid, {
           status: "failed",
