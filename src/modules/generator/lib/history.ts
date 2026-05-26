@@ -54,6 +54,9 @@ export type DraftPayload = {
   planName?: string | null;
   suiteId?: number | null;
   suiteName?: string | null;
+  /** Per-session pinned model. Persisted so reopening a draft keeps the model
+   *  the user chose instead of snapping back to the global default. */
+  overrideModelId?: import("@/modules/ai/config").ModelId | null;
   /** Optional ordered list of refine rounds, oldest-first. Restored into
    *  the live session on loadDraft so the user picks up the conversation
    *  with the full thinking-process log intact. */

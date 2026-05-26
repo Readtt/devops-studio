@@ -76,6 +76,7 @@ export const TabContent = memo(function TabContent({
           cwd={tab.cwd}
           base={tab.base}
           source={tab.source ?? null}
+          modelId={tab.modelId ?? null}
           rehydrateThreadId={tab.rehydrateThreadId ?? null}
         />
       );

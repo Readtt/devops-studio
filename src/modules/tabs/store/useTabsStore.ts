@@ -90,6 +90,8 @@ export type OpenTabInput =
        *  local working-copy diff. Persisted on the tab so it survives reload
        *  and is carried by Duplicate. */
       source?: import("@/modules/code-review/source").CodeReviewSource | null;
+      /** Per-tab pinned model (persisted). Absent ⇒ inherit global default. */
+      modelId?: import("@/modules/ai/config").ModelId | null;
       /** Pre-existing code-review thread to rehydrate. Used by the
        *  Chats sidebar to reopen past reviews. */
       rehydrateThreadId?: string | null;
@@ -144,6 +146,7 @@ export type TabsState = {
     patch: {
       source?: import("@/modules/code-review/source").CodeReviewSource | null;
       base?: string | null;
+      modelId?: import("@/modules/ai/config").ModelId | null;
     },
   ) => void;
   /** Replace a confidence tab's verdict snapshot (after a Re-evaluate). */
@@ -414,6 +417,7 @@ export const useTabsStore = create<TabsState>()(
               cwd: input.cwd,
               base: input.base ?? null,
               source: input.source ?? null,
+              modelId: input.modelId ?? null,
               rehydrateThreadId: input.rehydrateThreadId ?? null,
               pinned: input.pinned ?? false,
             };
@@ -643,6 +647,7 @@ export const useTabsStore = create<TabsState>()(
           const next = { ...t };
           if ("source" in patch) next.source = patch.source ?? null;
           if ("base" in patch) next.base = patch.base ?? null;
+          if ("modelId" in patch) next.modelId = patch.modelId ?? null;
           return { tabs: { ...s.tabs, [id]: next } };
         }),
 

@@ -70,6 +70,9 @@ type State = {
     /** Persisted ADO source from the tab. Seeds the slice on first mount /
      *  after a reload so an ADO review doesn't revert to the local diff. */
     source?: CodeReviewSource | null,
+    /** Persisted per-tab model pin from the tab. Seeds the slice so the
+     *  chosen model survives a reload. */
+    modelId?: ModelId | null,
   ) => Promise<void>;
   refreshDiff: (tabId: number) => Promise<void>;
   changeBase: (tabId: number, base: string) => Promise<void>;
@@ -106,7 +109,7 @@ function patch(set: (fn: (s: State) => Partial<State>) => void, tabId: number, p
 export const useCodeReview = create<State>((set, get) => ({
   byTab: new Map(),
 
-  ensure: async (tabId, cwd, base, rehydrateThreadId, source) => {
+  ensure: async (tabId, cwd, base, rehydrateThreadId, source, modelId) => {
     const existing = get().byTab.get(tabId);
     if (existing && existing.cwd === cwd) {
       if (!existing.diff && !existing.diffLoading) {
@@ -142,7 +145,7 @@ export const useCodeReview = create<State>((set, get) => ({
         activeClaudeRunId: null,
         error: null,
         threadId: hist?.id ?? null,
-        modelId: null,
+        modelId: modelId ?? null,
         source: source ?? null,
       });
       return { byTab: next };
@@ -193,6 +196,8 @@ export const useCodeReview = create<State>((set, get) => ({
 
   setModel: (tabId, modelId) => {
     patch(set, tabId, { modelId });
+    // Persist onto the tab so the pinned model survives a reload.
+    useTabsStore.getState().patchCodeReviewTab(tabId, { modelId });
   },
 
   setSource: async (tabId, source) => {

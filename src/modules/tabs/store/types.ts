@@ -60,6 +60,9 @@ export type CodeReviewTab = TabBase & {
   /** When set, review an Azure DevOps commit/PR/branch instead of the local
    *  working-copy diff. Absent ⇒ local. */
   source?: import("@/modules/code-review/source").CodeReviewSource | null;
+  /** Per-tab pinned model. Null/absent ⇒ inherit the global default. Persisted
+   *  so the chosen model survives a reload. */
+  modelId?: import("@/modules/ai/config").ModelId | null;
   /** When set, hydrate this tab's conversation from useCodeReviewHistory
    *  on mount. Surfaces when the user reopens a past review from the
    *  Chats sidebar. The current diff still loads from disk (the prior
