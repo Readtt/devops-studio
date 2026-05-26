@@ -9,7 +9,7 @@
 import { generateText, stepCountIs } from "ai";
 import { getModel, type ModelId } from "@/modules/ai/config";
 import { buildLanguageModel } from "@/modules/ai/lib/agent";
-import { runClaudeQuery } from "@/modules/ai/lib/claude";
+import { runClaudeQuery, cancelClaudeRun } from "@/modules/ai/lib/claude";
 import type { ClaudeAuthMode } from "@/modules/ai/lib/engine";
 import { getKey, type ProviderKeys } from "@/modules/ai/lib/keyring";
 import { buildSuiteChatTools } from "./suiteChatTools";
@@ -50,6 +50,9 @@ export type ConfidenceEvalInput = {
   runs?: number;
   /** Best-practices / extra context blocks to apply during evaluation. */
   contextBlocks?: ContextBlock[];
+  /** Cooperative cancel. Aborts the Vercel stream / cancels the Claude
+   *  subprocess and makes evaluateConfidence reject with an AbortError. */
+  signal?: AbortSignal;
 };
 
 export function fromTestCase(tc: TestCase): EvalCase {
@@ -74,11 +77,13 @@ export async function evaluateConfidence(
 
   const verdicts: ConfidenceVerdictLLM[] = [];
   for (let i = 0; i < runs; i++) {
+    if (input.signal?.aborted) throw abortError();
     const v = input.useClaude
       ? await runOnceClaude(input, prompt)
       : await runOnceVercel(input, prompt);
     if (v) verdicts.push(v);
   }
+  if (input.signal?.aborted) throw abortError();
 
   const aggregated = aggregate(verdicts);
   return {
@@ -183,6 +188,7 @@ async function runOnceVercel(
     model: lm,
     system: CONFIDENCE_EVAL_SYSTEM_PROMPT,
     prompt,
+    abortSignal: input.signal,
     ...(tools ? { tools, stopWhen: stepCountIs(10) } : {}),
   });
   return parseConfidenceVerdict(result.text ?? "");
@@ -198,18 +204,31 @@ async function runOnceClaude(
     if (key) env.ANTHROPIC_API_KEY = key;
   }
   const runId = `conf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  const result = await runClaudeQuery({
-    runId,
-    prompt,
-    systemPrompt: CONFIDENCE_EVAL_SYSTEM_PROMPT,
-    cwd: input.sourceRoot ?? undefined,
-    model: input.modelId,
-    permissionMode: "bypassPermissions",
-    allowedTools: ["Read", "Glob", "Grep"],
-    bare: input.bareMode,
-    env,
-  });
-  return parseConfidenceVerdict(result.text ?? "");
+  // Cancel the subprocess when the caller aborts (the chip's cancel button).
+  const onAbort = () => void cancelClaudeRun(runId).catch(() => undefined);
+  input.signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    const result = await runClaudeQuery({
+      runId,
+      prompt,
+      systemPrompt: CONFIDENCE_EVAL_SYSTEM_PROMPT,
+      cwd: input.sourceRoot ?? undefined,
+      model: input.modelId,
+      permissionMode: "bypassPermissions",
+      allowedTools: ["Read", "Glob", "Grep"],
+      bare: input.bareMode,
+      env,
+    });
+    if (input.signal?.aborted) throw abortError();
+    return parseConfidenceVerdict(result.text ?? "");
+  } finally {
+    input.signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+/** A DOMException the callers recognise as "user cancelled" (name === "AbortError"). */
+function abortError(): Error {
+  return new DOMException("Confidence evaluation cancelled", "AbortError");
 }
 
 // --- Prompt -----------------------------------------------------------------

@@ -81,19 +81,28 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
     };
   }, [caseId]);
 
+  const evalAbortRef = useRef<AbortController | null>(null);
   const handleEvaluate = useCallback(async () => {
     if (!tc || evaluating) return;
+    const ac = new AbortController();
+    evalAbortRef.current = ac;
     setEvaluating(true);
     try {
-      const v = await evaluateCaseConfidence(fromTestCase(tc));
+      const v = await evaluateCaseConfidence(fromTestCase(tc), {
+        signal: ac.signal,
+      });
       setVerdict(v);
       await saveConfidence(tc.id, v).catch(() => undefined);
     } catch (e) {
-      console.error("[confidence] evaluation failed:", e);
+      if ((e as { name?: string } | null)?.name !== "AbortError") {
+        console.error("[confidence] evaluation failed:", e);
+      }
     } finally {
       setEvaluating(false);
+      evalAbortRef.current = null;
     }
   }, [tc, evaluating]);
+  const cancelEvaluate = useCallback(() => evalAbortRef.current?.abort(), []);
 
   // Optimistic title commit: update local state first so the UI feels live,
   // revert on a wire-level failure. ADO's response carries the new System.Title
@@ -257,6 +266,8 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
               loading={evaluating}
               size="md"
               onEvaluate={() => void handleEvaluate()}
+              onReevaluate={() => void handleEvaluate()}
+              onCancel={cancelEvaluate}
               onOpenDetail={verdict ? () => setConfidenceOpen(true) : undefined}
             />
             <OutcomeControl

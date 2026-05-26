@@ -9,7 +9,12 @@ import {
   confidenceTone,
   type ConfidenceVerdict,
 } from "../lib/confidence";
-import { Loading03Icon, SparklesIcon } from "@hugeicons/core-free-icons";
+import {
+  Cancel01Icon,
+  Loading03Icon,
+  RefreshIcon,
+  SparklesIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 const OUTCOME_LABEL: Record<ConfidenceVerdict["predictedOutcome"], string> = {
@@ -20,36 +25,35 @@ const OUTCOME_LABEL: Record<ConfidenceVerdict["predictedOutcome"], string> = {
 };
 
 /**
- * Confidence chip — shows the AI's calibrated prediction of whether a case
- * would pass against the current code. Color-graded with the OUTCOME_CHIP
- * tints (green ≥90 / amber 60-89 / red <60) so it reads next to the outcome
- * chips.
+ * Confidence chip — the AI's calibrated prediction of whether a case would
+ * pass against the current code, color-graded (green ≥90 / amber 60-89 /
+ * red <60) so it reads next to the outcome chips.
  *
- * The chip stays compact: a single % + outcome pill. Clicking it opens the
- * confidence detail *pane* (via `onOpenDetail`) — a workspace tab with the
- * full reasoning, per-step evidence (clickable file:line that opens code
- * beside it), and caveats. It used to open a drawer that covered the screen;
- * a pane lets the reasoning and the code sit side by side.
- *
- * States: a verdict (clickable chip), `loading` with no verdict yet
- * (Evaluating…), or no verdict with an `onEvaluate` handler (Evaluate button).
+ * It carries every eval control inline so the user never has to open the
+ * detail pane to act: a verdict pill that opens the breakdown, a ↻
+ * re-evaluate button right next to it, and — while an evaluation is in
+ * flight — a cancel (✕) button in the chip itself.
  */
 export function ConfidenceChip({
   verdict,
   loading,
   onEvaluate,
+  onReevaluate,
+  onCancel,
   onOpenDetail,
   size = "sm",
 }: {
   verdict: ConfidenceVerdict | null | undefined;
   loading?: boolean;
-  /** When provided, enables a first evaluation (the Evaluate button). */
+  /** First evaluation (the Evaluate button, no prior verdict). */
   onEvaluate?: () => void;
-  /** Opens the confidence detail pane. Called when the verdict chip is
-   *  clicked. */
+  /** Re-run the evaluation in place (the ↻ next to a verdict pill). */
+  onReevaluate?: () => void;
+  /** Cancel an in-flight evaluation (the ✕ shown while loading). */
+  onCancel?: () => void;
+  /** Open the confidence detail side panel (verdict pill click). */
   onOpenDetail?: () => void;
-  /** "sm" (default) for dense review rows; "md" gives the Evaluate / loading
-   *  affordance a roomier hit target on the test-case header. */
+  /** "sm" (default) for dense review rows; "md" for the test-case header. */
   size?: "sm" | "md";
 }) {
   const md = size === "md";
@@ -57,26 +61,39 @@ export function ConfidenceChip({
     ? "h-6 px-2 text-[11px] gap-1.5"
     : "h-5 px-1.5 text-[10px] gap-1";
   const glyph = md ? 12 : 10;
+  const iconBtn = md ? "size-6" : "size-5";
 
   // Nothing to show and no way to make something appear.
   if (!verdict && !loading && !onEvaluate) return null;
 
-  // First-time evaluation (no prior verdict): a quiet, non-interactive pill.
+  // First-time evaluation (no prior verdict) — pill + inline cancel.
   if (loading && !verdict) {
     return (
-      <span
-        className={cn(
-          "inline-flex items-center rounded-sm bg-foreground/[0.06] font-medium text-muted-foreground",
-          affordance,
-        )}
-      >
-        <HugeiconsIcon
-          icon={Loading03Icon}
-          size={glyph}
-          strokeWidth={2}
-          className="animate-spin"
-        />
-        Evaluating…
+      <span className="inline-flex items-center gap-1">
+        <span
+          className={cn(
+            "inline-flex items-center rounded-sm bg-foreground/[0.06] font-medium text-muted-foreground",
+            affordance,
+          )}
+        >
+          <HugeiconsIcon
+            icon={Loading03Icon}
+            size={glyph}
+            strokeWidth={2}
+            className="animate-spin"
+          />
+          Evaluating…
+        </span>
+        {onCancel ? (
+          <IconAction
+            label="Cancel evaluation"
+            icon={Cancel01Icon}
+            onClick={onCancel}
+            sizeClass={iconBtn}
+            glyph={glyph}
+            tone="danger"
+          />
+        ) : null}
       </span>
     );
   }
@@ -128,61 +145,123 @@ export function ConfidenceChip({
 
   const tone = confidenceTone(verdict.confidence);
   const pct = Math.round(verdict.confidence);
-
   const isAutoPass =
     verdict.confidence >= AUTO_PASS_THRESHOLD &&
     verdict.predictedOutcome === "Pass";
 
   return (
+    <span className="inline-flex items-center gap-1">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={() => onOpenDetail?.()}
+            className={cn(
+              "inline-flex items-center gap-1 rounded-sm font-medium tabular-nums transition-[filter] hover:brightness-95 dark:hover:brightness-110",
+              md ? "h-6 px-2 text-[11px]" : "h-5 px-1.5 text-[10px]",
+              tone.className,
+            )}
+          >
+            {loading ? (
+              <HugeiconsIcon
+                icon={Loading03Icon}
+                size={glyph}
+                strokeWidth={2}
+                className="animate-spin"
+              />
+            ) : null}
+            {pct}%
+            <span className="opacity-70">
+              {OUTCOME_LABEL[verdict.predictedOutcome]}
+            </span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent
+          variant="panel"
+          side="bottom"
+          align="start"
+          className="max-w-[300px] px-3 py-2 text-[11px] leading-relaxed"
+        >
+          <div className="flex flex-col gap-1">
+            <div className="flex items-baseline gap-1.5">
+              <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
+                verdict
+              </span>
+              <span className="font-medium tabular-nums text-foreground/90">
+                {pct}% · {OUTCOME_LABEL[verdict.predictedOutcome]}
+              </span>
+            </div>
+            <p className="text-foreground/80">
+              {isAutoPass
+                ? "At or above the 90% bar — auto-pass candidate."
+                : "Below the 90% auto-pass bar — flag for manual testing."}
+            </p>
+            <p className="mt-0.5 text-[10px] text-muted-foreground/70">
+              Click for the breakdown · ↻ re-analyzes in place.
+            </p>
+          </div>
+        </TooltipContent>
+      </Tooltip>
+
+      {/* While re-evaluating: cancel. Otherwise: a one-click re-analyze that
+          doesn't require opening the detail pane. */}
+      {loading && onCancel ? (
+        <IconAction
+          label="Cancel evaluation"
+          icon={Cancel01Icon}
+          onClick={onCancel}
+          sizeClass={iconBtn}
+          glyph={glyph}
+          tone="danger"
+        />
+      ) : !loading && onReevaluate ? (
+        <IconAction
+          label="Re-analyze confidence"
+          icon={RefreshIcon}
+          onClick={onReevaluate}
+          sizeClass={iconBtn}
+          glyph={glyph}
+        />
+      ) : null}
+    </span>
+  );
+}
+
+function IconAction({
+  label,
+  icon,
+  onClick,
+  sizeClass,
+  glyph,
+  tone,
+}: {
+  label: string;
+  icon: typeof RefreshIcon;
+  onClick: () => void;
+  sizeClass: string;
+  glyph: number;
+  tone?: "danger";
+}) {
+  return (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
           type="button"
-          onClick={() => onOpenDetail?.()}
+          onClick={onClick}
+          aria-label={label}
           className={cn(
-            "inline-flex h-5 items-center gap-1 rounded-sm px-1.5 text-[10px] font-medium tabular-nums transition-[filter] hover:brightness-95 dark:hover:brightness-110",
-            tone.className,
+            "grid shrink-0 place-items-center rounded-sm text-muted-foreground transition-colors",
+            sizeClass,
+            tone === "danger"
+              ? "hover:bg-destructive/15 hover:text-destructive"
+              : "hover:bg-foreground/[0.06] hover:text-foreground",
           )}
         >
-          {loading ? (
-            <HugeiconsIcon
-              icon={Loading03Icon}
-              size={9}
-              strokeWidth={2}
-              className="animate-spin"
-            />
-          ) : null}
-          {pct}%
-          <span className="opacity-70">
-            {OUTCOME_LABEL[verdict.predictedOutcome]}
-          </span>
+          <HugeiconsIcon icon={icon} size={glyph} strokeWidth={1.75} />
         </button>
       </TooltipTrigger>
-      <TooltipContent
-        variant="panel"
-        side="bottom"
-        align="start"
-        className="max-w-[300px] px-3 py-2 text-[11px] leading-relaxed"
-      >
-        <div className="flex flex-col gap-1">
-          <div className="flex items-baseline gap-1.5">
-            <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
-              verdict
-            </span>
-            <span className="font-medium tabular-nums text-foreground/90">
-              {pct}% · {OUTCOME_LABEL[verdict.predictedOutcome]}
-            </span>
-          </div>
-          <p className="text-foreground/80">
-            {isAutoPass
-              ? "At or above the 90% bar — auto-pass candidate."
-              : "Below the 90% auto-pass bar — flag for manual testing."}
-          </p>
-          <p className="mt-0.5 text-[10px] text-muted-foreground/70">
-            Click to open the breakdown — reasoning, per-step evidence, and
-            caveats, with code you can open beside it.
-          </p>
-        </div>
+      <TooltipContent side="bottom" className="text-[11px]">
+        {label}
       </TooltipContent>
     </Tooltip>
   );

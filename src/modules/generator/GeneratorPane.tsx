@@ -1512,19 +1512,30 @@ function ReviewPhase({
   const [bulkEval, setBulkEval] = useState<{ done: number; total: number } | null>(
     null,
   );
+  // Per-case AbortControllers so the chip's cancel (✕) can abort an in-flight
+  // evaluation, single or part of a batch.
+  const evalAbortsRef = useRef(new Map<string, AbortController>());
+
   const runEval = useCallback(
     async (
       uid: string,
       title: string,
       steps: { action: string; expected: string }[],
     ) => {
+      // A re-analyze supersedes any in-flight eval for this case.
+      evalAbortsRef.current.get(uid)?.abort();
+      const ac = new AbortController();
+      evalAbortsRef.current.set(uid, ac);
       setEvaluatingUids((s) => new Set(s).add(uid));
       try {
-        const v = await evaluateCaseConfidence({ title, steps });
+        const v = await evaluateCaseConfidence({ title, steps }, { signal: ac.signal });
         setCaseVerdict(uid, v);
       } catch (e) {
-        console.error("[confidence] review eval failed:", e);
+        if ((e as { name?: string } | null)?.name !== "AbortError") {
+          console.error("[confidence] review eval failed:", e);
+        }
       } finally {
+        if (evalAbortsRef.current.get(uid) === ac) evalAbortsRef.current.delete(uid);
         setEvaluatingUids((s) => {
           const n = new Set(s);
           n.delete(uid);
@@ -1535,52 +1546,64 @@ function ReviewPhase({
     [setCaseVerdict],
   );
 
-  // Evaluate every case that doesn't have a verdict yet, a few at a time. QA's
-  // whole point here is speed: one click triages a freshly-generated batch by
-  // confidence instead of clicking Evaluate on each card. Already-evaluated
-  // cases are skipped so re-running after adding a few is cheap.
-  const runEvalAll = useCallback(async () => {
-    const targets = cases
-      .filter((c) => !c.verdict)
-      .map((c) => ({ uid: c.uid, title: c.title, steps: c.steps }));
-    if (targets.length === 0) return;
-    setBulkEval({ done: 0, total: targets.length });
-    setEvaluatingUids((s) => {
-      const n = new Set(s);
-      for (const t of targets) n.add(t.uid);
-      return n;
-    });
-    let done = 0;
-    const queue = [...targets];
-    const worker = async () => {
-      for (;;) {
-        const t = queue.shift();
-        if (!t) return;
-        try {
-          const v = await evaluateCaseConfidence({
-            title: t.title,
-            steps: t.steps,
-          });
-          setCaseVerdict(t.uid, v);
-        } catch (e) {
-          console.error("[confidence] bulk eval failed:", e);
-        } finally {
-          setEvaluatingUids((s) => {
-            const n = new Set(s);
-            n.delete(t.uid);
-            return n;
-          });
-          done += 1;
-          setBulkEval({ done, total: targets.length });
+  const cancelEval = useCallback((uid: string) => {
+    evalAbortsRef.current.get(uid)?.abort();
+  }, []);
+
+  // Evaluate cases a few at a time. `force` re-analyzes every case (the
+  // "Reanalyze all" action once everything has a verdict); otherwise it skips
+  // already-evaluated cases so a top-up after adding a few is cheap.
+  const runEvalAll = useCallback(
+    async (force = false) => {
+      const targets = cases
+        .filter((c) => force || !c.verdict)
+        .map((c) => ({ uid: c.uid, title: c.title, steps: c.steps }));
+      if (targets.length === 0) return;
+      setBulkEval({ done: 0, total: targets.length });
+      setEvaluatingUids((s) => {
+        const n = new Set(s);
+        for (const t of targets) n.add(t.uid);
+        return n;
+      });
+      let done = 0;
+      const queue = [...targets];
+      const worker = async () => {
+        for (;;) {
+          const t = queue.shift();
+          if (!t) return;
+          const ac = new AbortController();
+          evalAbortsRef.current.set(t.uid, ac);
+          try {
+            const v = await evaluateCaseConfidence(
+              { title: t.title, steps: t.steps },
+              { signal: ac.signal },
+            );
+            setCaseVerdict(t.uid, v);
+          } catch (e) {
+            if ((e as { name?: string } | null)?.name !== "AbortError") {
+              console.error("[confidence] bulk eval failed:", e);
+            }
+          } finally {
+            if (evalAbortsRef.current.get(t.uid) === ac)
+              evalAbortsRef.current.delete(t.uid);
+            setEvaluatingUids((s) => {
+              const n = new Set(s);
+              n.delete(t.uid);
+              return n;
+            });
+            done += 1;
+            setBulkEval({ done, total: targets.length });
+          }
         }
-      }
-    };
-    const CONCURRENCY = 3;
-    await Promise.all(
-      Array.from({ length: Math.min(CONCURRENCY, targets.length) }, worker),
-    );
-    setBulkEval(null);
-  }, [cases, setCaseVerdict]);
+      };
+      const CONCURRENCY = 3;
+      await Promise.all(
+        Array.from({ length: Math.min(CONCURRENCY, targets.length) }, worker),
+      );
+      setBulkEval(null);
+    },
+    [cases, setCaseVerdict],
+  );
 
   const kept = useMemo(
     () => cases.filter((c) => c.decision === "keep").length,
@@ -1781,11 +1804,17 @@ function ReviewPhase({
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => void runEvalAll()}
-                  disabled={!!bulkEval || unevaluated === 0}
+                  onClick={() => void runEvalAll(unevaluated === 0)}
+                  disabled={!!bulkEval}
                 >
                   <HugeiconsIcon
-                    icon={bulkEval ? Loading03Icon : SparklesIcon}
+                    icon={
+                      bulkEval
+                        ? Loading03Icon
+                        : unevaluated === 0
+                          ? RefreshIcon
+                          : SparklesIcon
+                    }
                     size={12}
                     strokeWidth={1.75}
                     className={bulkEval ? "animate-spin" : ""}
@@ -1793,7 +1822,7 @@ function ReviewPhase({
                   {bulkEval
                     ? `Evaluating ${bulkEval.done}/${bulkEval.total}…`
                     : unevaluated === 0
-                      ? "All evaluated"
+                      ? "Reanalyze all"
                       : `Evaluate all (${unevaluated})`}
                 </Button>
               </TooltipTrigger>
@@ -1809,15 +1838,20 @@ function ReviewPhase({
                       batch
                     </span>
                     <span className="font-medium text-foreground/90">
-                      Evaluate every un-scored case
+                      {unevaluated === 0
+                        ? "Re-analyze every case"
+                        : "Evaluate every un-scored case"}
                     </span>
                   </div>
                   <p className="text-foreground/80">
                     Predicts pass/fail confidence a few at a time so you can
                     triage low-confidence cases before publishing.
+                    {unevaluated === 0
+                      ? " Everything's scored — this re-runs them all against the latest source."
+                      : ""}
                   </p>
                   <p className="mt-0.5 text-[10px] text-muted-foreground/70">
-                    No need to click Evaluate on each card.
+                    Or use ↻ on a single card to re-analyze just that one.
                   </p>
                 </div>
               </TooltipContent>
@@ -1940,6 +1974,8 @@ function ReviewPhase({
                     verdict={c.verdict}
                     loading={evaluatingUids.has(c.uid)}
                     onEvaluate={() => void runEval(c.uid, c.title, c.steps)}
+                    onReevaluate={() => void runEval(c.uid, c.title, c.steps)}
+                    onCancel={() => cancelEval(c.uid)}
                     onOpenDetail={
                       c.verdict ? () => onOpenConfidence?.(c.uid) : undefined
                     }

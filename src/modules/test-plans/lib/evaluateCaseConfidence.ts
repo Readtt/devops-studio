@@ -12,7 +12,7 @@ import type { ConfidenceVerdict } from "./confidence";
 
 export async function evaluateCaseConfidence(
   testCase: EvalCase,
-  opts?: { runs?: number },
+  opts?: { runs?: number; signal?: AbortSignal },
 ): Promise<ConfidenceVerdict> {
   const chat = useChatStore.getState();
   const prefs = usePreferencesStore.getState();
@@ -37,5 +37,6 @@ export async function evaluateCaseConfidence(
     lmstudioBaseURL: prefs.lmstudioBaseURL,
     runs: opts?.runs ?? 1,
     contextBlocks: blocks,
+    signal: opts?.signal,
   });
 }
