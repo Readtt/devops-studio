@@ -1735,10 +1735,29 @@ function ReviewPhase({
                       : `Evaluate all (${unevaluated})`}
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
-                Predict pass/fail confidence for every case that isn&apos;t
-                evaluated yet, a few at a time. Triage the low-confidence cases
-                before publishing — no need to click Evaluate on each card.
+              <TooltipContent
+                variant="panel"
+                side="bottom"
+                align="end"
+                className="max-w-[300px] px-3 py-2 text-[11px] leading-relaxed"
+              >
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
+                      batch
+                    </span>
+                    <span className="font-medium text-foreground/90">
+                      Evaluate every un-scored case
+                    </span>
+                  </div>
+                  <p className="text-foreground/80">
+                    Predicts pass/fail confidence a few at a time so you can
+                    triage low-confidence cases before publishing.
+                  </p>
+                  <p className="mt-0.5 text-[10px] text-muted-foreground/70">
+                    No need to click Evaluate on each card.
+                  </p>
+                </div>
               </TooltipContent>
             </Tooltip>
           ) : null}
