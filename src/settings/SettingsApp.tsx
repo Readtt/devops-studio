@@ -13,14 +13,12 @@ import {
   InformationCircleIcon,
   Settings01Icon,
   KeyboardIcon,
-  TaskDone01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { JSX, ReactNode, useEffect, useState } from "react";
 import { AboutSection } from "./sections/AboutSection";
 import { AzureDevOpsSection } from "./sections/AzureDevOpsSection";
-import { BestPracticesSection } from "./sections/BestPracticesSection";
 import { GeneralSection } from "./sections/GeneralSection";
 import { ModelsSection } from "./sections/ModelsSection";
 import { ShortcutsSection } from "./sections/ShortcutsSection";
@@ -60,12 +58,6 @@ const TABS: TabDef[] = [
     component: ModelsSection,
   },
   {
-    id: "best-practices",
-    label: "Best practices",
-    glyph: <HugeiconsIcon icon={TaskDone01Icon} size={12} strokeWidth={1.75} />,
-    component: BestPracticesSection,
-  },
-  {
     id: "terminal",
     label: "Terminal",
     glyph: <HugeiconsIcon icon={CommandLineIcon} size={12} strokeWidth={1.75} />,
@@ -84,7 +76,6 @@ const VALID_TABS: SettingsTab[] = [
   "shortcuts",
   "azure-devops",
   "models",
-  "best-practices",
   "terminal",
   "about",
 ];
@@ -93,8 +84,10 @@ function readInitialTab(): SettingsTab {
   if (typeof window === "undefined") return "general";
   const url = new URL(window.location.href);
   const t = url.searchParams.get("tab");
-  // Back-compat: legacy "ai" / "connections" → "models".
-  if (t === "ai" || t === "connections") return "models";
+  // Back-compat: legacy "ai" / "connections" / "best-practices" → "models".
+  // Best practices folded into the Models tab to keep the tab strip from
+  // overflowing.
+  if (t === "ai" || t === "connections" || t === "best-practices") return "models";
   if (t && (VALID_TABS as string[]).includes(t)) return t as SettingsTab;
   return "general";
 }
@@ -125,8 +118,9 @@ export function SettingsApp() {
         setActive("models");
         return;
       }
-      // Legacy "agents" requests land on Models — the Agents tab is gone.
-      if (detail === "agents") {
+      // Legacy "agents" / "best-practices" requests land on Models — those
+      // tabs are gone (best practices folded into Models as a subsection).
+      if (detail === "agents" || detail === "best-practices") {
         setActive("models");
         return;
       }
@@ -154,15 +148,19 @@ export function SettingsApp() {
           value={active}
           onValueChange={(v) => setActive(v as SettingsTab)}
           orientation="horizontal"
-          className="flex-1 items-center"
+          className="min-w-0 flex-1 items-center"
           {...windowDragPropsFixed}
         >
-          <TabsList className="mx-auto h-7 bg-muted/40 px-2">
+          {/* max-w-full + overflow-x lets the strip scroll within its bounds
+              instead of forcing the flex row wider than the window and shoving
+              the close button off-screen. min-w-0 on <Tabs> is what actually
+              allows the flex item to shrink below the tabs' intrinsic width. */}
+          <TabsList className="mx-auto h-7 max-w-full overflow-x-auto bg-muted/40 px-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {TABS.map((t) => (
               <TabsTrigger
                 key={t.id}
                 value={t.id}
-                className="h-6 gap-1.5 px-2.5 text-[11.5px]"
+                className="h-6 shrink-0 gap-1.5 px-2.5 text-[11.5px]"
               >
                 {t.glyph}
                 <span>{t.label}</span>

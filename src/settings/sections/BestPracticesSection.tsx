@@ -23,7 +23,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useEffect, useState } from "react";
-import { SectionHeader } from "../components/SectionHeader";
 
 type ReadStatus = "checking" | "ok" | "error";
 
@@ -32,7 +31,13 @@ function baseName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
-export function BestPracticesSection() {
+/**
+ * Best-practices file manager, rendered as a subsection of the Models tab.
+ * Best practices ARE AI config (they're injected as context into every AI
+ * feature), so they live alongside the providers rather than in a tab of
+ * their own — keeps the settings tab strip from overflowing.
+ */
+export function BestPracticesPanel() {
   const files = usePreferencesStore((s) => s.bestPracticeFiles);
   const [status, setStatus] = useState<Record<string, ReadStatus>>({});
 
@@ -102,32 +107,34 @@ export function BestPracticesSection() {
   };
 
   return (
-    <div className="flex flex-col gap-6">
-      <SectionHeader
-        title="Best practices"
-        description="Coding-standards and best-practice files fed as context into every AI feature — test generation, suite chat, the review Ask chat, and code review. Files are referenced by path and read fresh on each run, so a shared network file stays the single source of truth."
-      />
+    <div className="flex flex-col gap-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium tracking-tight text-muted-foreground">
+            Best practices
+          </span>
+          <p className="max-w-[440px] text-[10.5px] leading-relaxed text-muted-foreground/70">
+            Coding-standards files fed as context into every AI feature — test
+            generation, suite chat, the review Ask chat, and code review. Read
+            fresh on each run, so a shared network file stays the source of truth.
+          </p>
+        </div>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button size="sm" variant="outline" onClick={() => void addFiles()}>
+              <HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={2} />
+              Add files
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
+            Pick markdown, text, or image files. They're stored as path
+            references (incl. network/UNC paths) and read live each time an AI
+            feature runs.
+          </TooltipContent>
+        </Tooltip>
+      </div>
 
       <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between">
-          <span className="text-[11px] font-medium tracking-tight text-muted-foreground">
-            Standards files
-          </span>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button size="sm" variant="outline" onClick={() => void addFiles()}>
-                <HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={2} />
-                Add files
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
-              Pick markdown, text, or image files. They're stored as path
-              references (incl. network/UNC paths) and read live each time an AI
-              feature runs.
-            </TooltipContent>
-          </Tooltip>
-        </div>
-
         {files.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border/60 bg-card/40 px-4 py-6 text-center">
             <p className="text-[12px] text-muted-foreground">

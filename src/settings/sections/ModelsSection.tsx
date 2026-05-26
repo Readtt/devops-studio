@@ -38,6 +38,7 @@ import {
   type GenerationBusyState,
 } from "@/modules/settings/store";
 import { AiEngineSection } from "../components/AiEngineSection";
+import { BestPracticesPanel } from "./BestPracticesSection";
 import {
   Add01Icon,
   ArrowDown01Icon,
@@ -275,6 +276,10 @@ export function ModelsSection() {
             )}
           </div>
         )}
+      </div>
+
+      <div className="border-t border-border/50 pt-6">
+        <BestPracticesPanel />
       </div>
     </div>
   );
