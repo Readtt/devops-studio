@@ -41,6 +41,11 @@ export type ClaudeQueryInput = {
   bare?: boolean;
   /** Extra env vars merged into the child. Typical use: ANTHROPIC_API_KEY. */
   env?: Record<string, string>;
+  /** Image attachments sent as real vision input. When present the CLI is
+   *  driven with `--input-format stream-json` and the prompt is framed as a
+   *  user message with base64 image blocks. `dataBase64` is the raw payload
+   *  (no `data:` URL prefix). */
+  images?: { mediaType: string; dataBase64: string }[];
 };
 
 export type ClaudeQueryResult = {

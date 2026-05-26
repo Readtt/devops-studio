@@ -194,6 +194,24 @@ pub struct RunQueryInput {
     /// `ANTHROPIC_API_KEY` when the user picks API-key auth mode.
     #[serde(default)]
     pub env: Option<std::collections::HashMap<String, String>>,
+    /// Image attachments to send as real vision input. When non-empty we
+    /// switch stdin to `--input-format stream-json` and frame the prompt as a
+    /// single user message whose content carries a text block plus one base64
+    /// image block per entry — the native multimodal path (single-message /
+    /// plain-text stdin can't carry images). Empty/None keeps the proven
+    /// plain-text stdin path untouched.
+    #[serde(default)]
+    pub images: Option<Vec<ImageInput>>,
+}
+
+/// One base64-encoded image to attach to a stream-json user message. `data`
+/// is the raw base64 payload (no `data:` URL prefix); `media_type` is the
+/// MIME type the Anthropic API expects (e.g. "image/png").
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageInput {
+    pub media_type: String,
+    pub data_base64: String,
 }
 
 /// Tools that can read but cannot mutate filesystem, run shell, or reach the
@@ -261,11 +279,24 @@ pub async fn claude_run_query(
 
     let event_name = format!("claude:event:{}", input.run_id);
 
+    // Vision path: when images are attached we frame stdin as a stream-json
+    // user message (the only stdin format that carries image blocks). With no
+    // images we keep the simpler plain-text stdin the rest of the app relies on.
+    let has_images = input
+        .images
+        .as_ref()
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+
     let mut cmd = Command::new(&path);
     cmd.arg("--print")
         .arg("--output-format")
         .arg("stream-json")
         .arg("--verbose"); // required by the CLI when output-format is stream-json
+    if has_images {
+        // Tell the CLI stdin is a stream of JSON messages rather than raw text.
+        cmd.arg("--input-format").arg("stream-json");
+    }
     // Bare mode skips hook/plugin/MCP/CLAUDE.md auto-discovery — recommended
     // by Anthropic for scripted callers. Without it, a failing SessionStart
     // hook in the user's `~/.claude` makes the CLI exit non-zero with no
@@ -351,7 +382,34 @@ pub async fn claude_run_query(
     // and stderr concurrently. Errors here are recorded but non-fatal — the
     // child will exit with a non-zero status that we report from its own
     // stderr, which carries the real diagnostic.
-    let prompt_bytes = input.prompt.as_bytes().to_vec();
+    let prompt_bytes: Vec<u8> = if has_images {
+        // Frame the turn as a single stream-json user message: a text block
+        // followed by one base64 image block per attachment. One line + EOF
+        // (the stdin.shutdown below) is enough for a one-shot run.
+        let images = input.images.clone().unwrap_or_default();
+        let mut content: Vec<serde_json::Value> =
+            vec![serde_json::json!({ "type": "text", "text": input.prompt })];
+        for img in &images {
+            content.push(serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": img.media_type,
+                    "data": img.data_base64,
+                },
+            }));
+        }
+        let message = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": content },
+            "parent_tool_use_id": null,
+        });
+        let mut line = serde_json::to_vec(&message).unwrap_or_default();
+        line.push(b'\n');
+        line
+    } else {
+        input.prompt.as_bytes().to_vec()
+    };
     let stdin_task = tokio::spawn(async move {
         if let Some(mut stdin) = stdin_handle {
             // BrokenPipe is the common failure mode when the child rejects the
