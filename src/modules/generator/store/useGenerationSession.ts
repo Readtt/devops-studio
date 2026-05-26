@@ -6,6 +6,7 @@ import {
   createCaseInSuite,
   createBugAndLink,
   getConnection,
+  getCase,
   indexCaseLinks,
   listPlans,
   listSuiteCases,
@@ -584,6 +585,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     };
 
     let existingCaseTitles: { id: number; title: string }[] = [];
+    let existingCases: {
+      id: number;
+      title: string;
+      steps: { action: string; expected: string }[];
+    }[] = [];
     let targetContext: TargetContext | null = null;
     let relatedCases: RelatedCase[] = [];
     if (planId && suiteId) {
@@ -594,6 +600,35 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       } catch (e) {
         // Non-fatal — duplicate detection just won't fire.
         console.warn("[generator] couldn't load existing cases:", e);
+      }
+      // Pull full steps for the existing cases (capped) so the analyst reads
+      // prior coverage in detail and writes complementary, style-matched
+      // cases — not just a title-level dedup. Best-effort + parallel; a
+      // failed fetch falls back to title-only for that case.
+      if (existingCaseTitles.length > 0) {
+        set({ stepLabel: "Reading existing cases…" });
+        const subset = existingCaseTitles.slice(0, 20);
+        existingCases = await Promise.all(
+          subset.map(async (t) => {
+            try {
+              const full = await getCase(t.id);
+              return {
+                id: full.id,
+                title: full.title,
+                steps: full.steps.map((s) => ({
+                  action: s.action,
+                  expected: s.expected,
+                })),
+              };
+            } catch {
+              return { id: t.id, title: t.title, steps: [] };
+            }
+          }),
+        );
+        // Keep the remaining (uncapped) titles available for dedup context.
+        for (const t of existingCaseTitles.slice(20)) {
+          existingCases.push({ id: t.id, title: t.title, steps: [] });
+        }
       }
       try {
         targetContext = await buildTargetContext(planId, suiteId);
@@ -630,6 +665,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           changesets,
           attachments,
           existingCaseTitles,
+          existingCases,
           relatedCases,
           targetContext,
           mode,
@@ -652,6 +688,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           changesets,
           attachments,
           existingCaseTitles,
+          existingCases,
           relatedCases,
           targetContext,
           mode,

@@ -15,7 +15,9 @@ import type { TestCaseRef } from "@/modules/ado";
 import {
   formatAttachmentBlock,
   renderChangesetsBlock,
+  renderExistingCases,
   renderTargetContext,
+  type ExistingCaseDetail,
   type GenerationMode,
   type RunAttachment,
   type RunResult,
@@ -34,6 +36,8 @@ export type RunClaudeInput = {
   requirements: string;
   attachments: RunAttachment[];
   existingCaseTitles: Pick<TestCaseRef, "id" | "title">[];
+  /** Full existing cases (with steps) for the target suite — see qaAnalystRun.ts. */
+  existingCases?: ExistingCaseDetail[];
   /** Cases from sibling suites in the same plan — see qaAnalystRun.ts. */
   relatedCases?: RelatedCase[];
   /** Plan/suite the generator will publish into — see qaAnalystRun.ts. */
@@ -319,13 +323,7 @@ function buildUserPrompt(input: RunClaudeInput): string {
         ? "Mode: thorough — happy + edge cases + negative paths."
         : "Mode: bug-hunt — thorough plus flag concrete bug suggestions where warranted.";
 
-  const existing =
-    input.existingCaseTitles.length === 0
-      ? "No existing cases in the target suite — generate freely."
-      : "Existing case titles in this suite (do not duplicate):\n" +
-        input.existingCaseTitles
-          .map((c) => `  #${c.id}: ${c.title}`)
-          .join("\n");
+  const existing = renderExistingCases(input.existingCaseTitles, input.existingCases);
 
   const sourceHint = input.sourceRoot
     ? `Working directory: ${input.sourceRoot}\nUse Read / Glob / Grep to ground every case in actual code paths.`

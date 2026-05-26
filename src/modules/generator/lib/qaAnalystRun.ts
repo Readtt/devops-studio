@@ -50,10 +50,23 @@ export type TargetContext = {
   iterationPath: string | null;
 };
 
+/** An existing case in the target suite, with steps, so the analyst can read
+ *  what's already covered (not just titles) and generate complementary,
+ *  style-matched cases. Populated from per-case fetches at analyze time. */
+export type ExistingCaseDetail = {
+  id: number;
+  title: string;
+  steps: { action: string; expected: string }[];
+};
+
 export type RunInput = {
   requirements: string;
   attachments: RunAttachment[];
   existingCaseTitles: Pick<TestCaseRef, "id" | "title">[];
+  /** Full existing cases (with steps) for the target suite. When present the
+   *  prompt shows these in detail instead of the bare titles list, so the
+   *  model can read prior coverage and match its style. */
+  existingCases?: ExistingCaseDetail[];
   /** Cases from sibling suites in the same plan, surfaced as supplementary
    *  context. May contain stale or wrong entries — the prompt explicitly
    *  flags them as lower-priority than the feature spec. */
@@ -158,13 +171,7 @@ function buildUserPrompt(input: RunInput): string {
         ? "Mode: thorough — happy + edge cases + negative paths."
         : "Mode: bug-hunt — thorough plus flag concrete bug suggestions where warranted.";
 
-  const existing =
-    input.existingCaseTitles.length === 0
-      ? "No existing cases in the target suite — generate freely."
-      : "Existing case titles in this suite (do not duplicate):\n" +
-        input.existingCaseTitles
-          .map((c) => `  #${c.id}: ${c.title}`)
-          .join("\n");
+  const existing = renderExistingCases(input.existingCaseTitles, input.existingCases);
 
   const attached =
     input.attachments.length === 0
@@ -195,6 +202,61 @@ function buildUserPrompt(input: RunInput): string {
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
+}
+
+const MAX_EXISTING_DETAIL = 20;
+const MAX_EXISTING_STEP_LINES = 8;
+
+/** Render the "existing cases in this suite" block. When full case details
+ *  (with steps) are available, show up to MAX_EXISTING_DETAIL of them with
+ *  their steps so the model reads prior coverage and matches its style; the
+ *  rest fall back to titles-only so the dedup list stays complete. Without
+ *  details, renders the bare titles list. */
+export function renderExistingCases(
+  titles: { id: number; title: string }[],
+  details?: ExistingCaseDetail[],
+): string {
+  if ((details?.length ?? 0) === 0 && titles.length === 0) {
+    return "No existing cases in the target suite — generate freely.";
+  }
+  if (details && details.length > 0) {
+    const shown = details.slice(0, MAX_EXISTING_DETAIL);
+    const lines: string[] = [
+      "EXISTING CASES already in this suite — do NOT duplicate these. Read their",
+      "steps to see what's covered, match their style and granularity, and",
+      "generate cases that COMPLEMENT (not repeat) this coverage:",
+    ];
+    for (const c of shown) {
+      lines.push("");
+      lines.push(`#${c.id}: ${c.title}`);
+      const steps = c.steps.slice(0, MAX_EXISTING_STEP_LINES);
+      for (let i = 0; i < steps.length; i++) {
+        lines.push(`  ${i + 1}. ${oneLine(steps[i].action)} → ${oneLine(steps[i].expected)}`);
+      }
+      if (c.steps.length > steps.length) {
+        lines.push(`  … (+${c.steps.length - steps.length} more steps)`);
+      }
+    }
+    if (details.length > shown.length) {
+      lines.push("");
+      lines.push(
+        `Plus ${details.length - shown.length} more existing case(s) — titles only:`,
+      );
+      for (const c of details.slice(MAX_EXISTING_DETAIL)) {
+        lines.push(`  #${c.id}: ${c.title}`);
+      }
+    }
+    return lines.join("\n");
+  }
+  return (
+    "Existing case titles in this suite (do not duplicate):\n" +
+    titles.map((c) => `  #${c.id}: ${c.title}`).join("\n")
+  );
+}
+
+function oneLine(s: string, cap = 200): string {
+  const flat = s.replace(/\s+/g, " ").trim();
+  return flat.length > cap ? `${flat.slice(0, cap - 1)}…` : flat;
 }
 
 /** Render the CHANGESETS / SCOPE NOTES block. Empty when the user didn't
