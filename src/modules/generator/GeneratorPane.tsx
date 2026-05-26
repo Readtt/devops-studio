@@ -1326,10 +1326,28 @@ function AnalyzingPhase() {
 
 // --- Review phase -----------------------------------------------------------
 
+/** Tinted chip colours per outcome — same vocabulary as the review-row
+ *  similar-match chip and the ApplyEditCard set-outcome chip, so the picker
+ *  reads as one of the card's quiet metadata chips rather than a button. */
+const OUTCOME_CHIP: Record<Exclude<ExecutionOutcome, "Active">, string> = {
+  Passed: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+  Failed: "bg-rose-500/15 text-rose-600 dark:text-rose-300",
+  Blocked: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+  NotApplicable: "bg-foreground/[0.08] text-muted-foreground",
+};
+
+const OUTCOME_SHORT: Record<Exclude<ExecutionOutcome, "Active">, string> = {
+  Passed: "Passed",
+  Failed: "Failed",
+  Blocked: "Blocked",
+  NotApplicable: "N/A",
+};
+
 /** Per-row run-outcome picker for the review phase. Sets a LOCAL desired
  *  outcome on the draft case — no ADO call here. The generator records it
- *  against the case's test point right after the case is published. Mirrors
- *  the test-case OutcomeControl's look (shared OUTCOMES + dot colours). */
+ *  against the case's test point right after the case is published. Renders
+ *  as a tinted status chip (set) or a dashed "status" affordance (unset) so
+ *  it sits naturally among the row's metadata chips. */
 function ReviewOutcomePicker({
   value,
   onChange,
@@ -1346,23 +1364,13 @@ function ReviewOutcomePicker({
             <button
               type="button"
               className={cn(
-                "inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-border/60 bg-transparent px-1.5 text-[10.5px] font-medium transition-colors hover:bg-foreground/[0.05]",
-                current ? "text-foreground" : "text-muted-foreground",
+                "mt-0.5 inline-flex shrink-0 items-center rounded-sm border px-1.5 py-px text-[9.5px] font-medium uppercase tracking-wide transition-colors",
+                current
+                  ? cn("border-transparent", OUTCOME_CHIP[current.value])
+                  : "border-dashed border-border/60 text-muted-foreground/70 hover:border-border hover:text-foreground",
               )}
             >
-              <span
-                className={cn(
-                  "size-2 rounded-full",
-                  current?.dot ?? "bg-muted-foreground/40",
-                )}
-              />
-              {current?.label ?? "Set status"}
-              <HugeiconsIcon
-                icon={ArrowDown01Icon}
-                size={10}
-                strokeWidth={1.75}
-                className="text-muted-foreground/70"
-              />
+              {current ? OUTCOME_SHORT[current.value] : "status"}
             </button>
           </DropdownMenuTrigger>
         </TooltipTrigger>

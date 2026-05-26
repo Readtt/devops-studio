@@ -307,7 +307,12 @@ export function ReviewChat({ onClose }: Props) {
             className="w-full resize-none rounded-sm border border-border/40 bg-input/40 px-2 py-1.5 pl-8 pr-8 text-[11.5px] leading-relaxed outline-none focus:ring-2 focus:ring-ring/30"
           />
           <div className="absolute bottom-1.5 left-1.5">
-            <AttachButton onFilePicker={onFilePicker} disabled={busy} />
+            <AttachButton
+              onFilePicker={onFilePicker}
+              disabled={busy}
+              iconSize={13}
+              className="size-6 rounded-sm"
+            />
           </div>
           {busy ? (
             <button

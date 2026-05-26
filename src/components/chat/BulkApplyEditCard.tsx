@@ -11,6 +11,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   buildSubtitle,
+  CaseRefBadge,
   CreateCasePreview,
   diffSteps,
   parseEdit,
@@ -341,14 +342,12 @@ function BulkRow({
                 new
               </span>
             ) : parsed.caseId != null ? (
-              <span className="font-mono text-[10px] text-foreground/70">
-                #{parsed.caseId}
-                {current?.title ? (
-                  <span className="ml-1 font-sans text-foreground/55">
-                    {truncate(current.title, 40)}
-                  </span>
-                ) : null}
-              </span>
+              <CaseRefBadge
+                caseId={parsed.caseId}
+                title={current?.title ?? null}
+                webUrl={current?.webUrl ?? null}
+                suite={current?.suite ?? null}
+              />
             ) : (
               <span className="font-mono text-[10px] text-destructive">no caseId</span>
             )}
@@ -508,10 +507,6 @@ function kindLabel(kind: string): string {
     default:
       return `Edit (${kind})`;
   }
-}
-
-function truncate(s: string, n: number): string {
-  return s.length <= n ? s : `${s.slice(0, n - 1)}…`;
 }
 
 /** Deterministic, reload-stable hash for a sub-edit: parent block hash +

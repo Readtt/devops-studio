@@ -927,7 +927,7 @@ function DiffArrow() {
   );
 }
 
-function CaseRefBadge({
+export function CaseRefBadge({
   caseId,
   title,
   webUrl,

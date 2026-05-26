@@ -57,10 +57,13 @@ export function AttachButton({
   onFilePicker,
   disabled,
   className,
+  iconSize = 15,
 }: {
   onFilePicker: UseAttachments["onFilePicker"];
   disabled?: boolean;
   className?: string;
+  /** Override the paperclip glyph size for compact composers. */
+  iconSize?: number;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   return (
@@ -84,7 +87,11 @@ export function AttachButton({
             )}
             aria-label="Attach files"
           >
-            <HugeiconsIcon icon={Attachment01Icon} size={15} strokeWidth={1.75} />
+            <HugeiconsIcon
+              icon={Attachment01Icon}
+              size={iconSize}
+              strokeWidth={1.75}
+            />
           </button>
         </TooltipTrigger>
         <TooltipContent side="bottom" className="max-w-[260px] text-[11px]">
