@@ -252,6 +252,7 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
             <ConfidenceChip
               verdict={verdict}
               loading={evaluating}
+              size="md"
               onEvaluate={() => void handleEvaluate()}
               onOpenDetail={
                 verdict

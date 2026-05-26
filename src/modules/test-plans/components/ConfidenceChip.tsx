@@ -39,6 +39,7 @@ export function ConfidenceChip({
   loading,
   onEvaluate,
   onOpenDetail,
+  size = "sm",
 }: {
   verdict: ConfidenceVerdict | null | undefined;
   loading?: boolean;
@@ -47,17 +48,31 @@ export function ConfidenceChip({
   /** Opens the confidence detail pane. Called when the verdict chip is
    *  clicked. */
   onOpenDetail?: () => void;
+  /** "sm" (default) for dense review rows; "md" gives the Evaluate / loading
+   *  affordance a roomier hit target on the test-case header. */
+  size?: "sm" | "md";
 }) {
+  const md = size === "md";
+  const affordance = md
+    ? "h-6 px-2 text-[11px] gap-1.5"
+    : "h-5 px-1.5 text-[10px] gap-1";
+  const glyph = md ? 12 : 10;
+
   // Nothing to show and no way to make something appear.
   if (!verdict && !loading && !onEvaluate) return null;
 
   // First-time evaluation (no prior verdict): a quiet, non-interactive pill.
   if (loading && !verdict) {
     return (
-      <span className="inline-flex h-5 items-center gap-1 rounded-sm bg-foreground/[0.06] px-1.5 text-[10px] font-medium text-muted-foreground">
+      <span
+        className={cn(
+          "inline-flex items-center rounded-sm bg-foreground/[0.06] font-medium text-muted-foreground",
+          affordance,
+        )}
+      >
         <HugeiconsIcon
           icon={Loading03Icon}
-          size={10}
+          size={glyph}
           strokeWidth={2}
           className="animate-spin"
         />
@@ -74,9 +89,12 @@ export function ConfidenceChip({
           <button
             type="button"
             onClick={onEvaluate}
-            className="inline-flex h-5 items-center gap-1 rounded-sm border border-border/55 bg-card/60 px-1.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-foreground/[0.05] hover:text-foreground"
+            className={cn(
+              "inline-flex items-center rounded-sm border border-border/55 bg-card/60 font-medium text-muted-foreground transition-colors hover:bg-foreground/[0.05] hover:text-foreground",
+              affordance,
+            )}
           >
-            <HugeiconsIcon icon={SparklesIcon} size={10} strokeWidth={1.75} />
+            <HugeiconsIcon icon={SparklesIcon} size={glyph} strokeWidth={1.75} />
             Evaluate
           </button>
         </TooltipTrigger>
