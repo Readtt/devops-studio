@@ -241,9 +241,22 @@ export function CodeViewerPane({ path, startLine, endLine }: Props) {
             <Skeleton className="h-32 w-full" />
           </div>
         ) : state.kind === "error" ? (
-          <div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center text-[12px]">
+          <div className="flex h-full flex-col items-center justify-center gap-1.5 px-6 text-center text-[12px]">
             <p className="font-medium text-destructive">Couldn't open this file.</p>
-            <p className="text-muted-foreground">{state.message}</p>
+            <p className="max-w-md break-all font-mono text-[10.5px] text-muted-foreground">
+              {path}
+            </p>
+            {/(not found|no such file|cannot find|os error 2|enoent)/i.test(
+              state.message,
+            ) ? (
+              <p className="max-w-md text-[11px] text-muted-foreground">
+                The path couldn't be found on disk. If this came from an AI
+                citation, your Source directory may point at a different repo —
+                set it in Settings → General.
+              </p>
+            ) : (
+              <p className="max-w-md text-muted-foreground">{state.message}</p>
+            )}
           </div>
         ) : state.kind === "binary" ? (
           <p className="px-6 py-4 text-[12px] italic text-muted-foreground">

@@ -386,6 +386,10 @@ function AppShell() {
       startLine?: number;
       endLine?: number;
       title?: string;
+      /** When set, open the viewer in the leaf beside this one (the
+       *  confidence pane uses this to show code next to its reasoning)
+       *  instead of the focused leaf. */
+      besideLeafId?: string;
     }) => {
       // Bug code refs and analyst Read entries arrive as relative paths
       // (e.g. "src/auth/sms.ts"). The Rust fs_read_file handler treats
@@ -407,13 +411,18 @@ function AppShell() {
           t.startLine === input.startLine &&
           t.endLine === input.endLine,
       );
-      const id = useTabsStore.getState().openTab({
-        kind: "code-viewer",
+      const viewerInput = {
+        kind: "code-viewer" as const,
         path: absPath,
         startLine: input.startLine,
         endLine: input.endLine,
         title: input.title ?? titleFor(absPath),
-      });
+      };
+      const store = useTabsStore.getState();
+      const id =
+        input.besideLeafId && !reused
+          ? store.openTabBeside(input.besideLeafId, viewerInput)
+          : store.openTab(viewerInput);
       // When the tab is reused, props don't change so React's effect won't
       // re-run the scroll + pulse. Nudge the pane via a window event so
       // re-clicking the same chip still lands the user on the right line.
@@ -598,6 +607,7 @@ function AppShell() {
       startLine?: number;
       endLine?: number;
       title?: string;
+      besideLeafId?: string;
     };
     const onOpen = (e: Event) => {
       const ce = e as CustomEvent<Detail>;

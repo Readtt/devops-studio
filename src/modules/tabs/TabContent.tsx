@@ -10,19 +10,27 @@ import { useGeneratorCallbacks } from "@/modules/generator/callbacksContext";
 import { getRun } from "@/modules/generator/lib/history";
 import { TerminalPane } from "@/modules/terminal/TerminalPane";
 import { CodeReviewPane } from "@/modules/code-review/CodeReviewPane";
+import { ConfidencePane } from "@/modules/test-plans/components/ConfidencePane";
 import type { AppTab, GeneratorTab } from "./store/types";
 
 type Props = {
   tab: AppTab;
   sourceRoot: string | null;
+  /** Leaf this tab is rendered in. Lets a pane open a sibling beside itself
+   *  (the confidence pane opens code in the adjacent leaf). */
+  leafId: string;
 };
 
 /**
- * Kind dispatcher. Memoized on (tab, sourceRoot) — switching between two
- * tabs in the same leaf doesn't re-render any tab content other than the
+ * Kind dispatcher. Memoized on (tab, sourceRoot, leafId) — switching between
+ * two tabs in the same leaf doesn't re-render any tab content other than the
  * two involved.
  */
-export const TabContent = memo(function TabContent({ tab, sourceRoot }: Props) {
+export const TabContent = memo(function TabContent({
+  tab,
+  sourceRoot,
+  leafId,
+}: Props) {
   switch (tab.kind) {
     case "test-case":
       return (
@@ -69,6 +77,16 @@ export const TabContent = memo(function TabContent({ tab, sourceRoot }: Props) {
           base={tab.base}
           source={tab.source ?? null}
           rehydrateThreadId={tab.rehydrateThreadId ?? null}
+        />
+      );
+    case "confidence":
+      return (
+        <ConfidencePane
+          tabId={tab.id}
+          leafId={leafId}
+          caseTitle={tab.caseTitle}
+          verdict={tab.verdict}
+          caseId={tab.caseId ?? null}
         />
       );
   }

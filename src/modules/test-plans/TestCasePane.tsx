@@ -31,6 +31,7 @@ import type { LinkedWorkItem } from "@/modules/ado";
 import { EditableText } from "@/modules/generator/components/EditableText";
 import { OutcomeControl } from "./OutcomeControl";
 import { ConfidenceChip } from "./components/ConfidenceChip";
+import { useTabsStore } from "@/modules/tabs/store/useTabsStore";
 import { fromTestCase } from "./lib/runConfidenceEval";
 import { evaluateCaseConfidence } from "./lib/evaluateCaseConfidence";
 import { getConfidence, saveConfidence } from "./lib/confidenceApi";
@@ -252,6 +253,18 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
               verdict={verdict}
               loading={evaluating}
               onEvaluate={() => void handleEvaluate()}
+              onOpenDetail={
+                verdict
+                  ? () =>
+                      useTabsStore.getState().openTab({
+                        kind: "confidence",
+                        evalKey: `case-${tc.id}`,
+                        caseId: tc.id,
+                        caseTitle: tc.title,
+                        verdict,
+                      })
+                  : undefined
+              }
             />
             <OutcomeControl
               caseId={tc.id}

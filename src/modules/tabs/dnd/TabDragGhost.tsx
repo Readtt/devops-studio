@@ -51,5 +51,7 @@ function kindDotClass(kind: TabKind): string {
       return "bg-emerald-400 dark:bg-emerald-500";
     case "code-review":
       return "bg-fuchsia-400 dark:bg-fuchsia-500";
+    case "confidence":
+      return "bg-teal-400 dark:bg-teal-500";
   }
 }

@@ -31,6 +31,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfidenceChip } from "@/modules/test-plans/components/ConfidenceChip";
+import { useTabsStore } from "@/modules/tabs/store/useTabsStore";
 import { evaluateCaseConfidence } from "@/modules/test-plans/lib/evaluateCaseConfidence";
 import {
   type GenerationMode,
@@ -1858,6 +1859,20 @@ function ReviewPhase({
                     verdict={c.verdict}
                     loading={evaluatingUids.has(c.uid)}
                     onEvaluate={() => void runEval(c.uid, c.title, c.steps)}
+                    onOpenDetail={
+                      c.verdict
+                        ? () => {
+                            const v = c.verdict;
+                            if (!v) return;
+                            useTabsStore.getState().openTab({
+                              kind: "confidence",
+                              evalKey: `draft-${c.uid}`,
+                              caseTitle: c.title,
+                              verdict: v,
+                            });
+                          }
+                        : undefined
+                    }
                   />
                   <ReviewOutcomePicker
                     value={c.desiredOutcome ?? null}

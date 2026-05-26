@@ -1,4 +1,3 @@
-import { useState } from "react";
 import {
   Tooltip,
   TooltipContent,
@@ -10,7 +9,6 @@ import {
   confidenceTone,
   type ConfidenceVerdict,
 } from "../lib/confidence";
-import { ConfidenceSheet } from "./ConfidenceSheet";
 import { Loading03Icon, SparklesIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -28,10 +26,10 @@ const OUTCOME_LABEL: Record<ConfidenceVerdict["predictedOutcome"], string> = {
  * chips.
  *
  * The chip stays compact: a single % + outcome pill. Clicking it opens the
- * ConfidenceSheet — a designated right-side drawer with the full reasoning,
- * per-step evidence (clickable file:line), and caveats. The detail used to
- * live in a hover tooltip that ran off-screen on narrow panes; the sheet
- * scrolls and wraps instead.
+ * confidence detail *pane* (via `onOpenDetail`) — a workspace tab with the
+ * full reasoning, per-step evidence (clickable file:line that opens code
+ * beside it), and caveats. It used to open a drawer that covered the screen;
+ * a pane lets the reasoning and the code sit side by side.
  *
  * States: a verdict (clickable chip), `loading` with no verdict yet
  * (Evaluating…), or no verdict with an `onEvaluate` handler (Evaluate button).
@@ -40,15 +38,16 @@ export function ConfidenceChip({
   verdict,
   loading,
   onEvaluate,
+  onOpenDetail,
 }: {
   verdict: ConfidenceVerdict | null | undefined;
   loading?: boolean;
-  /** When provided, enables evaluation (the Evaluate button and the sheet's
-   *  Re-evaluate action). */
+  /** When provided, enables a first evaluation (the Evaluate button). */
   onEvaluate?: () => void;
+  /** Opens the confidence detail pane. Called when the verdict chip is
+   *  clicked. */
+  onOpenDetail?: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-
   // Nothing to show and no way to make something appear.
   if (!verdict && !loading && !onEvaluate) return null;
 
@@ -81,10 +80,29 @@ export function ConfidenceChip({
             Evaluate
           </button>
         </TooltipTrigger>
-        <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
-          Read the source and predict whether this case would pass, with a
-          calibrated confidence %. May take a moment — it traces each step
-          through the code.
+        <TooltipContent
+          variant="panel"
+          side="bottom"
+          align="start"
+          className="max-w-[300px] px-3 py-2 text-[11px] leading-relaxed"
+        >
+          <div className="flex flex-col gap-1">
+            <div className="flex items-baseline gap-1.5">
+              <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
+                confidence
+              </span>
+              <span className="font-medium text-foreground/90">
+                Predict the outcome
+              </span>
+            </div>
+            <p className="text-foreground/80">
+              Reads the source and predicts whether this case would pass, with
+              a calibrated confidence %.
+            </p>
+            <p className="mt-0.5 text-[10px] text-muted-foreground/70">
+              Takes a moment — it traces each step through the code.
+            </p>
+          </div>
         </TooltipContent>
       </Tooltip>
     );
@@ -93,50 +111,61 @@ export function ConfidenceChip({
   const tone = confidenceTone(verdict.confidence);
   const pct = Math.round(verdict.confidence);
 
+  const isAutoPass =
+    verdict.confidence >= AUTO_PASS_THRESHOLD &&
+    verdict.predictedOutcome === "Pass";
+
   return (
-    <>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            onClick={() => setOpen(true)}
-            className={cn(
-              "inline-flex h-5 items-center gap-1 rounded-sm px-1.5 text-[10px] font-medium tabular-nums transition-[filter] hover:brightness-95 dark:hover:brightness-110",
-              tone.className,
-            )}
-          >
-            {loading ? (
-              <HugeiconsIcon
-                icon={Loading03Icon}
-                size={9}
-                strokeWidth={2}
-                className="animate-spin"
-              />
-            ) : null}
-            {pct}%
-            <span className="opacity-70">
-              {OUTCOME_LABEL[verdict.predictedOutcome]}
-            </span>
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom" className="max-w-[260px] text-[11px]">
-          {pct}% · {OUTCOME_LABEL[verdict.predictedOutcome]}
-          {verdict.confidence >= AUTO_PASS_THRESHOLD &&
-          verdict.predictedOutcome === "Pass"
-            ? " — auto-pass candidate."
-            : " — below the manual-test bar."}
-          <span className="mt-0.5 block text-muted-foreground">
-            Click for the full breakdown — evidence, reasoning, caveats.
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={() => onOpenDetail?.()}
+          className={cn(
+            "inline-flex h-5 items-center gap-1 rounded-sm px-1.5 text-[10px] font-medium tabular-nums transition-[filter] hover:brightness-95 dark:hover:brightness-110",
+            tone.className,
+          )}
+        >
+          {loading ? (
+            <HugeiconsIcon
+              icon={Loading03Icon}
+              size={9}
+              strokeWidth={2}
+              className="animate-spin"
+            />
+          ) : null}
+          {pct}%
+          <span className="opacity-70">
+            {OUTCOME_LABEL[verdict.predictedOutcome]}
           </span>
-        </TooltipContent>
-      </Tooltip>
-      <ConfidenceSheet
-        open={open}
-        onOpenChange={setOpen}
-        verdict={verdict}
-        evaluating={loading}
-        onEvaluate={onEvaluate}
-      />
-    </>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent
+        variant="panel"
+        side="bottom"
+        align="start"
+        className="max-w-[300px] px-3 py-2 text-[11px] leading-relaxed"
+      >
+        <div className="flex flex-col gap-1">
+          <div className="flex items-baseline gap-1.5">
+            <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
+              verdict
+            </span>
+            <span className="font-medium tabular-nums text-foreground/90">
+              {pct}% · {OUTCOME_LABEL[verdict.predictedOutcome]}
+            </span>
+          </div>
+          <p className="text-foreground/80">
+            {isAutoPass
+              ? "At or above the 90% bar — auto-pass candidate."
+              : "Below the 90% auto-pass bar — flag for manual testing."}
+          </p>
+          <p className="mt-0.5 text-[10px] text-muted-foreground/70">
+            Click to open the breakdown — reasoning, per-step evidence, and
+            caveats, with code you can open beside it.
+          </p>
+        </div>
+      </TooltipContent>
+    </Tooltip>
   );
 }
