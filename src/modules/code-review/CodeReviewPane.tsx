@@ -11,7 +11,12 @@ import {
 import { Kbd } from "@/components/ui/kbd";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
-import { BugContextPicker } from "@/modules/ado/components/BugContextPicker";
+import {
+  MentionDropdown,
+  WorkItemChips,
+  useWorkItemMention,
+  type WorkItemMention,
+} from "@/modules/ado/components/WorkItemMention";
 import { useBugContext } from "@/modules/ado/hooks/useBugContext";
 import { getModel } from "@/modules/ai/config";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
@@ -87,6 +92,12 @@ export function CodeReviewPane({
   const [draft, setDraft] = useState(DEFAULT_FIRST_PROMPT);
   const att = useAttachments();
   const bugCtx = useBugContext();
+  const mention = useWorkItemMention({
+    value: draft,
+    onValueChange: setDraft,
+    onAdd: bugCtx.add,
+    selectedIds: bugCtx.selected.map((b) => b.id),
+  });
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -159,6 +170,7 @@ export function CodeReviewPane({
     setDraft("");
     att.clear();
     bugCtx.clear();
+    mention.dismiss();
   };
 
   const baseList = useMemo(() => {
@@ -439,12 +451,9 @@ export function CodeReviewPane({
         onFilePicker={att.onFilePicker}
         onRemoveAttachment={att.remove}
         onDismissAttachmentError={att.dismissError}
-        bugPicker={
-          <BugContextPicker
-            selected={bugCtx.selected}
-            onAdd={bugCtx.add}
-            onRemove={bugCtx.remove}
-          />
+        mention={mention}
+        bugChips={
+          <WorkItemChips items={bugCtx.selected} onRemove={bugCtx.remove} />
         }
       />
     </div>
@@ -474,7 +483,8 @@ function ChatComposer({
   onFilePicker,
   onRemoveAttachment,
   onDismissAttachmentError,
-  bugPicker,
+  mention,
+  bugChips,
 }: {
   draft: string;
   onChange: (v: string) => void;
@@ -490,8 +500,10 @@ function ChatComposer({
   onFilePicker: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onRemoveAttachment: (id: string) => void;
   onDismissAttachmentError: (id: string) => void;
-  /** Optional bug-context picker rendered in the composer toolbar. */
-  bugPicker?: React.ReactNode;
+  /** Inline `#id` work-item mention. */
+  mention?: WorkItemMention;
+  /** Attached work-item chips. */
+  bugChips?: React.ReactNode;
 }) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -514,7 +526,7 @@ function ChatComposer({
           dismissError={onDismissAttachmentError}
           className="mb-2"
         />
-        {bugPicker ? <div className="mb-1.5">{bugPicker}</div> : null}
+        {bugChips ? <div className="mb-1.5">{bugChips}</div> : null}
         <div
           onDrop={onDrop}
           onDragOver={(e) => e.preventDefault()}
@@ -524,13 +536,24 @@ function ChatComposer({
             busy && "border-primary/35 bg-primary/[0.03]",
           )}
         >
+          {mention?.active ? <MentionDropdown mention={mention} /> : null}
           <AttachButton onFilePicker={onFilePicker} disabled={disabled} />
           <textarea
             ref={inputRef}
             value={draft}
-            onChange={(e) => onChange(e.target.value)}
+            onChange={(e) => {
+              onChange(e.target.value);
+              mention?.noteInput(e.target.value, e.target.selectionStart ?? e.target.value.length);
+            }}
+            onSelect={(e) =>
+              mention?.noteCaret(
+                e.currentTarget.value,
+                e.currentTarget.selectionStart ?? e.currentTarget.value.length,
+              )
+            }
             onPaste={onPaste}
             onKeyDown={(e) => {
+              if (mention?.onKeyDown(e)) return;
               if (e.key === "Enter" && !e.shiftKey && !e.metaKey) {
                 e.preventDefault();
                 onSubmit();

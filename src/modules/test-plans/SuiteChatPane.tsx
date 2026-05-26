@@ -23,7 +23,12 @@ import {
   useAttachments,
   type Attachment,
 } from "@/components/chat/attachments";
-import { BugContextPicker } from "@/modules/ado/components/BugContextPicker";
+import {
+  MentionDropdown,
+  WorkItemChips,
+  useWorkItemMention,
+  type WorkItemMention,
+} from "@/modules/ado/components/WorkItemMention";
 import { useBugContext } from "@/modules/ado/hooks/useBugContext";
 import {
   Popover,
@@ -137,6 +142,12 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
   const [draft, setDraft] = useState("");
   const att = useAttachments();
   const bugCtx = useBugContext();
+  const mention = useWorkItemMention({
+    value: draft,
+    onValueChange: setDraft,
+    onAdd: bugCtx.add,
+    selectedIds: bugCtx.selected.map((b) => b.id),
+  });
   const [conn, setConn] = useState<ConnectionStatus | null>(null);
 
   useEffect(() => {
@@ -651,6 +662,7 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
     setDraft("");
     att.clear();
     bugCtx.clear();
+    mention.dismiss();
   };
 
   return (
@@ -758,12 +770,9 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
         onFilePicker={att.onFilePicker}
         onRemoveAttachment={att.remove}
         onDismissAttachmentError={att.dismissError}
-        bugPicker={
-          <BugContextPicker
-            selected={bugCtx.selected}
-            onAdd={bugCtx.add}
-            onRemove={bugCtx.remove}
-          />
+        mention={mention}
+        bugChips={
+          <WorkItemChips items={bugCtx.selected} onRemove={bugCtx.remove} />
         }
       />
     </div>
@@ -1421,7 +1430,8 @@ function Composer({
   onFilePicker,
   onRemoveAttachment,
   onDismissAttachmentError,
-  bugPicker,
+  mention,
+  bugChips,
 }: {
   draft: string;
   onChange: (v: string) => void;
@@ -1437,8 +1447,10 @@ function Composer({
   onFilePicker: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onRemoveAttachment: (id: string) => void;
   onDismissAttachmentError: (id: string) => void;
-  /** Optional bug-context picker rendered in the composer toolbar. */
-  bugPicker?: React.ReactNode;
+  /** Inline `#id` work-item mention (detection + dropdown + keyboard nav). */
+  mention?: WorkItemMention;
+  /** Attached work-item chips, rendered above the input. */
+  bugChips?: React.ReactNode;
 }) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -1463,7 +1475,7 @@ function Composer({
           dismissError={onDismissAttachmentError}
           className="mb-2"
         />
-        {bugPicker ? <div className="mb-1.5">{bugPicker}</div> : null}
+        {bugChips ? <div className="mb-1.5">{bugChips}</div> : null}
         <div
           onDrop={onDrop}
           onDragOver={(e) => e.preventDefault()}
@@ -1473,13 +1485,25 @@ function Composer({
             busy && "border-primary/35 bg-primary/[0.03]",
           )}
         >
+          {mention?.active ? <MentionDropdown mention={mention} /> : null}
           <AttachButton onFilePicker={onFilePicker} disabled={disabled} />
           <textarea
             ref={inputRef}
             value={draft}
-            onChange={(e) => onChange(e.target.value)}
+            onChange={(e) => {
+              onChange(e.target.value);
+              mention?.noteInput(e.target.value, e.target.selectionStart ?? e.target.value.length);
+            }}
+            onSelect={(e) =>
+              mention?.noteCaret(
+                e.currentTarget.value,
+                e.currentTarget.selectionStart ?? e.currentTarget.value.length,
+              )
+            }
             onPaste={onPaste}
             onKeyDown={(e) => {
+              // Let the mention own arrows/enter/escape while its menu is open.
+              if (mention?.onKeyDown(e)) return;
               if (e.key === "Enter" && !e.shiftKey && !e.metaKey) {
                 e.preventDefault();
                 onSubmit();
@@ -1543,6 +1567,11 @@ function Composer({
           <span className="inline-flex items-center gap-1">
             <Kbd>⇧↵</Kbd>
             newline
+          </span>
+          <Dot />
+          <span className="inline-flex items-center gap-1">
+            <Kbd>#</Kbd>
+            attach a work item
           </span>
         </div>
       </div>

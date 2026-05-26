@@ -10,7 +10,11 @@ import {
 } from "react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { BugContextPicker } from "@/modules/ado/components/BugContextPicker";
+import {
+  MentionDropdown,
+  WorkItemChips,
+  useWorkItemMention,
+} from "@/modules/ado/components/WorkItemMention";
 import { useBugContext } from "@/modules/ado/hooks/useBugContext";
 import { useGenerationSession } from "../store/useGenerationSession";
 import { ChatMarkdown } from "@/components/ChatMarkdown";
@@ -59,6 +63,12 @@ export function ReviewChat({ onClose }: Props) {
   const error = useGenerationSession((s) => s.chatError);
   const send = useGenerationSession((s) => s.sendChatMessage);
   const bugCtx = useBugContext();
+  const mention = useWorkItemMention({
+    value: draft,
+    onValueChange: setDraft,
+    onAdd: bugCtx.add,
+    selectedIds: bugCtx.selected.map((b) => b.id),
+  });
   const cancel = useGenerationSession((s) => s.cancelChat);
   const clear = useGenerationSession((s) => s.clearChat);
   const dismissError = useGenerationSession((s) => s.dismissChatError);
@@ -164,6 +174,7 @@ export function ReviewChat({ onClose }: Props) {
     );
     setDraft("");
     bugCtx.clear();
+    mention.dismiss();
   };
 
   return (
@@ -302,13 +313,11 @@ export function ReviewChat({ onClose }: Props) {
           }
           className="mb-2"
         />
-        <div className="mb-1.5">
-          <BugContextPicker
-            selected={bugCtx.selected}
-            onAdd={bugCtx.add}
-            onRemove={bugCtx.remove}
-          />
-        </div>
+        {bugCtx.selected.length > 0 ? (
+          <div className="mb-1.5">
+            <WorkItemChips items={bugCtx.selected} onRemove={bugCtx.remove} />
+          </div>
+        ) : null}
         {/* Single autosizing row — attach / input / send sit on one baseline
             (items-end) so the controls track the text as it grows instead of
             floating at the bottom of a fixed two-line box. */}
@@ -316,11 +325,12 @@ export function ReviewChat({ onClose }: Props) {
           onDrop={onDrop}
           onDragOver={(e) => e.preventDefault()}
           className={cn(
-            "group flex items-end gap-1.5 rounded-sm border border-border/40 bg-input/40 px-1.5 py-1 transition-colors",
+            "group relative flex items-end gap-1.5 rounded-sm border border-border/40 bg-input/40 px-1.5 py-1 transition-colors",
             "focus-within:border-primary/55 focus-within:ring-2 focus-within:ring-ring/25",
             busy && "border-primary/35 bg-primary/[0.03]",
           )}
         >
+          {mention.active ? <MentionDropdown mention={mention} /> : null}
           <AttachButton
             onFilePicker={onFilePicker}
             disabled={busy}
@@ -330,9 +340,19 @@ export function ReviewChat({ onClose }: Props) {
           <textarea
             ref={inputRef}
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              mention.noteInput(e.target.value, e.target.selectionStart ?? e.target.value.length);
+            }}
+            onSelect={(e) =>
+              mention.noteCaret(
+                e.currentTarget.value,
+                e.currentTarget.selectionStart ?? e.currentTarget.value.length,
+              )
+            }
             onPaste={onPaste}
             onKeyDown={(e) => {
+              if (mention.onKeyDown(e)) return;
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 submit();
@@ -340,7 +360,7 @@ export function ReviewChat({ onClose }: Props) {
             }}
             rows={1}
             disabled={busy}
-            placeholder="Ask about the draft…  (Enter to send · Shift+Enter for newline)"
+            placeholder="Ask about the draft…  (#id to attach · Enter to send)"
             className="min-h-[20px] w-full resize-none bg-transparent py-1 text-[11.5px] leading-[1.55] outline-none placeholder:text-muted-foreground/55"
           />
           {busy ? (
