@@ -44,6 +44,7 @@ import {
   createGenerationSessionStore,
   type SessionState,
 } from "@/modules/generator/store/useGenerationSession";
+import { saveRun } from "@/modules/generator/lib/history";
 import { useSourceDirGitInfo } from "@/modules/git";
 import { getConnection } from "@/modules/ado";
 import { AzureDevOpsBrand } from "@/components/AzureDevOpsBrand";
@@ -257,7 +258,17 @@ function AppShell() {
       // Sync the tab's stored runId so "Open in review" dedup works once
       // the live session has actually committed to a runId (set on first
       // analyze). No-op when the value hasn't changed.
-      useTabsStore.getState().updateGeneratorRunId(tabId, next.runId);
+      //
+      // CRITICAL: only ever propagate a NON-NULL runId. On a window reload the
+      // per-tab session store is recreated empty (runId null) and reports that
+      // before the async getRun rehydrate runs. Propagating that null would
+      // erase the tab's runId — which both cancels the rehydrate (its effect
+      // dep changes) and, on the next reload, drops the tab as a ghost. The
+      // tab's runId is the durable binding; the session adopts it on restore,
+      // never the other way around.
+      if (next.runId != null) {
+        useTabsStore.getState().updateGeneratorRunId(tabId, next.runId);
+      }
     },
     [],
   );
@@ -655,14 +666,76 @@ function AppShell() {
         return;
       }
       const s = src.getState();
+      const freshId = `dup-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      // Only a review/done copy gets a durable runId (and a saved history row).
+      // An input-phase copy stays an unbound scratch tab, like any fresh
+      // generator — no half-empty row to restore on reload.
+      const bindRunId = s.phase === "review" || s.phase === "done" ? freshId : null;
+
+      // Copy the FULL session state verbatim (phase, publishLog, cases, bugs,
+      // refine snapshot, …) into a fresh store under a new runId — so the
+      // duplicate lands on the SAME phase as the source (done stays done,
+      // review keeps its "already published" bar) instead of being forced
+      // back to review by loadDraft. setState merges, so the store's action
+      // functions stay intact; we only overwrite data and reset the
+      // in-flight/transient flags.
       const store = createGenerationSessionStore();
-      const hasDraft = s.cases.length > 0 || s.bugs.length > 0;
-      if (hasDraft) {
-        // Reconstruct a draft row from the source snapshot and load it into
-        // the fresh store under a NEW runId so the two never dedup or share
-        // an autosave slot.
-        const freshId = `dup-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-        const ok = store.getState().loadDraft({
+      store.setState({
+        phase: s.phase,
+        requirements: s.requirements,
+        changesets: s.changesets,
+        attachments: s.attachments,
+        planId: s.planId,
+        suiteId: s.suiteId,
+        planName: s.planName,
+        suiteName: s.suiteName,
+        mode: s.mode,
+        allowCodeSearch: s.allowCodeSearch,
+        overrideModelId: s.overrideModelId,
+        durationMs: s.durationMs,
+        cases: s.cases,
+        bugs: s.bugs,
+        rawText: s.rawText,
+        publishLog: s.publishLog,
+        refineUndoSnapshot: s.refineUndoSnapshot,
+        refineHistory: s.refineHistory,
+        refineRounds: s.refineRounds,
+        chatMessages: s.chatMessages,
+        runId: bindRunId,
+        // Reset transient / in-flight state so the copy opens idle.
+        stepLabel: "",
+        activityLog: [],
+        error: null,
+        errorPhase: null,
+        isRefining: false,
+        activeClaudeRunId: null,
+        refineError: null,
+        chatBusy: false,
+        chatStreamingId: null,
+        chatError: null,
+        chatActiveClaudeRunId: null,
+      });
+
+      // Persist the copy under its new id so it survives a reload too. A
+      // published source clones to a published row (keeps the done view +
+      // ado links); anything else clones to a draft row. Best-effort.
+      const isPublished = s.publishLog.some((l) => l.status === "ok");
+      if (s.phase === "review" || s.phase === "done") {
+        const draftPayload = {
+          requirements: s.requirements,
+          changesets: s.changesets,
+          mode: s.mode,
+          cases: s.cases,
+          bugs: s.bugs,
+          rawText: s.rawText,
+          planId: s.planId,
+          planName: s.planName,
+          suiteId: s.suiteId,
+          suiteName: s.suiteName,
+          refineRounds: s.refineRounds,
+          refineUndoSnapshot: s.refineUndoSnapshot,
+        };
+        void saveRun({
           id: freshId,
           timestamp: new Date().toISOString(),
           planId: s.planId,
@@ -670,46 +743,43 @@ function AppShell() {
           suiteId: s.suiteId,
           suiteName: s.suiteName,
           mode: s.mode,
-          cases: [],
-          bugs: [],
-          publishLog: [],
-          status: "draft",
-          draftPayload: {
-            requirements: s.requirements,
-            changesets: s.changesets,
-            mode: s.mode,
-            cases: s.cases,
-            bugs: s.bugs,
-            rawText: s.rawText,
-            planId: s.planId,
-            planName: s.planName,
-            suiteId: s.suiteId,
-            suiteName: s.suiteName,
-            refineRounds: s.refineRounds,
-            refineUndoSnapshot: s.refineUndoSnapshot,
-          },
+          specExcerpt: (s.requirements ?? "").slice(0, 500),
+          cases: s.cases.map((c) => {
+            const log = s.publishLog.find((l) => l.uid === c.uid);
+            return {
+              title: c.title,
+              adoId: isPublished ? (log?.result?.id ?? null) : null,
+              webUrl: isPublished ? (log?.result?.webUrl ?? null) : null,
+            };
+          }),
+          bugs: s.bugs.map((b) => {
+            const log = s.publishLog.find((l) => l.uid === b.uid);
+            return {
+              title: b.title,
+              severity: b.severity,
+              adoId: isPublished ? (log?.result?.id ?? null) : null,
+              webUrl: isPublished ? (log?.result?.webUrl ?? null) : null,
+            };
+          }),
+          publishLog: isPublished
+            ? s.publishLog.map((l) => ({
+                uid: l.uid,
+                kind: l.kind,
+                title: l.title,
+                status: l.status === "pending" ? "skipped" : l.status,
+                error: l.error ?? null,
+              }))
+            : [],
+          status: isPublished ? "published" : "draft",
+          draftPayload,
         });
-        if (ok) {
-          openGeneratorTab({
-            planId: s.planId,
-            suiteId: s.suiteId,
-            hydrateFrom: store,
-            runId: freshId,
-          });
-          return;
-        }
       }
-      // Input-phase (or empty) source: seed a fresh generator with the same
-      // target + spec text rather than a published draft.
-      const st = store.getState();
-      if (s.planId) st.setTarget(s.planId, s.suiteId);
-      if (s.requirements) st.setRequirements(s.requirements);
-      if (s.changesets) st.setChangesets(s.changesets);
-      st.setMode(s.mode);
+
       openGeneratorTab({
         planId: s.planId,
         suiteId: s.suiteId,
         hydrateFrom: store,
+        runId: bindRunId,
       });
     };
     window.addEventListener("devops-studio:duplicate-generator", onDup);
