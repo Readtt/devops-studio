@@ -36,7 +36,6 @@ import {
   GitCommitIcon,
   GitPullRequestIcon,
   HardDriveIcon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useState } from "react";
@@ -322,8 +321,12 @@ export function CodeReviewSourcePicker({
                       strokeWidth={1.75}
                       className="shrink-0 text-muted-foreground"
                     />
-                    <span className="flex-1 text-[12px]">Local working copy</span>
-                    {!source ? <CheckMark /> : null}
+                    <span className="flex flex-1 flex-col">
+                      <span className="text-[12px]">Local working copy</span>
+                      <span className="text-[10px] text-muted-foreground/70">
+                        Uncommitted + branch diff on disk
+                      </span>
+                    </span>
                   </CommandItem>
                 </CommandGroup>
                 <CommandGroup heading="Azure DevOps repositories">
@@ -389,7 +392,6 @@ export function CodeReviewSourcePicker({
                         <span className="flex-1 truncate font-mono text-[12px]">
                           {b}
                         </span>
-                        {b === branch ? <CheckMark /> : null}
                       </CommandItem>
                     ))}
                   </>
@@ -510,17 +512,6 @@ function SegButton({
       <HugeiconsIcon icon={icon} size={11} strokeWidth={1.75} />
       {label}
     </button>
-  );
-}
-
-function CheckMark() {
-  return (
-    <HugeiconsIcon
-      icon={Tick02Icon}
-      size={13}
-      strokeWidth={2}
-      className="shrink-0 text-primary"
-    />
   );
 }
 
