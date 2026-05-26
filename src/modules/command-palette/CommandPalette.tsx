@@ -27,6 +27,7 @@ import {
   Clock01Icon,
   CloudServerIcon,
   CommandLineIcon,
+  ExternalLink,
   PlusSignIcon,
   Search01Icon,
   Settings01Icon,
@@ -536,6 +537,10 @@ function WorkItemRow({
   const abbr =
     WORK_ITEM_ABBR[wi.workItemType] ??
     (wi.workItemType ? wi.workItemType.slice(0, 4).toUpperCase() : "ITEM");
+  // Bugs + test cases open an in-app pane; everything else has no pane here,
+  // so it opens in Azure DevOps — flag that so the click isn't a surprise.
+  const external =
+    wi.workItemType !== "Bug" && wi.workItemType !== "Test Case";
   return (
     <CommandItem value={`wi-${wi.id}-${wi.title}`} onSelect={onSelect}>
       <span className="w-10 shrink-0 font-mono text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -548,6 +553,12 @@ function WorkItemRow({
           {wi.state ? ` · ${wi.state}` : ""}
         </span>
       </div>
+      {external ? (
+        <span className="ml-auto flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground/70">
+          <HugeiconsIcon icon={ExternalLink} size={11} strokeWidth={1.75} />
+          Azure DevOps
+        </span>
+      ) : null}
     </CommandItem>
   );
 }
