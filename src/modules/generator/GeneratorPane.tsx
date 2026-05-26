@@ -9,6 +9,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { SearchableSelect } from "@/components/ui/searchable-select";
@@ -31,7 +38,12 @@ import {
   useGenerationSessionStore,
 } from "./store/useGenerationSession";
 import { useTestPlans } from "@/modules/test-plans";
-import { adoErrorMessage, getWorkItemTitles } from "@/modules/ado";
+import {
+  adoErrorMessage,
+  getWorkItemTitles,
+  OUTCOMES,
+  type ExecutionOutcome,
+} from "@/modules/ado";
 import { useSourceDirGitInfo } from "@/modules/git";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
@@ -73,7 +85,7 @@ import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { getModel } from "@/modules/ai/config";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
-import { ArrowDown01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, ArrowRight01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 
 /** Tab title trimmer — keeps the cap below the visible width budget so
  *  multiple generator tabs side by side don't squish each other. */
@@ -1314,6 +1326,86 @@ function AnalyzingPhase() {
 
 // --- Review phase -----------------------------------------------------------
 
+/** Per-row run-outcome picker for the review phase. Sets a LOCAL desired
+ *  outcome on the draft case — no ADO call here. The generator records it
+ *  against the case's test point right after the case is published. Mirrors
+ *  the test-case OutcomeControl's look (shared OUTCOMES + dot colours). */
+function ReviewOutcomePicker({
+  value,
+  onChange,
+}: {
+  value: Exclude<ExecutionOutcome, "Active"> | null;
+  onChange: (next: Exclude<ExecutionOutcome, "Active"> | null) => void;
+}) {
+  const current = value ? (OUTCOMES.find((o) => o.value === value) ?? null) : null;
+  return (
+    <DropdownMenu>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className={cn(
+                "inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-border/60 bg-transparent px-1.5 text-[10.5px] font-medium transition-colors hover:bg-foreground/[0.05]",
+                current ? "text-foreground" : "text-muted-foreground",
+              )}
+            >
+              <span
+                className={cn(
+                  "size-2 rounded-full",
+                  current?.dot ?? "bg-muted-foreground/40",
+                )}
+              />
+              {current?.label ?? "Set status"}
+              <HugeiconsIcon
+                icon={ArrowDown01Icon}
+                size={10}
+                strokeWidth={1.75}
+                className="text-muted-foreground/70"
+              />
+            </button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-[260px] text-[11px]">
+          Set this case&apos;s run outcome (Pass / Fail / Blocked). It&apos;s
+          recorded in Azure DevOps right after the case is published.
+        </TooltipContent>
+      </Tooltip>
+      <DropdownMenuContent align="end" className="w-44">
+        {OUTCOMES.map((o) => (
+          <DropdownMenuItem
+            key={o.value}
+            className="text-[11px]"
+            onSelect={() => onChange(o.value)}
+          >
+            <span className={cn("size-2 rounded-full", o.dot)} />
+            {o.label}
+            {current?.value === o.value ? (
+              <HugeiconsIcon
+                icon={Tick02Icon}
+                size={12}
+                strokeWidth={2}
+                className="ml-auto text-primary"
+              />
+            ) : null}
+          </DropdownMenuItem>
+        ))}
+        {current ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              className="text-[11px] text-muted-foreground"
+              onSelect={() => onChange(null)}
+            >
+              Clear status
+            </DropdownMenuItem>
+          </>
+        ) : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 function ReviewPhase({
   onOpenCase,
 }: {
@@ -1325,6 +1417,7 @@ function ReviewPhase({
   const setBugDecision = useGenerationSession((s) => s.setBugDecision);
   const setCaseTitle = useGenerationSession((s) => s.setCaseTitle);
   const setCaseRationale = useGenerationSession((s) => s.setCaseRationale);
+  const setCaseOutcome = useGenerationSession((s) => s.setCaseOutcome);
   const setCaseStep = useGenerationSession((s) => s.setCaseStep);
   const addCaseStep = useGenerationSession((s) => s.addCaseStep);
   const removeCaseStep = useGenerationSession((s) => s.removeCaseStep);
@@ -1625,6 +1718,10 @@ function ReviewPhase({
                     />
                   </div>
                 </div>
+                <ReviewOutcomePicker
+                  value={c.desiredOutcome ?? null}
+                  onChange={(next) => setCaseOutcome(c.uid, next)}
+                />
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <span className="cursor-help text-[10px] text-muted-foreground/70">
