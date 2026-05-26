@@ -59,11 +59,13 @@ import {
   ExternalLink,
   GitBranchIcon,
   Key01Icon,
+  Loading03Icon,
   PlayIcon,
   PlugSocketIcon,
   RefreshIcon,
   RemoveCircleIcon,
   Settings01Icon,
+  SparklesIcon,
   WifiDisconnected01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -1443,6 +1445,10 @@ function ReviewPhase({
   const [evaluatingUids, setEvaluatingUids] = useState<Set<string>>(
     () => new Set(),
   );
+  // Bulk "Evaluate all" progress — null when no batch is running.
+  const [bulkEval, setBulkEval] = useState<{ done: number; total: number } | null>(
+    null,
+  );
   const runEval = useCallback(
     async (
       uid: string,
@@ -1465,6 +1471,53 @@ function ReviewPhase({
     },
     [setCaseVerdict],
   );
+
+  // Evaluate every case that doesn't have a verdict yet, a few at a time. QA's
+  // whole point here is speed: one click triages a freshly-generated batch by
+  // confidence instead of clicking Evaluate on each card. Already-evaluated
+  // cases are skipped so re-running after adding a few is cheap.
+  const runEvalAll = useCallback(async () => {
+    const targets = cases
+      .filter((c) => !c.verdict)
+      .map((c) => ({ uid: c.uid, title: c.title, steps: c.steps }));
+    if (targets.length === 0) return;
+    setBulkEval({ done: 0, total: targets.length });
+    setEvaluatingUids((s) => {
+      const n = new Set(s);
+      for (const t of targets) n.add(t.uid);
+      return n;
+    });
+    let done = 0;
+    const queue = [...targets];
+    const worker = async () => {
+      for (;;) {
+        const t = queue.shift();
+        if (!t) return;
+        try {
+          const v = await evaluateCaseConfidence({
+            title: t.title,
+            steps: t.steps,
+          });
+          setCaseVerdict(t.uid, v);
+        } catch (e) {
+          console.error("[confidence] bulk eval failed:", e);
+        } finally {
+          setEvaluatingUids((s) => {
+            const n = new Set(s);
+            n.delete(t.uid);
+            return n;
+          });
+          done += 1;
+          setBulkEval({ done, total: targets.length });
+        }
+      }
+    };
+    const CONCURRENCY = 3;
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, targets.length) }, worker),
+    );
+    setBulkEval(null);
+  }, [cases, setCaseVerdict]);
 
   const kept = useMemo(
     () => cases.filter((c) => c.decision === "keep").length,
@@ -1620,6 +1673,7 @@ function ReviewPhase({
   const publishCount =
     keptCasesUnpublished +
     (keptBugsUnpublished > 0 ? keptBugsUnpublished : 0);
+  const unevaluated = cases.filter((c) => !c.verdict).length;
 
   return (
     <div className="flex flex-col gap-3">
@@ -1657,21 +1711,51 @@ function ReviewPhase({
             j/k to nav cases &amp; bugs · space to toggle · p to publish
           </span>
         </p>
-        <Button
-          onClick={() => void publish()}
-          disabled={publishCount === 0}
-          className="shrink-0"
-        >
-          {hasAnyPublished
-            ? publishCount === 0
-              ? "All kept items published"
-              : `Publish ${publishCount} new`
-            : `Publish ${kept} case${kept === 1 ? "" : "s"}${
-                keptBugs > 0
-                  ? ` + ${keptBugs} bug${keptBugs === 1 ? "" : "s"}`
-                  : ""
-              }`}
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          {cases.length > 0 ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void runEvalAll()}
+                  disabled={!!bulkEval || unevaluated === 0}
+                >
+                  <HugeiconsIcon
+                    icon={bulkEval ? Loading03Icon : SparklesIcon}
+                    size={12}
+                    strokeWidth={1.75}
+                    className={bulkEval ? "animate-spin" : ""}
+                  />
+                  {bulkEval
+                    ? `Evaluating ${bulkEval.done}/${bulkEval.total}…`
+                    : unevaluated === 0
+                      ? "All evaluated"
+                      : `Evaluate all (${unevaluated})`}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
+                Predict pass/fail confidence for every case that isn&apos;t
+                evaluated yet, a few at a time. Triage the low-confidence cases
+                before publishing — no need to click Evaluate on each card.
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
+          <Button
+            onClick={() => void publish()}
+            disabled={publishCount === 0}
+          >
+            {hasAnyPublished
+              ? publishCount === 0
+                ? "All kept items published"
+                : `Publish ${publishCount} new`
+              : `Publish ${kept} case${kept === 1 ? "" : "s"}${
+                  keptBugs > 0
+                    ? ` + ${keptBugs} bug${keptBugs === 1 ? "" : "s"}`
+                    : ""
+                }`}
+          </Button>
+        </div>
       </div>
 
       <RefineChangesPanel />

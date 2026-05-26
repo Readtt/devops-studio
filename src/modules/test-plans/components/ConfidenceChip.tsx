@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   Tooltip,
   TooltipContent,
@@ -9,6 +10,7 @@ import {
   confidenceTone,
   type ConfidenceVerdict,
 } from "../lib/confidence";
+import { ConfidenceSheet } from "./ConfidenceSheet";
 import { Loading03Icon, SparklesIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -23,11 +25,16 @@ const OUTCOME_LABEL: Record<ConfidenceVerdict["predictedOutcome"], string> = {
  * Confidence chip — shows the AI's calibrated prediction of whether a case
  * would pass against the current code. Color-graded with the OUTCOME_CHIP
  * tints (green ≥90 / amber 60-89 / red <60) so it reads next to the outcome
- * chips. The rich tooltip carries the predicted outcome, reasoning, the top
- * per-step evidence (file:line), and any caveats.
+ * chips.
  *
- * Three states: a verdict (the chip), `loading` (evaluating…), or no verdict
- * with an `onEvaluate` handler (an "Evaluate" affordance).
+ * The chip stays compact: a single % + outcome pill. Clicking it opens the
+ * ConfidenceSheet — a designated right-side drawer with the full reasoning,
+ * per-step evidence (clickable file:line), and caveats. The detail used to
+ * live in a hover tooltip that ran off-screen on narrow panes; the sheet
+ * scrolls and wraps instead.
+ *
+ * States: a verdict (clickable chip), `loading` with no verdict yet
+ * (Evaluating…), or no verdict with an `onEvaluate` handler (Evaluate button).
  */
 export function ConfidenceChip({
   verdict,
@@ -36,11 +43,17 @@ export function ConfidenceChip({
 }: {
   verdict: ConfidenceVerdict | null | undefined;
   loading?: boolean;
-  /** When provided and there's no verdict, renders an Evaluate button. Also
-   *  exposed in the tooltip footer as "re-evaluate". */
+  /** When provided, enables evaluation (the Evaluate button and the sheet's
+   *  Re-evaluate action). */
   onEvaluate?: () => void;
 }) {
-  if (loading) {
+  const [open, setOpen] = useState(false);
+
+  // Nothing to show and no way to make something appear.
+  if (!verdict && !loading && !onEvaluate) return null;
+
+  // First-time evaluation (no prior verdict): a quiet, non-interactive pill.
+  if (loading && !verdict) {
     return (
       <span className="inline-flex h-5 items-center gap-1 rounded-sm bg-foreground/[0.06] px-1.5 text-[10px] font-medium text-muted-foreground">
         <HugeiconsIcon
@@ -54,8 +67,8 @@ export function ConfidenceChip({
     );
   }
 
+  // No verdict yet, but we can make one — show the Evaluate affordance.
   if (!verdict) {
-    if (!onEvaluate) return null;
     return (
       <Tooltip>
         <TooltipTrigger asChild>
@@ -79,102 +92,51 @@ export function ConfidenceChip({
 
   const tone = confidenceTone(verdict.confidence);
   const pct = Math.round(verdict.confidence);
-  const isAutoPass =
-    verdict.predictedOutcome === "Pass" && verdict.confidence >= AUTO_PASS_THRESHOLD;
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span
-          className={cn(
-            "inline-flex h-5 cursor-default items-center gap-1 rounded-sm px-1.5 text-[10px] font-medium tabular-nums",
-            tone.className,
-          )}
-        >
-          {pct}%
-          <span className="opacity-70">
-            {OUTCOME_LABEL[verdict.predictedOutcome]}
-          </span>
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="bottom" variant="panel" className="max-w-[320px] p-0">
-        <div className="px-3 py-2">
-          <div className="flex items-center justify-between gap-2">
-            <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/85">
-              Confidence
-            </span>
-            <span className={cn("rounded-sm px-1.5 py-px text-[10px] font-medium", tone.className)}>
-              {pct}% · {OUTCOME_LABEL[verdict.predictedOutcome]}
-            </span>
-          </div>
-          <p className="mt-1.5 text-[11.5px] leading-snug text-foreground">
-            {isAutoPass
-              ? "High confidence — auto-pass candidate."
-              : verdict.predictedOutcome === "Unknown"
-                ? "Couldn't ground this in code — needs manual testing."
-                : "Below the 90% bar — flag for manual testing."}
-          </p>
-          {verdict.reasoning ? (
-            <p className="mt-1 text-[10.5px] leading-snug text-muted-foreground">
-              {verdict.reasoning}
-            </p>
-          ) : null}
-        </div>
-        {verdict.evidence.length > 0 ? (
-          <div className="border-t border-border/40 px-3 py-1.5">
-            <div className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground/70">
-              Evidence
-            </div>
-            <ul className="mt-1 flex flex-col gap-0.5">
-              {verdict.evidence.slice(0, 6).map((e, i) => (
-                <li key={i} className="text-[10.5px] leading-snug text-muted-foreground">
-                  <span className="text-foreground/80">{e.step}.</span>{" "}
-                  {e.finding}
-                  {e.ref ? (
-                    <span className="ml-1 font-mono text-[9.5px] text-foreground/65">
-                      {e.ref}
-                    </span>
-                  ) : (
-                    <span className="ml-1 text-[9.5px] italic text-rose-500/80">
-                      unverified
-                    </span>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-        {verdict.caveats.length > 0 ? (
-          <div className="border-t border-border/40 bg-foreground/[0.02] px-3 py-1.5">
-            <div className="font-mono text-[9px] uppercase tracking-wider text-amber-600/90 dark:text-amber-400/90">
-              Caveats
-            </div>
-            <ul className="mt-1 flex flex-col gap-0.5">
-              {verdict.caveats.slice(0, 4).map((c, i) => (
-                <li key={i} className="text-[10.5px] leading-snug text-muted-foreground">
-                  {c}
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-        {onEvaluate ? (
-          <div className="border-t border-border/40 px-3 py-1.5">
-            <button
-              type="button"
-              onClick={onEvaluate}
-              className="text-[10.5px] text-muted-foreground transition-colors hover:text-foreground"
-            >
-              Re-evaluate
-            </button>
-            {verdict.runs && verdict.runs > 1 ? (
-              <span className="ml-2 text-[9.5px] text-muted-foreground/70">
-                {verdict.runs} runs
-              </span>
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className={cn(
+              "inline-flex h-5 items-center gap-1 rounded-sm px-1.5 text-[10px] font-medium tabular-nums transition-[filter] hover:brightness-95 dark:hover:brightness-110",
+              tone.className,
+            )}
+          >
+            {loading ? (
+              <HugeiconsIcon
+                icon={Loading03Icon}
+                size={9}
+                strokeWidth={2}
+                className="animate-spin"
+              />
             ) : null}
-          </div>
-        ) : null}
-      </TooltipContent>
-    </Tooltip>
+            {pct}%
+            <span className="opacity-70">
+              {OUTCOME_LABEL[verdict.predictedOutcome]}
+            </span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-[260px] text-[11px]">
+          {pct}% · {OUTCOME_LABEL[verdict.predictedOutcome]}
+          {verdict.confidence >= AUTO_PASS_THRESHOLD &&
+          verdict.predictedOutcome === "Pass"
+            ? " — auto-pass candidate."
+            : " — below the manual-test bar."}
+          <span className="mt-0.5 block text-muted-foreground">
+            Click for the full breakdown — evidence, reasoning, caveats.
+          </span>
+        </TooltipContent>
+      </Tooltip>
+      <ConfidenceSheet
+        open={open}
+        onOpenChange={setOpen}
+        verdict={verdict}
+        evaluating={loading}
+        onEvaluate={onEvaluate}
+      />
+    </>
   );
 }
