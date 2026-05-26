@@ -620,11 +620,18 @@ function AppShell() {
   // the app.
   useEffect(() => {
     const onOpen = (e: Event) => {
-      const ce = e as CustomEvent<{ caseId: number; title?: string }>;
+      const ce = e as CustomEvent<{
+        caseId: number;
+        title?: string;
+        planId?: number | null;
+        suiteId?: number | null;
+      }>;
       if (!ce.detail?.caseId) return;
       openTestCaseTab({
         caseId: ce.detail.caseId,
         title: ce.detail.title ?? `#${ce.detail.caseId}`,
+        planId: ce.detail.planId ?? null,
+        suiteId: ce.detail.suiteId ?? null,
       });
     };
     window.addEventListener("devops-studio:open-test-case", onOpen);

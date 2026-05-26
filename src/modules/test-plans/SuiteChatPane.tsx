@@ -191,6 +191,10 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
           conn && conn.configured && conn.orgUrl && conn.project
             ? `${conn.orgUrl.replace(/\/$/, "")}/${encodeURIComponent(conn.project)}/_workitems/edit/${caseId}`
             : null,
+        // Every case in this lookup belongs to the suite being chatted, so
+        // opening one carries the suite context — its Execute control lands
+        // ready instead of asking the user to pick a suite.
+        suite: { planId, suiteId },
       };
     };
   }, [cases, conn]);

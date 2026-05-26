@@ -319,6 +319,7 @@ export function ApplyEditCard({
                   caseId={parsed.caseId}
                   title={current?.title ?? null}
                   webUrl={current?.webUrl ?? null}
+                  suite={current?.suite ?? null}
                 />
               ) : null}
             </div>
@@ -394,6 +395,7 @@ export function ApplyEditCard({
                 caseId={parsed.caseId}
                 title={current?.title ?? null}
                 webUrl={current?.webUrl ?? null}
+                suite={current?.suite ?? null}
               />
             ) : (
               <span className="font-mono text-[10px] text-destructive">
@@ -929,17 +931,24 @@ function CaseRefBadge({
   caseId,
   title,
   webUrl,
+  suite,
 }: {
   caseId: number;
   title: string | null;
   webUrl: string | null;
+  suite?: { planId: number; suiteId: number } | null;
 }) {
   const onOpen = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     window.dispatchEvent(
       new CustomEvent("devops-studio:open-test-case", {
-        detail: { caseId, title: title ? `#${caseId} ${title}` : `#${caseId}` },
+        detail: {
+          caseId,
+          title: title ? `#${caseId} ${title}` : `#${caseId}`,
+          planId: suite?.planId ?? null,
+          suiteId: suite?.suiteId ?? null,
+        },
       }),
     );
   };

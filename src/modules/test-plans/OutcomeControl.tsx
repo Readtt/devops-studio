@@ -71,6 +71,7 @@ export function OutcomeControl({ caseId, planId, suiteId, refreshKey }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   const [memberships, setMemberships] = useState<CaseSuiteMembership[] | null>(null);
+  const [membershipError, setMembershipError] = useState<string | null>(null);
 
   const loadPoints = useCallback(async () => {
     if (!target) return;
@@ -142,9 +143,11 @@ export function OutcomeControl({ caseId, planId, suiteId, refreshKey }: Props) {
 
   const loadMemberships = useCallback(async () => {
     setMemberships(null);
+    setMembershipError(null);
     try {
       setMemberships(await listSuitesForCase(caseId));
-    } catch {
+    } catch (e) {
+      setMembershipError(adoErrorMessage(toAdoError(e)) || "Couldn't load suites.");
       setMemberships([]);
     }
   }, [caseId]);
@@ -207,9 +210,13 @@ export function OutcomeControl({ caseId, planId, suiteId, refreshKey }: Props) {
               <DropdownMenuItem disabled className="text-[11px]">
                 Loading suites…
               </DropdownMenuItem>
+            ) : membershipError ? (
+              <DropdownMenuItem disabled className="text-[11px] text-destructive">
+                {membershipError}
+              </DropdownMenuItem>
             ) : memberships.length === 0 ? (
               <DropdownMenuItem disabled className="text-[11px]">
-                Not in any suite yet
+                Not assigned to a suite in any plan
               </DropdownMenuItem>
             ) : (
               memberships.map((m) => (

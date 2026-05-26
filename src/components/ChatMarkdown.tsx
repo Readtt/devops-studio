@@ -40,6 +40,11 @@ export type CaseLookup = (caseId: number) =>
       title: string;
       steps: { index: number; action: string; expected: string }[];
       webUrl: string | null;
+      /** Plan + suite the case is being viewed in, when the caller knows it
+       *  (e.g. suite chat). Forwarded on the open-test-case event so the
+       *  opened tab's Execute control targets the right test point instead
+       *  of falling back to a suite picker. */
+      suite?: { planId: number; suiteId: number } | null;
     }
   | null;
 
@@ -595,7 +600,12 @@ function CaseChip({
     e.stopPropagation();
     window.dispatchEvent(
       new CustomEvent("devops-studio:open-test-case", {
-        detail: { caseId, title: title ? `#${caseId} ${title}` : `#${caseId}` },
+        detail: {
+          caseId,
+          title: title ? `#${caseId} ${title}` : `#${caseId}`,
+          planId: ref?.suite?.planId ?? null,
+          suiteId: ref?.suite?.suiteId ?? null,
+        },
       }),
     );
   };
