@@ -53,6 +53,9 @@ type Props = {
   tabId: number;
   cwd: string;
   base: string | null;
+  /** Persisted ADO source for this tab (commit/PR/branch). Null/absent ⇒
+   *  the local working-copy diff. Survives reload + Duplicate via the tab. */
+  source?: import("./source").CodeReviewSource | null;
   /** When set, useCodeReview.ensure() will preload the matching history
    *  thread on mount. The diff is still re-read from disk (we don't
    *  persist diffs across sessions), so the conversation may reference
@@ -64,6 +67,7 @@ export function CodeReviewPane({
   tabId,
   cwd,
   base,
+  source,
   rehydrateThreadId,
 }: Props) {
   const ensure = useCodeReview((s) => s.ensure);
@@ -103,7 +107,7 @@ export function CodeReviewPane({
   const [atBottom, setAtBottom] = useState(true);
 
   useEffect(() => {
-    void ensure(tabId, cwd, base, rehydrateThreadId ?? null);
+    void ensure(tabId, cwd, base, rehydrateThreadId ?? null, source ?? null);
     invoke<string[]>("git_branch_list", { cwd })
       .then(setBranches)
       .catch(() => setBranches([]));

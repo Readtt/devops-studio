@@ -85,6 +85,10 @@ export type OpenTabInput =
       kind: "code-review";
       cwd: string;
       base?: string | null;
+      /** Which Azure DevOps unit to review (commit/PR/branch). Absent ⇒ the
+       *  local working-copy diff. Persisted on the tab so it survives reload
+       *  and is carried by Duplicate. */
+      source?: import("@/modules/code-review/source").CodeReviewSource | null;
       /** Pre-existing code-review thread to rehydrate. Used by the
        *  Chats sidebar to reopen past reviews. */
       rehydrateThreadId?: string | null;
@@ -116,6 +120,16 @@ export type TabsState = {
 
   renameTab: (id: number, title: string) => void;
   updateGeneratorRunId: (id: number, runId: string | null) => void;
+  /** Persist a code-review tab's live source/base so it survives reload and
+   *  Duplicate. The runtime store (useCodeReview) owns the in-memory slice;
+   *  this mirrors the user's choice onto the persisted tab. */
+  patchCodeReviewTab: (
+    id: number,
+    patch: {
+      source?: import("@/modules/code-review/source").CodeReviewSource | null;
+      base?: string | null;
+    },
+  ) => void;
 
   setActiveInLeaf: (leafId: string, tabId: number | null) => void;
   focusLeaf: (leafId: string) => void;
@@ -361,6 +375,7 @@ export const useTabsStore = create<TabsState>()(
               title: input.title ?? "Code review",
               cwd: input.cwd,
               base: input.base ?? null,
+              source: input.source ?? null,
               rehydrateThreadId: input.rehydrateThreadId ?? null,
               pinned: input.pinned ?? false,
             };
@@ -506,6 +521,9 @@ export const useTabsStore = create<TabsState>()(
             kind: "code-review",
             cwd: t.cwd,
             base: t.base,
+            // Carry the ADO source so a duplicated review keeps reviewing the
+            // same commit/PR/branch instead of silently reverting to local.
+            source: t.source ?? null,
             title: `${t.title} (copy)`,
           });
         }
@@ -543,6 +561,16 @@ export const useTabsStore = create<TabsState>()(
           const t = s.tabs[id];
           if (!t || t.kind !== "generator" || t.runId === runId) return s;
           return { tabs: { ...s.tabs, [id]: { ...t, runId } } };
+        }),
+
+      patchCodeReviewTab: (id, patch) =>
+        set((s) => {
+          const t = s.tabs[id];
+          if (!t || t.kind !== "code-review") return s;
+          const next = { ...t };
+          if ("source" in patch) next.source = patch.source ?? null;
+          if ("base" in patch) next.base = patch.base ?? null;
+          return { tabs: { ...s.tabs, [id]: next } };
         }),
 
       setActiveInLeaf: (leafId, tabId) =>

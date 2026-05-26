@@ -9,6 +9,7 @@ import {
 import type { CodeReviewSource } from "./source";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { useTabsStore } from "@/modules/tabs/store/useTabsStore";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import { bugsToContextBlocks } from "@/modules/ado/lib/bugContextBlock";
 import { resolveClaudeModelId, selectEngine } from "@/modules/ai/lib/engine";
@@ -66,6 +67,9 @@ type State = {
     /** Optional thread to rehydrate from. Used when the Chats sidebar
      *  reopens a past review. */
     rehydrateThreadId?: string | null,
+    /** Persisted ADO source from the tab. Seeds the slice on first mount /
+     *  after a reload so an ADO review doesn't revert to the local diff. */
+    source?: CodeReviewSource | null,
   ) => Promise<void>;
   refreshDiff: (tabId: number) => Promise<void>;
   changeBase: (tabId: number, base: string) => Promise<void>;
@@ -102,7 +106,7 @@ function patch(set: (fn: (s: State) => Partial<State>) => void, tabId: number, p
 export const useCodeReview = create<State>((set, get) => ({
   byTab: new Map(),
 
-  ensure: async (tabId, cwd, base, rehydrateThreadId) => {
+  ensure: async (tabId, cwd, base, rehydrateThreadId, source) => {
     const existing = get().byTab.get(tabId);
     if (existing && existing.cwd === cwd) {
       if (!existing.diff && !existing.diffLoading) {
@@ -139,7 +143,7 @@ export const useCodeReview = create<State>((set, get) => ({
         error: null,
         threadId: hist?.id ?? null,
         modelId: null,
-        source: null,
+        source: source ?? null,
       });
       return { byTab: next };
     });
@@ -202,6 +206,8 @@ export const useCodeReview = create<State>((set, get) => ({
       diff: null,
       threadId: null,
     });
+    // Mirror onto the persisted tab so reload + Duplicate keep this source.
+    useTabsStore.getState().patchCodeReviewTab(tabId, { source });
     await get().refreshDiff(tabId);
   },
 
@@ -219,6 +225,8 @@ export const useCodeReview = create<State>((set, get) => ({
       diff: null,
       threadId: null,
     });
+    // Persist the chosen base so a reload doesn't snap back to the original.
+    useTabsStore.getState().patchCodeReviewTab(tabId, { base });
     await get().refreshDiff(tabId);
   },
 
