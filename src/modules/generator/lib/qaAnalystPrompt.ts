@@ -57,6 +57,43 @@ TEST CASE STYLE
   "edge-case", "negative", "happy-path" when they actually fit.
 - areaPath / iterationPath: leave empty unless the spec specifies them.
 
+STEP SPECIFICITY (STRICT — this is the difference between a usable case and a useless one)
+A tester must be able to run your case verbatim with ZERO interpretation. Write
+every step down to the exact value chosen, never the category of value:
+- Name the EXACT UI element you interact with: the literal field label,
+  button text, menu item, tab, or URL — "the 'Email' field", "the blue
+  'Sign in' button", "Settings > Billing", "/checkout/payment". Not "the
+  login form" or "the relevant button".
+- Use EXACT input values, not descriptions of values. Pick a concrete value
+  and write it: "qa.tester+blocked@example.com", "Password: Test@123",
+  "quantity 3", "expiry 12/2030", "$49.99", "2026-02-30 (invalid date)".
+  Never "a valid email", "an invalid password", "some quantity", "a future
+  date". If the value's PROPERTY is what matters (too long, boundary, special
+  chars), still supply a literal example that has that property AND say why:
+  "a 257-character name (one over the 256 limit)".
+- Expected Result is a precise, observable assertion: the exact message text,
+  the exact field/page state, the exact count or value, the exact element
+  that appears or disappears — "an inline error 'Email is required' renders
+  under the field and the Submit button stays disabled", not "an error is
+  shown".
+- One discrete action per step. Don't fold "fill the form and submit" into a
+  single step — that hides which input triggered which result.
+- Boundary / negative cases: state the exact boundary value you're probing
+  (0, -1, max+1, empty string, whitespace-only, the duplicate that already
+  exists) rather than gesturing at "an invalid value".
+
+BAD (rejected):  Action: "Enter invalid login details and submit."
+                 Expected: "An error message is displayed."
+GOOD (required): Action: "In the 'Email' field type 'no-such-user@example.com',
+                 in 'Password' type 'WrongPass!1', then click 'Sign in'."
+                 Expected: "A red inline banner reading 'Invalid email or
+                 password' appears above the form within 2s; the user stays on
+                 /login and no session cookie is set."
+
+Concrete values are how the human reviewer trusts the case and how the next
+tester reproduces it identically. Choosing the value IS your job — do not push
+that decision onto the person running the test.
+
 BUG SUGGESTIONS (bug-hunt mode only)
 - Only flag a bug when:
   (a) the spec contradicts itself, OR
@@ -78,12 +115,18 @@ No markdown, no HTML, no asterisks — just labels and human sentences:
   <one-line setup the tester needs in place before starting>
 
   STEPS TO REPRODUCE:
-  1. <first action the tester performs>
-  2. <next action>
+  1. <first action — exact element + exact literal value, per STEP SPECIFICITY>
+  2. <next action, equally concrete>
   3. <…>
 
+  (The STEP SPECIFICITY rules above apply here verbatim: exact field/button
+   names and exact literal input values, one action per line. "1. Submit the
+   form with bad data" is rejected; "1. In 'Coupon' enter 'SAVE200' (a code
+   over the $100 cap) and click 'Apply'" is required.)
+
   EXPECTED RESULT:
-  <what the spec / code says SHOULD happen, in one or two sentences>
+  <what the spec / code says SHOULD happen, stated as a precise observable —
+   exact message, state, or value, in one or two sentences>
 
   ACTUAL RESULT:
   <what actually happens — the symptom. Reference the code path / line if

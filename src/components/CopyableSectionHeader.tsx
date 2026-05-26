@@ -84,6 +84,15 @@ export function CopyableSectionHeader({
   };
 
   const disabled = items.length === 0;
+  // Drafts have no ADO id yet, so they copy as bare title rows — there's no
+  // link to render. Only published items (id present) copy as "Kind <id>:
+  // title", hyperlinked when a webUrl is known. The tooltip says which of
+  // these the user will actually get so a draft copy doesn't promise a link
+  // that isn't there.
+  const hasIds = items.some((it) => it.id != null);
+  const copyHint = hasIds
+    ? `pastes as ${kind} ID + title rows (linked where published)`
+    : `pastes as plain title rows`;
   return (
     <div
       className={cn(
@@ -126,7 +135,7 @@ export function CopyableSectionHeader({
             ? `Nothing to copy yet`
             : copied
               ? `Copied ${items.length} ${label.toLowerCase()}`
-              : `Copy all ${items.length} ${label.toLowerCase()} — pastes as <link>: title rows`}
+              : `Copy all ${items.length} ${label.toLowerCase()} — ${copyHint}`}
         </TooltipContent>
       </Tooltip>
     </div>
