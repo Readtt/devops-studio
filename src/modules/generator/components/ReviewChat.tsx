@@ -38,6 +38,7 @@ export function ReviewChat({ onClose }: Props) {
 
   const messages = useGenerationSession((s) => s.chatMessages);
   const busy = useGenerationSession((s) => s.chatBusy);
+  const streamingId = useGenerationSession((s) => s.chatStreamingId);
   const error = useGenerationSession((s) => s.chatError);
   const send = useGenerationSession((s) => s.sendChatMessage);
   const cancel = useGenerationSession((s) => s.cancelChat);
@@ -172,28 +173,20 @@ export function ReviewChat({ onClose }: Props) {
                   )}
                 >
                   {m.role === "assistant" ? (
-                    <ChatMarkdown source={m.content} />
+                    m.id === streamingId && m.content.trim() === "" ? (
+                      <ThinkingDots />
+                    ) : (
+                      <ChatMarkdown
+                        source={m.content}
+                        streaming={m.id === streamingId}
+                      />
+                    )
                   ) : (
                     m.content
                   )}
                 </div>
               </li>
             ))}
-            {busy ? (
-              <li className="flex justify-start">
-                <div className="inline-flex items-center gap-1.5 rounded-md bg-foreground/[0.05] px-2.5 py-1.5 text-[11px] text-muted-foreground">
-                  <span className="inline-flex h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
-                  Thinking…
-                  <button
-                    type="button"
-                    onClick={() => cancel()}
-                    className="ml-1 font-mono text-[10px] text-muted-foreground/85 underline-offset-2 hover:underline"
-                  >
-                    cancel
-                  </button>
-                </div>
-              </li>
-            ) : null}
           </ul>
         )}
       </div>
@@ -228,22 +221,45 @@ export function ReviewChat({ onClose }: Props) {
             placeholder="Ask about the draft… (Enter to send, Shift+Enter for newline)"
             className="w-full resize-none rounded-sm border border-border/40 bg-input/40 px-2 py-1.5 pr-8 text-[11.5px] leading-relaxed outline-none focus:ring-2 focus:ring-ring/30"
           />
-          <button
-            type="button"
-            onClick={submit}
-            disabled={!draft.trim() || busy}
-            aria-label="Send message"
-            className={cn(
-              "absolute bottom-1.5 right-1.5 grid size-6 place-items-center rounded-sm transition-colors",
-              draft.trim() && !busy
-                ? "bg-primary text-primary-foreground hover:bg-primary/85"
-                : "bg-foreground/[0.06] text-muted-foreground/55",
-            )}
-          >
-            <HugeiconsIcon icon={ArrowTurnUpIcon} size={12} strokeWidth={2} />
-          </button>
+          {busy ? (
+            <button
+              type="button"
+              onClick={() => cancel()}
+              aria-label="Stop"
+              className="absolute bottom-1.5 right-1.5 grid size-6 place-items-center rounded-sm bg-foreground/[0.08] text-foreground/80 transition-colors hover:bg-foreground/[0.14]"
+            >
+              <span className="size-2.5 rounded-[2px] bg-current" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={submit}
+              disabled={!draft.trim()}
+              aria-label="Send message"
+              className={cn(
+                "absolute bottom-1.5 right-1.5 grid size-6 place-items-center rounded-sm transition-colors",
+                draft.trim()
+                  ? "bg-primary text-primary-foreground hover:bg-primary/85"
+                  : "bg-foreground/[0.06] text-muted-foreground/55",
+              )}
+            >
+              <HugeiconsIcon icon={ArrowTurnUpIcon} size={12} strokeWidth={2} />
+            </button>
+          )}
         </div>
       </div>
     </aside>
+  );
+}
+
+/** Three pulsing dots shown in the assistant bubble before the first token
+ *  lands — same language as the suite chat's streaming placeholder. */
+function ThinkingDots() {
+  return (
+    <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+      <span className="inline-flex h-1.5 w-1.5 animate-[chat-thinking-pulse_1.2s_ease-in-out_infinite] rounded-full bg-primary" />
+      <span className="inline-flex h-1.5 w-1.5 animate-[chat-thinking-pulse_1.2s_ease-in-out_infinite] rounded-full bg-primary [animation-delay:0.18s]" />
+      <span className="inline-flex h-1.5 w-1.5 animate-[chat-thinking-pulse_1.2s_ease-in-out_infinite] rounded-full bg-primary [animation-delay:0.36s]" />
+    </span>
   );
 }

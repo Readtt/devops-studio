@@ -53,8 +53,8 @@ import {
 import { entryToLabel, type ActivityEntry } from "../lib/activityLog";
 import { buildRefineUserPrompt } from "../lib/qaAnalystRefinePrompt";
 import {
-  runQaChat,
-  runQaChatClaude,
+  streamQaChat,
+  streamQaChatClaude,
   newChatMessageId,
   type ChatMessage,
 } from "../lib/qaChatRun";
@@ -267,6 +267,10 @@ export type SessionState = {
   /** Run id of the in-flight chat subprocess, when the engine is Claude
    *  CLI. Lets a cancel button abort the round mid-stream. */
   chatActiveClaudeRunId: string | null;
+  /** Id of the assistant message currently being streamed into, so the UI
+   *  can render the live caret / thinking placeholder on the right bubble.
+   *  Null when no response is streaming. */
+  chatStreamingId: string | null;
   /** Send a question to the chat thread. Optimistically appends a user
    *  message + a placeholder assistant message, then resolves the
    *  assistant content when the model returns. */
@@ -387,6 +391,7 @@ const initialState: Omit<
   refineRounds: [],
   chatMessages: [],
   chatBusy: false,
+  chatStreamingId: null,
   chatError: null,
   chatActiveClaudeRunId: null,
 };
@@ -1421,11 +1426,28 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       timestamp: newTimestamp(),
     };
     const priorHistory = s.chatMessages;
+    // Append the user turn AND an empty assistant placeholder we'll stream
+    // tokens into — same live-bubble pattern as the suite chat.
+    const assistantId = newChatMessageId();
+    const assistantMsg: ChatMessage = {
+      id: assistantId,
+      role: "assistant",
+      content: "",
+      timestamp: newTimestamp(),
+    };
     set({
       chatBusy: true,
       chatError: null,
-      chatMessages: [...priorHistory, userMsg],
+      chatStreamingId: assistantId,
+      chatMessages: [...priorHistory, userMsg, assistantMsg],
     });
+
+    const appendDelta = (delta: string) =>
+      set((curr) => ({
+        chatMessages: curr.chatMessages.map((m) =>
+          m.id === assistantId ? { ...m, content: m.content + delta } : m,
+        ),
+      }));
 
     const chat = useChatStore.getState();
     const keys = chat.apiKeys;
@@ -1434,11 +1456,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     const engineSel = selectEngine(modelId);
 
     try {
-      let assistantText: string;
       if (engineSel.engine === "claude-agent-sdk" && engineSel.active) {
         const runId = `chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
         set({ chatActiveClaudeRunId: runId });
-        const res = await runQaChatClaude({
+        await streamQaChatClaude({
           runId,
           requirements: s.requirements,
           changesets: s.changesets,
@@ -1452,10 +1473,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           sourceRoot: s.allowCodeSearch ? prefs.sourceRoot : null,
           authMode: engineSel.authMode ?? "api-key",
           bareMode: prefs.claudeBareMode,
+          onText: appendDelta,
         });
-        assistantText = res.text;
       } else {
-        const res = await runQaChat({
+        await streamQaChat({
           requirements: s.requirements,
           changesets: s.changesets,
           attachments: s.attachments,
@@ -1466,19 +1487,20 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           newQuestion: text,
           keys,
           modelId,
+          onText: appendDelta,
         });
-        assistantText = res.text;
       }
-      const assistantMsg: ChatMessage = {
-        id: newChatMessageId(),
-        role: "assistant",
-        content: assistantText || "(empty response)",
-        timestamp: newTimestamp(),
-      };
+      // Backfill a placeholder for a genuinely empty response so the bubble
+      // doesn't render blank.
       set((curr) => ({
         chatBusy: false,
         chatActiveClaudeRunId: null,
-        chatMessages: [...curr.chatMessages, assistantMsg],
+        chatStreamingId: null,
+        chatMessages: curr.chatMessages.map((m) =>
+          m.id === assistantId && m.content.trim() === ""
+            ? { ...m, content: "(empty response)" }
+            : m,
+        ),
       }));
     } catch (e) {
       const cancelled =
@@ -1486,11 +1508,17 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         e !== null &&
         (e as { kind?: string }).kind === "cancelled";
       if (!cancelled) console.error("[generator] chat failed:", e);
-      set({
+      // Drop the placeholder if nothing streamed (keep a partial answer on
+      // cancel — that text is still useful to the user).
+      set((curr) => ({
         chatBusy: false,
         chatActiveClaudeRunId: null,
+        chatStreamingId: null,
+        chatMessages: curr.chatMessages.filter(
+          (m) => m.id !== assistantId || m.content.trim() !== "",
+        ),
         chatError: cancelled ? null : errToString(e),
-      });
+      }));
     }
   },
 

@@ -3,10 +3,10 @@
 // Both engines (Vercel SDK + Claude CLI) are supported because users on a
 // CLI OAuth session don't have an Anthropic API key for the SDK path.
 
-import { generateText } from "ai";
+import { generateText, streamText } from "ai";
 import { getModel, type ModelId } from "@/modules/ai/config";
 import { buildLanguageModel } from "@/modules/ai/lib/agent";
-import { runClaudeQuery } from "@/modules/ai/lib/claude";
+import { runClaudeQuery, type ClaudeEvent } from "@/modules/ai/lib/claude";
 import type { ClaudeAuthMode } from "@/modules/ai/lib/engine";
 import { getKey } from "@/modules/ai/lib/keyring";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
@@ -100,6 +100,32 @@ export async function runQaChat(input: VercelChatInput): Promise<ChatRunResult> 
   return { text: result.text ?? "", durationMs: Date.now() - start };
 }
 
+/** Streaming variant of runQaChat. Calls `onText` with each delta as the
+ *  model produces it; resolves with the full accumulated text. Mirrors
+ *  streamSuiteChat so the review-pane "Ask" reads tokens live like every
+ *  other chat surface in the app. */
+export async function streamQaChat(
+  input: VercelChatInput & { onText: (delta: string) => void },
+): Promise<ChatRunResult> {
+  const model = getModel(input.modelId);
+  const lm = await buildLanguageModel(model.provider, input.keys, model.id, {
+    lmstudioBaseURL: input.lmstudioBaseURL,
+  });
+  const userPrompt = buildChatUserPrompt(input);
+  const start = Date.now();
+  const result = streamText({
+    model: lm,
+    system: CHAT_SYSTEM_PROMPT,
+    prompt: userPrompt,
+  });
+  let acc = "";
+  for await (const chunk of result.textStream) {
+    acc += chunk;
+    input.onText(chunk);
+  }
+  return { text: acc, durationMs: Date.now() - start };
+}
+
 // --- Claude CLI path --------------------------------------------------------
 
 export type ClaudeChatInput = ChatRunInput & {
@@ -132,6 +158,60 @@ export async function runQaChatClaude(
     bare: input.bareMode,
     env,
   });
+  return { text: result.text ?? "", durationMs: Date.now() - start };
+}
+
+/** Streaming Claude CLI variant. Surfaces each assistant text delta via
+ *  `onText`, deduping by message id the same way streamSuiteChatClaude does
+ *  (the CLI re-emits consolidated messages). Tool-use blocks are ignored —
+ *  the chat only needs the prose. */
+export async function streamQaChatClaude(
+  input: ClaudeChatInput & { onText: (delta: string) => void },
+): Promise<ChatRunResult> {
+  const env: Record<string, string> = {};
+  if (input.authMode === "api-key") {
+    const key = await getKey("anthropic");
+    if (key) env.ANTHROPIC_API_KEY = key;
+  }
+  const userPrompt = buildChatUserPrompt(input);
+  const start = Date.now();
+  const seenByMsgId = new Map<string, string>();
+  const onEvent = (event: ClaudeEvent) => {
+    if (event.type !== "assistant") return;
+    const msg = event.message as
+      | { id?: string; content?: Array<Record<string, unknown>> }
+      | undefined;
+    const msgId = msg?.id ?? "anon";
+    const blocks = msg?.content ?? [];
+    let combined = "";
+    for (const b of blocks) {
+      if (b && (b as { type?: string }).type === "text") {
+        combined += (b as { text?: string }).text ?? "";
+      }
+    }
+    const prior = seenByMsgId.get(msgId) ?? "";
+    if (combined.length > prior.length && combined.startsWith(prior)) {
+      seenByMsgId.set(msgId, combined);
+      input.onText(combined.slice(prior.length));
+    } else if (combined && combined !== prior) {
+      seenByMsgId.set(msgId, combined);
+      input.onText(combined);
+    }
+  };
+  const result = await runClaudeQuery(
+    {
+      runId: input.runId,
+      prompt: userPrompt,
+      systemPrompt: CHAT_SYSTEM_PROMPT,
+      cwd: input.sourceRoot ?? undefined,
+      model: input.modelId,
+      permissionMode: "bypassPermissions",
+      allowedTools: ["Read", "Glob", "Grep"],
+      bare: input.bareMode,
+      env,
+    },
+    onEvent,
+  );
   return { text: result.text ?? "", durationMs: Date.now() - start };
 }
 
