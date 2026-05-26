@@ -13,12 +13,14 @@ import {
   InformationCircleIcon,
   Settings01Icon,
   KeyboardIcon,
+  TaskDone01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { JSX, ReactNode, useEffect, useState } from "react";
 import { AboutSection } from "./sections/AboutSection";
 import { AzureDevOpsSection } from "./sections/AzureDevOpsSection";
+import { BestPracticesSection } from "./sections/BestPracticesSection";
 import { GeneralSection } from "./sections/GeneralSection";
 import { ModelsSection } from "./sections/ModelsSection";
 import { ShortcutsSection } from "./sections/ShortcutsSection";
@@ -58,6 +60,12 @@ const TABS: TabDef[] = [
     component: ModelsSection,
   },
   {
+    id: "best-practices",
+    label: "Best practices",
+    glyph: <HugeiconsIcon icon={TaskDone01Icon} size={12} strokeWidth={1.75} />,
+    component: BestPracticesSection,
+  },
+  {
     id: "terminal",
     label: "Terminal",
     glyph: <HugeiconsIcon icon={CommandLineIcon} size={12} strokeWidth={1.75} />,
@@ -76,6 +84,7 @@ const VALID_TABS: SettingsTab[] = [
   "shortcuts",
   "azure-devops",
   "models",
+  "best-practices",
   "terminal",
   "about",
 ];

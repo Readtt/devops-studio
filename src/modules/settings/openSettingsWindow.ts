@@ -5,6 +5,7 @@ export type SettingsTab =
   | "shortcuts"
   | "azure-devops"
   | "models"
+  | "best-practices"
   | "terminal"
   | "about";
 
