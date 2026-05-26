@@ -18,7 +18,6 @@ import {
   FileContentSchema,
   ProjectRefSchema,
   RepoRefSchema,
-  StaleCaseInfoSchema,
   SuiteRefSchema,
   TestCaseRefSchema,
   TestCaseSchema,
@@ -37,7 +36,6 @@ import {
   type FileContent,
   type ProjectRef,
   type RepoRef,
-  type StaleCaseInfo,
   type SuiteRef,
   type TestCase,
   type TestCaseRef,
@@ -355,24 +353,6 @@ export async function listCommitsSince(
   return CommitInfoSchema.array().parse(raw);
 }
 
-// --- Staleness ---
-
-export async function scanStaleness(): Promise<StaleCaseInfo[]> {
-  const raw = await invoke("ado_scan_staleness");
-  return StaleCaseInfoSchema.array().parse(raw);
-}
-
-export async function acknowledgeCase(caseId: number): Promise<void> {
-  await invoke("ado_acknowledge_case", { input: { caseId } });
-}
-
-export async function markForReview(
-  caseId: number,
-  reason: string,
-): Promise<void> {
-  await invoke("ado_mark_for_review", { input: { caseId, reason } });
-}
-
 export type WorkItemTitle = {
   id: number;
   title: string;
@@ -386,21 +366,6 @@ export async function getWorkItemTitles(
   if (ids.length === 0) return [];
   const raw = await invoke<WorkItemTitle[]>("ado_get_work_item_titles", { ids });
   return raw;
-}
-
-export type IndexLinkInput = {
-  repoId: string;
-  branch: string;
-  filePath: string;
-  symbol?: string | null;
-  baselineSha?: string;
-};
-
-export async function indexCaseLinks(
-  caseId: number,
-  links: IndexLinkInput[],
-): Promise<void> {
-  await invoke("ado_index_case_links", { input: { caseId, links } });
 }
 
 /**

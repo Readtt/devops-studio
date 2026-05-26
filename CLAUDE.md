@@ -32,10 +32,10 @@ src/                                      Frontend
 │   ├── search/                           Workspace-wide search surface
 │   ├── settings/                         Preferences store + cross-window settings bridge
 │   ├── shortcuts/                        Keyboard shortcut definitions
-│   ├── sidebar/                          Left sidebar rail (Plans/Stale/History/Chats)
+│   ├── sidebar/                          Left sidebar rail (Plans/History/Chats)
 │   ├── tabs/                             Recursive pane tree + tab store (split, drag, pin, dedup)
 │   ├── terminal/                         xterm.js pane + Quick Prompts (developer mode)
-│   ├── test-plans/                       Plans tree, suites, cases, stale queue, bug panes, Suite Chat
+│   ├── test-plans/                       Plans tree, suites, cases, bug panes, Suite Chat
 │   ├── theme/                            Light/dark/system theme provider
 │   └── updater/                          Tauri auto-update dialog
 ├── settings/                             Settings window (its own Vite entry)
@@ -53,7 +53,6 @@ src-tauri/src/                            Rust backend
     ├── net.rs                            HTTP + LM-Studio ping helpers
     ├── pty.rs                            portable-pty driver for the embedded terminal
     ├── secrets.rs                        OS keychain bridge
-    ├── staleness.rs                      Per-branch stale-case detection
     └── workspace.rs                      Source-dir authorization + path resolution
 ```
 
@@ -117,7 +116,7 @@ Generator can re-target itself mid-session via `setTarget(planId, suiteId)` so r
 
 The bottom status bar shows the current git branch of the user's source directory (`usePreferencesStore.sourceRoot`). Reading is done by `src/modules/git/useSourceDirGitInfo.ts` → Rust `git_repo_info`, polled every 30 s and on window focus.
 
-If `AzureDevOpsSection`'s tracking branch is set to the sentinel `$current`, the staleness scanner resolves it at scan-time from the live source-dir branch instead of using the saved value.
+If `AzureDevOpsSection`'s tracking branch is set to the sentinel `$current`, the generator resolves it at publish-time from the live source-dir branch instead of using the saved value, so code-link chips on published cases point at the branch you're actually working on.
 
 ## Release process
 
@@ -205,11 +204,11 @@ the matching repo secrets.
 - **Context menu items get a `description`, not a `<Tooltip>`.** Radix Tooltip and Radix ContextMenu manage their portals/focus independently and fight if you nest a tooltip on a menu item. Instead, pass `icon` + `description` props to `<ContextMenuItem>`. The component renders a Linear/Raycast-style two-line row — label on top, 10.5 px muted subtitle underneath — so right-clickers can see what an action does before they invoke it.
   ```tsx
   <ContextMenuItem
-    icon={<HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />}
-    description="Flag this case as needing attention — it shows up in the Stale queue."
+    icon={<HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={1.75} />}
+    description="Generate more cases into this same suite."
     onSelect={...}
   >
-    Mark for review
+    Generate sibling cases
   </ContextMenuItem>
   ```
   Add a description for any item whose label isn't fully self-explanatory ("Open" can ride bare; "Generate sibling cases" cannot).

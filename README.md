@@ -32,9 +32,9 @@ It's an editor-shaped tool: tabbed workspace, command palette, keyboard-driven, 
 - **Open externally** dropdown on every code-viewer tab: jump to the file in VS Code, Cursor, Visual Studio, Sublime, Zed, Vim/Neovim, Emacs, IntelliJ — or any custom command. Placeholders `{file}`, `{line}`, `{endLine}` work in the template, so the editor lands on the exact code section.
 - Reveal in the OS file manager when you want context, not the line.
 
-### Stay on top of stale tests
-- When linked source code changes upstream, **stale-detection** surfaces affected test cases in a dedicated queue. Acknowledge, mark-for-review, or re-publish a fresh draft against the current code.
-- The bottom status bar shows your source directory + the live git branch, so you always know what the staleness baseline is tracking.
+### Branch-aware code links
+- Published cases carry **code-link chips** that deep-link to the exact file + line in ADO Repos, pinned to your tracking branch — or the live source-dir branch when you set it to `$current`.
+- The bottom status bar shows your source directory + the live git branch, so you always know which branch those links point at.
 
 ### Chat with a published suite
 - Right-click any suite → **Open chat** and ask follow-ups grounded in the cases ADO actually has — "which of these cover the empty-tenant path?", "draft a sibling case for the timeout branch", "delete the duplicate at row 4". The Suite Chat pane streams responses, persists every thread in SQLite (cross-session), and surfaces them in the **Chats** sidebar.
@@ -59,7 +59,7 @@ API keys live in the OS keychain (Windows Credential Manager / macOS Keychain / 
 
 ### Editor-density UX
 - **Command palette** (`Ctrl/Cmd+K`) — jump to plans, cases, bugs, history, or start a generation
-- **Customizable shortcuts** for palette, settings, sidebar toggle, theme cycle, new generate tab, tab navigation, stale scan, zoom
+- **Customizable shortcuts** for palette, settings, sidebar toggle, theme cycle, new generate tab, tab navigation, zoom
 - **Workspace tabs with splits** — drag tabs to reorder within a strip, between panes to move, or into a leaf's edge zones to split horizontally / vertically. Ctrl-drag clones. Pin, duplicate, close-others / close-right / close-all, jump-to-N, reopen-closed; everything is keyboard-driven.
 - **UI scale slider** in Settings → General — independent of the OS zoom, with an 80% floor so dense panes stay readable.
 - **Persistent drafts** — every edit autosaves to history. Close the tab, close the window, reopen — your draft (including refine thinking) lands back exactly as you left it.

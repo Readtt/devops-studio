@@ -66,7 +66,7 @@
     },
     "category": "DeveloperTool",
     "shortDescription": "AI-native Azure DevOps Test Plans assistant",
-    "longDescription": "DevOps Studio — an AI-native desktop app for QA testers working in Azure DevOps Test Plans. Generate test cases from requirements + source code, manage staleness, and link tests to ADO Repos."
+    "longDescription": "DevOps Studio — an AI-native desktop app for QA testers working in Azure DevOps Test Plans. Generate test cases from requirements + source code and link tests to ADO Repos."
   },
   "plugins": {
     "updater": {

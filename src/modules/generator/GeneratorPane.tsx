@@ -2660,9 +2660,10 @@ function PublishLogSection({
           >
             <StatusDot status={e.status} />
             <span className="min-w-0 flex-1 truncate">{e.title}</span>
-            {/* Source-link indexing on cases is best-effort — when it fails
-                the case itself is still published, but the staleness scanner
-                won't auto-detect drift. Treat as a warning, not a failure. */}
+            {/* An "ok" entry can still carry a non-fatal warning — e.g. the
+                case published but a follow-up step (like recording its run
+                outcome) didn't complete. Surface it as a warning, not a
+                failure. */}
             {e.error && e.status === "ok" ? (
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -2672,7 +2673,7 @@ function PublishLogSection({
                       size={9}
                       strokeWidth={1.75}
                     />
-                    no drift tracking
+                    warning
                   </span>
                 </TooltipTrigger>
                 <TooltipContent
@@ -2680,8 +2681,7 @@ function PublishLogSection({
                   variant="panel"
                   className="max-w-[280px] px-3 py-2 text-[11px] leading-relaxed"
                 >
-                  Published, but the staleness index couldn't be updated — this
-                  case won't auto-flag when its source files change. Detail:{" "}
+                  Published, but a follow-up step didn&apos;t finish. Detail:{" "}
                   <span className="font-mono text-[10px]">{e.error}</span>
                 </TooltipContent>
               </Tooltip>

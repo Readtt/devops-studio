@@ -16,8 +16,8 @@ interface Props {
 }
 
 /** Status-bar chip that surfaces updater state without ever blocking the
- *  workspace. Lives alongside the ADO + stale-queue pills in the footer and
- *  uses the same visual vocabulary: 20px tall, 10.5px monospace tag with a
+ *  workspace. Lives alongside the other footer pills and uses the same visual
+ *  vocabulary: 20px tall, 10.5px monospace tag with a
  *  short label, a colored dot when something needs attention. */
 export function UpdaterStatusPill({ status, onReopenToast }: Props) {
   switch (status.kind) {

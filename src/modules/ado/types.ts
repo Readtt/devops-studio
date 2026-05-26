@@ -229,16 +229,6 @@ export const CommitInfoSchema = z.object({
 });
 export type CommitInfo = z.infer<typeof CommitInfoSchema>;
 
-// --- Staleness ---
-
-export const StaleCaseInfoSchema = z.object({
-  caseId: z.number().int(),
-  reason: z.string(),
-  changedFiles: z.array(z.string()),
-  commitCount: z.number().int(),
-});
-export type StaleCaseInfo = z.infer<typeof StaleCaseInfoSchema>;
-
 // --- Source link (renderer-side shape, used by Phase 7) ---
 
 export const SourceLinkSchema = z.object({

@@ -1,7 +1,6 @@
 //! ADO Git repos: list, read file, list commits since SHA.
 //!
-//! Used both by source-code linking (Phase 7) and by staleness detection
-//! (Phase 8) which polls for commit deltas.
+//! Used by source-code linking to build code-link chips on published cases.
 
 use serde::Deserialize;
 

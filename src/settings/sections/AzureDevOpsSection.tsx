@@ -340,8 +340,8 @@ export function AzureDevOpsSection() {
               {useDynamicBranch
                 ? "Used when the source directory has no resolvable branch (detached HEAD or not a git repo). Picker shows branches detected in your source repo."
                 : sourceRoot
-                  ? "Staleness scans watch this branch. The list is your source repo's actual branches — no typos possible."
-                  : "Staleness scans watch this branch. Set a source directory to populate the picker from your repo."}
+                  ? "Code-link chips on published cases point at this branch. The list is your source repo's actual branches — no typos possible."
+                  : "Code-link chips on published cases point at this branch. Set a source directory to populate the picker from your repo."}
             </p>
           </div>
         </div>

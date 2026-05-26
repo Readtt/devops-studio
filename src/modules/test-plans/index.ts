@@ -1,11 +1,9 @@
 export { TestPlansPanel } from "./TestPlansPanel";
 export { NewSuiteDialog } from "./NewSuiteDialog";
-export { StaleQueuePanel } from "./StaleQueuePanel";
 export { TestCasePane } from "./TestCasePane";
 export { BugPane } from "./BugPane";
 export { SuiteChatPane } from "./SuiteChatPane";
 export { ChatHistoryPanel } from "./ChatHistoryPanel";
 export { useTestPlans } from "./hooks/useTestPlans";
-export { useStaleCases } from "./hooks/useStaleCases";
 export * from "./lib/sourceLinksParser";
 export { parseCodeLinks, stripCodeLinksBlock } from "./lib/codeLinksParser";

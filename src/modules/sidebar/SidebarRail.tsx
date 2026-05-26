@@ -1,6 +1,5 @@
 import { cn } from "@/lib/utils";
 import {
-  AlertCircleIcon,
   BubbleChatIcon,
   Clock01Icon,
   TaskDone01Icon,
@@ -20,19 +19,11 @@ type RailItem = {
 type Props = {
   activeView: SidebarViewId;
   onSelectView: (view: SidebarViewId) => void;
-  /** Stale test cases pending review. */
-  staleCount?: number;
 };
 
-export function SidebarRail({ activeView, onSelectView, staleCount }: Props) {
+export function SidebarRail({ activeView, onSelectView }: Props) {
   const items: RailItem[] = [
     { id: "test-plans", label: "Plans", icon: TaskDone01Icon },
-    {
-      id: "stale-queue",
-      label: "Stale",
-      icon: AlertCircleIcon,
-      badge: staleCount,
-    },
     { id: "history", label: "History", icon: Clock01Icon },
     { id: "chat-history", label: "Chats", icon: BubbleChatIcon },
   ];

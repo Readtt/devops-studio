@@ -338,17 +338,6 @@ pub struct CommitInfo {
     pub changed_files: Vec<String>,
 }
 
-// --- Staleness ---
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StaleCaseInfo {
-    pub case_id: i64,
-    pub reason: String,
-    pub changed_files: Vec<String>,
-    pub commit_count: u32,
-}
-
 // --- Generic paged response from ADO REST ---
 
 #[derive(Debug, Deserialize)]

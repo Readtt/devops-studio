@@ -24,9 +24,7 @@ import {
 } from "@/modules/settings/store";
 import {
   ChatHistoryPanel,
-  StaleQueuePanel,
   TestPlansPanel,
-  useStaleCases,
 } from "@/modules/test-plans";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -104,7 +102,6 @@ import {
   launchTerminal,
 } from "@/modules/tabs/launchActions";
 import {
-  AlertCircleIcon,
   FolderOpenIcon,
   GitBranchIcon,
   PlusSignIcon,
@@ -174,7 +171,6 @@ function readSidebarView(): SidebarViewId {
     const stored = window.localStorage.getItem(SIDEBAR_VIEW_STORAGE_KEY);
     if (
       stored === "test-plans" ||
-      stored === "stale-queue" ||
       stored === "history" ||
       stored === "chat-history"
     ) {
@@ -593,13 +589,6 @@ function AppShell() {
     };
   }, []);
 
-  const staleCount = useStaleCases((s) => s.cases.length);
-  useEffect(() => {
-    const id = window.setTimeout(() => {
-      void useStaleCases.getState().scan();
-    }, 5000);
-    return () => window.clearTimeout(id);
-  }, []);
 
   // Side channel: any component (BugPane / TestCasePane / CommandPalette)
   // can dispatch this event to open a CodeViewer tab without prop-drilling.
@@ -1274,12 +1263,6 @@ function AppShell() {
                     </div>
                     <div
                       className="absolute inset-0 flex flex-col"
-                      style={{ display: sidebarView === "stale-queue" ? "flex" : "none" }}
-                    >
-                      <StaleQueuePanel onOpenCase={openTestCaseTab} />
-                    </div>
-                    <div
-                      className="absolute inset-0 flex flex-col"
                       style={{ display: sidebarView === "history" ? "flex" : "none" }}
                     >
                       <GenerationHistoryPane
@@ -1363,7 +1346,6 @@ function AppShell() {
                   <SidebarRail
                     activeView={sidebarView}
                     onSelectView={persistSidebarView}
-                    staleCount={staleCount}
                   />
                 </div>
               </ResizablePanel>
@@ -1401,23 +1383,6 @@ function AppShell() {
                 status={updater.status}
                 onReopenToast={reopenToast}
               />
-              {staleCount > 0 ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      onClick={() => persistSidebarView("stale-queue")}
-                      className="flex h-5 items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-1.5 text-amber-700 transition-colors hover:bg-amber-500/15 dark:text-amber-300"
-                    >
-                      <HugeiconsIcon icon={AlertCircleIcon} size={11} strokeWidth={1.75} />
-                      <span>Stale: {staleCount}</span>
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" className="text-[11px]">
-                    {staleCount} test case{staleCount === 1 ? "" : "s"} need review.
-                  </TooltipContent>
-                </Tooltip>
-              ) : null}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
@@ -1460,7 +1425,6 @@ function AppShell() {
                 suiteId: input?.suiteId ?? null,
               })
             }
-            onOpenStaleQueue={() => persistSidebarView("stale-queue")}
             onOpenTestPlansSidebar={() => persistSidebarView("test-plans")}
             onOpenHistory={() => persistSidebarView("history")}
             onOpenTerminal={(input) => openTerminalTab(input)}

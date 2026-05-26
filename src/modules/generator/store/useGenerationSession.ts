@@ -7,7 +7,6 @@ import {
   createBugAndLink,
   getConnection,
   getCase,
-  indexCaseLinks,
   listPlans,
   listSuiteCases,
   listSuites,
@@ -988,13 +987,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       const prior = okByUid.get(c.uid);
       if (prior?.result?.id) caseIdByDraftUid.set(c.uid, prior.result.id);
     }
-    // Pull the default tracking branch once for staleness baselines. If the
-    // user configured `$current`, resolve to the live source-dir branch so
-    // each generation is indexed on the branch the user is actually working
-    // on, not whatever was saved at setup time. We also capture the source-
-    // dir HEAD SHA here so bug code refs can be stamped with the same commit
-    // — cases get a baseline via indexCaseLinks, bugs didn't have an
-    // equivalent so the rendered SHA was always blank.
+    // Resolve the tracking branch once so published cases' code-link chips
+    // point at the right branch. If the user configured `$current`, resolve to
+    // the live source-dir branch instead of whatever was saved at setup time.
+    // We also capture the source-dir HEAD SHA here so bug code refs can be
+    // stamped with the same commit.
     let trackingBranch = "main";
     let sourceDirSha: string | null = null;
     try {
@@ -1045,35 +1042,6 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         const created = await createCaseInSuite(planId, suiteId, draft);
         caseIdByDraftUid.set(c.uid, created.id);
         updateLog(set, c.uid, { status: "ok", result: created });
-
-        // Populate the staleness index for future scans. The case itself
-        // succeeded — if indexing fails we keep the publish "ok" but surface
-        // the indexing miss as an inline warning on the log entry so the
-        // user knows staleness won't track this case until they re-publish.
-        if (c.sourceLinks.length > 0) {
-          try {
-            await indexCaseLinks(
-              created.id,
-              c.sourceLinks.map((l) => ({
-                repoId: l.repoId ?? l.repoName,
-                branch: trackingBranch,
-                filePath: l.filePath,
-                symbol: l.symbol ?? undefined,
-                // Hand the source-dir HEAD SHA to the indexer so it doesn't
-                // have to call ADO's commits API to resolve a baseline. Most
-                // users' source isn't in an ADO Git repo (it's GitHub /
-                // GitLab / local) — without a SHA hint the indexer's HEAD
-                // lookup 404s and every published case shows a "no drift
-                // tracking" pill. Passing the local SHA short-circuits that.
-                baselineSha: sourceDirSha ?? undefined,
-              })),
-            );
-          } catch (e) {
-            updateLog(set, c.uid, {
-              error: `Published, but staleness indexing failed: ${errToString(e)}`,
-            });
-          }
-        }
       } catch (e) {
         updateLog(set, c.uid, {
           status: "failed",

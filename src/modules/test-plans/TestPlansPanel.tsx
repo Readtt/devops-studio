@@ -18,7 +18,6 @@ import { cn } from "@/lib/utils";
 import {
   adoErrorMessage,
   getConnection,
-  markForReview,
   type LinkedWorkItem,
 } from "@/modules/ado";
 import { useWorkItemTitles } from "@/modules/ado/hooks/useWorkItemTitles";
@@ -1226,15 +1225,6 @@ function CaseRow({
               Copy link
             </ContextMenuItem>
             <ContextMenuSeparator />
-            <ContextMenuItem
-              icon={<HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />}
-              description="Flag for follow-up — appears in the Stale queue."
-              onSelect={() => {
-                void markForReview(tc.id, "User requested review");
-              }}
-            >
-              Mark for review
-            </ContextMenuItem>
             <ContextMenuItem
               icon={<HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={1.75} />}
               description="Generate more cases into this same suite."

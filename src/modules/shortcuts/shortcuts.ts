@@ -41,7 +41,6 @@ export type ShortcutId =
   | "pane.focusRight"
   | "pane.focusUp"
   | "pane.focusDown"
-  | "stale.scan"
   | "generator.new"
   | "terminal.new"
   | "terminal.copy"
@@ -107,7 +106,7 @@ export const SHORTCUTS: Shortcut[] = [
   },
   {
     id: "sidebar.toggle",
-    label: "Toggle sidebar (Plans / Stale / History)",
+    label: "Toggle sidebar (Plans / History)",
     group: "General",
     defaultBindings: [{ [MOD_PROP]: true, key: "b" }],
   },
@@ -285,12 +284,6 @@ export const SHORTCUTS: Shortcut[] = [
     label: "Focus pane below",
     group: "Panes",
     defaultBindings: [{ [MOD_PROP]: true, alt: true, key: "ArrowDown" }],
-  },
-  {
-    id: "stale.scan",
-    label: "Scan for stale test cases",
-    group: "ADO",
-    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "s" }],
   },
   {
     id: "view.zoomIn",

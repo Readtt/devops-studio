@@ -10,19 +10,17 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { getBug, getCase, type Bug, type TestCase } from "@/modules/ado";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
-import { useStaleCases, useTestPlans } from "@/modules/test-plans";
+import { useTestPlans } from "@/modules/test-plans";
 import {
   useSearchIndex,
   type SearchResult,
 } from "@/modules/search/useSearchIndex";
 import {
-  AlertCircleIcon,
   Bug01Icon,
   Clock01Icon,
   CloudServerIcon,
   CommandLineIcon,
   PlusSignIcon,
-  RefreshIcon,
   Search01Icon,
   Settings01Icon,
   TaskDone01Icon,
@@ -39,7 +37,6 @@ type Props = {
     planId?: number | null;
     suiteId?: number | null;
   }) => void;
-  onOpenStaleQueue: () => void;
   onOpenTestPlansSidebar: () => void;
   onOpenHistory?: () => void;
   onOpenBug?: (input: { bugId: number; title: string }) => void;
@@ -68,7 +65,6 @@ export function CommandPalette({
   onOpenChange,
   onOpenCase,
   onStartGenerator,
-  onOpenStaleQueue,
   onOpenTestPlansSidebar,
   onOpenHistory,
   onOpenBug,
@@ -78,8 +74,6 @@ export function CommandPalette({
 }: Props) {
   const [query, setQuery] = useState("");
   const { plans, configured, refreshConnection } = useTestPlans();
-  const refreshStale = useStaleCases((s) => s.scan);
-  const staleCount = useStaleCases((s) => s.cases.length);
   const { search } = useSearchIndex();
 
   // Keep the plan list warm when the palette is opened.
@@ -288,29 +282,6 @@ export function CommandPalette({
           >
             <HugeiconsIcon icon={TaskDone01Icon} size={12} strokeWidth={1.75} />
             Open Test Plans sidebar
-          </CommandItem>
-          <CommandItem
-            value="refresh-stale"
-            onSelect={() => run(() => refreshStale())}
-          >
-            <HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />
-            Refresh staleness scan
-          </CommandItem>
-          <CommandItem
-            value="open-stale-queue"
-            onSelect={() => run(onOpenStaleQueue)}
-          >
-            <HugeiconsIcon
-              icon={AlertCircleIcon}
-              size={12}
-              strokeWidth={1.75}
-            />
-            Open Stale queue
-            {staleCount > 0 ? (
-              <span className="ml-auto rounded-full bg-amber-500/15 px-1.5 py-px text-[10px] font-medium text-amber-700 dark:text-amber-300">
-                {staleCount}
-              </span>
-            ) : null}
           </CommandItem>
           {onOpenHistory ? (
             <CommandItem
