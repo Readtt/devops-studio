@@ -1,6 +1,8 @@
 mod modules;
 
-use modules::{ado, chat_threads, claude, fs, git, history, net, pty, secrets, workspace};
+use modules::{
+    ado, chat_threads, claude, confidence_store, fs, git, history, net, pty, secrets, workspace,
+};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::sync::Mutex;
@@ -433,6 +435,7 @@ pub fn run() {
         .manage(pty::PtyState::default())
         .manage(ado::client::AdoState::default())
         .manage(chat_threads::ChatThreadsState::default())
+        .manage(confidence_store::ConfidenceStoreState::default())
         .setup(|app| {
             // Hydrate the in-memory ADO connection state from disk + keychain.
             // Non-blocking; failures (e.g. first run with no settings) are
@@ -539,6 +542,9 @@ pub fn run() {
             chat_threads::chat_threads_delete_suite,
             chat_threads::chat_threads_list,
             chat_threads::chat_threads_list_for_suite,
+            confidence_store::confidence_save,
+            confidence_store::confidence_get,
+            confidence_store::confidence_get_many,
             // --- Generation history ---
             history::history_save_run,
             history::history_list_runs,

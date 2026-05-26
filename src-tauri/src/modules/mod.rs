@@ -1,6 +1,7 @@
 pub mod ado;
 pub mod chat_threads;
 pub mod claude;
+pub mod confidence_store;
 pub mod fs;
 pub mod git;
 pub mod history;

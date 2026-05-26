@@ -30,6 +30,11 @@ import { useWorkItemTitles } from "@/modules/ado/hooks/useWorkItemTitles";
 import type { LinkedWorkItem } from "@/modules/ado";
 import { EditableText } from "@/modules/generator/components/EditableText";
 import { OutcomeControl } from "./OutcomeControl";
+import { ConfidenceChip } from "./components/ConfidenceChip";
+import { fromTestCase } from "./lib/runConfidenceEval";
+import { evaluateCaseConfidence } from "./lib/evaluateCaseConfidence";
+import { getConfidence, saveConfidence } from "./lib/confidenceApi";
+import type { ConfidenceVerdict } from "./lib/confidence";
 
 type Props = {
   caseId: number;
@@ -53,6 +58,39 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
   // Bumped on every case reload (button + window focus) so the header outcome
   // control re-reads its test point alongside the rest of the case.
   const [reloadKey, setReloadKey] = useState(0);
+  // AI confidence verdict for this case (predicted pass + calibrated %).
+  const [verdict, setVerdict] = useState<ConfidenceVerdict | null>(null);
+  const [evaluating, setEvaluating] = useState(false);
+
+  // Load any persisted verdict for this case on open. Recomputable, so a stale
+  // verdict just sits until the user re-evaluates.
+  useEffect(() => {
+    let alive = true;
+    void getConfidence(caseId)
+      .then((v) => {
+        if (alive) setVerdict(v);
+      })
+      .catch(() => {
+        if (alive) setVerdict(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [caseId]);
+
+  const handleEvaluate = useCallback(async () => {
+    if (!tc || evaluating) return;
+    setEvaluating(true);
+    try {
+      const v = await evaluateCaseConfidence(fromTestCase(tc));
+      setVerdict(v);
+      await saveConfidence(tc.id, v).catch(() => undefined);
+    } catch (e) {
+      console.error("[confidence] evaluation failed:", e);
+    } finally {
+      setEvaluating(false);
+    }
+  }, [tc, evaluating]);
 
   // Optimistic title commit: update local state first so the UI feels live,
   // revert on a wire-level failure. ADO's response carries the new System.Title
@@ -209,7 +247,12 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
               className="min-w-0 flex-1 truncate"
             />
           </h1>
-          <div className="flex shrink-0 items-center gap-1">
+          <div className="flex shrink-0 items-center gap-1.5">
+            <ConfidenceChip
+              verdict={verdict}
+              loading={evaluating}
+              onEvaluate={() => void handleEvaluate()}
+            />
             <OutcomeControl
               caseId={tc.id}
               planId={planId}
