@@ -22,6 +22,7 @@ import {
   type TestCase,
 } from "@/modules/ado";
 import type { ModelId } from "@/modules/ai/config";
+import type { Attachment } from "@/components/chat/attachments";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   newSuiteChatMessageId,
@@ -145,7 +146,12 @@ type Store = {
   loadCases: (planId: number, suiteId: number, force?: boolean) => Promise<void>;
   setFilter: (planId: number, suiteId: number, filter: string) => void;
 
-  sendMessage: (planId: number, suiteId: number, q: string) => Promise<void>;
+  sendMessage: (
+    planId: number,
+    suiteId: number,
+    q: string,
+    attachments?: Attachment[],
+  ) => Promise<void>;
   cancel: (planId: number, suiteId: number) => void;
   clearMessages: (planId: number, suiteId: number) => void;
   dismissError: (planId: number, suiteId: number) => void;
@@ -563,9 +569,10 @@ export const useSuiteChat = create<Store>((set, get) => ({
     patchSuite(set, planId, suiteId, { filter });
   },
 
-  sendMessage: async (planId, suiteId, q) => {
+  sendMessage: async (planId, suiteId, q, attachments) => {
     const text = q.trim();
-    if (!text) return;
+    const atts = attachments && attachments.length > 0 ? attachments : undefined;
+    if (!text && !atts) return;
     const sk = suiteKey(planId, suiteId);
     const suite = get().bySuite.get(sk);
     if (!suite) return;
@@ -587,6 +594,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
       role: "user",
       content: text,
       timestamp: new Date().toISOString(),
+      attachments: atts,
     };
     const assistantId = newSuiteChatMessageId();
     const assistantMsg: SuiteChatMessage = {
@@ -598,7 +606,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
     // First user message? Use it as the auto-title.
     const autoTitle =
       curr.messages.length === 0 && !curr.title
-        ? text.replace(/\s+/g, " ").trim().slice(0, 60)
+        ? (text || "Image attachment").replace(/\s+/g, " ").trim().slice(0, 60)
         : curr.title;
 
     patchThread(set, planId, suiteId, threadId, {
@@ -661,6 +669,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
           cases: promptCases,
           history: priorMessages,
           newQuestion: text,
+          attachments: atts,
           modelId: resolveClaudeModelId(modelId) as typeof modelId,
           sourceRoot,
           authMode: engineSel.authMode ?? "api-key",
@@ -675,6 +684,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
           cases: promptCases,
           history: priorMessages,
           newQuestion: text,
+          attachments: atts,
           keys,
           modelId,
           sourceRoot,

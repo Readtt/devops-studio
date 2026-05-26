@@ -59,6 +59,9 @@ export type SuiteChatMessage = {
   /** Map of devops-edit content hash → applied record. Optional so older
    *  persisted threads still load. */
   appliedEdits?: Record<string, AppliedEditRecord>;
+  /** Files/images the user attached to this turn. Persisted inline (base64
+   *  for images) so they survive a reload. Only set on user messages. */
+  attachments?: Attachment[];
 };
 
 const SUITE_CHAT_SYSTEM_PROMPT = `You are a senior QA engineer chatting with the user about a SUITE OF TEST CASES that already exist in Azure DevOps. The cases have been published; this conversation is for analysis, review, suggested edits, and "does this actually cover what the spec says it does".
