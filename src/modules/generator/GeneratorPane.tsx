@@ -62,6 +62,7 @@ import { ReviewChat } from "./components/ReviewChat";
 import { TargetContextChip } from "./components/TargetContextChip";
 import { BugCaseLinkPicker } from "./components/BugCaseLinkPicker";
 import { CopyableSectionHeader } from "@/components/CopyableSectionHeader";
+import { RefineChangesPanel } from "./RefineChangesPanel";
 import {
   ingestFile,
   synthesizeClipboardImageName,
@@ -1542,6 +1543,8 @@ function ReviewPhase({
               }`}
         </Button>
       </div>
+
+      <RefineChangesPanel />
 
       <CopyableSectionHeader
         label="Cases"
