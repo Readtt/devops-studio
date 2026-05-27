@@ -261,6 +261,9 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
             />
           </h1>
           <div className="flex shrink-0 items-center gap-1.5">
+            {/* Status group: the AI's prediction (pass-readiness) sits beside
+                the recorded run outcome — predicted vs. actual — then a divider
+                separates them from the utility actions. */}
             <ConfidenceChip
               verdict={verdict}
               loading={evaluating}
@@ -275,6 +278,10 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
               planId={planId}
               suiteId={suiteId}
               refreshKey={reloadKey}
+            />
+            <div
+              aria-hidden
+              className="mx-0.5 h-5 w-px self-center bg-border/60"
             />
             <Button
               size="sm"
