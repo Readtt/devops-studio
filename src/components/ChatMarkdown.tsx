@@ -1,6 +1,7 @@
 import { Fragment, memo, useMemo, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { CodeRefChip, parseCodeRef } from "@/components/CodeRefChip";
+import { CODE_REF_PATTERN, isCodeRefToken } from "@/components/codeRef";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -516,12 +517,40 @@ function renderInline(input: string, ctx: InlineCtx): ReactNode {
     if (input[i] === "`") {
       const end = input.indexOf("`", i + 1);
       if (end > i) {
+        const inner = input.slice(i + 1, end);
+        const token = inner.trim();
+        // Models routinely wrap a cited source in backticks (the prompts even
+        // show the format that way), which used to render as dead monospace
+        // instead of a clickable chip. Linkify a back-ticked file ref or
+        // `#id` the same as a bare one so "give me the source" is openable.
+        if (isCodeRefToken(token)) {
+          const parsed = parseCodeRef(token);
+          if (parsed) {
+            nodes.push(
+              <CodeRefChip key={key++} path={parsed.path} ranges={parsed.ranges} />,
+            );
+            i = end + 1;
+            continue;
+          }
+        }
+        const caseM = token.match(/^#(\d{3,7})$/);
+        if (caseM) {
+          nodes.push(
+            <CaseChip
+              key={key++}
+              caseId={Number.parseInt(caseM[1], 10)}
+              lookupCase={ctx.lookupCase}
+            />,
+          );
+          i = end + 1;
+          continue;
+        }
         nodes.push(
           <code
             key={key++}
             className="rounded-sm bg-foreground/[0.08] px-1 py-px font-mono text-[10.5px] text-foreground/95"
           >
-            {input.slice(i + 1, end)}
+            {inner}
           </code>,
         );
         i = end + 1;
@@ -591,15 +620,11 @@ function pushTextWithAutoLinks(
   // rather than a work-item id. `\B` keeps us from matching inside words
   // (e.g. "color: #abc").
   // Group 3 captures the whole file ref INCLUDING a multi-range line spec
-  // ("foo.cs:376,594-600,1080"); parseCodeRef splits it. Trailing ranges used
-  // to fall outside the match and render as dangling plain text.
-  // Extension allowlist — longest-first where a prefix collides (csproj|cs,
-  // vbproj|vbhtml|vb, config|conf) so the right one wins. Covers the .NET/web
-  // stack this tool reviews (aspx/ascx/config/csproj/resx/props/targets/sln)
-  // plus the usual source/markup/style/config files. A ref only linkifies as
+  // ("foo.cs:376,594-600,1080"); parseCodeRef splits it. The extension
+  // allowlist lives in codeRef.ts (CODE_REF_PATTERN) so this scanner and the
+  // inline-backtick linkifier stay in sync. A ref only matches as
   // `name.ext:line`, so a bare word like "config:" never matches.
-  const re =
-    /(\B#(\d{3,7})\b)|((?:[\w./-]+\/)?[\w.-]+\.(?:tsx?|jsx?|mjs|cjs|cshtml|csproj|cs|razor|vbproj|vbhtml|vb|xaml|fs|java|kt|go|py|rs|rb|php|swift|m|mm|c|cc|cpp|h|hpp|css|scss|sass|less|html?|json|jsonc|yaml|yml|md|sql|sh|ps1|toml|ini|xml|aspx|ascx|asax|ashx|asmx|master|resx|config|conf|props|targets|sln|vue|svelte|tauri):\d+(?:[-–]\d+)?(?:\s*,\s*:?\d+(?:[-–]\d+)?)*)/g;
+  const re = new RegExp(`(\\B#(\\d{3,7})\\b)|(${CODE_REF_PATTERN})`, "g");
   let last = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text))) {

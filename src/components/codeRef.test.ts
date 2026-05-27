@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fmtRange, parseCodeRef, shortenPath } from "./codeRef";
+import { fmtRange, isCodeRefToken, parseCodeRef, shortenPath } from "./codeRef";
 
 describe("parseCodeRef", () => {
   it("returns null for empty / whitespace / bare scheme", () => {
@@ -65,6 +65,23 @@ describe("parseCodeRef", () => {
       path: "MyApp.Web/Controllers/HomeController.cs",
       ranges: [{ start: 120, end: undefined }],
     });
+  });
+});
+
+describe("isCodeRefToken", () => {
+  it("accepts a back-tickable file ref carrying a line/range", () => {
+    expect(isCodeRefToken("src/foo.ts:42")).toBe(true);
+    expect(isCodeRefToken("foo.cs:376,594-600,1080")).toBe(true);
+    expect(isCodeRefToken("iSyncKit2/RESTAPI/Controllers/AccountsController.cs:1")).toBe(true);
+    expect(isCodeRefToken("  MyApp.Web/Controllers/HomeController.cs:120  ")).toBe(true);
+  });
+
+  it("rejects tokens that aren't a real file ref (so inline code stays code)", () => {
+    expect(isCodeRefToken("package.json")).toBe(false); // no line spec
+    expect(isCodeRefToken("npm run build")).toBe(false);
+    expect(isCodeRefToken("someVariable")).toBe(false);
+    expect(isCodeRefToken("config:")).toBe(false);
+    expect(isCodeRefToken("foo.xyz:42")).toBe(false); // extension not allowlisted
   });
 });
 

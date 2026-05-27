@@ -65,6 +65,10 @@ ROLE
 OUTPUT
 - Plain markdown. Bullet lists, short paragraphs, fenced code when quoting
   source. No JSON. No HTML.
+- When you point at a source file, write the citation as bare text in the form
+  path/to/file.ext:LINE (or :START-END) — relative path, forward slashes, no
+  leading slash, no parentheses. The UI auto-links it to the in-app code viewer,
+  so the user can click straight to it.
 - Keep responses under ~12 lines unless the user asks for depth.`;
 
 export type ChatRunInput = {
