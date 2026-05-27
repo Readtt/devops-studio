@@ -46,7 +46,7 @@ import {
  *  this size the system prompt overwhelms most context windows AND the
  *  user is unlikely to be asking suite-wide questions anyway. We surface
  *  the truncation explicitly so the user knows what got cut. */
-const PROMPT_CASE_CAP = 50;
+export const PROMPT_CASE_CAP = 50;
 
 export type ThreadSummary = {
   threadId: string;
@@ -734,7 +734,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
     // the user attaching anything. Merged with any work items the user
     // mentioned with #id, deduped, and capped so a huge suite can't blow the
     // prompt budget.
-    const linkedBugIds = collectLinkedBugIds(promptCases, 25);
+    const linkedBugIds = collectLinkedBugIds(promptCases, LINKED_BUG_CAP);
     const mergedBugIds = Array.from(
       new Set([...(bugIds ?? []), ...linkedBugIds]),
     );
@@ -944,9 +944,13 @@ export const useSuiteChat = create<Store>((set, get) => ({
  *  defect related to the case, which is what we want to auto-inject. */
 const BUG_LINK_KINDS = new Set(["Tested by", "Tests"]);
 
+/** Cap on how many linked bugs auto-inject into suite-chat context. Exported
+ *  so the context chip can show the same number the runner uses. */
+export const LINKED_BUG_CAP = 25;
+
 /** Collect unique bug ids linked to the given cases, capped. Drives the
  *  auto-injection of linked bugs into suite-chat context. */
-function collectLinkedBugIds(cases: TestCase[], cap: number): number[] {
+export function collectLinkedBugIds(cases: TestCase[], cap: number): number[] {
   const seen = new Set<number>();
   const out: number[] = [];
   for (const c of cases) {
@@ -964,7 +968,7 @@ function collectLinkedBugIds(cases: TestCase[], cap: number): number[] {
  *  serialized into the prompt. Matches against id, title, tags, and step
  *  text so users can scope to "auth" or "#15310" or "rate-limit". Empty
  *  filter = pass through unchanged. */
-function applyCaseFilter(cases: TestCase[], filter: string): TestCase[] {
+export function applyCaseFilter(cases: TestCase[], filter: string): TestCase[] {
   const needle = filter.trim().toLowerCase();
   if (!needle) return cases;
   // Support `#123` as a hard id match.

@@ -87,7 +87,14 @@ import {
   Search01Icon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
-import { useSuiteChat } from "./hooks/useSuiteChat";
+import {
+  useSuiteChat,
+  applyCaseFilter,
+  collectLinkedBugIds,
+  LINKED_BUG_CAP,
+  PROMPT_CASE_CAP,
+} from "./hooks/useSuiteChat";
+import { ContextChip, type SuiteChatScope } from "./components/ContextChip";
 
 type Props = {
   planId: number;
@@ -145,6 +152,7 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
   const [draft, setDraft] = useState("");
   const att = useAttachments();
   const bugCtx = useBugContext();
+  const bestPracticeFiles = usePreferencesStore((s) => s.bestPracticeFiles);
   const mention = useWorkItemMention({
     value: draft,
     onValueChange: setDraft,
@@ -652,6 +660,24 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
     }).length;
   })();
 
+  // Exactly what the next turn will hand the model — computed with the same
+  // helpers the runner uses (applyCaseFilter + collectLinkedBugIds) so the
+  // chip never lies about scope. Recomputed on load, so it "persists" across a
+  // refresh by reflecting the live suite state.
+  const contextScope = useMemo<SuiteChatScope>(() => {
+    const scoped = cases ? applyCaseFilter(cases, filter) : [];
+    return {
+      cases: scoped.map((c) => ({ id: c.id, title: c.title })),
+      autoBugIds: collectLinkedBugIds(scoped, LINKED_BUG_CAP),
+      mentioned: bugCtx.selected.map((b) => ({ id: b.id, title: b.title })),
+      bestPracticeFiles: bestPracticeFiles
+        .filter((f) => f.enabled)
+        .map((f) => f.label),
+      notLoaded: truncated ? Math.max(0, totalCases - (cases?.length ?? 0)) : 0,
+      caseCap: PROMPT_CASE_CAP,
+    };
+  }, [cases, filter, bugCtx.selected, bestPracticeFiles, truncated, totalCases]);
+
   const submit = () => {
     const text = draft.trim();
     if ((!text && att.attachments.length === 0) || busy || !cases) return;
@@ -677,6 +703,7 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
         totalCases={totalCases}
         truncated={truncated}
         scopedCount={scopedCount}
+        contextScope={contextScope}
         filter={filter}
         onFilterChange={(v) => setFilter(planId, suiteId, v)}
         modelId={modelId}
@@ -793,6 +820,7 @@ function ChatHeader({
   totalCases,
   truncated,
   scopedCount,
+  contextScope,
   filter,
   onFilterChange,
   modelId,
@@ -817,6 +845,7 @@ function ChatHeader({
   totalCases: number;
   truncated: boolean;
   scopedCount: number;
+  contextScope: SuiteChatScope;
   filter: string;
   onFilterChange: (v: string) => void;
   modelId: ModelId | null;
@@ -1000,6 +1029,7 @@ function ChatHeader({
             "—"
           )}
         </span>
+        {cases ? <ContextChip scope={contextScope} /> : null}
         {/* Scope-narrowing input. Earlier copy ("Search cases…") didn't
             explain why this control exists — users assumed it was a UI
             filter and ignored it. It's actually a budget control: the

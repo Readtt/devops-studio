@@ -1,0 +1,216 @@
+import { cn } from "@/lib/utils";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  BugIcon,
+  DatabaseIcon,
+  File01Icon,
+  TestTubeIcon,
+} from "@hugeicons/core-free-icons";
+
+/** Exactly what the suite chat will send the model this turn. Computed live
+ *  from the in-scope cases + their linked bugs + #mentioned items + the
+ *  best-practice files, so the count the chip shows is the real payload, not
+ *  a guess. */
+export type SuiteChatScope = {
+  cases: { id: number; title: string }[];
+  /** Bug ids auto-injected because they're linked to an in-scope case. */
+  autoBugIds: number[];
+  /** Work items the user #mentioned this turn (carry titles). */
+  mentioned: { id: number; title: string }[];
+  bestPracticeFiles: string[];
+  /** Cases that exist in the suite but weren't loaded (hard cap). */
+  notLoaded: number;
+  caseCap: number;
+};
+
+/**
+ * Inspectable "what does the chat know?" chip. Replaces a silent cap with a
+ * visible, openable scope: the QA tester can see every case and bug the model
+ * was handed instead of guessing. Click to open a scrollable popover — capped
+ * height so a 50-case suite can't blow past the viewport.
+ */
+export function ContextChip({ scope }: { scope: SuiteChatScope }) {
+  const caseCount = scope.cases.length;
+  const bugCount = scope.autoBugIds.length + scope.mentioned.length;
+
+  const openCase = (id: number) =>
+    window.dispatchEvent(
+      new CustomEvent("devops-studio:open-test-case", {
+        detail: { caseId: id, title: `#${id}` },
+      }),
+    );
+  const openBug = (id: number) =>
+    window.dispatchEvent(
+      new CustomEvent("devops-studio:open-bug", {
+        detail: { bugId: id, title: `Bug #${id}` },
+      }),
+    );
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-foreground/[0.03] px-2 py-0.5 text-[10.5px] font-medium text-muted-foreground transition-colors hover:border-border hover:bg-foreground/[0.06] hover:text-foreground"
+          title="See exactly which cases and bugs the chat was given"
+        >
+          <HugeiconsIcon icon={DatabaseIcon} size={11} strokeWidth={1.75} />
+          <span className="tabular-nums">
+            {caseCount} case{caseCount === 1 ? "" : "s"} · {bugCount} bug
+            {bugCount === 1 ? "" : "s"}
+          </span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        side="bottom"
+        className="w-80 max-w-[90vw] p-0"
+      >
+        <div className="border-b border-border/40 px-3 py-2">
+          <p className="text-[11px] font-medium text-foreground">In context</p>
+          <p className="text-[10.5px] leading-snug text-muted-foreground">
+            Everything below is sent to the model with your next message.
+          </p>
+        </div>
+        <div className="max-h-[min(60vh,420px)] overflow-y-auto py-1">
+          <Section
+            icon={TestTubeIcon}
+            label="Cases"
+            count={scope.cases.length}
+          />
+          {scope.cases.map((c) => (
+            <Row key={`c-${c.id}`} onClick={() => openCase(c.id)}>
+              <span className="font-mono text-primary">#{c.id}</span>
+              <span className="min-w-0 flex-1 truncate text-foreground/80">
+                {c.title}
+              </span>
+            </Row>
+          ))}
+          {scope.notLoaded > 0 ? (
+            <p className="px-3 py-1 text-[10px] text-amber-700 dark:text-amber-300">
+              + {scope.notLoaded} more in the suite not loaded (cap{" "}
+              {scope.caseCap}). Search to narrow onto the ones you need.
+            </p>
+          ) : null}
+
+          {scope.autoBugIds.length > 0 ? (
+            <>
+              <Section
+                icon={BugIcon}
+                label="Linked bugs"
+                count={scope.autoBugIds.length}
+                hint="auto-injected from in-scope cases"
+              />
+              {scope.autoBugIds.map((id) => (
+                <Row key={`ab-${id}`} onClick={() => openBug(id)}>
+                  <span className="font-mono text-primary">#{id}</span>
+                  <span className="truncate text-muted-foreground/70">
+                    linked defect
+                  </span>
+                </Row>
+              ))}
+            </>
+          ) : null}
+
+          {scope.mentioned.length > 0 ? (
+            <>
+              <Section
+                icon={BugIcon}
+                label="Mentioned"
+                count={scope.mentioned.length}
+                hint="work items you attached with #id"
+              />
+              {scope.mentioned.map((b) => (
+                <Row key={`m-${b.id}`} onClick={() => openBug(b.id)}>
+                  <span className="font-mono text-primary">#{b.id}</span>
+                  <span className="min-w-0 flex-1 truncate text-foreground/80">
+                    {b.title}
+                  </span>
+                </Row>
+              ))}
+            </>
+          ) : null}
+
+          {scope.bestPracticeFiles.length > 0 ? (
+            <>
+              <Section
+                icon={File01Icon}
+                label="Best practices"
+                count={scope.bestPracticeFiles.length}
+              />
+              {scope.bestPracticeFiles.map((f) => (
+                <div
+                  key={`bp-${f}`}
+                  className="flex items-center gap-2 px-3 py-1 text-[10.5px]"
+                >
+                  <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground/80">
+                    {f}
+                  </span>
+                </div>
+              ))}
+            </>
+          ) : null}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function Section({
+  icon,
+  label,
+  count,
+  hint,
+}: {
+  icon: typeof BugIcon;
+  label: string;
+  count: number;
+  hint?: string;
+}) {
+  return (
+    <div className="flex items-baseline gap-1.5 px-3 pb-0.5 pt-2">
+      <HugeiconsIcon
+        icon={icon}
+        size={11}
+        strokeWidth={1.75}
+        className="translate-y-px text-muted-foreground/70"
+      />
+      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80">
+        {label}
+      </span>
+      <span className="font-mono text-[10px] tabular-nums text-muted-foreground/60">
+        {count}
+      </span>
+      {hint ? (
+        <span className="truncate text-[10px] text-muted-foreground/55">
+          · {hint}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function Row({
+  children,
+  onClick,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex w-full items-center gap-2 px-3 py-1 text-left text-[10.5px] transition-colors hover:bg-foreground/[0.05]",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
