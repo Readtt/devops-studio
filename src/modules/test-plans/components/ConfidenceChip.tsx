@@ -6,7 +6,8 @@ import {
 import { cn } from "@/lib/utils";
 import {
   AUTO_PASS_THRESHOLD,
-  verdictTone,
+  passReadiness,
+  readinessTone,
   type ConfidenceVerdict,
 } from "../lib/confidence";
 import {
@@ -25,12 +26,14 @@ const OUTCOME_LABEL: Record<ConfidenceVerdict["predictedOutcome"], string> = {
 };
 
 /**
- * Confidence chip — the AI's calibrated prediction of whether a case would
- * pass against the current code, color-graded (green ≥90 / amber 60-89 /
- * red <60) so it reads next to the outcome chips.
+ * Confidence chip — shows pass-readiness: one number for "how safe is it to
+ * just mark this case Passed?", color-graded (green ≥90 / amber 60-89 / red
+ * <60). A case the model expects to fail reads low + red; a confident pass
+ * reads high + green. The predicted outcome (Pass/Fail/Blocked) lives in the
+ * tooltip and detail panel, not on the chip face.
  *
  * It carries every eval control inline so the user never has to open the
- * detail pane to act: a verdict pill that opens the breakdown, a ↻
+ * detail pane to act: a readiness pill that opens the breakdown, a ↻
  * re-evaluate button right next to it, and — while an evaluation is in
  * flight — a cancel (✕) button in the chip itself.
  */
@@ -143,8 +146,9 @@ export function ConfidenceChip({
     );
   }
 
-  const tone = verdictTone(verdict.predictedOutcome, verdict.confidence);
-  const pct = Math.round(verdict.confidence);
+  const readiness = passReadiness(verdict);
+  const tone = readinessTone(readiness, verdict.predictedOutcome);
+  const conf = Math.round(verdict.confidence);
   const isAutoPass =
     verdict.confidence >= AUTO_PASS_THRESHOLD &&
     verdict.predictedOutcome === "Pass";
@@ -170,10 +174,7 @@ export function ConfidenceChip({
                 className="animate-spin"
               />
             ) : null}
-            {pct}%
-            <span className="opacity-70">
-              {OUTCOME_LABEL[verdict.predictedOutcome]}
-            </span>
+            {readiness !== null ? `${readiness}%` : "?"}
           </button>
         </TooltipTrigger>
         <TooltipContent
@@ -185,16 +186,22 @@ export function ConfidenceChip({
           <div className="flex flex-col gap-1">
             <div className="flex items-baseline gap-1.5">
               <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
-                verdict
+                pass-ready
               </span>
               <span className="font-medium tabular-nums text-foreground/90">
-                {pct}% · {OUTCOME_LABEL[verdict.predictedOutcome]}
+                {readiness !== null ? `${readiness}%` : "—"}
               </span>
             </div>
             <p className="text-foreground/80">
               {isAutoPass
-                ? "At or above the 90% bar — auto-pass candidate."
-                : "Below the 90% auto-pass bar — flag for manual testing."}
+                ? "At or above the 90% bar — safe to mark Passed."
+                : verdict.predictedOutcome === "Unknown"
+                  ? "Couldn't ground this in code — test it manually."
+                  : "Below the 90% bar — verify before passing."}
+            </p>
+            <p className="text-[10px] text-muted-foreground/80">
+              Predicted {OUTCOME_LABEL[verdict.predictedOutcome]} · {conf}%
+              confidence.
             </p>
             <p className="mt-0.5 text-[10px] text-muted-foreground/70">
               Click for the breakdown · ↻ re-analyzes in place.

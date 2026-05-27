@@ -44,52 +44,55 @@ export type ConfidenceVerdict = ConfidenceVerdictLLM & {
   runs?: number;
 };
 
-/** Color grammar for the confidence chip — reuses the OUTCOME_CHIP tints so it
- *  sits consistently next to the Passed/Failed/Blocked chips. */
-export function confidenceTone(confidence: number): {
-  className: string;
-  band: "high" | "medium" | "low";
-} {
-  if (confidence >= AUTO_PASS_THRESHOLD) {
-    return {
-      className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
-      band: "high",
-    };
-  }
-  if (confidence >= 60) {
-    return {
-      className: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
-      band: "medium",
-    };
-  }
-  return {
-    className: "bg-rose-500/15 text-rose-600 dark:text-rose-300",
-    band: "low",
-  };
-}
-
-/** Color grammar for the verdict pill — keyed by the PREDICTED OUTCOME, not
- *  the raw confidence. (Coloring by confidence alone made a 93%-confident
- *  *Fail* show green, which reads as "pass".) Pass is green only when it
- *  clears the auto-pass bar; a lower-confidence Pass is amber ("likely, but
- *  verify"); Fail is always red; Blocked amber; Unknown grey. */
-export function verdictTone(
-  outcome: PredictedOutcome,
-  confidence: number,
-): { className: string } {
-  switch (outcome) {
+/** Pass-readiness — a single 0–100 "how safe is it to just mark this case
+ *  Passed?" score. This is the number the chip surfaces, so QA reads one axis:
+ *  high = green = click Pass, low = red = go test it. Derived from the model's
+ *  prediction: a confident Pass scores high (its confidence); a confident Fail
+ *  or Blocked scores low (the inverse — 94%-confident Fail → 6% pass-ready).
+ *  Unknown has no honest score, so it returns null and the chip renders a
+ *  neutral "?". The detail panel still shows the raw predicted outcome +
+ *  confidence behind this number. */
+export function passReadiness(v: {
+  predictedOutcome: PredictedOutcome;
+  confidence: number;
+}): number | null {
+  switch (v.predictedOutcome) {
     case "Pass":
-      return confidence >= AUTO_PASS_THRESHOLD
-        ? { className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300" }
-        : { className: "bg-amber-500/15 text-amber-700 dark:text-amber-300" };
+      return clampPct(v.confidence);
     case "Fail":
-      return { className: "bg-rose-500/15 text-rose-600 dark:text-rose-300" };
     case "Blocked":
-      return { className: "bg-amber-500/15 text-amber-700 dark:text-amber-300" };
+      return clampPct(100 - v.confidence);
     case "Unknown":
     default:
-      return { className: "bg-foreground/[0.08] text-muted-foreground" };
+      return null;
   }
+}
+
+/** Color grammar for the pass-readiness chip. Green only when an actual Pass
+ *  clears the auto-pass bar — a Fail's inverse score can never read as "safe to
+ *  pass", even when it's high (a barely-confident Fail is "verify", not "pass").
+ *  Amber = "probably, verify first"; red = "likely fails, go test"; grey =
+ *  Unknown. */
+export function readinessTone(
+  readiness: number | null,
+  outcome: PredictedOutcome,
+): { className: string } {
+  if (readiness === null || outcome === "Unknown") {
+    return { className: "bg-foreground/[0.08] text-muted-foreground" };
+  }
+  if (outcome === "Pass" && readiness >= AUTO_PASS_THRESHOLD) {
+    return {
+      className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+    };
+  }
+  if (readiness >= 60) {
+    return { className: "bg-amber-500/15 text-amber-700 dark:text-amber-300" };
+  }
+  return { className: "bg-rose-500/15 text-rose-600 dark:text-rose-300" };
+}
+
+function clampPct(n: number): number {
+  return Math.max(0, Math.min(100, Math.round(n)));
 }
 
 /** Whether this verdict qualifies the case for a one-click auto-pass: a Pass

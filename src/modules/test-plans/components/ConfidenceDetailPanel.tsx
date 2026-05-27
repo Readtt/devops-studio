@@ -4,7 +4,8 @@ import { cn } from "@/lib/utils";
 import { CodeRefChip, parseCodeRef } from "@/components/CodeRefChip";
 import {
   AUTO_PASS_THRESHOLD,
-  verdictTone,
+  passReadiness,
+  readinessTone,
   type ConfidenceVerdict,
   type EvidenceItem,
 } from "../lib/confidence";
@@ -49,10 +50,11 @@ export function ConfidenceDetailPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  const readiness = verdict ? passReadiness(verdict) : null;
   const tone = verdict
-    ? verdictTone(verdict.predictedOutcome, verdict.confidence)
+    ? readinessTone(readiness, verdict.predictedOutcome)
     : null;
-  const pct = verdict ? Math.round(verdict.confidence) : 0;
+  const conf = verdict ? Math.round(verdict.confidence) : 0;
   const isAutoPass =
     !!verdict &&
     verdict.predictedOutcome === "Pass" &&
@@ -75,7 +77,7 @@ export function ConfidenceDetailPanel({
                 tone.className,
               )}
             >
-              {pct}% · {verdict.predictedOutcome}
+              {readiness !== null ? `${readiness}% pass-ready` : "Pass-ready —"}
             </span>
           ) : null}
           <div className="ml-auto flex items-center gap-1">
@@ -132,11 +134,15 @@ export function ConfidenceDetailPanel({
         </p>
         {verdict ? (
           <p className="text-[11px] leading-snug text-foreground/80">
+            <span className="font-medium text-foreground">
+              Predicted {verdict.predictedOutcome}
+            </span>
+            <span className="text-muted-foreground"> · {conf}% confidence. </span>
             {isAutoPass
-              ? "High confidence — auto-pass candidate. Every load-bearing step was grounded in code."
+              ? "Safe to mark Passed — every load-bearing step was grounded in code."
               : verdict.predictedOutcome === "Unknown"
-                ? "Couldn't ground this in code — needs manual testing."
-                : "Below the 90% auto-pass bar — flag for manual testing."}
+                ? "Couldn't ground this in code — test it manually."
+                : "Below the 90% bar — verify before passing."}
           </p>
         ) : null}
         {verdict ? (
