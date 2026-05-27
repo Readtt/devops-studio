@@ -4,8 +4,13 @@
 // the rubric (in confidenceEvalPrompt) forces per-step code evidence and an
 // explicit "Unknown" when the code path can't be located.
 //
-// Threshold semantics (the QA workflow): >= 90 confidence on a Pass marks the
-// case an auto-pass candidate; anything below is flagged for manual testing.
+// The model reasons in PASS terms directly: it emits `passLikelihood` (0-100 =
+// "how likely a tester sees every Expected Result right now") plus a categorical
+// `predictedOutcome`. We do NOT ask for fail-confidence and invert it — the
+// number the model produces is the number the chip shows.
+//
+// Threshold semantics (the QA workflow): a Pass with passLikelihood >= 90 marks
+// the case an auto-pass candidate; anything below is flagged for manual testing.
 
 import { z } from "zod";
 
@@ -15,7 +20,7 @@ export type PredictedOutcome = "Pass" | "Fail" | "Blocked" | "Unknown";
 
 /** One traced step's finding. `ref` is the file:line the step was verified
  *  against (null when the step couldn't be grounded in code — which caps
- *  confidence per the rubric). */
+ *  pass-likelihood per the rubric). */
 export const EvidenceItemSchema = z.object({
   step: z.number().int().nonnegative(),
   finding: z.string(),
@@ -27,12 +32,24 @@ export type EvidenceItem = z.infer<typeof EvidenceItemSchema>;
  *  evaluatedAt / modelId / runs around it. */
 export const ConfidenceVerdictLLMSchema = z.object({
   predictedOutcome: z.enum(["Pass", "Fail", "Blocked", "Unknown"]),
-  confidence: z.number().min(0).max(100),
+  /** Direct probability (0-100) the case passes against current code. */
+  passLikelihood: z.number().min(0).max(100),
   evidence: z.array(EvidenceItemSchema).default([]),
   reasoning: z.string().default(""),
   caveats: z.array(z.string()).default([]),
 });
 export type ConfidenceVerdictLLM = z.infer<typeof ConfidenceVerdictLLMSchema>;
+
+/** Pre-pass-likelihood shape: the model used to emit `confidence` (confidence
+ *  IN the predicted outcome — high for a confident Fail) which we inverted. We
+ *  still read it so verdicts stored before the reframe keep rendering. */
+const LegacyVerdictLLMSchema = z.object({
+  predictedOutcome: z.enum(["Pass", "Fail", "Blocked", "Unknown"]),
+  confidence: z.number().min(0).max(100),
+  evidence: z.array(EvidenceItemSchema).default([]),
+  reasoning: z.string().default(""),
+  caveats: z.array(z.string()).default([]),
+});
 
 /** Full persisted verdict. */
 export type ConfidenceVerdict = ConfidenceVerdictLLM & {
@@ -42,30 +59,34 @@ export type ConfidenceVerdict = ConfidenceVerdictLLM & {
   modelId: string;
   /** Number of self-consistency runs that fed this verdict (1 = single pass). */
   runs?: number;
+  /** @deprecated Legacy confidence-in-outcome from verdicts produced before the
+   *  pass-likelihood reframe. Absent on new verdicts; read only as a fallback by
+   *  {@link passReadiness}. */
+  confidence?: number;
 };
 
-/** Pass-readiness — a single 0–100 "how safe is it to just mark this case
- *  Passed?" score. This is the number the chip surfaces, so QA reads one axis:
- *  high = green = click Pass, low = red = go test it. Derived from the model's
- *  prediction: a confident Pass scores high (its confidence); a confident Fail
- *  or Blocked scores low (the inverse — 94%-confident Fail → 6% pass-ready).
- *  Unknown has no honest score, so it returns null and the chip renders a
- *  neutral "?". The detail panel still shows the raw predicted outcome +
- *  confidence behind this number. */
+/** Pass-readiness — the single 0–100 "how safe is it to just mark this case
+ *  Passed?" score the chip surfaces, so QA reads one axis: high = green = click
+ *  Pass, low = red = go test it. For new verdicts this is just the model's
+ *  `passLikelihood` (it already reasons in pass terms). Unknown has no honest
+ *  score, so it returns null and the chip renders a neutral "?".
+ *
+ *  Back-compat: a legacy verdict carries `confidence` (confidence in the
+ *  outcome) instead — derive the same way the old code did so stored verdicts
+ *  still render (94%-confident Fail → 6% pass-ready). */
 export function passReadiness(v: {
   predictedOutcome: PredictedOutcome;
-  confidence: number;
+  passLikelihood?: number;
+  confidence?: number;
 }): number | null {
-  switch (v.predictedOutcome) {
-    case "Pass":
-      return clampPct(v.confidence);
-    case "Fail":
-    case "Blocked":
-      return clampPct(100 - v.confidence);
-    case "Unknown":
-    default:
-      return null;
+  if (v.predictedOutcome === "Unknown") return null;
+  if (typeof v.passLikelihood === "number") return clampPct(v.passLikelihood);
+  if (typeof v.confidence === "number") {
+    return clampPct(
+      v.predictedOutcome === "Pass" ? v.confidence : 100 - v.confidence,
+    );
   }
+  return null;
 }
 
 /** Color grammar for the pass-readiness chip. Green only when an actual Pass
@@ -98,19 +119,44 @@ function clampPct(n: number): number {
 /** Whether this verdict qualifies the case for a one-click auto-pass: a Pass
  *  prediction at or above the threshold. Everything else needs manual testing. */
 export function isAutoPassCandidate(v: ConfidenceVerdict | null | undefined): boolean {
-  return !!v && v.predictedOutcome === "Pass" && v.confidence >= AUTO_PASS_THRESHOLD;
+  if (!v || v.predictedOutcome !== "Pass") return false;
+  const r = passReadiness(v);
+  return r !== null && r >= AUTO_PASS_THRESHOLD;
 }
 
 /** Parse a model response into a verdict (permissive — strips fences/preamble).
- *  Returns null when nothing valid was found so the caller can surface an
- *  honest "couldn't evaluate" instead of a fabricated score. */
+ *  Accepts the current pass-likelihood shape and the legacy confidence shape
+ *  (deriving passLikelihood from it). Returns null when nothing valid was found
+ *  so the caller can surface an honest "couldn't evaluate" instead of a
+ *  fabricated score. */
 export function parseConfidenceVerdict(text: string): ConfidenceVerdictLLM | null {
   const candidate = extractJson(text.trim());
+  let obj: unknown;
   try {
-    return ConfidenceVerdictLLMSchema.parse(JSON.parse(candidate));
+    obj = JSON.parse(candidate);
   } catch {
     return null;
   }
+  const direct = ConfidenceVerdictLLMSchema.safeParse(obj);
+  if (direct.success) return direct.data;
+  const legacy = LegacyVerdictLLMSchema.safeParse(obj);
+  if (legacy.success) {
+    const d = legacy.data;
+    const pl =
+      d.predictedOutcome === "Unknown"
+        ? 0
+        : d.predictedOutcome === "Pass"
+          ? d.confidence
+          : 100 - d.confidence;
+    return {
+      predictedOutcome: d.predictedOutcome,
+      passLikelihood: clampPct(pl),
+      evidence: d.evidence,
+      reasoning: d.reasoning,
+      caveats: d.caveats,
+    };
+  }
+  return null;
 }
 
 function extractJson(s: string): string {

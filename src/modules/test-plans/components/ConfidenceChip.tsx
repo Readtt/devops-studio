@@ -5,7 +5,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
-  AUTO_PASS_THRESHOLD,
+  isAutoPassCandidate,
   passReadiness,
   readinessTone,
   type ConfidenceVerdict,
@@ -155,10 +155,7 @@ export function ConfidenceChip({
 
   const readiness = passReadiness(verdict);
   const tone = readinessTone(readiness, verdict.predictedOutcome);
-  const conf = Math.round(verdict.confidence);
-  const isAutoPass =
-    verdict.confidence >= AUTO_PASS_THRESHOLD &&
-    verdict.predictedOutcome === "Pass";
+  const isAutoPass = isAutoPassCandidate(verdict);
 
   // While re-evaluating: cancel. Otherwise: a one-click re-analyze that
   // doesn't require opening the detail pane. Placed left or right of the pill
@@ -233,8 +230,7 @@ export function ConfidenceChip({
               </p>
             ) : null}
             <p className="text-[10px] text-muted-foreground/80">
-              Predicted {OUTCOME_LABEL[verdict.predictedOutcome]} · {conf}%
-              confidence.
+              Predicted {OUTCOME_LABEL[verdict.predictedOutcome]}.
             </p>
             <p className="mt-0.5 text-[10px] text-muted-foreground/70">
               Click for the breakdown · ↻ re-analyzes in place.

@@ -98,17 +98,17 @@ export async function evaluateConfidence(
 
 const UNEVALUABLE: ConfidenceVerdictLLM = {
   predictedOutcome: "Unknown",
-  confidence: 0,
+  passLikelihood: 0,
   evidence: [],
   reasoning: "The model did not return a usable verdict.",
   caveats: ["Evaluation failed to produce structured output."],
 };
 
 /** Combine N single-run verdicts into one. Single run → passthrough. Multiple
- *  → require agreement for a high score: the final confidence is only allowed
- *  to stay >= 90 when every run agreed on the outcome AND scored high. Any
- *  disagreement downgrades and records it in caveats — that's the whole point
- *  of self-consistency. */
+ *  → require agreement before trusting a high pass-likelihood: the final score
+ *  is only allowed to stay >= 90 when every run agreed on the outcome. Any
+ *  disagreement downgrades the pass-likelihood and records it in caveats —
+ *  that's the whole point of self-consistency. */
 export function aggregate(verdicts: ConfidenceVerdictLLM[]): ConfidenceVerdictLLM {
   if (verdicts.length === 0) return UNEVALUABLE;
   if (verdicts.length === 1) return verdicts[0];
@@ -135,8 +135,8 @@ export function aggregate(verdicts: ConfidenceVerdictLLM[]): ConfidenceVerdictLL
   const lead = agreeing.reduce((a, b) =>
     b.evidence.length > a.evidence.length ? b : a,
   );
-  const avgConfidence = Math.round(
-    agreeing.reduce((s, v) => s + v.confidence, 0) / agreeing.length,
+  const avgPassLikelihood = Math.round(
+    agreeing.reduce((s, v) => s + v.passLikelihood, 0) / agreeing.length,
   );
 
   const caveats = [...new Set(agreeing.flatMap((v) => v.caveats))];
@@ -150,7 +150,7 @@ export function aggregate(verdicts: ConfidenceVerdictLLM[]): ConfidenceVerdictLL
     );
     return {
       predictedOutcome: majority,
-      confidence: Math.min(avgConfidence, 45),
+      passLikelihood: Math.min(avgPassLikelihood, 45),
       evidence: lead.evidence,
       reasoning: lead.reasoning,
       caveats,
@@ -166,7 +166,9 @@ export function aggregate(verdicts: ConfidenceVerdictLLM[]): ConfidenceVerdictLL
   return {
     predictedOutcome: majority,
     // Only unanimous agreement may keep a >= 90 score; a split caps at 89.
-    confidence: unanimous ? avgConfidence : Math.min(avgConfidence, 89),
+    passLikelihood: unanimous
+      ? avgPassLikelihood
+      : Math.min(avgPassLikelihood, 89),
     evidence: lead.evidence,
     reasoning: lead.reasoning,
     caveats,

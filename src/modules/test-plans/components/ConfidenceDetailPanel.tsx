@@ -3,7 +3,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import { CodeRefChip, parseCodeRef } from "@/components/CodeRefChip";
 import {
-  AUTO_PASS_THRESHOLD,
+  isAutoPassCandidate,
   passReadiness,
   readinessTone,
   type ConfidenceVerdict,
@@ -55,11 +55,7 @@ export function ConfidenceDetailPanel({
   const tone = verdict
     ? readinessTone(readiness, verdict.predictedOutcome)
     : null;
-  const conf = verdict ? Math.round(verdict.confidence) : 0;
-  const isAutoPass =
-    !!verdict &&
-    verdict.predictedOutcome === "Pass" &&
-    verdict.confidence >= AUTO_PASS_THRESHOLD;
+  const isAutoPass = isAutoPassCandidate(verdict);
 
   return (
     <aside
@@ -138,7 +134,13 @@ export function ConfidenceDetailPanel({
             <span className="font-medium text-foreground">
               Predicted {verdict.predictedOutcome}
             </span>
-            <span className="text-muted-foreground"> · {conf}% confidence.</span>
+            <span className="text-muted-foreground">
+              {" "}
+              ·{" "}
+              {readiness !== null
+                ? `${readiness}% likely to pass.`
+                : "no honest pass estimate."}
+            </span>
             {isAutoPass
               ? " Safe to mark Passed — every load-bearing step was grounded in code."
               : verdict.predictedOutcome === "Unknown"
