@@ -162,7 +162,12 @@ function CommandItem({
       {...props}
     >
       {children}
-      <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto opacity-0 group-has-data-[slot=command-shortcut]/command-item:hidden group-data-[checked=true]/command-item:opacity-100" />
+      {/* Checked affordance for picker-style lists (data-checked). `hidden` by
+          default — not opacity-0 — so it takes no layout: an invisible-but-present
+          icon also carries `ml-auto`, which would fight a row's own trailing
+          `ml-auto` (#id / tag) and split the free space, leaving the right column
+          floating mid-row instead of flush right. */}
+      <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto hidden group-data-[checked=true]/command-item:block" />
     </CommandPrimitive.Item>
   )
 }
