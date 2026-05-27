@@ -32,6 +32,7 @@ import {
   streamSuiteChatClaude,
   type SuiteChatMessage,
 } from "../lib/runSuiteChat";
+import type { ActivityEntry } from "@/modules/generator/lib/activityLog";
 import {
   DEFAULT_THREAD_ID,
   deleteChatThread,
@@ -671,6 +672,33 @@ export const useSuiteChat = create<Store>((set, get) => ({
       schedulePersist(planId, suiteId, threadId, get);
     };
 
+    // Tool activity (Read/Glob/Grep) → accumulate onto the assistant message,
+    // upserting by id so a tool_use (running) is later completed in place by
+    // its tool_result. Persisted with the thread so the strip survives reload.
+    const mergeToolEvent = (e: ActivityEntry) => {
+      set((s) => {
+        const next = new Map(s.byThread);
+        const slice = next.get(tk);
+        if (!slice) return s;
+        let found = false;
+        const messages = slice.messages.map((m) => {
+          if (m.id !== assistantId) return m;
+          found = true;
+          const prior = m.toolEvents ?? [];
+          const idx = prior.findIndex((x) => x.id === e.id);
+          const toolEvents =
+            idx >= 0
+              ? prior.map((x, i) => (i === idx ? { ...x, ...e } : x))
+              : [...prior, e];
+          return { ...m, toolEvents };
+        });
+        if (!found) return s;
+        next.set(tk, { ...slice, messages });
+        return { byThread: next };
+      });
+      schedulePersist(planId, suiteId, threadId, get);
+    };
+
     // Persist the user message IMMEDIATELY so a quick cancel can't drop it.
     void saveChatThread({
       planId,
@@ -735,6 +763,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
           authMode: engineSel.authMode ?? "api-key",
           bareMode: prefs.claudeBareMode,
           onText: appendDelta,
+          onToolEvent: mergeToolEvent,
         });
       } else {
         await streamSuiteChat({
@@ -750,6 +779,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
           modelId,
           sourceRoot,
           onText: appendDelta,
+          onToolEvent: mergeToolEvent,
         });
       }
       set((s) => {

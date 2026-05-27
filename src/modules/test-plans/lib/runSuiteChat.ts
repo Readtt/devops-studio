@@ -28,6 +28,11 @@ import {
   imageAttachmentToBase64,
   type Attachment,
 } from "@/components/chat/attachments";
+import { ClaudeActivityTracker } from "@/modules/ai/lib/claudeActivity";
+import {
+  vercelStepToActivity,
+  type ActivityEntry,
+} from "@/modules/generator/lib/activityLog";
 
 /** Persisted record of an ADO edit that the user applied from this message.
  *  Keyed in `SuiteChatMessage.appliedEdits` by a content hash of the
@@ -78,6 +83,10 @@ export type SuiteChatMessage = {
   /** Ids of ADO bugs attached as context on this turn. Persisted so a
    *  reopened thread shows which bugs grounded the answer. User messages only. */
   bugContext?: number[];
+  /** Tool calls (Read/Glob/Grep) the model made on this turn. Persisted so a
+   *  reopened thread still shows the work the model did. Assistant messages
+   *  only; reloaded entries read as completed history. */
+  toolEvents?: ActivityEntry[];
 };
 
 const SUITE_CHAT_SYSTEM_PROMPT = `You are a senior QA engineer chatting with the user about a SUITE OF TEST CASES that already exist in Azure DevOps. The cases have been published; this conversation is for analysis, review, suggested edits, and "does this actually cover what the spec says it does".
@@ -308,6 +317,10 @@ export type SuiteChatRunInput = {
   /** Extra context blocks (best-practices files, attached bugs) appended to
    *  the prompt and lifted into vision input. Empty/absent ⇒ prompt unchanged. */
   contextBlocks?: ContextBlock[];
+  /** Tool-activity callback — each Read/Glob/Grep call (and its result) the
+   *  model makes, so the UI can render a live activity strip instead of going
+   *  silent. Entries upsert by id (running → done). */
+  onToolEvent?: (e: ActivityEntry) => void;
 };
 
 export type SuiteChatRunResult = {
@@ -376,6 +389,13 @@ export async function streamSuiteChat(
       ...collectContextImages(input.contextBlocks ?? []),
     ]),
     ...(tools ? { tools, stopWhen: stepCountIs(8) } : {}),
+    onStepFinish: input.onToolEvent
+      ? (step) => {
+          for (const e of vercelStepToActivity(step, start)) {
+            input.onToolEvent?.(e);
+          }
+        }
+      : undefined,
   });
   let acc = "";
   for await (const chunk of result.textStream) {
@@ -452,7 +472,11 @@ export async function streamSuiteChatClaude(
   // Track already-emitted text by message id so a repeated assistant event
   // (which the CLI sometimes does as it consolidates) doesn't duplicate.
   const seenByMsgId = new Map<string, string>();
+  // Tool activity (Read/Glob/Grep) → the live strip. emitThinking=false: the
+  // chat strip only wants tool/error rows, not a breadcrumb per text turn.
+  const tracker = new ClaudeActivityTracker(start, input.onToolEvent, false);
   const onEvent = (event: ClaudeEvent) => {
+    tracker.consume(event);
     if (event.type !== "assistant") return;
     const msg = event.message as
       | { id?: string; content?: Array<Record<string, unknown>> }

@@ -86,6 +86,52 @@ export function summarizeToolInput(
   return toolName;
 }
 
+/** Convert one Vercel AI SDK `streamText`/`generateText` step into activity
+ *  entries — one per tool call, paired with its result by toolCallId. Returns
+ *  a single "thinking" entry when the step ran no tools so the log still has a
+ *  breadcrumb. Mirrors the generator analyze path so chats and the generator
+ *  surface tool activity identically. */
+export function vercelStepToActivity(
+  step: {
+    toolCalls?: Array<{ toolCallId?: string; toolName?: string; input?: unknown }>;
+    toolResults?: Array<{ toolCallId?: string; output?: unknown }>;
+  },
+  startMs: number,
+): ActivityEntry[] {
+  const calls = step.toolCalls ?? [];
+  const results = step.toolResults ?? [];
+  if (calls.length === 0) {
+    return [{ id: newActivityId(), ts: Date.now() - startMs, kind: "thinking" }];
+  }
+  return calls.map((call) => {
+    const match = results.find((r) => r.toolCallId === call.toolCallId);
+    const raw = match ? stringifyResult(match.output) : undefined;
+    const toolName = call.toolName ?? "tool";
+    return {
+      id: newActivityId(),
+      ts: Date.now() - startMs,
+      kind: "tool" as const,
+      toolName,
+      inputSummary: summarizeToolInput(
+        toolName,
+        (call.input ?? {}) as Record<string, unknown>,
+      ),
+      outputSummary: raw ? clampOutputSummary(raw) : undefined,
+      outputFull: raw ? clampOutputFull(raw) : undefined,
+    };
+  });
+}
+
+function stringifyResult(output: unknown): string {
+  if (output == null) return "";
+  if (typeof output === "string") return output;
+  try {
+    return JSON.stringify(output);
+  } catch {
+    return String(output);
+  }
+}
+
 /** Compact label for the spinner caption — most recent thing the agent did. */
 export function entryToLabel(entry: ActivityEntry): string {
   if (entry.kind === "tool" && entry.toolName) {

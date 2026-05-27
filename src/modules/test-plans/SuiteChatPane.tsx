@@ -17,6 +17,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ChatMarkdown } from "@/components/ChatMarkdown";
+import { ToolCallStrip } from "@/components/chat/ToolCallStrip";
+import type { ActivityEntry } from "@/modules/generator/lib/activityLog";
 import {
   AttachButton,
   AttachmentDropZone,
@@ -1075,6 +1077,7 @@ type Msg = {
   content: string;
   appliedEdits?: Record<string, AppliedEditRecord>;
   attachments?: Attachment[];
+  toolEvents?: ActivityEntry[];
 };
 
 function ChatThread({
@@ -1233,6 +1236,7 @@ function ChatThread({
             role={m.role}
             content={m.content}
             attachments={m.attachments}
+            toolEvents={m.toolEvents}
             streaming={busy && m.role === "assistant" && idx === messages.length - 1}
             lookupCase={lookupCase}
             fetchBug={fetchBug}
@@ -1288,10 +1292,12 @@ function MessageBubble({
   onUndoEdit,
   onEditUndone,
   assistantProvider,
+  toolEvents,
 }: {
   role: "user" | "assistant";
   content: string;
   attachments?: Attachment[];
+  toolEvents?: ActivityEntry[];
   streaming: boolean;
   lookupCase: CaseLookup;
   fetchBug: BugLookup;
@@ -1348,6 +1354,7 @@ function MessageBubble({
         )}
       </div>
       <div className="group/msg relative min-w-0 flex-1 rounded-2xl rounded-tl-sm border border-border/45 bg-card/55 px-3.5 py-2.5">
+        <ToolCallStrip events={toolEvents} streaming={streaming} />
         {content ? (
           <ChatMarkdown
             source={content}
