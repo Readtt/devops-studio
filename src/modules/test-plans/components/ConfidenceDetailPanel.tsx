@@ -147,7 +147,7 @@ export function ConfidenceDetailPanel({
           </p>
         ) : null}
         {verdict ? (
-          <p className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
+          <p className="inline-flex w-fit items-center gap-1 rounded-sm bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:text-blue-300">
             <HugeiconsIcon
               icon={GitBranchIcon}
               size={10}
