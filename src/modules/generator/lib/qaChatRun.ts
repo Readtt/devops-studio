@@ -25,6 +25,8 @@ import {
   formatContextBlocks,
   type ContextBlock,
 } from "@/modules/ai/lib/contextBlocks";
+import { ClaudeActivityTracker } from "@/modules/ai/lib/claudeActivity";
+import type { ActivityEntry } from "./activityLog";
 
 /** Lift image attachments into stream-json image blocks for the CLI path. */
 function claudeImages(
@@ -45,6 +47,10 @@ export type ChatMessage = {
   content: string;
   /** ISO-8601 timestamp the message was created. */
   timestamp: string;
+  /** Tool calls (Read/Glob/Grep) the model made on this turn — Claude CLI path
+   *  only (the BYOK path here is text-only). Persisted with the draft chat so a
+   *  reopened session still shows them. Assistant messages only. */
+  toolEvents?: ActivityEntry[];
 };
 
 const CHAT_SYSTEM_PROMPT = `You are a senior QA test analyst chatting with the user about a draft test plan they have on screen. The plan was already generated; this conversation is for *understanding and improving* the draft, NOT for editing it. The user has a separate "refine" action when they want changes applied.
@@ -94,6 +100,9 @@ export type ChatRunInput = {
   /** Extra context blocks (best-practices files, attached bugs) appended to
    *  the prompt and lifted into vision input. Empty/absent ⇒ prompt unchanged. */
   contextBlocks?: ContextBlock[];
+  /** Tool-activity callback for the live strip (Claude CLI path only — the
+   *  Vercel path here runs without tools). Entries upsert by id. */
+  onToolEvent?: (e: ActivityEntry) => void;
 };
 
 export type ChatRunResult = {
@@ -210,7 +219,9 @@ export async function streamQaChatClaude(
   const userPrompt = buildChatUserPrompt(input);
   const start = Date.now();
   const seenByMsgId = new Map<string, string>();
+  const tracker = new ClaudeActivityTracker(start, input.onToolEvent, false);
   const onEvent = (event: ClaudeEvent) => {
+    tracker.consume(event);
     if (event.type !== "assistant") return;
     const msg = event.message as
       | { id?: string; content?: Array<Record<string, unknown>> }

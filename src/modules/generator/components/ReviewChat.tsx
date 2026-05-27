@@ -18,6 +18,7 @@ import {
 import { useBugContext } from "@/modules/ado/hooks/useBugContext";
 import { useGenerationSession } from "../store/useGenerationSession";
 import { ChatMarkdown } from "@/components/ChatMarkdown";
+import { ToolCallStrip } from "@/components/chat/ToolCallStrip";
 import {
   AttachButton,
   AttachmentDropZone,
@@ -281,14 +282,20 @@ export function ReviewChat({ onClose }: Props) {
                   )}
                 >
                   {m.role === "assistant" ? (
-                    m.id === streamingId && m.content.trim() === "" ? (
-                      <ThinkingDots />
-                    ) : (
-                      <ChatMarkdown
-                        source={m.content}
+                    <>
+                      <ToolCallStrip
+                        events={m.toolEvents}
                         streaming={m.id === streamingId}
                       />
-                    )
+                      {m.id === streamingId && m.content.trim() === "" ? (
+                        <ThinkingDots />
+                      ) : (
+                        <ChatMarkdown
+                          source={m.content}
+                          streaming={m.id === streamingId}
+                        />
+                      )}
+                    </>
                   ) : (
                     m.content
                   )}

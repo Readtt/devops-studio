@@ -1562,6 +1562,21 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         ),
       }));
 
+    // Tool activity onto the assistant chat message, upserting by id.
+    const mergeToolEvent = (e: ActivityEntry) =>
+      set((curr) => ({
+        chatMessages: curr.chatMessages.map((m) => {
+          if (m.id !== assistantId) return m;
+          const prior = m.toolEvents ?? [];
+          const idx = prior.findIndex((x) => x.id === e.id);
+          const toolEvents =
+            idx >= 0
+              ? prior.map((x, i) => (i === idx ? { ...x, ...e } : x))
+              : [...prior, e];
+          return { ...m, toolEvents };
+        }),
+      }));
+
     const chat = useChatStore.getState();
     const keys = chat.apiKeys;
     const modelId = s.overrideModelId ?? chat.selectedModelId;
@@ -1600,6 +1615,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           bareMode: prefs.claudeBareMode,
           contextBlocks: chatContextBlocks,
           onText: appendDelta,
+          onToolEvent: mergeToolEvent,
         });
       } else {
         await streamQaChat({

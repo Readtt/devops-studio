@@ -26,6 +26,11 @@ import {
   type Attachment,
 } from "@/components/chat/attachments";
 import type { AppliedPatchesMap } from "@/components/ChatMarkdown";
+import { ClaudeActivityTracker } from "@/modules/ai/lib/claudeActivity";
+import {
+  vercelStepToActivity,
+  type ActivityEntry,
+} from "@/modules/generator/lib/activityLog";
 
 export type CodeReviewMessage = {
   id: string;
@@ -40,6 +45,9 @@ export type CodeReviewMessage = {
    *  reload. Only set on assistant messages that emitted a patch the user
    *  applied. */
   appliedPatches?: AppliedPatchesMap;
+  /** Tool calls (Read/Glob/Grep) the reviewer made on this turn. Persisted so a
+   *  reopened review still shows the work. Assistant messages only. */
+  toolEvents?: ActivityEntry[];
 };
 
 /** Lighter-weight echo of the Rust `GitDiff` payload (camelCase here). */
@@ -144,6 +152,9 @@ export type StreamCodeReviewInput = {
   newQuestion: string;
   /** Streaming chunk callback. Same shape as suite-chat. */
   onText: (delta: string) => void;
+  /** Tool-activity callback — Read/Glob/Grep calls + results, for the live
+   *  activity strip. Entries upsert by id (running → done). */
+  onToolEvent?: (e: ActivityEntry) => void;
   /** Abort signal for the renderer's cancel button. */
   signal?: AbortSignal;
   /** Image/text attachments on the current turn. Images go to the model as
@@ -179,6 +190,13 @@ export async function streamCodeReview(input: StreamCodeReviewInput): Promise<{
     ]),
     abortSignal: input.signal,
     ...(tools ? { tools, stopWhen: stepCountIs(10) } : {}),
+    onStepFinish: input.onToolEvent
+      ? (step) => {
+          for (const e of vercelStepToActivity(step, start)) {
+            input.onToolEvent?.(e);
+          }
+        }
+      : undefined,
   });
   let acc = "";
   for await (const chunk of result.textStream) {
@@ -226,7 +244,9 @@ export async function streamCodeReviewClaude(
   const prompt = buildUserPrompt(input);
   const start = Date.now();
   const seenByMsgId = new Map<string, string>();
+  const tracker = new ClaudeActivityTracker(start, input.onToolEvent, false);
   const onEvent = (event: ClaudeEvent) => {
+    tracker.consume(event);
     if (event.type !== "assistant") return;
     const msg = event.message as
       | { id?: string; content?: Array<Record<string, unknown>> }

@@ -1,6 +1,7 @@
 import { BranchPicker } from "@/components/BranchPicker";
 import { Button } from "@/components/ui/button";
 import { ChatMarkdown } from "@/components/ChatMarkdown";
+import { ToolCallStrip } from "@/components/chat/ToolCallStrip";
 import {
   AttachButton,
   AttachmentDropZone,
@@ -444,6 +445,7 @@ export function CodeReviewPane({
                   attachments={m.attachments}
                   streaming={busy && i === messages.length - 1}
                   assistantProvider={activeModel.provider}
+                  toolEvents={m.toolEvents}
                   appliedPatches={m.appliedPatches}
                   onPatchApplied={(blockHash, record) =>
                     applyPatch(tabId, m.id, blockHash, record)
@@ -909,6 +911,7 @@ function MessageBubble({
   attachments,
   streaming,
   assistantProvider,
+  toolEvents,
   appliedPatches,
   onPatchApplied,
 }: {
@@ -917,6 +920,7 @@ function MessageBubble({
   attachments?: Attachment[];
   streaming: boolean;
   assistantProvider: import("@/modules/ai/config").ProviderId | null;
+  toolEvents?: import("@/modules/generator/lib/activityLog").ActivityEntry[];
   appliedPatches?: import("@/components/ChatMarkdown").AppliedPatchesMap;
   onPatchApplied?: (
     blockHash: string,
@@ -966,6 +970,7 @@ function MessageBubble({
         )}
       </div>
       <div className="group/msg relative min-w-0 flex-1 rounded-2xl rounded-tl-sm border border-border/45 bg-card/55 px-3.5 py-2.5">
+        <ToolCallStrip events={toolEvents} streaming={streaming} />
         {content ? (
           <ChatMarkdown
             source={content}

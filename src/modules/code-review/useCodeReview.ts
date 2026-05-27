@@ -16,6 +16,7 @@ import { resolveClaudeModelId, selectEngine } from "@/modules/ai/lib/engine";
 import { cancelClaudeRun } from "@/modules/ai/lib/claude";
 import type { Attachment } from "@/components/chat/attachments";
 import type { AppliedPatchRecord } from "@/components/ChatMarkdown";
+import type { ActivityEntry } from "@/modules/generator/lib/activityLog";
 import {
   streamCodeReview,
   streamCodeReviewClaude,
@@ -302,6 +303,27 @@ export const useCodeReview = create<State>((set, get) => ({
       });
     };
 
+    // Tool activity onto the assistant message, upserting by id (running → done).
+    const mergeToolEvent = (e: ActivityEntry) => {
+      set((s) => {
+        const next = new Map(s.byTab);
+        const curr = next.get(tabId);
+        if (!curr) return s;
+        const messages = curr.messages.map((m) => {
+          if (m.id !== assistantId) return m;
+          const prior = m.toolEvents ?? [];
+          const idx = prior.findIndex((x) => x.id === e.id);
+          const toolEvents =
+            idx >= 0
+              ? prior.map((x, i) => (i === idx ? { ...x, ...e } : x))
+              : [...prior, e];
+          return { ...m, toolEvents };
+        });
+        next.set(tabId, { ...curr, messages });
+        return { byTab: next };
+      });
+    };
+
     try {
       const chat = useChatStore.getState();
       const prefs = usePreferencesStore.getState();
@@ -336,6 +358,7 @@ export const useCodeReview = create<State>((set, get) => ({
           contextBlocks,
           adoSourceLabel,
           onText: appendDelta,
+          onToolEvent: mergeToolEvent,
           authMode: engineSel.authMode ?? "api-key",
           bareMode: prefs.claudeBareMode,
           runId,
@@ -352,6 +375,7 @@ export const useCodeReview = create<State>((set, get) => ({
           contextBlocks,
           adoSourceLabel,
           onText: appendDelta,
+          onToolEvent: mergeToolEvent,
           signal: abort.signal,
         });
       }
