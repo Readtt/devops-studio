@@ -25,6 +25,7 @@ import {
   imageAttachmentToBase64,
   type Attachment,
 } from "@/components/chat/attachments";
+import type { AppliedPatchesMap } from "@/components/ChatMarkdown";
 
 export type CodeReviewMessage = {
   id: string;
@@ -34,6 +35,11 @@ export type CodeReviewMessage = {
   /** Files/images attached to this turn. Persisted inline (base64 for images)
    *  so they survive a reload. Only set on user messages. */
   attachments?: Attachment[];
+  /** Applied code-review patches in this message, keyed by block hash. Persisted
+   *  with the thread so the "Applied" state + before/after diff survive a
+   *  reload. Only set on assistant messages that emitted a patch the user
+   *  applied. */
+  appliedPatches?: AppliedPatchesMap;
 };
 
 /** Lighter-weight echo of the Rust `GitDiff` payload (camelCase here). */

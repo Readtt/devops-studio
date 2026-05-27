@@ -5,6 +5,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { TextDiff } from "@/components/diff/textDiff";
+import type { AppliedPatchRecord } from "@/components/ChatMarkdown";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   Cancel01Icon,
@@ -14,7 +16,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 /**
  * Inline "Apply this patch" card rendered by ChatMarkdown when the
@@ -22,12 +24,15 @@ import { useState } from "react";
  *
  * UX:
  *   - Header: path + line range badge.
- *   - Body: monospace preview of the replacement.
+ *   - Body: a real before/after diff (TextDiff, monospace) — the current
+ *     file lines on the left, the proposed replacement on the right. Falls
+ *     back to a replacement-only preview when the file can't be read.
  *   - Apply button: read current file, splice the line range with the
- *     replacement, write atomically. The card switches to a quiet
- *     "Applied" state on success.
- *   - "Open in code viewer" button: jump to the file at startLine so
- *     the user can sanity-check before pressing Apply.
+ *     replacement, write atomically. The applied state + the original
+ *     "before" snapshot are reported up so the parent can persist them; the
+ *     card then shows "Applied" and keeps the diff even after a reload.
+ *   - "Open in code viewer" button: jump to the file at startLine so the
+ *     user can sanity-check before pressing Apply.
  *
  * Failure modes surface as a single line under the button — usually
  * "file not found" or "range out of bounds" when the diff has moved
@@ -49,14 +54,71 @@ type ReadResult =
 type ApplyState =
   | { kind: "idle" }
   | { kind: "applying" }
-  | { kind: "applied"; at: string }
   | { kind: "error"; message: string };
 
-export function ApplyPatchCard({ body }: { body: string }) {
+export function ApplyPatchCard({
+  body,
+  applied,
+  onApplied,
+}: {
+  body: string;
+  /** Persisted applied-state for this block (from the message). When set, the
+   *  card shows the "Applied" state + a diff against the snapshotted original
+   *  even after a reload. */
+  applied?: AppliedPatchRecord | null;
+  /** Called after a successful apply so the parent persists the record. */
+  onApplied?: (record: AppliedPatchRecord) => void;
+}) {
   const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
   const [state, setState] = useState<ApplyState>({ kind: "idle" });
+  // Local copy so the card reflects the apply instantly even if the parent
+  // hasn't re-supplied `applied` yet (it does, on persist — this just avoids a
+  // flash). Parent-supplied `applied` always wins on reload.
+  const [localApplied, setLocalApplied] = useState<AppliedPatchRecord | null>(
+    null,
+  );
+  // The current file's lines [startLine,endLine], read live so an un-applied
+  // patch shows a real before/after. Null while loading; "" is a valid value
+  // (insert patches have no "before").
+  const [liveBefore, setLiveBefore] = useState<string | null>(null);
+  const [beforeError, setBeforeError] = useState<string | null>(null);
 
   const parsed = parsePatch(body);
+  const effectiveApplied = applied ?? localApplied;
+
+  // Read the current file once per patch identity so the diff has a "before".
+  // Skipped when already applied (the snapshot is authoritative and the file
+  // on disk now holds the replacement anyway).
+  const okPath = parsed.ok ? parsed.value.path : null;
+  const okStart = parsed.ok ? parsed.value.startLine : 0;
+  const okEnd = parsed.ok ? parsed.value.endLine : 0;
+  useEffect(() => {
+    if (!okPath || !sourceRoot || effectiveApplied) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const absPath = resolveAgainstRoot(okPath, sourceRoot);
+        const raw = await invoke<ReadResult>("fs_read_file", { path: absPath });
+        if (cancelled) return;
+        if (raw.kind !== "text") {
+          setBeforeError(
+            raw.kind === "binary" ? "file is binary" : "file is too large",
+          );
+          return;
+        }
+        setLiveBefore(sliceLinesText(raw.content, okStart, okEnd));
+        setBeforeError(null);
+      } catch (e) {
+        if (!cancelled) {
+          setBeforeError(e instanceof Error ? e.message : String(e));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [okPath, okStart, okEnd, sourceRoot, effectiveApplied]);
+
   if (!parsed.ok) {
     return (
       <div className="my-2 rounded-md border border-amber-500/30 bg-amber-500/[0.06] px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
@@ -65,15 +127,18 @@ export function ApplyPatchCard({ body }: { body: string }) {
     );
   }
   const patch = parsed.value;
-  const previewLines = patch.replacement.split("\n");
-  const previewCapped = previewLines.length > 12;
-  const visibleLines = previewCapped ? previewLines.slice(0, 12) : previewLines;
   const replacedRangeText =
     patch.endLine < patch.startLine
       ? `insert before line ${patch.startLine}`
       : patch.startLine === patch.endLine
         ? `replace line ${patch.startLine}`
         : `replace lines ${patch.startLine}–${patch.endLine}`;
+
+  // What the diff compares against: the snapshot for an applied patch, else
+  // the live file read. Null => still loading or unreadable, so we fall back to
+  // a replacement-only preview that still shows the proposed code.
+  const beforeText = effectiveApplied ? effectiveApplied.beforeText : liveBefore;
+  const hasDiff = beforeText !== null;
 
   const onApply = async () => {
     if (!sourceRoot) {
@@ -92,6 +157,11 @@ export function ApplyPatchCard({ body }: { body: string }) {
           raw.kind === "binary" ? "file is binary" : "file is too large",
         );
       }
+      // Preserve the ORIGINAL snapshot across re-applies so the historical
+      // before/after never collapses to an empty diff.
+      const snapshot =
+        effectiveApplied?.beforeText ??
+        sliceLinesText(raw.content, patch.startLine, patch.endLine);
       const next = spliceLines(
         raw.content,
         patch.startLine,
@@ -103,7 +173,16 @@ export function ApplyPatchCard({ body }: { body: string }) {
         content: next,
         source: "code-review-apply",
       });
-      setState({ kind: "applied", at: new Date().toISOString() });
+      const record: AppliedPatchRecord = {
+        appliedAt: new Date().toISOString(),
+        path: patch.path,
+        startLine: patch.startLine,
+        endLine: patch.endLine,
+        beforeText: snapshot,
+      };
+      setLocalApplied(record);
+      onApplied?.(record);
+      setState({ kind: "idle" });
     } catch (e) {
       setState({
         kind: "error",
@@ -124,7 +203,7 @@ export function ApplyPatchCard({ body }: { body: string }) {
     );
   };
 
-  const isApplied = state.kind === "applied";
+  const isApplied = !!effectiveApplied;
 
   return (
     <div
@@ -164,23 +243,16 @@ export function ApplyPatchCard({ body }: { body: string }) {
           </span>
         ) : null}
       </div>
-      <pre className="overflow-x-auto bg-foreground/[0.02] px-3 py-2 font-mono text-[11px] leading-relaxed">
-        {visibleLines.map((line, i) => (
-          <span key={i} className="block">
-            <span className="mr-3 inline-block w-6 text-right text-muted-foreground/40 select-none">
-              {(patch.startLine + i).toString()}
-            </span>
-            <span className="text-emerald-700 dark:text-emerald-300">
-              {line || " "}
-            </span>
-          </span>
-        ))}
-        {previewCapped ? (
-          <span className="block px-3 pt-1 text-[10.5px] text-muted-foreground/70">
-            … {previewLines.length - 12} more lines hidden
-          </span>
-        ) : null}
-      </pre>
+      {hasDiff ? (
+        <div className="max-h-[320px] overflow-y-auto bg-foreground/[0.02] py-1">
+          <TextDiff before={beforeText} after={patch.replacement} mono />
+        </div>
+      ) : (
+        <ReplacementPreview
+          replacement={patch.replacement}
+          startLine={patch.startLine}
+        />
+      )}
       <div className="flex items-center justify-between gap-2 border-t border-border/40 px-3 py-1.5">
         <div className="text-[10.5px] text-muted-foreground">
           {state.kind === "error" ? (
@@ -188,15 +260,21 @@ export function ApplyPatchCard({ body }: { body: string }) {
               <HugeiconsIcon icon={Cancel01Icon} size={10} strokeWidth={2} />
               {state.message}
             </span>
-          ) : state.kind === "applied" ? (
+          ) : isApplied ? (
             <span>
-              Wrote to disk at {new Date(state.at).toLocaleTimeString()}.
-              You can re-run the diff or refresh the review.
+              Wrote to disk at{" "}
+              {new Date(effectiveApplied.appliedAt).toLocaleTimeString()}.
+              Showing the diff against the original.
+            </span>
+          ) : beforeError ? (
+            <span>
+              Couldn't read the current file ({beforeError}) — showing the
+              proposed replacement only.
             </span>
           ) : (
             <span>
-              Review the preview above. Apply writes atomically; original
-              file is replaced in one shot.
+              Review the diff above. Apply writes atomically; the file is
+              replaced in one shot.
             </span>
           )}
         </div>
@@ -222,7 +300,7 @@ export function ApplyPatchCard({ body }: { body: string }) {
               <Button
                 size="xs"
                 variant={isApplied ? "outline" : "default"}
-                disabled={state.kind === "applying" || isApplied}
+                disabled={state.kind === "applying"}
                 onClick={() => void onApply()}
                 className="h-6 px-2 text-[10.5px]"
               >
@@ -239,12 +317,45 @@ export function ApplyPatchCard({ body }: { body: string }) {
             >
               {isApplied
                 ? "Already applied. Click again to overwrite with the same patch (no-op if the file hasn't changed since)."
-                : "Read the file, splice in this patch, write it back. No undo — review the preview first."}
+                : "Read the file, splice in this patch, write it back. No undo — review the diff first."}
             </TooltipContent>
           </Tooltip>
         </div>
       </div>
     </div>
+  );
+}
+
+/** Fallback body when the current file can't be read (loading, moved, binary):
+ *  show the proposed replacement with line numbers, all-added green. */
+function ReplacementPreview({
+  replacement,
+  startLine,
+}: {
+  replacement: string;
+  startLine: number;
+}) {
+  const lines = replacement.split("\n");
+  const capped = lines.length > 12;
+  const visible = capped ? lines.slice(0, 12) : lines;
+  return (
+    <pre className="overflow-x-auto bg-foreground/[0.02] px-3 py-2 font-mono text-[11px] leading-relaxed">
+      {visible.map((line, i) => (
+        <span key={i} className="block">
+          <span className="mr-3 inline-block w-6 select-none text-right text-muted-foreground/40">
+            {(startLine + i).toString()}
+          </span>
+          <span className="text-emerald-700 dark:text-emerald-300">
+            {line || " "}
+          </span>
+        </span>
+      ))}
+      {capped ? (
+        <span className="block px-3 pt-1 text-[10.5px] text-muted-foreground/70">
+          … {lines.length - 12} more lines hidden
+        </span>
+      ) : null}
+    </pre>
   );
 }
 
@@ -299,6 +410,20 @@ function spliceLines(
   parts.push(middle);
   if (after) parts.push(after);
   return parts.join("\n");
+}
+
+/** The file's lines [startLine, endLine] (1-indexed, inclusive) as text — the
+ *  "before" side of the diff. For an insert (endLine < startLine) the slice is
+ *  empty, so the diff renders as all-added. */
+function sliceLinesText(
+  source: string,
+  startLine: number,
+  endLine: number,
+): string {
+  const lines = source.split("\n");
+  const startIdx = Math.max(0, startLine - 1);
+  const endIdx = endLine < startLine ? startIdx : Math.min(lines.length, endLine);
+  return lines.slice(startIdx, endIdx).join("\n");
 }
 
 /** Same resolution rule the suite-chat fs tools use: absolute paths

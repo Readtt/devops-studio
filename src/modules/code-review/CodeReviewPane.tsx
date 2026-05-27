@@ -83,6 +83,7 @@ export function CodeReviewPane({
   const send = useCodeReview((s) => s.send);
   const stop = useCodeReview((s) => s.stop);
   const clear = useCodeReview((s) => s.clear);
+  const applyPatch = useCodeReview((s) => s.applyPatch);
   const slice = useCodeReview((s) => s.byTab.get(tabId));
   const renameTab = useTabsStore((s) => s.renameTab);
   const globalModelId = usePreferencesStore((s) => s.defaultModelId);
@@ -443,6 +444,10 @@ export function CodeReviewPane({
                   attachments={m.attachments}
                   streaming={busy && i === messages.length - 1}
                   assistantProvider={activeModel.provider}
+                  appliedPatches={m.appliedPatches}
+                  onPatchApplied={(blockHash, record) =>
+                    applyPatch(tabId, m.id, blockHash, record)
+                  }
                 />
               ))}
               {error ? (
@@ -904,12 +909,19 @@ function MessageBubble({
   attachments,
   streaming,
   assistantProvider,
+  appliedPatches,
+  onPatchApplied,
 }: {
   role: "user" | "assistant";
   content: string;
   attachments?: Attachment[];
   streaming: boolean;
   assistantProvider: import("@/modules/ai/config").ProviderId | null;
+  appliedPatches?: import("@/components/ChatMarkdown").AppliedPatchesMap;
+  onPatchApplied?: (
+    blockHash: string,
+    record: import("@/components/ChatMarkdown").AppliedPatchRecord,
+  ) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const onCopy = async () => {
@@ -955,7 +967,12 @@ function MessageBubble({
       </div>
       <div className="group/msg relative min-w-0 flex-1 rounded-2xl rounded-tl-sm border border-border/45 bg-card/55 px-3.5 py-2.5">
         {content ? (
-          <ChatMarkdown source={content} streaming={streaming} />
+          <ChatMarkdown
+            source={content}
+            streaming={streaming}
+            appliedPatches={appliedPatches}
+            onPatchApplied={onPatchApplied}
+          />
         ) : streaming ? (
           <StreamingPlaceholder />
         ) : (

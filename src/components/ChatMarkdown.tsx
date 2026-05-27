@@ -108,6 +108,21 @@ export type AppliedEditRecord = {
  *  decide whether to show the "Apply" button or the quiet "Applied" state. */
 export type AppliedEditsMap = Record<string, AppliedEditRecord>;
 
+/** Persisted record of an applied code-review-patch, keyed (like edits) by a
+ *  content hash of the block. `beforeText` snapshots the file lines as they
+ *  were before the patch so the before/after diff still renders after a
+ *  reload — by then the file on disk already contains the replacement, so a
+ *  live re-read would show an empty diff. */
+export type AppliedPatchRecord = {
+  appliedAt: string;
+  path: string;
+  startLine: number;
+  endLine: number;
+  beforeText: string;
+};
+
+export type AppliedPatchesMap = Record<string, AppliedPatchRecord>;
+
 /** Handler the parent provides to undo an applied edit. Receives the
  *  persisted applied record (which carries the caseId + before snapshot)
  *  and performs the inverse ADO write. */
@@ -140,6 +155,13 @@ export type ChatMarkdownProps = {
   /** Called after a successful undo so the parent can drop the persisted
    *  applied-edit record. */
   onEditUndone?: (blockHash: string) => void;
+  /** Already-applied code-review patches for this message, keyed by block
+   *  hash. When set for a block, its ApplyPatchCard renders the persisted
+   *  "Applied" state + before/after diff instead of a live "Apply" button. */
+  appliedPatches?: AppliedPatchesMap;
+  /** Called after a patch is applied so the parent can persist it onto the
+   *  message (survives reload). */
+  onPatchApplied?: (blockHash: string, record: AppliedPatchRecord) => void;
 };
 
 export function ChatMarkdown({
@@ -153,6 +175,8 @@ export function ChatMarkdown({
   onEditApplied,
   onUndoEdit,
   onEditUndone,
+  appliedPatches,
+  onPatchApplied,
 }: ChatMarkdownProps) {
   const blocks = useMemo(() => parseBlocks(source), [source]);
   return (
@@ -176,6 +200,8 @@ export function ChatMarkdown({
           onEditApplied={onEditApplied}
           onUndoEdit={onUndoEdit}
           onEditUndone={onEditUndone}
+          appliedPatches={appliedPatches}
+          onPatchApplied={onPatchApplied}
         />
       ))}
     </div>
@@ -312,6 +338,8 @@ type BlockRendererProps = {
   onEditApplied?: (blockHash: string, result: AppliedEditRecord) => void;
   onUndoEdit?: UndoEditHandler;
   onEditUndone?: (blockHash: string) => void;
+  appliedPatches?: AppliedPatchesMap;
+  onPatchApplied?: (blockHash: string, record: AppliedPatchRecord) => void;
 };
 
 const blockRendererEqual = (a: BlockRendererProps, b: BlockRendererProps) =>
@@ -330,7 +358,9 @@ const blockRendererEqual = (a: BlockRendererProps, b: BlockRendererProps) =>
   a.appliedEdits === b.appliedEdits &&
   a.onEditApplied === b.onEditApplied &&
   a.onUndoEdit === b.onUndoEdit &&
-  a.onEditUndone === b.onEditUndone;
+  a.onEditUndone === b.onEditUndone &&
+  a.appliedPatches === b.appliedPatches &&
+  a.onPatchApplied === b.onPatchApplied;
 
 const BlockRenderer = memo(function BlockRenderer({
   block,
@@ -342,6 +372,8 @@ const BlockRenderer = memo(function BlockRenderer({
   onEditApplied,
   onUndoEdit,
   onEditUndone,
+  appliedPatches,
+  onPatchApplied,
 }: BlockRendererProps) {
   switch (block.kind) {
     case "heading": {
@@ -431,7 +463,14 @@ const BlockRenderer = memo(function BlockRenderer({
         );
       }
       if (block.lang === "code-review-patch") {
-        return <ApplyPatchCard body={block.body} />;
+        const blockHash = hashEditBody(block.body);
+        return (
+          <ApplyPatchCard
+            body={block.body}
+            applied={appliedPatches?.[blockHash] ?? null}
+            onApplied={(record) => onPatchApplied?.(blockHash, record)}
+          />
+        );
       }
       return <CodeBlock lang={block.lang} body={block.body} />;
   }

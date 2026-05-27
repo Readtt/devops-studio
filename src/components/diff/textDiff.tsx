@@ -5,8 +5,21 @@
 
 type LineRow = { kind: "unchanged" | "added" | "removed"; text: string };
 
-export function TextDiff({ before, after }: { before: string; after: string }) {
+/** Line-based before/after diff. Default styling suits prose (case
+ *  descriptions, bug repro steps); pass `mono` for code patches — monospace,
+ *  no strikethrough (struck-through code is unreadable), same rose/emerald
+ *  language so it reads the same as the prose diffs. */
+export function TextDiff({
+  before,
+  after,
+  mono = false,
+}: {
+  before: string;
+  after: string;
+  mono?: boolean;
+}) {
   const rows = lineDiff(before, after);
+  const size = mono ? "font-mono text-[11px]" : "text-[11.5px]";
   return (
     <div className="divide-y divide-border/20">
       {rows.map((row, i) => (
@@ -20,10 +33,10 @@ export function TextDiff({ before, after }: { before: string; after: string }) {
           <p
             className={
               row.kind === "removed"
-                ? "whitespace-pre-wrap text-[11.5px] leading-snug text-rose-700/90 line-through dark:text-rose-300/80"
+                ? `whitespace-pre-wrap ${size} leading-snug text-rose-700/90 dark:text-rose-300/80${mono ? "" : " line-through"}`
                 : row.kind === "added"
-                  ? "whitespace-pre-wrap text-[11.5px] leading-snug text-emerald-800 dark:text-emerald-200"
-                  : "whitespace-pre-wrap text-[11.5px] leading-snug text-foreground/55"
+                  ? `whitespace-pre-wrap ${size} leading-snug text-emerald-800 dark:text-emerald-200`
+                  : `whitespace-pre-wrap ${size} leading-snug text-foreground/55`
             }
           >
             {row.text || " "}

@@ -15,6 +15,7 @@ import { bugsToContextBlocks } from "@/modules/ado/lib/bugContextBlock";
 import { resolveClaudeModelId, selectEngine } from "@/modules/ai/lib/engine";
 import { cancelClaudeRun } from "@/modules/ai/lib/claude";
 import type { Attachment } from "@/components/chat/attachments";
+import type { AppliedPatchRecord } from "@/components/ChatMarkdown";
 import {
   streamCodeReview,
   streamCodeReviewClaude,
@@ -90,6 +91,14 @@ type State = {
   ) => Promise<void>;
   stop: (tabId: number) => void;
   clear: (tabId: number) => void;
+  /** Persist an applied code-review patch onto its message so the Applied
+   *  state + before/after diff survive a reload. */
+  applyPatch: (
+    tabId: number,
+    messageId: string,
+    blockHash: string,
+    record: AppliedPatchRecord,
+  ) => void;
 };
 
 function newId(): string {
@@ -400,6 +409,28 @@ export const useCodeReview = create<State>((set, get) => ({
       useCodeReviewHistory.getState().remove(slice.threadId);
     }
     patch(set, tabId, { messages: [], error: null, threadId: null });
+  },
+
+  applyPatch: (tabId, messageId, blockHash, record) => {
+    let threadId: string | null = null;
+    set((s) => {
+      const next = new Map(s.byTab);
+      const curr = next.get(tabId);
+      if (!curr) return s;
+      threadId = curr.threadId;
+      const messages = curr.messages.map((m) =>
+        m.id === messageId
+          ? {
+              ...m,
+              appliedPatches: { ...(m.appliedPatches ?? {}), [blockHash]: record },
+            }
+          : m,
+      );
+      next.set(tabId, { ...curr, messages });
+      return { byTab: next };
+    });
+    // Re-snapshot to history so the applied state survives a reload.
+    if (threadId) persistToHistory(tabId, threadId);
   },
 }));
 
