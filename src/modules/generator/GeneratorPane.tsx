@@ -27,6 +27,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { ENTER_KEY } from "@/lib/platform";
 import { Spinner } from "@/components/ui/spinner";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -1748,7 +1749,7 @@ function ReviewPhase({
               Refine spec
             </Button>
             <span className="ml-auto font-mono text-[10px] text-muted-foreground/60">
-              ↵ to retry · esc to dismiss
+              {ENTER_KEY} to retry · esc to dismiss
             </span>
           </div>
         </div>

@@ -18,6 +18,7 @@ import {
 } from "@/components/chat/attachments";
 import { Button } from "@/components/ui/button";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
+import { ENTER_KEY, MOD_KEY } from "@/lib/platform";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -659,8 +660,8 @@ export function RefineComposer({ isRefining }: Props) {
               </Tooltip>
             ) : null}
             <KbdGroup className="hidden sm:inline-flex">
-              <Kbd>⌘</Kbd>
-              <Kbd>↵</Kbd>
+              <Kbd>{MOD_KEY}</Kbd>
+              <Kbd>{ENTER_KEY}</Kbd>
             </KbdGroup>
             <Button
               size="sm"

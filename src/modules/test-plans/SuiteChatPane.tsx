@@ -9,6 +9,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
+import { ENTER_KEY, SHIFT_KEY, fmtShortcut } from "@/lib/platform";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Tooltip,
@@ -1560,12 +1561,12 @@ function Composer({
         </div>
         <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 px-0.5 text-[10px] text-muted-foreground/80">
           <span className="inline-flex items-center gap-1">
-            <Kbd>↵</Kbd>
+            <Kbd>{ENTER_KEY}</Kbd>
             send
           </span>
           <Dot />
           <span className="inline-flex items-center gap-1">
-            <Kbd>⇧↵</Kbd>
+            <Kbd>{fmtShortcut(SHIFT_KEY, ENTER_KEY)}</Kbd>
             newline
           </span>
           <Dot />

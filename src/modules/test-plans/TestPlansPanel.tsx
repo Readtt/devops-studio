@@ -13,6 +13,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { AzureDevOpsLogo } from "@/components/AzureDevOpsLogo";
+import { MOD_KEY, fmtShortcut } from "@/lib/platform";
 import { ProjectSwitcher } from "@/modules/ado/ProjectSwitcher";
 import { cn } from "@/lib/utils";
 import {
@@ -73,11 +74,11 @@ type Props = {
 
 type ConnInfo = { orgUrl: string; project: string };
 
-/** Platform-appropriate label for the command-palette shortcut. */
+/** Platform-appropriate label for the command-palette shortcut — uses the
+ *  shared platform constants (Tauri OS plugin) rather than navigator.platform
+ *  so it agrees with every other shortcut hint in the app. */
 function paletteHint(): string {
-  const mac =
-    typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
-  return mac ? "⌘K" : "Ctrl K";
+  return fmtShortcut(MOD_KEY, "K");
 }
 
 // --- Suite tree --------------------------------------------------------------
