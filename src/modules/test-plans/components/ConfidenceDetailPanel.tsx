@@ -12,6 +12,7 @@ import {
 import {
   AlertCircleIcon,
   Cancel01Icon,
+  GitBranchIcon,
   Loading03Icon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
@@ -137,12 +138,23 @@ export function ConfidenceDetailPanel({
             <span className="font-medium text-foreground">
               Predicted {verdict.predictedOutcome}
             </span>
-            <span className="text-muted-foreground"> · {conf}% confidence. </span>
+            <span className="text-muted-foreground"> · {conf}% confidence.</span>
             {isAutoPass
-              ? "Safe to mark Passed — every load-bearing step was grounded in code."
+              ? " Safe to mark Passed — every load-bearing step was grounded in code."
               : verdict.predictedOutcome === "Unknown"
-                ? "Couldn't ground this in code — test it manually."
-                : "Below the 90% bar — verify before passing."}
+                ? " Couldn't ground this in code — test it manually."
+                : null}
+          </p>
+        ) : null}
+        {verdict ? (
+          <p className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
+            <HugeiconsIcon
+              icon={GitBranchIcon}
+              size={10}
+              strokeWidth={1.75}
+              className="shrink-0"
+            />
+            Make sure you&apos;re on the right branch.
           </p>
         ) : null}
         {verdict ? (

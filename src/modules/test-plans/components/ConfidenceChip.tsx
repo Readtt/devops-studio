@@ -223,13 +223,15 @@ export function ConfidenceChip({
                 {readiness !== null ? `${readiness}%` : "—"}
               </span>
             </div>
-            <p className="text-foreground/80">
-              {isAutoPass
-                ? "At or above the 90% bar — safe to mark Passed."
-                : verdict.predictedOutcome === "Unknown"
-                  ? "Couldn't ground this in code — test it manually."
-                  : "Below the 90% bar — verify before passing."}
-            </p>
+            {isAutoPass ? (
+              <p className="text-foreground/80">
+                At or above the 90% bar — safe to mark Passed.
+              </p>
+            ) : verdict.predictedOutcome === "Unknown" ? (
+              <p className="text-foreground/80">
+                Couldn&apos;t ground this in code — test it manually.
+              </p>
+            ) : null}
             <p className="text-[10px] text-muted-foreground/80">
               Predicted {OUTCOME_LABEL[verdict.predictedOutcome]} · {conf}%
               confidence.
