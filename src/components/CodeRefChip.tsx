@@ -4,6 +4,11 @@ import { cn } from "@/lib/utils";
 import { useTabsStore } from "@/modules/tabs/store/useTabsStore";
 import { CodeIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { fmtRange, parseCodeRef, shortenPath, type CodeRange } from "./codeRef";
+
+// Re-exported so existing call sites keep importing the parser from here.
+export { parseCodeRef };
+export type { CodeRange };
 
 /**
  * One clickable code reference, rendered as a compact pill. Handles
@@ -16,8 +21,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
  * panel — pass `besideLeafId` to open the viewer in the leaf beside the host
  * pane (the confidence panel) instead of the focused one.
  */
-export type CodeRange = { start: number; end?: number };
-
 export function CodeRefChip({
   path,
   ranges,
@@ -109,47 +112,4 @@ export function CodeRefChip({
       </TooltipContent>
     </Tooltip>
   );
-}
-
-function fmtRange(r: CodeRange): string {
-  return r.end && r.end !== r.start ? `${r.start}–${r.end}` : `${r.start}`;
-}
-
-/** Show the last two path segments when long, so the chip stays scannable
- *  ("src/auth/loginController.ts" → "…/auth/loginController.ts"). */
-function shortenPath(p: string): string {
-  const norm = p.replace(/\\/g, "/");
-  if (norm.length <= 30) return norm;
-  const segs = norm.split("/");
-  if (segs.length <= 2) return norm;
-  return `…/${segs.slice(-2).join("/")}`;
-}
-
-/** Parse "src/foo.ts" / "src/foo.ts:42" / "src/foo.ts:42-58" /
- *  "src/foo.ts:376,594-600,1080" (commas, optional leading ":" / "L" per range,
- *  en-dashes) into a path + ordered ranges. Returns null only for empty input. */
-export function parseCodeRef(
-  raw: string,
-): { path: string; ranges: CodeRange[] } | null {
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  // Split the path off at the first ":<digit>" (paths here are repo-relative,
-  // so the first colon is the line separator, not a Windows drive).
-  const m = trimmed.match(/^(.*?):(\s*L?\d.*)$/);
-  if (!m) return { path: trimmed, ranges: [] };
-  const path = m[1];
-  const ranges: CodeRange[] = [];
-  for (const part of m[2].split(",")) {
-    const rm = part
-      .trim()
-      .replace(/^:/, "")
-      .match(/^L?(\d+)(?:[-–]L?(\d+))?/);
-    if (rm) {
-      ranges.push({
-        start: Number.parseInt(rm[1], 10),
-        end: rm[2] ? Number.parseInt(rm[2], 10) : undefined,
-      });
-    }
-  }
-  return { path, ranges };
 }

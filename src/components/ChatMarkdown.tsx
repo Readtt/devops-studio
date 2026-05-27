@@ -593,8 +593,13 @@ function pushTextWithAutoLinks(
   // Group 3 captures the whole file ref INCLUDING a multi-range line spec
   // ("foo.cs:376,594-600,1080"); parseCodeRef splits it. Trailing ranges used
   // to fall outside the match and render as dangling plain text.
+  // Extension allowlist — longest-first where a prefix collides (csproj|cs,
+  // vbproj|vbhtml|vb, config|conf) so the right one wins. Covers the .NET/web
+  // stack this tool reviews (aspx/ascx/config/csproj/resx/props/targets/sln)
+  // plus the usual source/markup/style/config files. A ref only linkifies as
+  // `name.ext:line`, so a bare word like "config:" never matches.
   const re =
-    /(\B#(\d{3,7})\b)|((?:[\w./-]+\/)?[\w.-]+\.(?:tsx?|jsx?|cshtml|razor|vbhtml|xaml|cs|vb|fs|java|kt|go|py|rs|rb|php|swift|m|mm|c|cc|cpp|h|hpp|css|scss|html?|json|yaml|yml|md|sql|sh|toml|xml|vue|svelte|tauri|conf):\d+(?:[-–]\d+)?(?:\s*,\s*:?\d+(?:[-–]\d+)?)*)/g;
+    /(\B#(\d{3,7})\b)|((?:[\w./-]+\/)?[\w.-]+\.(?:tsx?|jsx?|mjs|cjs|cshtml|csproj|cs|razor|vbproj|vbhtml|vb|xaml|fs|java|kt|go|py|rs|rb|php|swift|m|mm|c|cc|cpp|h|hpp|css|scss|sass|less|html?|json|jsonc|yaml|yml|md|sql|sh|ps1|toml|ini|xml|aspx|ascx|asax|ashx|asmx|master|resx|config|conf|props|targets|sln|vue|svelte|tauri):\d+(?:[-–]\d+)?(?:\s*,\s*:?\d+(?:[-–]\d+)?)*)/g;
   let last = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text))) {
