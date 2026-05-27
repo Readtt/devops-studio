@@ -28,6 +28,11 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { ENTER_KEY } from "@/lib/platform";
+import {
+  MentionDropdown,
+  WorkItemChips,
+  useWorkItemMention,
+} from "@/modules/ado/components/WorkItemMention";
 import { Spinner } from "@/components/ui/spinner";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -634,7 +639,18 @@ function InputPhase() {
   const setOverrideModelId = useGenerationSession((s) => s.setOverrideModelId);
   const addRichAttachment = useGenerationSession((s) => s.addRichAttachment);
   const removeAttachment = useGenerationSession((s) => s.removeAttachment);
+  const attachedWorkItems = useGenerationSession((s) => s.attachedWorkItems);
+  const addWorkItem = useGenerationSession((s) => s.addWorkItem);
+  const removeWorkItem = useGenerationSession((s) => s.removeWorkItem);
   const analyze = useGenerationSession((s) => s.analyze);
+  // Inline `#id` work-item mention — same affordance as the chats, so the
+  // requirements box can attach a bug / work item as grounding context.
+  const mention = useWorkItemMention({
+    value: requirements,
+    onValueChange: setRequirements,
+    onAdd: addWorkItem,
+    selectedIds: attachedWorkItems.map((w) => w.id),
+  });
   // Cases/bugs survive a breadcrumb-back to input. A second analyze would
   // silently discard that draft once the model returns — so we gate the
   // button behind a confirm dialog when a draft is present. Empty state
@@ -764,6 +780,11 @@ function InputPhase() {
               className="mb-1.5"
             />
           ) : null}
+          {attachedWorkItems.length > 0 ? (
+            <div className="mb-1.5">
+              <WorkItemChips items={attachedWorkItems} onRemove={removeWorkItem} />
+            </div>
+          ) : null}
           <div
             onDragEnter={(e) => {
               e.preventDefault();
@@ -792,12 +813,28 @@ function InputPhase() {
                 : "border-border/60 focus-within:border-primary/55 focus-within:ring-2 focus-within:ring-ring/25",
             )}
           >
+            {mention.active ? <MentionDropdown mention={mention} /> : null}
             <textarea
               value={requirements}
-              onChange={(e) => setRequirements(e.target.value)}
+              onChange={(e) => {
+                setRequirements(e.target.value);
+                mention.noteInput(
+                  e.target.value,
+                  e.target.selectionStart ?? e.target.value.length,
+                );
+              }}
+              onSelect={(e) =>
+                mention.noteCaret(
+                  e.currentTarget.value,
+                  e.currentTarget.selectionStart ?? e.currentTarget.value.length,
+                )
+              }
+              onKeyDown={(e) => {
+                mention.onKeyDown(e);
+              }}
               onPaste={onPaste}
               placeholder={
-                "Paste the Asana task / Jira ticket / spec wiki here. Drop files or paste images directly — the analyzer reads them along with the spec.\n\nIf you have changeset notes (commit messages, PR description, diff, ADO changeset URL), paste them at the bottom — the analyzer uses them to narrow scope."
+                "Paste the Asana task / Jira ticket / spec wiki here. Drop files or paste images directly — the analyzer reads them along with the spec. Type #id to attach a work item.\n\nIf you have changeset notes (commit messages, PR description, diff, ADO changeset URL), paste them at the bottom — the analyzer uses them to narrow scope."
               }
               rows={10}
               className="w-full resize-y rounded-md bg-transparent px-2.5 py-2 font-mono text-[11.5px] leading-relaxed outline-none"

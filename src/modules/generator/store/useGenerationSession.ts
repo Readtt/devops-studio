@@ -84,6 +84,7 @@ export type PublishLogEntry = {
 import { supportsVision, type ModelId } from "@/modules/ai/config";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import { bugsToContextBlocks } from "@/modules/ado/lib/bugContextBlock";
+import type { WorkItemRef } from "@/modules/ado";
 import type { ConfidenceVerdict } from "@/modules/test-plans/lib/confidence";
 
 // Attachment types + id minting live in the shared chat-attachment module.
@@ -109,6 +110,10 @@ export type SessionState = {
    *  so missing changesets still get coverage from the spec. */
   changesets: string;
   attachments: Attachment[];
+  /** Work items the user #mentioned in the requirements box, attached as
+   *  read-only grounding context for the analyze run — the same affordance the
+   *  chats offer. Converted to context blocks at analyze time. */
+  attachedWorkItems: WorkItemRef[];
   planId: number | null;
   suiteId: number | null;
   /** Display names for the chosen plan + suite, populated by analyze() (and
@@ -167,6 +172,10 @@ export type SessionState = {
   /** Add an attachment of any supported kind. Dedups by `path`. */
   addRichAttachment: (attachment: Attachment) => void;
   removeAttachment: (path: string) => void;
+  /** Attach / detach a #mentioned work item for the analyze run. Dedups by id. */
+  addWorkItem: (item: WorkItemRef) => void;
+  removeWorkItem: (id: number) => void;
+  clearWorkItems: () => void;
   analyze: () => Promise<void>;
   /** Cancel an in-flight analyze and return to the input phase. The model
    *  request itself is not aborted (provider SDKs don't all support it) —
@@ -326,6 +335,9 @@ const initialState: Omit<
   | "addAttachment"
   | "addRichAttachment"
   | "removeAttachment"
+  | "addWorkItem"
+  | "removeWorkItem"
+  | "clearWorkItems"
   | "analyze"
   | "cancel"
   | "tryAgain"
@@ -363,6 +375,7 @@ const initialState: Omit<
   requirements: "",
   changesets: "",
   attachments: [],
+  attachedWorkItems: [],
   planId: null,
   suiteId: null,
   planName: null,
@@ -543,9 +556,20 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     set((s) => ({
       attachments: s.attachments.filter((a) => a.id !== id),
     })),
+  addWorkItem: (item) =>
+    set((s) =>
+      s.attachedWorkItems.some((w) => w.id === item.id)
+        ? s
+        : { attachedWorkItems: [...s.attachedWorkItems, item] },
+    ),
+  removeWorkItem: (id) =>
+    set((s) => ({
+      attachedWorkItems: s.attachedWorkItems.filter((w) => w.id !== id),
+    })),
+  clearWorkItems: () => set({ attachedWorkItems: [] }),
 
   analyze: async () => {
-    const { requirements, changesets, attachments, planId, suiteId, mode, allowCodeSearch, overrideModelId } = get();
+    const { requirements, changesets, attachments, attachedWorkItems, planId, suiteId, mode, allowCodeSearch, overrideModelId } = get();
     if (!requirements.trim()) {
       set({
         phase: "error",
@@ -662,6 +686,14 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     if (bpWarnings.length > 0) {
       console.warn("[generator] best-practices skipped:", bpWarnings);
     }
+    // #mentioned work items → read-only context blocks, merged with
+    // best-practices. Fetched here (at analyze time) so the chips only hold
+    // lightweight refs until they're actually needed.
+    const bugBlocks =
+      attachedWorkItems.length > 0
+        ? await bugsToContextBlocks(attachedWorkItems.map((w) => w.id))
+        : [];
+    const contextBlocks = [...bpBlocks, ...bugBlocks];
 
     try {
       set({ stepLabel: "Calling model…" });
@@ -686,7 +718,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           sourceRoot: allowCodeSearch ? prefs.sourceRoot : null,
           authMode: engineSel.authMode ?? "api-key",
           bareMode: prefs.claudeBareMode,
-          contextBlocks: bpBlocks,
+          contextBlocks,
           onActivity,
           onRunStart: (rid) => set({ activeClaudeRunId: rid }),
         });
@@ -702,7 +734,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           mode,
           keys,
           modelId,
-          contextBlocks: bpBlocks,
+          contextBlocks,
           onActivity,
         });
       }
