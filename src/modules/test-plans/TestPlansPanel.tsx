@@ -438,7 +438,10 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
             No test plans found in this project.
           </div>
         ) : null}
-        <ul className="px-1 py-1">
+        {/* Bottom scroll-space so right-clicking the last row (case/suite/plan)
+            leaves room for its context menu instead of it opening flush against
+            the viewport edge and getting clipped. */}
+        <ul className="px-1 pt-1 pb-28">
           {plans.map((p) => (
             <PlanRow
               key={p.id}
