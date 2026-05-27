@@ -45,6 +45,7 @@ export function ConfidenceChip({
   onCancel,
   onOpenDetail,
   size = "sm",
+  actionsSide = "right",
 }: {
   verdict: ConfidenceVerdict | null | undefined;
   loading?: boolean;
@@ -58,6 +59,10 @@ export function ConfidenceChip({
   onOpenDetail?: () => void;
   /** "sm" (default) for dense review rows; "md" for the test-case header. */
   size?: "sm" | "md";
+  /** Which side the inline ↻/✕ control sits on. "right" (default) for the
+   *  dense review rows; "left" in the test-case header, where the badge sits
+   *  flush against the outcome selector to its right. */
+  actionsSide?: "left" | "right";
 }) {
   const md = size === "md";
   const affordance = md
@@ -71,8 +76,19 @@ export function ConfidenceChip({
 
   // First-time evaluation (no prior verdict) — pill + inline cancel.
   if (loading && !verdict) {
+    const cancel = onCancel ? (
+      <IconAction
+        label="Cancel evaluation"
+        icon={Cancel01Icon}
+        onClick={onCancel}
+        sizeClass={iconBtn}
+        glyph={glyph}
+        tone="danger"
+      />
+    ) : null;
     return (
       <span className="inline-flex items-center gap-1">
+        {actionsSide === "left" ? cancel : null}
         <span
           className={cn(
             "inline-flex items-center rounded-sm bg-foreground/[0.06] font-medium text-muted-foreground",
@@ -87,16 +103,7 @@ export function ConfidenceChip({
           />
           Evaluating…
         </span>
-        {onCancel ? (
-          <IconAction
-            label="Cancel evaluation"
-            icon={Cancel01Icon}
-            onClick={onCancel}
-            sizeClass={iconBtn}
-            glyph={glyph}
-            tone="danger"
-          />
-        ) : null}
+        {actionsSide === "right" ? cancel : null}
       </span>
     );
   }
@@ -153,8 +160,32 @@ export function ConfidenceChip({
     verdict.confidence >= AUTO_PASS_THRESHOLD &&
     verdict.predictedOutcome === "Pass";
 
+  // While re-evaluating: cancel. Otherwise: a one-click re-analyze that
+  // doesn't require opening the detail pane. Placed left or right of the pill
+  // per actionsSide.
+  const action =
+    loading && onCancel ? (
+      <IconAction
+        label="Cancel evaluation"
+        icon={Cancel01Icon}
+        onClick={onCancel}
+        sizeClass={iconBtn}
+        glyph={glyph}
+        tone="danger"
+      />
+    ) : !loading && onReevaluate ? (
+      <IconAction
+        label="Re-analyze confidence"
+        icon={RefreshIcon}
+        onClick={onReevaluate}
+        sizeClass={iconBtn}
+        glyph={glyph}
+      />
+    ) : null;
+
   return (
     <span className="inline-flex items-center gap-1">
+      {actionsSide === "left" ? action : null}
       <Tooltip>
         <TooltipTrigger asChild>
           <button
@@ -210,26 +241,7 @@ export function ConfidenceChip({
         </TooltipContent>
       </Tooltip>
 
-      {/* While re-evaluating: cancel. Otherwise: a one-click re-analyze that
-          doesn't require opening the detail pane. */}
-      {loading && onCancel ? (
-        <IconAction
-          label="Cancel evaluation"
-          icon={Cancel01Icon}
-          onClick={onCancel}
-          sizeClass={iconBtn}
-          glyph={glyph}
-          tone="danger"
-        />
-      ) : !loading && onReevaluate ? (
-        <IconAction
-          label="Re-analyze confidence"
-          icon={RefreshIcon}
-          onClick={onReevaluate}
-          sizeClass={iconBtn}
-          glyph={glyph}
-        />
-      ) : null}
+      {actionsSide === "right" ? action : null}
     </span>
   );
 }

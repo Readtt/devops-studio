@@ -268,6 +268,7 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
               verdict={verdict}
               loading={evaluating}
               size="md"
+              actionsSide="left"
               onEvaluate={() => void handleEvaluate()}
               onReevaluate={() => void handleEvaluate()}
               onCancel={cancelEvaluate}
