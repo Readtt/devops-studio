@@ -1,7 +1,6 @@
 import { Fragment } from "react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { useTabsStore } from "@/modules/tabs/store/useTabsStore";
 import { CodeIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { fmtRange, parseCodeRef, shortenPath, type CodeRange } from "./codeRef";
@@ -18,21 +17,15 @@ export type { CodeRange };
  * pill never overflows or dangles trailing line numbers as plain text.
  *
  * Used by chat citations (code review / suite chat / ask) and the confidence
- * panel — pass `besideLeafId` to open the viewer in the leaf beside the host
- * pane (the confidence panel) instead of the focused one.
+ * panel. Always opens the viewer in the focused leaf (a normal tab).
  */
 export function CodeRefChip({
   path,
   ranges,
-  beside,
   className,
 }: {
   path: string;
   ranges: CodeRange[];
-  /** Open the viewer in the leaf beside the currently-focused one (resolved at
-   *  click time) instead of in the focused leaf. Used by the confidence panel
-   *  so code shows next to the reasoning. */
-  beside?: boolean;
   className?: string;
 }) {
   const open = (r?: CodeRange) => {
@@ -42,9 +35,6 @@ export function CodeRefChip({
           path,
           startLine: r?.start,
           endLine: r?.end,
-          ...(beside
-            ? { besideLeafId: useTabsStore.getState().focusedLeafId }
-            : {}),
         },
       }),
     );

@@ -21,8 +21,8 @@ import { HugeiconsIcon } from "@hugeicons/react";
  * Confidence detail as an inline side panel — mirrors the generator's Ask
  * panel (a flex sibling, not a workspace tab) so the prediction sits beside
  * the cases / case it's about instead of opening a new tab. Clicking an
- * evidence `file:line` opens the code viewer in the leaf beside this pane,
- * so reasoning and code stay visible together.
+ * evidence `file:line` opens the code viewer as a normal tab in the focused
+ * leaf.
  *
  * Fully controlled: the host owns "is it open" and the verdict, and provides
  * Re-evaluate. Dismiss via the close button or Esc.
@@ -265,8 +265,8 @@ function EvidenceRow({ item }: { item: EvidenceItem }) {
   );
 }
 
-/** An evidence ref → the shared multi-range code-ref pill, opened in the leaf
- *  beside this panel so reasoning + code stay visible together. */
+/** An evidence ref → the shared multi-range code-ref pill, opened as a normal
+ *  code-viewer tab in the focused leaf. */
 function CodeRef({ refStr }: { refStr: string }) {
   const parsed = parseCodeRef(refStr);
   if (!parsed) {
@@ -276,7 +276,7 @@ function CodeRef({ refStr }: { refStr: string }) {
       </span>
     );
   }
-  return <CodeRefChip path={parsed.path} ranges={parsed.ranges} beside />;
+  return <CodeRefChip path={parsed.path} ranges={parsed.ranges} />;
 }
 
 function formatWhen(iso: string): string {
