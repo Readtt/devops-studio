@@ -14,6 +14,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { ApplyEditCard } from "@/components/chat/ApplyEditCard";
 import { BulkApplyEditCard } from "@/components/chat/BulkApplyEditCard";
 import { ApplyPatchCard } from "@/modules/code-review/ApplyPatchCard";
+import { ChatCodeMirror } from "@/modules/code-viewer/ChatCodeMirror";
 
 /**
  * Markdown renderer tuned for chat assistant messages. Built for streaming:
@@ -472,7 +473,13 @@ const BlockRenderer = memo(function BlockRenderer({
           />
         );
       }
-      return <CodeBlock lang={block.lang} body={block.body} />;
+      return (
+        <CodeBlock
+          lang={block.lang}
+          body={block.body}
+          streaming={streamingTail}
+        />
+      );
   }
 }, blockRendererEqual);
 
@@ -489,7 +496,18 @@ function Caret() {
 
 // --- Code block -------------------------------------------------------------
 
-function CodeBlock({ lang, body }: { lang: string | null; body: string }) {
+function CodeBlock({
+  lang,
+  body,
+  streaming,
+}: {
+  lang: string | null;
+  body: string;
+  /** While the block is still streaming in we render a plain <pre> — mounting
+   *  a CodeMirror per token would thrash. Once settled, swap to the themed,
+   *  syntax-highlighted editor that matches Settings → General. */
+  streaming?: boolean;
+}) {
   const [copied, setCopied] = useState(false);
   const onCopy = async () => {
     try {
@@ -535,9 +553,13 @@ function CodeBlock({ lang, body }: { lang: string | null; body: string }) {
           </TooltipContent>
         </Tooltip>
       </div>
-      <pre className="overflow-x-auto px-3 py-2 font-mono text-[11px] leading-[1.55] text-foreground/90">
-        <code>{body}</code>
-      </pre>
+      {streaming ? (
+        <pre className="overflow-x-auto px-3 py-2 font-mono text-[11px] leading-[1.55] text-foreground/90">
+          <code>{body}</code>
+        </pre>
+      ) : (
+        <ChatCodeMirror lang={lang} body={body} />
+      )}
     </div>
   );
 }
