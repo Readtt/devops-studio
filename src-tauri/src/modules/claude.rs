@@ -473,6 +473,12 @@ pub async fn claude_run_query(
                 // Emit the parsed object so the UI can render anything it
                 // wants (tool calls, partial text, usage stats).
                 let _ = app_for_stdout.emit(&event_for_stdout, value);
+            } else {
+                // The CLI emits one JSON object per line in stream-json mode, so
+                // a non-parseable line is anomalous — log it (debug) instead of
+                // dropping silently, which is what made "the UI just stopped
+                // updating" impossible to diagnose.
+                log::debug!("claude: ignoring non-JSON stdout line: {}", truncate(trimmed, 200));
             }
         }
         (final_text, result_is_error, result_http_status)
