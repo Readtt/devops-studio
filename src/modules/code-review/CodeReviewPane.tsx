@@ -264,11 +264,9 @@ export function CodeReviewPane({
                 side="bottom"
                 className="max-w-[300px] px-3 py-2 text-[11px] leading-relaxed"
               >
-                {totals.count} file{totals.count === 1 ? "" : "s"} changed —{" "}
-                {totals.adds} line{totals.adds === 1 ? "" : "s"} added,{" "}
-                {totals.dels} removed. The diff is fed to the reviewer model
-                along with Read/Glob/Grep tools so it can dig into context
-                outside the changed lines.
+                What the reviewer sees: {totals.count} file
+                {totals.count === 1 ? "" : "s"} (+{totals.adds} −{totals.dels}),
+                plus Read/Glob/Grep to look beyond the changed lines.
               </TooltipContent>
             </Tooltip>
           ) : diffLoading ? (
