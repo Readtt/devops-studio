@@ -245,12 +245,23 @@ async function fetchMentionItems(
 
 export function MentionDropdown({
   mention,
+  /** Which side of the input the panel opens on. Composers anchored to the
+   *  bottom of their pane (the Refine box) open "top" so the list grows into
+   *  free space above; an input near the TOP of its pane (the generator
+   *  requirements box) must open "bottom" or the panel runs off-screen. */
+  placement = "top",
 }: {
   mention: WorkItemMention;
+  placement?: "top" | "bottom";
 }) {
   const { query, results, loading, highlight, setHighlight, accept } = mention;
   return (
-    <div className="absolute bottom-full left-0 z-50 mb-1 w-80 overflow-hidden rounded-lg border border-border/60 bg-popover shadow-xl">
+    <div
+      className={cn(
+        "absolute left-0 z-50 w-80 overflow-hidden rounded-lg border border-border/60 bg-popover shadow-xl",
+        placement === "bottom" ? "top-full mt-1" : "bottom-full mb-1",
+      )}
+    >
       <div className="border-b border-border/40 px-2.5 py-1.5 text-[10px] text-muted-foreground">
         {query ? (
           <>

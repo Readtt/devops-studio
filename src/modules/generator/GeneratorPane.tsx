@@ -813,7 +813,9 @@ function InputPhase() {
                 : "border-border/60 focus-within:border-primary/55 focus-within:ring-2 focus-within:ring-ring/25",
             )}
           >
-            {mention.active ? <MentionDropdown mention={mention} /> : null}
+            {mention.active ? (
+              <MentionDropdown mention={mention} placement="bottom" />
+            ) : null}
             <textarea
               value={requirements}
               onChange={(e) => {
