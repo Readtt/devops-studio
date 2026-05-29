@@ -7,6 +7,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.6.0] - 2026-05-29
+
+### Added
+
+- Claude Opus 4.8 (`claude-opus-4-8`) in the model selector — Anthropic's
+  new flagship, available to both the Vercel AI SDK and Claude Code engines,
+  with context-limit and pricing metadata wired up.
+
+### Changed
+
+- Claude Opus 4.7 is now labelled "Powerful" (prior-generation flagship)
+  instead of "Best", so Opus 4.8 reads as the current top model.
+
 ## [0.5.0] - 2026-05-29
 
 The biggest release since the test-execution work — a full feature wave plus a
