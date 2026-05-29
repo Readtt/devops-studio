@@ -308,14 +308,14 @@ function RunCard({
           aria-expanded={expanded}
           className="min-w-0 flex-1 text-left"
         >
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span className="font-medium">{formatTimestamp(run.timestamp)}</span>
             <span className="text-[10.5px] text-muted-foreground">
               {run.mode}
             </span>
             <StatusBadge status={run.status ?? "published"} />
             {hasFailures ? (
-              <span className="rounded bg-destructive/15 px-1.5 py-0.5 text-[10px] font-medium text-destructive">
+              <span className="shrink-0 rounded bg-destructive/15 px-1.5 py-0.5 text-[10px] font-medium text-destructive">
                 {failCount} failed
               </span>
             ) : null}
@@ -325,7 +325,7 @@ function RunCard({
             {" · "}
             {suiteLabel}
           </p>
-          <p className="mt-0.5 text-[10.5px] text-muted-foreground/85">
+          <p className="mt-0.5 truncate text-[10.5px] text-muted-foreground/85">
             {run.cases.length} case{run.cases.length === 1 ? "" : "s"} ·{" "}
             {run.bugs.length} bug{run.bugs.length === 1 ? "" : "s"} ·{" "}
             {okCount} published
