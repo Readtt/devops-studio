@@ -34,7 +34,7 @@ import { ConfidenceChip } from "./components/ConfidenceChip";
 import { ConfidenceDetailPanel } from "./components/ConfidenceDetailPanel";
 import { fromTestCase } from "./lib/runConfidenceEval";
 import { evaluateCaseConfidence } from "./lib/evaluateCaseConfidence";
-import { getConfidence, saveConfidence } from "./lib/confidenceApi";
+import { clearConfidence, getConfidence, saveConfidence } from "./lib/confidenceApi";
 import type { ConfidenceVerdict } from "./lib/confidence";
 
 type Props = {
@@ -136,6 +136,13 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
     const previous = tc.steps;
     setTc({ ...tc, steps: next });
     setStepsSaveError(null);
+    // A verdict graded against the old steps is now stale — drop it (and its
+    // stored copy) so the chip returns to "Evaluate" instead of showing a
+    // misleading pass-readiness % the reviewer might act on.
+    if (verdict) {
+      setVerdict(null);
+      void clearConfidence(tc.id).catch(() => undefined);
+    }
     if (stepsSaveTimer.current) clearTimeout(stepsSaveTimer.current);
     stepsSaveTimer.current = setTimeout(() => {
       void (async () => {

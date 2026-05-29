@@ -959,6 +959,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     }));
     schedulePersistDraft();
   },
+  // Editing steps invalidates a prior confidence verdict — it was graded
+  // against the old steps, and showing a stale "92% pass-ready" after an edit
+  // could trick a reviewer into auto-passing a case that no longer matches.
+  // Clearing it flips the chip back to "Evaluate" so the score is never stale.
   setCaseStep: (uid, stepIndex, patch) => {
     set((s) => ({
       cases: s.cases.map((c) => {
@@ -968,6 +972,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           steps: c.steps.map((st, i) =>
             i === stepIndex ? { ...st, ...patch } : st,
           ),
+          verdict: undefined,
         };
       }),
     }));
@@ -977,7 +982,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     set((s) => ({
       cases: s.cases.map((c) =>
         c.uid === uid
-          ? { ...c, steps: [...c.steps, { action: "", expected: "" }] }
+          ? {
+              ...c,
+              steps: [...c.steps, { action: "", expected: "" }],
+              verdict: undefined,
+            }
           : c,
       ),
     }));
@@ -988,7 +997,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       cases: s.cases.map((c) => {
         if (c.uid !== uid) return c;
         if (c.steps.length <= 1) return c;
-        return { ...c, steps: c.steps.filter((_, i) => i !== stepIndex) };
+        return {
+          ...c,
+          steps: c.steps.filter((_, i) => i !== stepIndex),
+          verdict: undefined,
+        };
       }),
     }));
     schedulePersistDraft();

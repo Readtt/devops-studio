@@ -553,6 +553,7 @@ pub fn run() {
             chat_threads::chat_threads_list,
             chat_threads::chat_threads_list_for_suite,
             confidence_store::confidence_save,
+            confidence_store::confidence_delete,
             confidence_store::confidence_get,
             confidence_store::confidence_get_many,
             // --- Generation history ---

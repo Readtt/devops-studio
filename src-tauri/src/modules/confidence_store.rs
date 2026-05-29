@@ -99,6 +99,21 @@ pub async fn confidence_save(
     })
 }
 
+/// Drop a stored verdict. Called when a case's steps change so a stale score
+/// can't reappear when the case is reopened.
+#[tauri::command]
+pub async fn confidence_delete(
+    app: AppHandle,
+    state: State<'_, ConfidenceStoreState>,
+    case_id: i64,
+) -> Result<(), String> {
+    state.with_conn(&app, |conn| {
+        conn.execute("DELETE FROM confidence WHERE case_id = ?1", params![case_id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
 #[tauri::command]
 pub async fn confidence_get(
     app: AppHandle,

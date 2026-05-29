@@ -34,6 +34,12 @@ export async function saveConfidence(
   });
 }
 
+/** Drop the stored verdict for a case — used when its steps change so a stale
+ *  score can't resurface on reopen. */
+export async function clearConfidence(caseId: number): Promise<void> {
+  await invoke("confidence_delete", { caseId });
+}
+
 /** Read the stored verdict for a case, or null if none. */
 export async function getConfidence(
   caseId: number,

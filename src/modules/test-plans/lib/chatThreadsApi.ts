@@ -103,9 +103,14 @@ function parseRaw(raw: RawThread): StoredChatThread {
   try {
     const parsed = JSON.parse(raw.messages);
     if (Array.isArray(parsed)) messages = parsed as SuiteChatMessage[];
-  } catch {
+  } catch (e) {
     // Corrupt or older shape — start with an empty thread rather than
-    // crashing the pane. The user can re-send and overwrite cleanly.
+    // crashing the pane. The user can re-send and overwrite cleanly. Log it so
+    // a corrupted row is diagnosable instead of silently looking empty.
+    console.warn(
+      `[suite-chat] could not parse stored messages for thread ${raw.threadId}:`,
+      e,
+    );
   }
   return {
     planId: raw.planId,
