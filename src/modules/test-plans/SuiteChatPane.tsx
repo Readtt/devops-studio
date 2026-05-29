@@ -662,21 +662,20 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
 
   // Exactly what the next turn will hand the model — computed with the same
   // helpers the runner uses (applyCaseFilter + collectLinkedBugIds) so the
-  // chip never lies about scope. Recomputed on load, so it "persists" across a
-  // refresh by reflecting the live suite state.
-  const contextScope = useMemo<SuiteChatScope>(() => {
-    const scoped = cases ? applyCaseFilter(cases, filter) : [];
-    return {
-      cases: scoped.map((c) => ({ id: c.id, title: c.title })),
-      autoBugIds: collectLinkedBugIds(scoped, LINKED_BUG_CAP),
-      mentioned: bugCtx.selected.map((b) => ({ id: b.id, title: b.title })),
-      bestPracticeFiles: bestPracticeFiles
-        .filter((f) => f.enabled)
-        .map((f) => f.label),
-      notLoaded: truncated ? Math.max(0, totalCases - (cases?.length ?? 0)) : 0,
-      caseCap: PROMPT_CASE_CAP,
-    };
-  }, [cases, filter, bugCtx.selected, bestPracticeFiles, truncated, totalCases]);
+  // chip never lies about scope. A plain const (NOT useMemo): this sits after
+  // the `if (!suite || !thread) return` guard above, so a hook here would
+  // violate the Rules of Hooks. Filtering <=50 cases per render is cheap.
+  const scopedCases = cases ? applyCaseFilter(cases, filter) : [];
+  const contextScope: SuiteChatScope = {
+    cases: scopedCases.map((c) => ({ id: c.id, title: c.title })),
+    autoBugIds: collectLinkedBugIds(scopedCases, LINKED_BUG_CAP),
+    mentioned: bugCtx.selected.map((b) => ({ id: b.id, title: b.title })),
+    bestPracticeFiles: bestPracticeFiles
+      .filter((f) => f.enabled)
+      .map((f) => f.label),
+    notLoaded: truncated ? Math.max(0, totalCases - (cases?.length ?? 0)) : 0,
+    caseCap: PROMPT_CASE_CAP,
+  };
 
   const submit = () => {
     const text = draft.trim();
