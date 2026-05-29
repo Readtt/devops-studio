@@ -828,6 +828,13 @@ export const useSuiteChat = create<Store>((set, get) => ({
         });
         return { byThread: next };
       });
+      // Reconcile disk with memory. The initial send eagerly persisted
+      // [user, emptyAssistant] (so a fast cancel can't drop the question),
+      // and a mid-stream throttled write may have saved a partial assistant.
+      // We just dropped that assistant from state — without this flush the
+      // stale row survives in SQLite and reappears, broken, on the next
+      // reload. Flush (not schedule) so a reload a beat later sees the truth.
+      flushPersist(planId, suiteId, threadId, get);
     }
   },
 
