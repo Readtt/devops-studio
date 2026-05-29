@@ -94,7 +94,6 @@ export type SetConnectionArgs = {
   project: string;
   /** Provide a non-empty PAT to set; empty string clears it; undefined leaves it as-is. */
   pat?: string;
-  defaultPlanId?: number | null;
   defaultTrackingBranch?: string;
 };
 

@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 pub struct Connection {
     pub org_url: String,
     pub project: String,
-    pub default_plan_id: Option<i64>,
     pub default_tracking_branch: String,
 }
 
@@ -20,7 +19,6 @@ impl Default for Connection {
         Self {
             org_url: String::new(),
             project: String::new(),
-            default_plan_id: None,
             default_tracking_branch: "main".into(),
         }
     }
@@ -34,7 +32,6 @@ pub struct ConnectionStatus {
     pub identity_name: Option<String>,
     pub org_url: String,
     pub project: String,
-    pub default_plan_id: Option<i64>,
     pub default_tracking_branch: String,
 }
 

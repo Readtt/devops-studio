@@ -35,7 +35,6 @@ use types::{
 const STORE_PATH: &str = "devops-studio-settings.json";
 const KEY_ORG: &str = "ado.orgUrl";
 const KEY_PROJECT: &str = "ado.project";
-const KEY_DEFAULT_PLAN: &str = "ado.defaultPlanId";
 const KEY_DEFAULT_BRANCH: &str = "ado.defaultTrackingBranch";
 
 // --- Helpers ---
@@ -87,7 +86,6 @@ fn load_connection_from_store(app: &AppHandle) -> Connection {
         .get(KEY_PROJECT)
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_default();
-    let default_plan_id = store.get(KEY_DEFAULT_PLAN).and_then(|v| v.as_i64());
     let default_tracking_branch = store
         .get(KEY_DEFAULT_BRANCH)
         .and_then(|v| v.as_str().map(String::from))
@@ -95,7 +93,6 @@ fn load_connection_from_store(app: &AppHandle) -> Connection {
     Connection {
         org_url,
         project,
-        default_plan_id,
         default_tracking_branch,
     }
 }
@@ -104,9 +101,6 @@ fn save_connection_to_store(app: &AppHandle, conn: &Connection) -> Result<(), St
     let store = app.store(STORE_PATH).map_err(|e| e.to_string())?;
     store.set(KEY_ORG, serde_json::Value::String(conn.org_url.clone()));
     store.set(KEY_PROJECT, serde_json::Value::String(conn.project.clone()));
-    if let Some(p) = conn.default_plan_id {
-        store.set(KEY_DEFAULT_PLAN, serde_json::Value::from(p));
-    }
     store.set(
         KEY_DEFAULT_BRANCH,
         serde_json::Value::String(conn.default_tracking_branch.clone()),
@@ -129,7 +123,6 @@ pub struct SetConnectionInput {
     pub org_url: String,
     pub project: String,
     pub pat: Option<String>,
-    pub default_plan_id: Option<i64>,
     pub default_tracking_branch: Option<String>,
 }
 
@@ -142,7 +135,6 @@ pub async fn ado_set_connection(
     let conn = Connection {
         org_url: normalize_org_url(&input.org_url),
         project: input.project,
-        default_plan_id: input.default_plan_id,
         default_tracking_branch: input
             .default_tracking_branch
             .unwrap_or_else(|| "main".to_string()),
@@ -173,7 +165,6 @@ pub async fn ado_get_connection(
         identity_name: None,
         org_url: c.org_url,
         project: c.project,
-        default_plan_id: c.default_plan_id,
         default_tracking_branch: c.default_tracking_branch,
     })
 }

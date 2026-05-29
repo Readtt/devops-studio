@@ -164,7 +164,6 @@ export function AzureDevOpsSection() {
         // canonical place to switch projects now.
         project,
         pat: pat.length > 0 ? pat : undefined,
-        defaultPlanId: null,
         defaultTrackingBranch: useDynamicBranch
           ? CURRENT_BRANCH_SENTINEL
           : trackingBranch || "main",

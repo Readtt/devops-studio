@@ -8,7 +8,6 @@ export const ConnectionStatusSchema = z.object({
   identityName: z.string().nullable().optional(),
   orgUrl: z.string(),
   project: z.string(),
-  defaultPlanId: z.number().int().nullable().optional(),
   defaultTrackingBranch: z.string(),
 });
 export type ConnectionStatus = z.infer<typeof ConnectionStatusSchema>;

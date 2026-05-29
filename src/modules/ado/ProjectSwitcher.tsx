@@ -87,7 +87,6 @@ export function ProjectSwitcher({ currentProject }: Props) {
         await setConnection({
           orgUrl: curr.orgUrl,
           project: name,
-          defaultPlanId: null,
           defaultTrackingBranch:
             curr.defaultTrackingBranch && curr.defaultTrackingBranch.length > 0
               ? curr.defaultTrackingBranch
