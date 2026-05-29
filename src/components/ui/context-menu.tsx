@@ -67,8 +67,15 @@ function ContextMenuContent({
     <ContextMenuPrimitive.Portal>
       <ContextMenuPrimitive.Content
         data-slot="context-menu-content"
+        // collisionPadding keeps the menu off the viewport edge. The height cap
+        // is a viewport fraction, NOT --radix-...-available-height: capping to
+        // the available space lets Radix's flip() think a tall menu "fits" near
+        // the bottom (by scrolling) so it never flips — the menu then renders
+        // short + clipped. A static cap lets flip() see the true height and
+        // open the full menu UPWARD when there's no room below.
+        collisionPadding={8}
         className={cn(
-          "z-50 max-h-(--radix-context-menu-content-available-height) min-w-44 origin-(--radix-context-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border border-border/60 bg-popover p-1 text-popover-foreground shadow-lg duration-100",
+          "z-50 max-h-[min(80vh,28rem)] min-w-44 origin-(--radix-context-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border border-border/60 bg-popover p-1 text-popover-foreground shadow-lg duration-100",
           "data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1",
           "data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
           className,
