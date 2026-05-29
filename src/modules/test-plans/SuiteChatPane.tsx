@@ -637,29 +637,6 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
   const activeModelId = modelId ?? globalModelId;
   const activeModel = MODELS.find((m) => m.id === activeModelId);
   const titleParts = [...suitePath, suiteName ?? `#${suiteId}`];
-  // How many cases the model will actually see after the filter is applied —
-  // gives the user instant feedback when they narrow scope on a big suite.
-  const scopedCount = (() => {
-    if (!cases) return 0;
-    const needle = filter.trim().toLowerCase();
-    if (!needle) return cases.length;
-    const idMatch = needle.match(/^#(\d+)$/);
-    if (idMatch) {
-      const id = Number(idMatch[1]);
-      return cases.filter((c) => c.id === id).length;
-    }
-    return cases.filter((c) => {
-      if (String(c.id).includes(needle)) return true;
-      if (c.title.toLowerCase().includes(needle)) return true;
-      if (c.tags.some((t) => t.toLowerCase().includes(needle))) return true;
-      return c.steps.some(
-        (s) =>
-          s.action.toLowerCase().includes(needle) ||
-          s.expected.toLowerCase().includes(needle),
-      );
-    }).length;
-  })();
-
   // Exactly what the next turn will hand the model — computed with the same
   // helpers the runner uses (applyCaseFilter + collectLinkedBugIds) so the
   // chip never lies about scope. A plain const (NOT useMemo): this sits after
@@ -721,7 +698,6 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
         casesLoading={casesLoading}
         totalCases={totalCases}
         truncated={truncated}
-        scopedCount={scopedCount}
         contextScope={contextScope}
         filter={filter}
         onFilterChange={(v) => setFilter(planId, suiteId, v)}
@@ -838,7 +814,6 @@ function ChatHeader({
   casesLoading,
   totalCases,
   truncated,
-  scopedCount,
   contextScope,
   filter,
   onFilterChange,
@@ -863,7 +838,6 @@ function ChatHeader({
   casesLoading: boolean;
   totalCases: number;
   truncated: boolean;
-  scopedCount: number;
   contextScope: SuiteChatScope;
   filter: string;
   onFilterChange: (v: string) => void;
@@ -1018,37 +992,26 @@ function ChatHeader({
           a global concern that belongs in Preferences, not in every
           chat header. */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-muted-foreground">
-        <span className="inline-flex items-center gap-1">
-          {casesLoading ? (
-            "Loading cases…"
-          ) : cases ? (
-            <>
-              <span
-                className={cn(
-                  "font-medium tabular-nums",
-                  filter.trim() ? "text-primary" : "text-foreground/85",
-                )}
-              >
-                {filter.trim() ? scopedCount : cases.length}
-              </span>{" "}
-              case{(filter.trim() ? scopedCount : cases.length) === 1 ? "" : "s"}
-              {filter.trim() ? (
-                <span className="text-muted-foreground/70">
-                  {" "}
-                  matching · {cases.length} in suite
-                </span>
-              ) : truncated ? (
-                <span className="text-amber-700 dark:text-amber-300">
-                  {" "}
-                  · {totalCases - cases.length} more not loaded
-                </span>
-              ) : null}
-            </>
-          ) : (
-            "—"
-          )}
-        </span>
-        {cases ? <ContextChip scope={contextScope} /> : null}
+        {/* The ContextChip is the single source for the case/item count — no
+            separate "N cases" text beside it. We keep only the qualifiers the
+            chip can't show: the in-suite total when a filter is narrowing the
+            set, and the "not all loaded" warning. */}
+        {casesLoading ? (
+          <span className="inline-flex items-center gap-1">Loading cases…</span>
+        ) : cases ? (
+          <ContextChip scope={contextScope} />
+        ) : (
+          <span className="inline-flex items-center gap-1">—</span>
+        )}
+        {cases && !casesLoading && filter.trim() ? (
+          <span className="text-muted-foreground/70 tabular-nums">
+            filtered · {cases.length} in suite
+          </span>
+        ) : cases && !casesLoading && truncated ? (
+          <span className="text-amber-700 dark:text-amber-300 tabular-nums">
+            {totalCases - cases.length} more not loaded
+          </span>
+        ) : null}
         {/* Scope-narrowing input. Earlier copy ("Search cases…") didn't
             explain why this control exists — users assumed it was a UI
             filter and ignored it. It's actually a budget control: the
@@ -1104,10 +1067,9 @@ function ChatHeader({
               variant="panel"
               className="max-w-[280px] px-3 py-2 text-[11px] leading-relaxed"
             >
-              The chat sends every loaded case to the model on each turn.
-              On a big suite that dilutes answers — type a keyword here to
-              focus the AI on the matching subset (title, step text, tag,
-              or <span className="font-mono">#id</span>).
+              Focus the AI on matching cases — by title, step, tag, or{" "}
+              <span className="font-mono">#id</span>. Otherwise every loaded
+              case is sent each turn.
             </TooltipContent>
           </Tooltip>
         ) : null}
