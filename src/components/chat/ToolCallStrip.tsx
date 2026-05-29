@@ -4,6 +4,7 @@ import type { ActivityEntry } from "@/modules/generator/lib/activityLog";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   AlertCircleIcon,
+  ArrowRight01Icon,
   CodeIcon,
   FileEditIcon,
   Loading03Icon,
@@ -16,6 +17,11 @@ import {
  * (Read / Glob / Grep / …). Renders above the message text so the chat no
  * longer goes silent while the model works — a running tool shows a spinner,
  * a finished one a check. Click a row to expand its input + a result preview.
+ *
+ * The whole group is collapsed by default to a one-line summary ("N tool
+ * calls") so a turn with a dozen reads doesn't bury the answer under a wall of
+ * rows. It auto-expands while the turn streams so live progress stays visible,
+ * then tucks itself back into the summary once the work is done.
  *
  * Fed by ActivityEntry[] persisted on the message (so the strip survives a
  * reload, where everything reads as completed history). We only surface
@@ -34,6 +40,7 @@ export function ToolCallStrip({
   streaming?: boolean;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [groupOpen, setGroupOpen] = useState(false);
   const rows = (events ?? []).filter(
     (e) => e.kind === "tool" || e.kind === "error",
   );
@@ -47,8 +54,52 @@ export function ToolCallStrip({
       return next;
     });
 
+  const errorCount = rows.filter((e) => e.kind === "error").length;
+  const totalMs = rows.reduce((sum, e) => sum + (e.durationMs ?? 0), 0);
+  // Show the rows while the user has expanded the group OR the turn is still
+  // streaming — never hide work in progress behind a collapsed summary.
+  const showRows = groupOpen || !!streaming;
+
   return (
     <div className="mb-2 overflow-hidden rounded-lg border border-border/45 bg-foreground/[0.02]">
+      <button
+        type="button"
+        onClick={() => setGroupOpen((o) => !o)}
+        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[10.5px] transition-colors hover:bg-foreground/[0.03]"
+      >
+        <HugeiconsIcon
+          icon={ArrowRight01Icon}
+          size={11}
+          strokeWidth={2}
+          className={cn(
+            "shrink-0 text-muted-foreground/60 transition-transform",
+            showRows && "rotate-90",
+          )}
+        />
+        <span className="shrink-0 font-medium text-foreground/80">
+          {rows.length} tool {rows.length === 1 ? "call" : "calls"}
+        </span>
+        {errorCount > 0 ? (
+          <span className="shrink-0 font-medium text-rose-600 dark:text-rose-400">
+            · {errorCount} failed
+          </span>
+        ) : null}
+        <span className="min-w-0 flex-1" />
+        {streaming ? (
+          <HugeiconsIcon
+            icon={Loading03Icon}
+            size={11}
+            strokeWidth={2}
+            className="shrink-0 animate-spin text-muted-foreground/70"
+          />
+        ) : totalMs > 0 ? (
+          <span className="shrink-0 tabular-nums text-muted-foreground/55">
+            {formatDuration(totalMs)}
+          </span>
+        ) : null}
+      </button>
+      {showRows ? (
+      <div className="border-t border-border/30">
       {rows.map((e, i) => {
         const isError = e.kind === "error";
         // A tool with no recorded result yet is still running — but only while
@@ -140,6 +191,8 @@ export function ToolCallStrip({
           </div>
         );
       })}
+      </div>
+      ) : null}
     </div>
   );
 }
