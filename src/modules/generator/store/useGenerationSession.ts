@@ -128,6 +128,11 @@ export type SessionState = {
    *  source root is set. Defaults to true so first-time users get the
    *  better experience without having to find a hidden toggle. */
   allowCodeSearch: boolean;
+  /** Stamp the local source branch / commit onto published artifacts so their
+   *  code links point at the code they were generated from: the branch on each
+   *  case's source links, and the source-dir HEAD SHA on bug code refs.
+   *  Defaults to true; the user can turn it off in the input form. */
+  tagSourceBranch: boolean;
   /** Per-generation model override. When null, the run uses
    *  useChatStore.selectedModelId (the global default). Reset to null on
    *  startNew so each session starts from the latest default. */
@@ -165,6 +170,7 @@ export type SessionState = {
    *  the resolved labels without another ADO lookup. */
   setPlanSuiteNames: (planName: string | null, suiteName: string | null) => void;
   setAllowCodeSearch: (v: boolean) => void;
+  setTagSourceBranch: (v: boolean) => void;
   /** Set or clear (null) the per-generation model override. */
   setOverrideModelId: (id: ModelId | null) => void;
   /** Add a text attachment. Convenience wrapper around `addRichAttachment`
@@ -332,6 +338,7 @@ const initialState: Omit<
   | "setTarget"
   | "setPlanSuiteNames"
   | "setAllowCodeSearch"
+  | "setTagSourceBranch"
   | "setOverrideModelId"
   | "addAttachment"
   | "addRichAttachment"
@@ -383,6 +390,7 @@ const initialState: Omit<
   suiteName: null,
   mode: "thorough",
   allowCodeSearch: true,
+  tagSourceBranch: true,
   overrideModelId: null,
   stepLabel: "",
   activityLog: [],
@@ -528,6 +536,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     schedulePersistDraft();
   },
   setAllowCodeSearch: (v) => set({ allowCodeSearch: v }),
+  setTagSourceBranch: (v) => set({ tagSourceBranch: v }),
   setOverrideModelId: (id) => set({ overrideModelId: id }),
   addAttachment: (path, content) =>
     set((s) => {
@@ -1020,7 +1029,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
   },
 
   publish: async () => {
-    const { cases, bugs, planId, suiteId } = get();
+    const { cases, bugs, planId, suiteId, tagSourceBranch } = get();
     if (!planId || !suiteId) {
       set({
         phase: "error",
@@ -1099,9 +1108,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       // visible in the log with its original "ok" status + result link.
       if (okByUid.has(c.uid)) continue;
       try {
+        // Tag the case's code links with the branch only when the user opted
+        // in (default). Passing "" omits the branch from the source-links block.
         const sourceLinksBlock = renderSourceLinksBlock(
           c.sourceLinks,
-          trackingBranch,
+          tagSourceBranch ? trackingBranch : "",
         );
         const draft: AdoDraftCase = {
           title: c.title,
@@ -1179,11 +1190,12 @@ export function createGenerationSessionStore(): GenerationSessionStore {
             file: r.file,
             startLine: r.startLine,
             endLine: r.endLine ?? undefined,
-            // Stamp the source-dir HEAD SHA so the bug's code refs survive
-            // future drift the same way case source-links do. Null fallback
-            // is fine — older bugs without a SHA render without the commit
-            // chip in BugPane and the user can still navigate by file/line.
-            commitSha: sourceDirSha,
+            // Stamp the source-dir HEAD SHA (the commit the bug was found
+            // against, on the generation branch) so the bug's code refs survive
+            // future drift the same way case source-links do — unless the user
+            // turned off source-branch tagging. Null renders without the commit
+            // chip in BugPane; the user can still navigate by file/line.
+            commitSha: tagSourceBranch ? sourceDirSha : null,
           })),
         });
         updateLog(set, b.uid, { status: "ok", result: created });

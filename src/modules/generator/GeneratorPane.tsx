@@ -630,6 +630,8 @@ function InputPhase() {
   const planId = useGenerationSession((s) => s.planId);
   const suiteId = useGenerationSession((s) => s.suiteId);
   const allowCodeSearch = useGenerationSession((s) => s.allowCodeSearch);
+  const tagSourceBranch = useGenerationSession((s) => s.tagSourceBranch);
+  const setTagSourceBranch = useGenerationSession((s) => s.setTagSourceBranch);
   const attachments = useGenerationSession((s) => s.attachments);
   const overrideModelId = useGenerationSession((s) => s.overrideModelId);
   const setRequirements = useGenerationSession((s) => s.setRequirements);
@@ -1022,6 +1024,47 @@ function InputPhase() {
                 with Read / Glob / Grep so cases are grounded in actual
                 code paths. Off = spec + attachments only (faster, no disk
                 access).
+              </p>
+            </div>
+          </label>
+        ) : null}
+
+        {git.branch ? (
+          <label
+            className={cn(
+              "flex cursor-pointer items-start gap-2.5 rounded-md border px-3 py-2 transition-colors hover:bg-foreground/[0.03]",
+              tagSourceBranch
+                ? "border-primary/40 bg-primary/[0.04]"
+                : "border-border/50",
+            )}
+          >
+            <Switch
+              checked={tagSourceBranch}
+              onCheckedChange={setTagSourceBranch}
+              className="mt-0.5"
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="text-[11.5px] font-medium">
+                  Tag with source branch
+                </span>
+                <span className="inline-flex items-center gap-1 rounded-sm bg-foreground/[0.06] px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-muted-foreground">
+                  <HugeiconsIcon
+                    icon={GitBranchIcon}
+                    size={9}
+                    strokeWidth={2}
+                  />
+                  {git.branch}
+                </span>
+              </div>
+              <p className="mt-0.5 text-[10.5px] leading-relaxed text-muted-foreground">
+                Stamps{" "}
+                <span className="font-mono text-foreground/85">
+                  {git.branch}
+                </span>{" "}
+                onto published cases&rsquo; code links and the commit onto bug
+                code refs, so links point at the code you generated from. Off =
+                no source provenance.
               </p>
             </div>
           </label>
