@@ -123,8 +123,10 @@ EOF
   "${EDITOR:-nano}" "$NOTES_PATH"
 fi
 
-# Strip comment lines + trim leading/trailing blank runs
-NOTES="$(grep -v '^#' "$NOTES_PATH" | awk 'BEGIN{blank=1} /^[[:space:]]*$/{ if (blank) next; print; next } { blank=0; print }' | awk 'NR>1{print prev} {prev=$0} END{ if (prev!~/^[[:space:]]*$/) print prev }')"
+# Strip template comment lines ("# …" and a lone "#") but KEEP markdown
+# headings ("## …", "### …") — `grep -v '^#'` used to eat the section
+# headings out of a --notes-file. Then trim leading/trailing blank runs.
+NOTES="$(grep -vE '^#( |$)' "$NOTES_PATH" | awk 'BEGIN{blank=1} /^[[:space:]]*$/{ if (blank) next; print; next } { blank=0; print }' | awk 'NR>1{print prev} {prev=$0} END{ if (prev!~/^[[:space:]]*$/) print prev }')"
 
 if [[ -z "$(echo "$NOTES" | tr -d '[:space:]')" ]]; then
   [[ -n "$CLEANUP_NOTES" ]] && rm -f "$CLEANUP_NOTES"

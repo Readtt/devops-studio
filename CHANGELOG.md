@@ -13,6 +13,7 @@ A ground-up audit and cleanup pass: latent bug fixes, dead-code removal, setting
 hygiene, a source-branch toggle, simpler helper text, and added test coverage —
 all with no breaking changes to persisted data or ADO payloads.
 
+### Added
 - **"Tag with source branch" toggle** in the generator input form (default on,
   shown for git source dirs): stamps the resolved branch onto published cases'
   code links and the source-dir commit onto bug code refs, so links point at the
@@ -23,6 +24,7 @@ all with no breaking changes to persisted data or ADO payloads.
 - Added test coverage for batch parsing, bug→case linking, branch resolution, and
   confidence readiness, plus `docs/manual-test-checklist.md` and `SECURITY.md`.
 
+### Fixed
 - **Bugs linked to the wrong parent case** when an earlier case was skipped before
   publishing (the link index addressed the unfiltered case array). Now resolved
   through the full array — bugs always attach to their intended case.
@@ -41,16 +43,19 @@ all with no breaking changes to persisted data or ADO payloads.
 - Backend no longer panics on a poisoned mutex; case-insensitive SSO detection;
   non-JSON CLI output and dropped autosaves/branch-list failures are now logged.
 
+### Changed
 - Suite Chat header no longer shows a redundant "N cases" count beside the context
   chip; verbose tooltips (Narrow-AI-scope, code-review diff stats) tightened.
 - Icon-only buttons in Settings now use real tooltips (not bare `title`).
 - ADO connection status polling eased from 15s to 30s + on focus.
 
+### Removed
 - Dead settings: `vimMode`, `showHidden`, the autocomplete trio, and the unused
   `ado.defaultPlanId` field (existing settings files load fine — leftover keys are
   ignored). 10 confirmed-unused npm packages (incl. `@anthropic-ai/claude-agent-sdk`
   — the engine is driven by the `claude` CLI, not the SDK).
 
+### Security
 - Added `SECURITY.md` documenting the trusted-renderer threat model and the
   rationale for not path-gating the `fs_*` commands (best-practice files and repos
   legitimately live on arbitrary paths / network shares).
