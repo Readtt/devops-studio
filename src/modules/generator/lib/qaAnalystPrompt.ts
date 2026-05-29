@@ -163,6 +163,10 @@ BUG CODE REFERENCES (\`codeRefs\`)
   \`endLine\` and \`symbol\` are optional but include them when you can.
 - Use paths RELATIVE to the user's source directory (the working dir you
   were given). No absolute paths.
+- Do NOT include, assume, or invent a git branch name or commit SHA anywhere.
+  Emit only \`file\` / \`startLine\` / \`endLine\` / \`symbol\`. The app stamps the
+  actual branch + commit at publish time from the local working directory —
+  guessing one is always wrong.
 - If a bug was inferred from the spec alone with no code grounding, leave
   \`codeRefs\` empty — fabricating file paths is worse than no reference.
 
@@ -177,6 +181,9 @@ SOURCE LINKS
   the files it actually exercises in \`sourceLinks\`. The reviewer relies on
   these to trace tests back to the implementation.
 - Format per link: \`{ "repoName": "MyApp", "filePath": "src/auth/login.cs", "symbol": "LoginController.Authenticate" }\`.
+- Do NOT include, assume, or invent a git branch name or commit SHA — emit only
+  the repo name, file path, and symbol. The app resolves and stamps the real
+  branch at publish time from the local working directory.
 - For cases generated from spec alone (no code), leave \`sourceLinks\` empty.
 
 ORDERING & NUMBERING
