@@ -96,3 +96,31 @@ export type ReviewedBug = DraftBugLLM & {
   uid: string;
   decision: "keep" | "skip";
 };
+
+/** Pull the JSON object out of a model response that may be fenced or wrapped
+ *  in prose. Shared by both run engines (Vercel + Claude CLI). */
+export function extractBatchJson(s: string): string {
+  // Strip a ```json … ``` fence if present.
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (fence) return fence[1].trim();
+  // Otherwise take from the first { to the last } if there's surrounding prose.
+  const first = s.indexOf("{");
+  const last = s.lastIndexOf("}");
+  if (first >= 0 && last > first) return s.slice(first, last + 1);
+  return s;
+}
+
+/** Parse a model batch response into a validated DraftBatch. Permissive by
+ *  design — an unparseable/invalid response yields an empty batch rather than
+ *  crashing the review UI — but it now logs the failure so "the model
+ *  generated nothing" can be distinguished from "the model returned malformed
+ *  JSON" when debugging. */
+export function parseDraftBatch(text: string): DraftBatchLLM {
+  const candidate = extractBatchJson(text.trim());
+  try {
+    return DraftBatchLLMSchema.parse(JSON.parse(candidate));
+  } catch (e) {
+    console.warn("[generator] could not parse model batch response:", e);
+    return { cases: [], bugs: [] };
+  }
+}

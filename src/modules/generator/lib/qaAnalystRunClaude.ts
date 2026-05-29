@@ -10,10 +10,7 @@ import {
   formatContextBlocks,
   type ContextBlock,
 } from "@/modules/ai/lib/contextBlocks";
-import {
-  DraftBatchLLMSchema,
-  type DraftBatchLLM,
-} from "./draftBatchSchema";
+import { parseDraftBatch } from "./draftBatchSchema";
 import { QA_ANALYST_PROMPT } from "./qaAnalystPrompt";
 import type { ClaudeAuthMode } from "@/modules/settings/store";
 import type { ModelId } from "@/modules/ai/config";
@@ -131,7 +128,7 @@ export async function runQaAnalystClaude(
   );
 
   const text = result.text || "";
-  const batch = parseBatch(text);
+  const batch = parseDraftBatch(text);
   return { batch, rawText: text, durationMs: Date.now() - start };
 }
 
@@ -217,21 +214,3 @@ const DRAFT_BATCH_SHAPE = {
   ],
 };
 
-function parseBatch(text: string): DraftBatchLLM {
-  const trimmed = text.trim();
-  const candidate = extractJson(trimmed);
-  try {
-    return DraftBatchLLMSchema.parse(JSON.parse(candidate));
-  } catch {
-    return { cases: [], bugs: [] };
-  }
-}
-
-function extractJson(s: string): string {
-  const fence = s.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-  if (fence) return fence[1].trim();
-  const first = s.indexOf("{");
-  const last = s.lastIndexOf("}");
-  if (first >= 0 && last > first) return s.slice(first, last + 1);
-  return s;
-}

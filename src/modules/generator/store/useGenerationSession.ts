@@ -39,6 +39,7 @@ import type {
   ReviewedCase,
 } from "../lib/draftBatchSchema";
 import { findSimilarCases } from "../lib/similarity";
+import { bugParentCaseUid } from "../lib/bugLinking";
 import {
   fetchRelatedCaseTitles,
   type RelatedCase,
@@ -479,17 +480,23 @@ function makeSchedulePersistDraft(getter: () => SessionState) {
         },
       };
       // Fire-and-forget; the post-save event lets the History pane refresh.
-      void saveRun(run).then(() => {
-        try {
-          window.dispatchEvent(
-            new CustomEvent("devops-studio:history-updated", {
-              detail: { runId: s.runId },
-            }),
-          );
-        } catch {
-          // Non-fatal — synchronous dispatch should never throw.
-        }
-      });
+      void saveRun(run)
+        .then(() => {
+          try {
+            window.dispatchEvent(
+              new CustomEvent("devops-studio:history-updated", {
+                detail: { runId: s.runId },
+              }),
+            );
+          } catch {
+            // Non-fatal — synchronous dispatch should never throw.
+          }
+        })
+        .catch((e) => {
+          // A dropped autosave shouldn't be silent — surface it so a failing
+          // history write is diagnosable instead of looking like "saved".
+          console.error("[generator] draft autosave failed:", e);
+        });
     }, DRAFT_AUTOSAVE_MS);
   };
 }
@@ -1137,12 +1144,12 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     for (const b of keptBugs) {
       // Same idempotence guard: don't re-create bugs that already landed.
       if (okByUid.has(b.uid)) continue;
-      const target =
-        b.linkedDraftCaseIndex !== undefined &&
-        b.linkedDraftCaseIndex !== null
-          ? keptCases[b.linkedDraftCaseIndex]
-          : null;
-      const targetCaseId = target ? caseIdByDraftUid.get(target.uid) : null;
+      // linkedDraftCaseIndex indexes the full `cases` array (not keptCases) —
+      // resolve through it so skipping an earlier case can't mislink the bug.
+      const parentUid = bugParentCaseUid(b.linkedDraftCaseIndex, cases);
+      const targetCaseId = parentUid
+        ? caseIdByDraftUid.get(parentUid) ?? null
+        : null;
       if (!targetCaseId) {
         updateLog(set, b.uid, {
           status: "failed",
@@ -1179,6 +1186,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     // "published" in place instead of producing a duplicate entry.
     try {
       const s = get();
+      // Index the log once by uid instead of a linear .find per case/bug.
+      const logByUid = new Map(s.publishLog.map((l) => [l.uid, l] as const));
       const run: GenerationRun = {
         id: s.runId ?? newRunId(),
         timestamp: newTimestamp(),
@@ -1193,16 +1202,13 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         cases: keptCases.map((c) => ({
           title: c.title,
           adoId: caseIdByDraftUid.get(c.uid) ?? null,
-          webUrl:
-            s.publishLog.find((l) => l.uid === c.uid)?.result?.webUrl ?? null,
+          webUrl: logByUid.get(c.uid)?.result?.webUrl ?? null,
         })),
         bugs: keptBugs.map((b) => ({
           title: b.title,
           severity: b.severity,
-          adoId:
-            s.publishLog.find((l) => l.uid === b.uid)?.result?.id ?? null,
-          webUrl:
-            s.publishLog.find((l) => l.uid === b.uid)?.result?.webUrl ?? null,
+          adoId: logByUid.get(b.uid)?.result?.id ?? null,
+          webUrl: logByUid.get(b.uid)?.result?.webUrl ?? null,
         })),
         publishLog: s.publishLog.map((l) => ({
           uid: l.uid,

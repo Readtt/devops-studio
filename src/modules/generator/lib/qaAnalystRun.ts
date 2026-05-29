@@ -2,10 +2,7 @@ import { generateText, stepCountIs } from "ai";
 import { getModel, type ModelId } from "@/modules/ai/config";
 import { buildLanguageModel } from "@/modules/ai/lib/agent";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
-import {
-  DraftBatchLLMSchema,
-  type DraftBatchLLM,
-} from "./draftBatchSchema";
+import { parseDraftBatch, type DraftBatchLLM } from "./draftBatchSchema";
 import { QA_ANALYST_PROMPT } from "./qaAnalystPrompt";
 import type { TestCaseRef } from "@/modules/ado";
 import {
@@ -177,7 +174,7 @@ export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
   });
 
   const text = result.text || "";
-  const batch = parseBatch(text);
+  const batch = parseDraftBatch(text);
   return { batch, rawText: text, durationMs: Date.now() - start };
 }
 
@@ -362,17 +359,6 @@ const DRAFT_BATCH_SHAPE = {
   ],
 };
 
-function parseBatch(text: string): DraftBatchLLM {
-  const trimmed = text.trim();
-  const candidate = extractJson(trimmed);
-  try {
-    return DraftBatchLLMSchema.parse(JSON.parse(candidate));
-  } catch {
-    // Be permissive — return an empty batch rather than crashing the UI.
-    return { cases: [], bugs: [] };
-  }
-}
-
 /** Render one attachment for inclusion in the user prompt. Text attachments
  *  embed their content directly; images and binaries embed a metadata-only
  *  placeholder so the model knows they exist (true multimodal passthrough is
@@ -400,16 +386,4 @@ function stringifyResult(value: unknown): string {
   } catch {
     return String(value);
   }
-}
-
-/** Strip code fences / preamble if the model didn't fully obey the rules. */
-function extractJson(s: string): string {
-  // Remove ```json … ``` fences.
-  const fence = s.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-  if (fence) return fence[1].trim();
-  // Take from the first { to the last } if there's surrounding prose.
-  const first = s.indexOf("{");
-  const last = s.lastIndexOf("}");
-  if (first >= 0 && last > first) return s.slice(first, last + 1);
-  return s;
 }
