@@ -6,7 +6,9 @@
 //!   - `/_apis/testplan/Plans/{p}/Suites/{s}/TestCase` — case refs in a suite
 //!   - `/_apis/wit/workitems/{id}`      — the case as a work item (steps live here)
 
-use super::client::{get_json, get_raw_json, patch_json, post_json, project_api, AdoState};
+use super::client::{
+    get_all_value_rows, get_json, patch_json, post_json, project_api, AdoState,
+};
 use super::errors::{AdoError, AdoResult};
 use super::test_cases::work_item_to_case;
 use super::types::{PagedResponse, SuiteRef, TestCase, TestCaseRef, TestPlanRef};
@@ -52,12 +54,9 @@ pub async fn list_suite_cases(
         &conn,
         &format!("testplan/Plans/{plan_id}/Suites/{suite_id}/TestCase?expand=workItem"),
     );
-    let raw: Value = get_raw_json(state, &url, "suite cases").await?;
-    let rows = raw
-        .get("value")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
+    // Follow continuation tokens so a suite with more than one page of cases
+    // (200+) isn't silently truncated — a real risk for big regression suites.
+    let rows = get_all_value_rows(state, &url, "suite cases").await?;
 
     let mut out = Vec::with_capacity(rows.len());
     let mut dropped = 0_usize;

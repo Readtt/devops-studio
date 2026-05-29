@@ -378,6 +378,14 @@ async fn handle_response<T: DeserializeOwned>(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
+    // Retry-After is an HTTP header on a 429, not part of the body. Capture it
+    // before consuming the body so a rate-limited caller backs off for the
+    // server-specified window instead of a hardcoded default.
+    let retry_after = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u32>().ok());
     let body = resp.text().await.map_err(AdoError::network)?;
 
     // SSO probe: ADO returns 203 with HTML when the PAT is valid for the
@@ -396,7 +404,7 @@ async fn handle_response<T: DeserializeOwned>(
         });
     }
 
-    Err(map_error_status(status, resource_label, &body))
+    Err(map_error_status(status, resource_label, &body, retry_after))
 }
 
 fn is_sso_html(content_type: &str, body: &str) -> bool {
@@ -405,24 +413,25 @@ fn is_sso_html(content_type: &str, body: &str) -> bool {
         return true;
     }
     let trimmed = body.trim_start();
-    trimmed.starts_with("<!DOCTYPE") || trimmed.starts_with("<html")
+    let lower = trimmed.to_ascii_lowercase();
+    lower.starts_with("<!doctype") || lower.starts_with("<html")
 }
 
-fn map_error_status(status: StatusCode, resource: &str, body: &str) -> AdoError {
+fn map_error_status(
+    status: StatusCode,
+    resource: &str,
+    body: &str,
+    retry_after: Option<u32>,
+) -> AdoError {
     match status.as_u16() {
         401 => AdoError::BadPat {
             reason: "PAT was rejected by Azure DevOps (401).".into(),
         },
         403 => AdoError::forbidden(resource),
         404 => AdoError::not_found(resource),
-        429 => {
-            let retry = body
-                .lines()
-                .find_map(|l| l.strip_prefix("Retry-After: "))
-                .and_then(|s| s.parse::<u32>().ok())
-                .unwrap_or(30);
-            AdoError::RateLimited { retry_after_s: retry }
-        }
+        429 => AdoError::RateLimited {
+            retry_after_s: retry_after.unwrap_or(30),
+        },
         s => AdoError::Server {
             status: s,
             body_excerpt: excerpt(body),
@@ -443,4 +452,67 @@ fn excerpt(s: &str) -> String {
 /// Parse arbitrary JSON into a serde Value for callers that don't have a typed schema.
 pub async fn get_raw_json(state: &AdoState, url: &str, resource_label: &str) -> AdoResult<Value> {
     get_json::<Value>(state, url, resource_label).await
+}
+
+/// One page of a list endpoint, plus the ADO continuation token (if the server
+/// signalled more results via the `x-ms-continuationtoken` response header).
+async fn get_value_page(
+    state: &AdoState,
+    url: &str,
+    continuation: Option<&str>,
+    resource_label: &str,
+) -> AdoResult<(Value, Option<String>)> {
+    let (conn, pat) = state.snapshot();
+    let _conn = conn.ok_or(AdoError::NotConfigured)?;
+    let pat = pat.ok_or(AdoError::NotConfigured)?;
+
+    let mut req = state
+        .http()
+        .get(url)
+        .header(reqwest::header::AUTHORIZATION, auth_header(&pat))
+        .header(reqwest::header::ACCEPT, "application/json");
+    if let Some(token) = continuation {
+        // `.query` merges with any existing query string and handles encoding.
+        req = req.query(&[("continuationToken", token)]);
+    }
+    let resp = req.send().await.map_err(|e| network_with_url(e, url))?;
+    let token = resp
+        .headers()
+        .get("x-ms-continuationtoken")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let value: Value = handle_response(resp, resource_label).await?;
+    Ok((value, token))
+}
+
+/// Fetch every page of a list endpoint, following ADO continuation tokens, and
+/// return the concatenated `value` rows.
+///
+/// Safe by construction: if the endpoint sends no `x-ms-continuationtoken`
+/// header (the common small-result case) this makes exactly one request and
+/// returns the same rows the old single-GET did — no behavior change. The
+/// MAX_PAGES cap guarantees a misbehaving token can never loop forever.
+pub async fn get_all_value_rows(
+    state: &AdoState,
+    url: &str,
+    resource_label: &str,
+) -> AdoResult<Vec<Value>> {
+    const MAX_PAGES: usize = 50;
+    let mut rows: Vec<Value> = Vec::new();
+    let mut continuation: Option<String> = None;
+    for _ in 0..MAX_PAGES {
+        let (value, next) =
+            get_value_page(state, url, continuation.as_deref(), resource_label).await?;
+        if let Some(arr) = value.get("value").and_then(|v| v.as_array()) {
+            rows.extend(arr.iter().cloned());
+        }
+        match next {
+            Some(t) if !t.is_empty() => continuation = Some(t),
+            _ => return Ok(rows),
+        }
+    }
+    log::warn!(
+        "{resource_label}: hit the {MAX_PAGES}-page pagination cap; some rows may not be loaded"
+    );
+    Ok(rows)
 }
