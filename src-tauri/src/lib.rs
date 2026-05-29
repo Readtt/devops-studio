@@ -15,7 +15,9 @@ struct LaunchDir(Mutex<Option<String>>);
 
 #[tauri::command]
 fn get_launch_dir(state: State<'_, LaunchDir>) -> Option<String> {
-    state.0.lock().expect("LaunchDir mutex poisoned").take()
+    // Recover the value even if a prior holder panicked — a poisoned lock here
+    // should degrade to "no launch dir", never crash the command.
+    state.0.lock().unwrap_or_else(|e| e.into_inner()).take()
 }
 
 fn parse_launch_dir() -> Option<String> {

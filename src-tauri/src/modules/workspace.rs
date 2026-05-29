@@ -12,7 +12,9 @@ pub struct WorkspaceRegistry {
 impl WorkspaceRegistry {
     pub fn authorize<P: AsRef<Path>>(&self, path: P) -> std::io::Result<PathBuf> {
         let canonical = std::fs::canonicalize(path.as_ref())?;
-        let mut set = self.roots.lock().expect("workspace registry poisoned");
+        // Recover from a poisoned lock rather than panicking — authorizing a
+        // workspace root must not be able to crash the backend.
+        let mut set = self.roots.lock().unwrap_or_else(|e| e.into_inner());
         set.insert(canonical.clone());
         Ok(canonical)
     }

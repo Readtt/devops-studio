@@ -49,6 +49,7 @@ pub fn fs_search(
     limit: Option<usize>,
     workspace: Option<WorkspaceEnv>,
     show_hidden: Option<bool>,
+    max_depth: Option<usize>,
 ) -> Result<SearchResult, String> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
@@ -77,6 +78,9 @@ pub fn fs_search(
         .ignore(true)
         .parents(true)
         .follow_links(false)
+        // Optional depth bound. Omitted by callers => unlimited (the
+        // MAX_SCANNED budget + PRUNE_DIRS still cap pathological roots).
+        .max_depth(max_depth.map(|d| d.clamp(1, 16)))
         .filter_entry(|dent| {
             // Prune known-heavy dirs even when no .gitignore is present (e.g.
             // searching from $HOME).
@@ -117,7 +121,7 @@ pub fn fs_search(
             .unwrap_or_default();
         let is_dir = dent.file_type().map(|t| t.is_dir()).unwrap_or(false);
         out.push(SearchHit {
-            path: display_path(path, &root_path, &root, &workspace),
+            path: to_canon(path),
             rel,
             name,
             is_dir,
@@ -216,13 +220,4 @@ pub fn fs_list_files(
 
     files.sort_by_key(|a| a.to_lowercase());
     Ok(ListFilesResult { files, truncated })
-}
-
-fn display_path(
-    path: &std::path::Path,
-    _root_path: &std::path::Path,
-    _root_display: &str,
-    _workspace: &WorkspaceEnv,
-) -> String {
-    to_canon(path)
 }

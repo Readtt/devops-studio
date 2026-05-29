@@ -93,8 +93,6 @@ pub fn fs_grep(
         let scanned = scanned.clone();
         let truncated = truncated.clone();
         let root_path = root_path.clone();
-        let root_display = root.clone();
-        let workspace = workspace.clone();
 
         Box::new(move |dent_res| {
             if truncated.load(Ordering::Relaxed) {
@@ -125,7 +123,7 @@ pub fn fs_grep(
 
             scanned.fetch_add(1, Ordering::Relaxed);
 
-            let abs = display_path(path, &root_path, &root_display, &workspace);
+            let abs = to_canon(path);
             let rel_clone = rel.clone();
             let mut searcher = SearcherBuilder::new()
                 .binary_detection(BinaryDetection::quit(b'\x00'))
@@ -230,19 +228,10 @@ pub fn fs_glob(
             continue;
         }
         hits.push(GlobHit {
-            path: display_path(path, &root_path, &root, &workspace),
+            path: to_canon(path),
             rel,
         });
     }
 
     Ok(GlobResponse { hits, truncated })
-}
-
-fn display_path(
-    path: &std::path::Path,
-    _root_path: &std::path::Path,
-    _root_display: &str,
-    _workspace: &WorkspaceEnv,
-) -> String {
-    to_canon(path)
 }
