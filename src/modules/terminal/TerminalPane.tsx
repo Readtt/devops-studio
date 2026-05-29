@@ -277,6 +277,12 @@ export function TerminalPane({ tabId, sessionId, cwd, shellId: _shellId }: Props
           s.unlistenData = unlistenData;
           s.unlistenExit = unlistenExit;
           sessionForCallbacks.ref = s;
+        } else {
+          // The session was disposed (tab closed) during the spawn window, so
+          // the registry holds only the placeholder's no-op unlisteners. Drop
+          // the real Tauri subscriptions now or they leak for the app's life.
+          unlistenData();
+          unlistenExit();
         }
       });
       session = placeholder;

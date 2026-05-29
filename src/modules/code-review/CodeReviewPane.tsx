@@ -124,7 +124,10 @@ export function CodeReviewPane({
     );
     invoke<string[]>("git_branch_list", { cwd })
       .then(setBranches)
-      .catch(() => setBranches([]));
+      .catch((e) => {
+        console.warn("[code-review] git_branch_list failed:", e);
+        setBranches([]);
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabId, cwd]);
 
