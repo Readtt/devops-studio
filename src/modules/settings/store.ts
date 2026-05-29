@@ -130,14 +130,6 @@ export type Preferences = {
   aiEngine: AiEngine;
   /** Phase 5: how to authenticate to Anthropic when `aiEngine === "claude-agent-sdk"`. */
   claudeAuthMode: ClaudeAuthMode;
-  /** Run the Claude CLI in `--bare` mode — skip user-installed hooks, plugins,
-   *  MCP servers, and CLAUDE.md auto-discovery. ON by default: the user's
-   *  local Claude Code config shouldn't affect a desktop app's internal AI
-   *  calls (and a failing SessionStart hook in `~/.claude` aborts every run
-   *  with a silent code-1). Turning it OFF lets the analyst pick up your
-   *  hooks / plugins / MCP / CLAUDE.md — opt-in for users who want that.
-   *  Built-in tools (Read/Glob/Grep) stay available either way. */
-  claudeBareMode: boolean;
   /** Absolute path to the user's source directory. Code-link rows in the Bug
    *  pane resolve relative paths against this when opening the code viewer. */
   sourceRoot: string | null;
@@ -198,7 +190,6 @@ const KEY_ZOOM_LEVEL = "zoomLevel";
 const KEY_SHORTCUTS = "shortcuts";
 const KEY_AI_ENGINE = "aiEngine";
 const KEY_CLAUDE_AUTH_MODE = "claudeAuthMode";
-const KEY_CLAUDE_BARE_MODE = "claudeBareMode";
 const KEY_SOURCE_ROOT = "sourceRoot";
 const KEY_EDITOR_FONT_SIZE = "editorFontSize";
 const KEY_EDITOR_LINE_NUMBERS = "editorLineNumbers";
@@ -264,13 +255,6 @@ export const DEFAULT_PREFERENCES: Preferences = {
   shortcuts: {} as Record<ShortcutId, KeyBinding[]>,
   aiEngine: "vercel-ai-sdk",
   claudeAuthMode: "api-key",
-  // ON by default — DevOps Studio drives Claude as an internal analyst, so
-  // the user's local hooks / plugins / MCP / CLAUDE.md should NOT fire for
-  // these runs. Turning it off is opt-in for users who want their custom
-  // tooling in scope. `--tools Read,Glob,Grep` is passed regardless, so the
-  // analyst keeps its built-in read tools in bare mode (those are part of
-  // the CLI binary, not the plugin system).
-  claudeBareMode: true,
   sourceRoot: null,
   editorFontSize: EDITOR_FONT_SIZE_DEFAULT,
   editorLineNumbers: true,
@@ -385,9 +369,6 @@ export async function loadPreferences(): Promise<Preferences> {
     claudeAuthMode:
       get<ClaudeAuthMode>(KEY_CLAUDE_AUTH_MODE) ??
       DEFAULT_PREFERENCES.claudeAuthMode,
-    claudeBareMode:
-      get<boolean>(KEY_CLAUDE_BARE_MODE) ??
-      DEFAULT_PREFERENCES.claudeBareMode,
     sourceRoot:
       get<string | null>(KEY_SOURCE_ROOT) ?? DEFAULT_PREFERENCES.sourceRoot,
     editorFontSize: clampEditorFontSize(
@@ -418,10 +399,6 @@ export async function setAiEngine(value: AiEngine): Promise<void> {
 
 export async function setClaudeAuthMode(value: ClaudeAuthMode): Promise<void> {
   await writePref(KEY_CLAUDE_AUTH_MODE, value);
-}
-
-export async function setClaudeBareMode(value: boolean): Promise<void> {
-  await writePref(KEY_CLAUDE_BARE_MODE, value);
 }
 
 export async function setSourceRoot(value: string | null): Promise<void> {
@@ -671,7 +648,6 @@ export async function onPreferencesChange(
     [KEY_SHORTCUTS]: "shortcuts",
     [KEY_AI_ENGINE]: "aiEngine",
     [KEY_CLAUDE_AUTH_MODE]: "claudeAuthMode",
-    [KEY_CLAUDE_BARE_MODE]: "claudeBareMode",
     [KEY_SOURCE_ROOT]: "sourceRoot",
     [KEY_EDITOR_FONT_SIZE]: "editorFontSize",
     [KEY_EDITOR_LINE_NUMBERS]: "editorLineNumbers",

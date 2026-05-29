@@ -190,14 +190,14 @@ export function claudeErrorMessage(err: unknown): string {
         lower.includes("invalid api key") ||
         lower.includes("no api key")
       ) {
-        return `Claude isn't picking up your credentials: ${detail}. If you're on Max OAuth, open Settings → Models and either switch to "Anthropic API key" or turn off "Run Claude in isolation" — isolation skips the CLI's keychain read, which Max OAuth depends on.`;
+        return `Claude isn't picking up your credentials: ${detail}. On Max OAuth, make sure you've completed "claude setup-token" (open Settings → Models to re-run it). On Anthropic API key, check that your key is saved in Settings → Models.`;
       }
       if (detail) return `Claude exited with code ${code}: ${detail}`;
       // Empty stderr is the classic "something pre-flight crashed" signal:
       // a SessionStart hook, an MCP server, or the CLI itself dying before
       // it could write a diagnostic. The activity log usually has a
       // hook:<name> red row when a hook is the culprit.
-      return `Claude exited with code ${code} with no stderr. Most common causes: (1) a failing SessionStart hook in ~/.claude — enable "Run Claude in isolation" in Settings → Models to bypass it (API-key auth only). (2) An MCP server or plugin crashing during startup. Check the activity log above for hook:<name> entries to find the culprit.`;
+      return `Claude exited with code ${code} with no stderr. Most common cause on Max OAuth: a failing SessionStart hook or crashing MCP server in ~/.claude (Check the activity log above for hook:<name> entries to find the culprit). API-key auth runs isolated (--bare) and skips your ~/.claude hooks/plugins/MCP entirely, so switching to an Anthropic API key in Settings → Models sidesteps this; OAuth can't isolate because it needs the keychain.`;
     }
     case "api-error": {
       const status = e.httpStatus != null ? ` (HTTP ${e.httpStatus})` : "";

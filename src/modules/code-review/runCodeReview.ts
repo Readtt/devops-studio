@@ -210,7 +210,6 @@ export async function streamCodeReview(input: StreamCodeReviewInput): Promise<{
 
 export type ClaudeStreamCodeReviewInput = StreamCodeReviewInput & {
   authMode: ClaudeAuthMode;
-  bareMode?: boolean;
   /** Run id for cancellation (cancelClaudeRun). */
   runId: string;
 };
@@ -278,7 +277,7 @@ export async function streamCodeReviewClaude(
       model: input.modelId,
       permissionMode: "bypassPermissions",
       allowedTools: ["Read", "Glob", "Grep"],
-      bare: input.bareMode,
+      bare: input.authMode === "api-key",
       env,
     },
     onEvent,

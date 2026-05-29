@@ -360,7 +360,6 @@ export const useCodeReview = create<State>((set, get) => ({
           onText: appendDelta,
           onToolEvent: mergeToolEvent,
           authMode: engineSel.authMode ?? "api-key",
-          bareMode: prefs.claudeBareMode,
           runId,
         });
       } else {

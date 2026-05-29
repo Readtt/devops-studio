@@ -761,7 +761,6 @@ export const useSuiteChat = create<Store>((set, get) => ({
           modelId: resolveClaudeModelId(modelId) as typeof modelId,
           sourceRoot,
           authMode: engineSel.authMode ?? "api-key",
-          bareMode: prefs.claudeBareMode,
           onText: appendDelta,
           onToolEvent: mergeToolEvent,
         });

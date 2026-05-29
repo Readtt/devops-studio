@@ -33,7 +33,6 @@ export async function evaluateCaseConfidence(
     useClaude,
     keys: chat.apiKeys,
     authMode: engineSel.authMode ?? "api-key",
-    bareMode: prefs.claudeBareMode,
     lmstudioBaseURL: prefs.lmstudioBaseURL,
     runs: opts?.runs ?? 1,
     contextBlocks: blocks,

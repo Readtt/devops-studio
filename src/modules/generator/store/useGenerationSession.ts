@@ -717,7 +717,6 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           // cwd and can only reason from the spec + any inline attachments.
           sourceRoot: allowCodeSearch ? prefs.sourceRoot : null,
           authMode: engineSel.authMode ?? "api-key",
-          bareMode: prefs.claudeBareMode,
           contextBlocks,
           onActivity,
           onRunStart: (rid) => set({ activeClaudeRunId: rid }),
@@ -1362,7 +1361,6 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           modelId: resolveClaudeModelId(modelId) as typeof modelId,
           sourceRoot: s.allowCodeSearch ? prefs.sourceRoot : null,
           authMode: engineSel.authMode ?? "api-key",
-          bareMode: prefs.claudeBareMode,
           contextBlocks,
           onActivity,
           userPromptOverride: userPrompt,
@@ -1612,7 +1610,6 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           modelId: resolveClaudeModelId(modelId) as typeof modelId,
           sourceRoot: s.allowCodeSearch ? prefs.sourceRoot : null,
           authMode: engineSel.authMode ?? "api-key",
-          bareMode: prefs.claudeBareMode,
           contextBlocks: chatContextBlocks,
           onText: appendDelta,
           onToolEvent: mergeToolEvent,

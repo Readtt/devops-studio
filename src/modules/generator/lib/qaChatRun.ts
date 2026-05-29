@@ -171,7 +171,6 @@ export type ClaudeChatInput = ChatRunInput & {
   modelId: ModelId;
   sourceRoot: string | null;
   authMode: ClaudeAuthMode;
-  bareMode?: boolean;
   /** Run id for cancellation — the caller picks one and stashes it. */
   runId: string;
 };
@@ -198,7 +197,7 @@ export async function runQaChatClaude(
     model: input.modelId,
     permissionMode: "bypassPermissions",
     allowedTools: ["Read", "Glob", "Grep"],
-    bare: input.bareMode,
+    bare: input.authMode === "api-key",
     env,
   });
   return { text: result.text ?? "", durationMs: Date.now() - start };
@@ -256,7 +255,7 @@ export async function streamQaChatClaude(
       model: input.modelId,
       permissionMode: "bypassPermissions",
       allowedTools: ["Read", "Glob", "Grep"],
-      bare: input.bareMode,
+      bare: input.authMode === "api-key",
       env,
     },
     onEvent,

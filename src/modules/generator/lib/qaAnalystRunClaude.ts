@@ -54,11 +54,6 @@ export type RunClaudeInput = {
   /** "max-oauth" → rely on the CLI's own stored token. "api-key" → load the
    *  Anthropic key from the keyring and pass it via env. */
   authMode: ClaudeAuthMode;
-  /** When true, pass `--bare` to the CLI: skip user-installed hooks, plugins,
-   *  MCP servers, and CLAUDE.md auto-discovery. Surfaces in Settings → Models
-   *  as an escape hatch for users whose `~/.claude/settings.json` has a hook
-   *  that silently aborts every run with code 1. */
-  bareMode?: boolean;
   /** Structured per-step activity for the streaming log UI. */
   onActivity?: (entry: ActivityEntry) => void;
   /** Pre-built user prompt that replaces the auto-generated one. Used by
@@ -123,13 +118,11 @@ export async function runQaAnalystClaude(
       // contains a mutating tool, so a typo can't quietly re-open the
       // surface.
       //
-      // `--bare` skips user hooks / plugins / MCP / CLAUDE.md AND skips
-      // the CLI's keychain reads — so it requires API-key auth to find an
-      // Anthropic key. If the user is on Max OAuth, we silently fall back
-      // to non-bare regardless of the toggle (the UI flags this conflict
-      // separately so they're not surprised). On API-key auth, the toggle
-      // controls bare mode directly.
-      bare: input.bareMode === true && input.authMode === "api-key",
+      // `--bare` skips user hooks / plugins / MCP / CLAUDE.md AND skips the
+      // CLI's keychain reads. API-key runs always go bare so the user's
+      // global ~/.claude config can't interfere with our structured runs;
+      // OAuth (Max) runs can't be bare because they need the keychain.
+      bare: input.authMode === "api-key",
       permissionMode: "bypassPermissions",
       allowedTools: ["Read", "Glob", "Grep"],
       env: Object.keys(env).length > 0 ? env : undefined,

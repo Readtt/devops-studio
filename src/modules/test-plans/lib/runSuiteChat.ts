@@ -411,7 +411,6 @@ export type ClaudeSuiteChatInput = SuiteChatRunInput & {
   modelId: ModelId;
   sourceRoot: string | null;
   authMode: ClaudeAuthMode;
-  bareMode?: boolean;
   runId: string;
 };
 
@@ -448,7 +447,7 @@ export async function runSuiteChatClaude(
     model: input.modelId,
     permissionMode: "bypassPermissions",
     allowedTools: ["Read", "Glob", "Grep"],
-    bare: input.bareMode,
+    bare: input.authMode === "api-key",
     env,
   });
   return { text: result.text ?? "", durationMs: Date.now() - start };
@@ -515,7 +514,7 @@ export async function streamSuiteChatClaude(
       model: input.modelId,
       permissionMode: "bypassPermissions",
       allowedTools: ["Read", "Glob", "Grep"],
-      bare: input.bareMode,
+      bare: input.authMode === "api-key",
       env,
     },
     onEvent,

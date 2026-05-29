@@ -44,7 +44,6 @@ export type ConfidenceEvalInput = {
   useClaude: boolean;
   keys: ProviderKeys;
   authMode: ClaudeAuthMode;
-  bareMode?: boolean;
   lmstudioBaseURL?: string;
   /** Self-consistency runs (default 1). >1 requires agreement for a high score. */
   runs?: number;
@@ -218,7 +217,7 @@ async function runOnceClaude(
       model: input.modelId,
       permissionMode: "bypassPermissions",
       allowedTools: ["Read", "Glob", "Grep"],
-      bare: input.bareMode,
+      bare: input.authMode === "api-key",
       env,
     });
     if (input.signal?.aborted) throw abortError();
