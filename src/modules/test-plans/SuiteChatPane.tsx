@@ -666,10 +666,26 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
   // the `if (!suite || !thread) return` guard above, so a hook here would
   // violate the Rules of Hooks. Filtering <=50 cases per render is cheap.
   const scopedCases = cases ? applyCaseFilter(cases, filter) : [];
+  // Every work item #mentioned across the whole thread (persisted on past
+  // user messages) PLUS the ones staged in the composer right now, deduped by
+  // id. This is why the chip survives a reload and keeps growing as the user
+  // attaches more — not just the current turn's selection.
+  const mentioned: SuiteChatScope["mentioned"] = (() => {
+    const byId = new Map<number, SuiteChatScope["mentioned"][number]>();
+    for (const m of messages)
+      for (const w of m.contextWorkItems ?? []) byId.set(w.id, w);
+    for (const b of bugCtx.selected)
+      byId.set(b.id, {
+        id: b.id,
+        title: b.title,
+        workItemType: b.workItemType,
+      });
+    return [...byId.values()];
+  })();
   const contextScope: SuiteChatScope = {
     cases: scopedCases.map((c) => ({ id: c.id, title: c.title })),
     autoBugIds: collectLinkedBugIds(scopedCases, LINKED_BUG_CAP),
-    mentioned: bugCtx.selected.map((b) => ({ id: b.id, title: b.title })),
+    mentioned,
     bestPracticeFiles: bestPracticeFiles
       .filter((f) => f.enabled)
       .map((f) => f.label),
@@ -685,7 +701,11 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
       suiteId,
       text,
       att.attachments,
-      bugCtx.selected.map((b) => b.id),
+      bugCtx.selected.map((b) => ({
+        id: b.id,
+        title: b.title,
+        workItemType: b.workItemType,
+      })),
     );
     setDraft("");
     att.clear();

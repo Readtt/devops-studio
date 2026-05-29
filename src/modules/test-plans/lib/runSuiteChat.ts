@@ -69,6 +69,16 @@ export type AppliedEditRecord = {
     | { kind: "create-bug"; bugId: number };
 };
 
+/** Lightweight work-item reference persisted on a user message so the context
+ *  chip can list every #id'd item — any type, not just bugs — and rebuild
+ *  itself after a reload. */
+export type ContextWorkItem = {
+  id: number;
+  title: string;
+  /** "Bug" | "Task" | "User Story" | … — drives the chip's type tag. */
+  workItemType: string;
+};
+
 export type SuiteChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -83,6 +93,10 @@ export type SuiteChatMessage = {
   /** Ids of ADO bugs attached as context on this turn. Persisted so a
    *  reopened thread shows which bugs grounded the answer. User messages only. */
   bugContext?: number[];
+  /** Work items (any type) the user #mentioned on this turn, with title +
+   *  type so the context chip can render them after a reload without a
+   *  refetch. Superset of `bugContext` ids. User messages only. */
+  contextWorkItems?: ContextWorkItem[];
   /** Tool calls (Read/Glob/Grep) the model made on this turn. Persisted so a
    *  reopened thread still shows the work the model did. Assistant messages
    *  only; reloaded entries read as completed history. */

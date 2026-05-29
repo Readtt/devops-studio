@@ -59,7 +59,7 @@ function typeTint(type: string): string {
 
 /** Minimal type marker: a small tinted mono abbreviation. `compact` drops the
  *  fixed width for inline use on chips. */
-function TypeTag({
+export function TypeTag({
   type,
   compact,
 }: {

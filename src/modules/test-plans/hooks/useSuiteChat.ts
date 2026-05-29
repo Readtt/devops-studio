@@ -30,6 +30,7 @@ import {
   newSuiteChatMessageId,
   streamSuiteChat,
   streamSuiteChatClaude,
+  type ContextWorkItem,
   type SuiteChatMessage,
 } from "../lib/runSuiteChat";
 import type { ActivityEntry } from "@/modules/generator/lib/activityLog";
@@ -154,8 +155,9 @@ type Store = {
     suiteId: number,
     q: string,
     attachments?: Attachment[],
-    /** Existing ADO bug ids to attach as read-only context for this turn. */
-    bugIds?: number[],
+    /** Work items the user #mentioned this turn, attached as read-only
+     *  context. Carries title + type so the context chip can list them. */
+    workItems?: ContextWorkItem[],
   ) => Promise<void>;
   cancel: (planId: number, suiteId: number) => void;
   clearMessages: (planId: number, suiteId: number) => void;
@@ -605,8 +607,10 @@ export const useSuiteChat = create<Store>((set, get) => ({
     patchSuite(set, planId, suiteId, { filter });
   },
 
-  sendMessage: async (planId, suiteId, q, attachments, bugIds) => {
+  sendMessage: async (planId, suiteId, q, attachments, workItems) => {
     const text = q.trim();
+    const bugIds =
+      workItems && workItems.length > 0 ? workItems.map((w) => w.id) : undefined;
     const atts = attachments && attachments.length > 0 ? attachments : undefined;
     if (!text && !atts) return;
     const sk = suiteKey(planId, suiteId);
@@ -632,6 +636,8 @@ export const useSuiteChat = create<Store>((set, get) => ({
       timestamp: new Date().toISOString(),
       attachments: atts,
       bugContext: bugIds && bugIds.length > 0 ? bugIds : undefined,
+      contextWorkItems:
+        workItems && workItems.length > 0 ? workItems : undefined,
     };
     const assistantId = newSuiteChatMessageId();
     const assistantMsg: SuiteChatMessage = {

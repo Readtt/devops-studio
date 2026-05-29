@@ -1,27 +1,30 @@
+import { useState } from "react";
 import { cn } from "@/lib/utils";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { TypeTag } from "@/modules/ado/components/WorkItemMention";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   BugIcon,
   DatabaseIcon,
   File01Icon,
+  Link01Icon,
   TestTubeIcon,
 } from "@hugeicons/core-free-icons";
 
-/** Exactly what the suite chat will send the model this turn. Computed live
- *  from the in-scope cases + their linked bugs + #mentioned items + the
- *  best-practice files, so the count the chip shows is the real payload, not
- *  a guess. */
+/** What the suite chat can draw on for this conversation: the in-scope cases,
+ *  their linked bugs, every work item the user has #mentioned (any type), and
+ *  the best-practice files. Cases/best-practices are recomputed live; the
+ *  mentioned set accumulates across the whole thread and is persisted. */
 export type SuiteChatScope = {
   cases: { id: number; title: string }[];
   /** Bug ids auto-injected because they're linked to an in-scope case. */
   autoBugIds: number[];
-  /** Work items the user #mentioned this turn (carry titles). */
-  mentioned: { id: number; title: string }[];
+  /** Work items the user #mentioned (any type), accumulated across the thread. */
+  mentioned: { id: number; title: string; workItemType: string }[];
   bestPracticeFiles: string[];
   /** Cases that exist in the suite but weren't loaded (hard cap). */
   notLoaded: number;
@@ -35,34 +38,43 @@ export type SuiteChatScope = {
  * height so a 50-case suite can't blow past the viewport.
  */
 export function ContextChip({ scope }: { scope: SuiteChatScope }) {
+  // Controlled so a row click (which navigates to another tab) can close the
+  // popover — otherwise the portaled content floats over the tab you just
+  // jumped to. Radix already closes on outside-click, so switching tabs via
+  // the tab bar is covered; this only adds the inside-click case.
+  const [open, setOpen] = useState(false);
   const caseCount = scope.cases.length;
-  const bugCount = scope.autoBugIds.length + scope.mentioned.length;
+  const itemCount = scope.autoBugIds.length + scope.mentioned.length;
 
-  const openCase = (id: number) =>
+  const openCase = (id: number) => {
+    setOpen(false);
     window.dispatchEvent(
       new CustomEvent("devops-studio:open-test-case", {
         detail: { caseId: id, title: `#${id}` },
       }),
     );
-  const openBug = (id: number) =>
+  };
+  const openBug = (id: number) => {
+    setOpen(false);
     window.dispatchEvent(
       new CustomEvent("devops-studio:open-bug", {
         detail: { bugId: id, title: `Bug #${id}` },
       }),
     );
+  };
 
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-foreground/[0.03] px-2 py-0.5 text-[10.5px] font-medium text-muted-foreground transition-colors hover:border-border hover:bg-foreground/[0.06] hover:text-foreground"
-          title="See exactly which cases and bugs the chat was given"
+          className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-foreground/[0.03] px-2 py-0.5 text-[10.5px] font-medium text-muted-foreground transition-colors hover:border-border hover:bg-foreground/[0.06] hover:text-foreground"
+          title="See exactly which cases and work items the chat was given"
         >
           <HugeiconsIcon icon={DatabaseIcon} size={11} strokeWidth={1.75} />
           <span className="tabular-nums">
-            {caseCount} case{caseCount === 1 ? "" : "s"} · {bugCount} bug
-            {bugCount === 1 ? "" : "s"}
+            {caseCount} case{caseCount === 1 ? "" : "s"} · {itemCount} item
+            {itemCount === 1 ? "" : "s"}
           </span>
         </button>
       </PopoverTrigger>
@@ -74,7 +86,8 @@ export function ContextChip({ scope }: { scope: SuiteChatScope }) {
         <div className="border-b border-border/40 px-3 py-2">
           <p className="text-[11px] font-medium text-foreground">In context</p>
           <p className="text-[10.5px] leading-snug text-muted-foreground">
-            Everything below is sent to the model with your next message.
+            What this chat can draw on — cases in scope, their linked bugs, and
+            every work item you've #mentioned.
           </p>
         </div>
         <div className="max-h-[min(60vh,420px)] overflow-y-auto py-1">
@@ -120,7 +133,7 @@ export function ContextChip({ scope }: { scope: SuiteChatScope }) {
           {scope.mentioned.length > 0 ? (
             <>
               <Section
-                icon={BugIcon}
+                icon={Link01Icon}
                 label="Mentioned"
                 count={scope.mentioned.length}
                 hint="work items you attached with #id"
@@ -131,6 +144,7 @@ export function ContextChip({ scope }: { scope: SuiteChatScope }) {
                   <span className="min-w-0 flex-1 truncate text-foreground/80">
                     {b.title}
                   </span>
+                  <TypeTag type={b.workItemType} compact />
                 </Row>
               ))}
             </>
