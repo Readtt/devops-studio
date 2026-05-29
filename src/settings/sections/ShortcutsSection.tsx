@@ -1,6 +1,11 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { setShortcuts } from "@/modules/settings/store";
 import {
@@ -218,25 +223,39 @@ function ShortcutRow({
 
             <div className="flex items-center gap-1">
               {isModified && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-7 text-muted-foreground hover:text-foreground"
-                  onClick={onReset}
-                  title="Reset to default"
-                >
-                  <HugeiconsIcon icon={ArrowTurnBackwardIcon} size={12} />
-                </Button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-7 text-muted-foreground hover:text-foreground"
+                      onClick={onReset}
+                      aria-label="Reset to default"
+                    >
+                      <HugeiconsIcon icon={ArrowTurnBackwardIcon} size={12} />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="text-[11px]">
+                    Reset to default
+                  </TooltipContent>
+                </Tooltip>
               )}
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-7 text-muted-foreground hover:text-destructive opacity-0 transition-opacity group-hover:opacity-100"
-                onClick={onClear}
-                title="Clear shortcut"
-              >
-                <HugeiconsIcon icon={Delete02Icon} size={12} />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-7 text-muted-foreground hover:text-destructive opacity-0 transition-opacity group-hover:opacity-100"
+                    onClick={onClear}
+                    aria-label="Clear shortcut"
+                  >
+                    <HugeiconsIcon icon={Delete02Icon} size={12} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-[11px]">
+                  Clear shortcut
+                </TooltipContent>
+              </Tooltip>
             </div>
           </>
         )}

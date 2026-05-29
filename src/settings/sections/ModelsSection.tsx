@@ -8,6 +8,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
   MODELS,
@@ -593,15 +598,22 @@ function LocalProviderCard({
           Docs
           <HugeiconsIcon icon={ArrowUpRight01Icon} size={11} strokeWidth={1.75} />
         </button>
-        <Button
-          size="icon"
-          variant="ghost"
-          onClick={onRemove}
-          title="Remove provider"
-          className="size-7 text-muted-foreground hover:text-destructive"
-        >
-          <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="icon"
+              variant="ghost"
+              onClick={onRemove}
+              aria-label="Remove provider"
+              className="size-7 text-muted-foreground hover:text-destructive"
+            >
+              <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="text-[11px]">
+            Remove this provider
+          </TooltipContent>
+        </Tooltip>
       </div>
 
       <span className="text-[10.5px] leading-relaxed text-muted-foreground">
@@ -675,15 +687,26 @@ function LocalProviderCard({
                 <code className="flex-1 truncate rounded bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground">
                   {`${compatKey.slice(0, 4)}${"•".repeat(8)}${compatKey.slice(-4)}`}
                 </code>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  onClick={() => void onClearKey()}
-                  title="Remove key"
-                  className="size-7 text-muted-foreground hover:text-destructive"
-                >
-                  <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />
-                </Button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      onClick={() => void onClearKey()}
+                      aria-label="Remove key"
+                      className="size-7 text-muted-foreground hover:text-destructive"
+                    >
+                      <HugeiconsIcon
+                        icon={Cancel01Icon}
+                        size={12}
+                        strokeWidth={1.75}
+                      />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="text-[11px]">
+                    Remove this key
+                  </TooltipContent>
+                </Tooltip>
               </div>
             ) : (
               <div className="flex flex-1 gap-1.5">

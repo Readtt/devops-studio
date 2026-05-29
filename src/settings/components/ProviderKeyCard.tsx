@@ -2,6 +2,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { ProviderInfo } from "@/modules/ai/config";
 import {
@@ -178,25 +183,43 @@ export function ProviderKeyCard({
           >
             {maskKey(currentKey ?? "")}
           </code>
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={() => setEditing(true)}
-            title="Replace"
-            className="size-7"
-          >
-            <HugeiconsIcon icon={Edit02Icon} size={12} strokeWidth={1.75} />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="icon"
+                variant="ghost"
+                onClick={() => setEditing(true)}
+                aria-label="Replace key"
+                className="size-7"
+              >
+                <HugeiconsIcon icon={Edit02Icon} size={12} strokeWidth={1.75} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-[11px]">
+              Replace this key
+            </TooltipContent>
+          </Tooltip>
           {!onRemove ? (
-            <Button
-              size="icon"
-              variant="ghost"
-              onClick={() => void onClear()}
-              title="Remove"
-              className="size-7 text-muted-foreground hover:text-destructive"
-            >
-              <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  onClick={() => void onClear()}
+                  aria-label="Remove key"
+                  className="size-7 text-muted-foreground hover:text-destructive"
+                >
+                  <HugeiconsIcon
+                    icon={Cancel01Icon}
+                    size={12}
+                    strokeWidth={1.75}
+                  />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-[11px]">
+                Remove this key
+              </TooltipContent>
+            </Tooltip>
           ) : null}
         </div>
       )}

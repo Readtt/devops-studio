@@ -1069,10 +1069,16 @@ function AppShell() {
       }
     };
     void refresh();
-    const id = window.setInterval(refresh, 15_000);
+    // 30s matches the source-dir git poller. getConnection reads in-memory
+    // state (no network), so this is cheap; also refresh on focus so a change
+    // made in the Settings window reflects without waiting for the next tick.
+    const id = window.setInterval(refresh, 30_000);
+    const onFocus = () => void refresh();
+    window.addEventListener("focus", onFocus);
     return () => {
       cancelled = true;
       window.clearInterval(id);
+      window.removeEventListener("focus", onFocus);
     };
   }, []);
 
