@@ -9,56 +9,154 @@ as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY
 
 ## [0.5.0] - 2026-05-29
 
-A ground-up audit and cleanup pass: latent bug fixes, dead-code removal, settings
-hygiene, a source-branch toggle, simpler helper text, and added test coverage —
-all with no breaking changes to persisted data or ADO payloads.
+The biggest release since the test-execution work — a full feature wave plus a
+ground-up audit. Code Review grows up (Azure DevOps commit/PR/branch sources
+with real diffs), AI **confidence evaluation** predicts whether a case will pass
+against your current code, **bugs become first-class** across chat (attach as
+context, full CRUD, auto-injected), **best-practices files** ground every AI
+surface, inline **#id work-item mentions** replace the old pickers, chats now
+**show the model's tool calls** and syntax-highlight code, and a closing audit
+fixes latent bugs, prunes dead code, and adds test coverage. No breaking changes
+to your persisted data or Azure DevOps payloads — existing settings, drafts,
+chat threads, and saved runs load unchanged.
 
 ### Added
-- **"Tag with source branch" toggle** in the generator input form (default on,
-  shown for git source dirs): stamps the resolved branch onto published cases'
-  code links and the source-dir commit onto bug code refs, so links point at the
-  code they were generated from. Turn it off to publish without provenance.
-- **Custom instructions** UI in Settings → Models. The field was already injected
-  into every AI feature's system prompt but had no control — now editable instead
-  of config-file-only.
-- Added test coverage for batch parsing, bug→case linking, branch resolution, and
-  confidence readiness, plus `docs/manual-test-checklist.md` and `SECURITY.md`.
 
-### Fixed
-- **Bugs linked to the wrong parent case** when an earlier case was skipped before
-  publishing (the link index addressed the unfiltered case array). Now resolved
-  through the full array — bugs always attach to their intended case.
-- **Stale confidence verdicts**: editing a case's steps after evaluating no longer
-  leaves a misleading pass-readiness % on screen; the chip resets to "Evaluate"
-  (and the stored verdict is cleared for published cases).
-- **429 Retry-After** was read from the response body (where it never is) instead
-  of the HTTP header, so rate-limited calls always backed off a hardcoded 30s.
-- **Large suites truncated**: `list_suite_cases` now follows ADO continuation
-  tokens, so suites with 200+ cases load fully.
-- Cross-window settings sync for keyboard shortcuts (changes in the Settings
-  window now reach the main window).
-- A leaked PTY event listener when a terminal tab was closed during spawn.
-- The model no longer invents a git branch/commit in generated code refs — the
-  app stamps real provenance at publish time.
-- Backend no longer panics on a poisoned mutex; case-insensitive SSO detection;
-  non-JSON CLI output and dropped autosaves/branch-list failures are now logged.
+**Code Review**
+- Review **Azure DevOps sources**, not just the local working copy: a commit
+  (vs its parent), a pull request (source vs target), or a branch (vs base),
+  picked from a cmdk source picker with repo + branch + recent-commits + PR
+  lists, all fuzzy-searchable with skeleton loaders.
+- **Real unified diffs + line counts for ADO sources** — each changed file is
+  fetched at both versions and line-diffed (accurate +/−), instead of showing
+  whole files with +0/−0.
+- Runs on **Claude Code (OAuth)** as well as the BYOK API path; Stop cancels the
+  CLI subprocess.
+- **Regression-aware reviewer prompt**: traces callers/dependents of changed
+  symbols and flags blast radius (signatures, contracts, persisted shapes);
+  treats an ADO diff as authoritative over the local checkout.
+- **Before/after diffs on patch cards** with persisted apply state — the
+  "Applied" badge and the diff survive a reload (snapshot kept on the message).
+- Source-aware header (per-source descriptor + tooltips), tab dedup, and ADO
+  source restored across reload and Duplicate.
+
+**AI confidence evaluation**
+- A new engine that **predicts whether a test case would pass against the
+  current code**, with per-step code evidence (file:line or an honest
+  "Unknown"), calibrated anchors, optional self-consistency runs, and a SQLite
+  verdict store. Dual-engine (Vercel + Claude CLI), cancellable end-to-end.
+- A **pass-readiness chip** ("how safe is it to just mark this Passed?") on
+  generator review cards and the test-case header — green only when a real Pass
+  clears the 90% bar; the model now estimates pass-likelihood directly.
+- Inline **re-analyze (↻) and cancel (✕)** on the chip, **"Evaluate all"** in
+  the generator review (3 at a time, live progress), and a dismissible
+  **detail side panel** with reasoning, per-step evidence (click a file:line to
+  open it), and a branch reminder.
+
+**Bugs as first-class**
+- **Attach existing bugs as AI context** in every chat (repro, severity,
+  embedded code links), via a searchable picker.
+- **Bug CRUD in Suite Chat** — create / update / delete / link bugs (not just
+  cases), with before/after diff cards, undo, and full persistence.
+- **Auto-inject bugs linked to in-scope cases** (Tested-by/Tests relations) so
+  the model sees open defects without you attaching them.
+- Backend ADO commands: list / update / delete bug (WIQL search, JSON-Patch
+  edits, soft-delete to Recycle Bin).
+
+**Best practices & shared AI context**
+- Register **best-practices / coding-standards files** (md, text, images — incl.
+  network/UNC paths) in Settings → Models; they're read live and injected into
+  **every** AI surface (generation, suite chat, review chat, code review), with
+  a readability indicator that surfaces offline files before a run.
+- A shared context-block mechanism (no-op when empty) and a cross-module
+  consistency directive in the analyst/reviewer prompts.
+
+**Mentions, palette & search**
+- Inline **#id work-item mentions** in every chat composer *and* the generator
+  requirements + Refine boxes — `#123` resolves by id, `#login` title-searches,
+  bare `#` lists recent items; spans **all** work-item types with a type tag
+  (BUG / TASK / STORY / …). Replaces the old Bugs dropdown.
+- The Test Plans tree filter is replaced by the **command palette** (`⌘/Ctrl+K`)
+  with live Azure DevOps work-item search; items without an in-app pane are
+  flagged as opening in Azure DevOps. Tree search now lazy-loads suite cases so
+  matches actually surface.
+
+**Chat experience**
+- Chats now **show the model's tool calls** (Read/Glob/Grep) in all surfaces
+  (Suite Chat, Code Review, generator Ask) via shared infra — collapsed to a
+  one-line "N tool calls" summary by default, auto-expanding while streaming.
+- **Syntax-highlighted code blocks** using the in-app editor theme.
+- **Multi-range code-reference pills** everywhere — one compact pill per file,
+  each line range a clickable segment; back-ticked citations (`Foo.cs:42`) are
+  linkified too; widened allowlist for the .NET/web stack.
+- Persist the **pinned model per chat** across reload (code review + generator,
+  matching suite chat); jump-to-latest pills in Ask and Code Review.
+- The Suite Chat **inspectable context chip** shows exactly which cases, linked
+  bugs, mentioned items, and best-practice files the model received.
+
+**This release's audit pass**
+- **"Tag with source branch"** toggle in the generator input form (default on,
+  for git source dirs): stamps the resolved branch onto published cases' code
+  links and the source-dir commit onto bug code refs.
+- **Custom instructions** UI in Settings → Models (the field fed every AI prompt
+  but had no control).
+- Test coverage for batch parsing, bug→case linking, branch resolution, and
+  confidence readiness; plus `docs/manual-test-checklist.md` and `SECURITY.md`.
 
 ### Changed
-- Suite Chat header no longer shows a redundant "N cases" count beside the context
-  chip; verbose tooltips (Narrow-AI-scope, code-review diff stats) tightened.
-- Icon-only buttons in Settings now use real tooltips (not bare `title`).
-- ADO connection status polling eased from 15s to 30s + on focus.
+- Confidence verdicts are framed as pass-readiness, colored by predicted outcome
+  (not the raw %), and the detail moved from a hover tooltip → Sheet → workspace
+  pane → inline side panel over the release as the UX settled.
+- Best practices live as a subsection of the Models settings tab (not a 7th tab).
+- Claude `--bare` isolation is now derived from auth mode (API-key isolates,
+  OAuth doesn't) instead of a footgun user toggle that broke OAuth runs.
+- Keyboard hints adapt to the OS (⌘ on macOS, Ctrl on Windows) everywhere.
+- File-path separators are normalized throughout (no more mixed `C:\…/…` paths).
+- Suite Chat header drops the redundant "N cases" count beside the context chip;
+  verbose tooltips (Narrow-AI-scope, code-review diff stats) tightened; icon-only
+  Settings buttons use real tooltips; ADO status polling eased 15s → 30s + focus.
+
+### Fixed
+- **Bugs linked to the wrong parent case** when an earlier case was skipped
+  before publishing — the link index addressed the unfiltered array; now
+  resolved through the full array.
+- **Stale confidence verdicts** after editing a case's steps no longer linger;
+  the chip resets to "Evaluate" and the stored verdict is cleared.
+- **429 Retry-After** read from the response body (never present) instead of the
+  HTTP header — rate-limited calls always backed off a hardcoded 30s.
+- **Large suites truncated**: `list_suite_cases` now follows ADO continuation
+  tokens, so 200+ case suites load fully.
+- The model no longer invents a git branch/commit in generated code refs — the
+  app stamps real provenance at publish time.
+- A **white-screen crash** in Suite Chat (a hook ran after an early return on
+  suites without loaded cases).
+- A **failed suite-chat turn** no longer reappears broken after reload (the
+  reconciled thread is flushed to disk).
+- Cross-window settings sync for keyboard shortcuts; a leaked PTY event listener
+  when a terminal tab closed during spawn; the code viewer reliably scrolls to +
+  highlights a linked line on open; context menus flip up near the screen bottom
+  instead of clipping; the local diff no longer corrupts when switching back from
+  an ADO source; the command palette's right column stays flush-right; #mention
+  dropdowns no longer clip; the generation-history meta row wraps at narrow
+  widths; the settings close button can't be pushed off-window.
+- Backend no longer panics on a poisoned mutex; case-insensitive SSO detection;
+  non-JSON CLI output and dropped autosaves / branch-list failures are now logged.
 
 ### Removed
 - Dead settings: `vimMode`, `showHidden`, the autocomplete trio, and the unused
-  `ado.defaultPlanId` field (existing settings files load fine — leftover keys are
-  ignored). 10 confirmed-unused npm packages (incl. `@anthropic-ai/claude-agent-sdk`
-  — the engine is driven by the `claude` CLI, not the SDK).
+  `ado.defaultPlanId` field (existing settings files load fine — leftover keys
+  are ignored). The "Run Claude in isolation" toggle (now derived from auth).
+- 10 confirmed-unused npm packages, incl. `@anthropic-ai/claude-agent-sdk` (the
+  engine is driven by the `claude` CLI, not the SDK).
 
 ### Security
-- Added `SECURITY.md` documenting the trusted-renderer threat model and the
-  rationale for not path-gating the `fs_*` commands (best-practice files and repos
-  legitimately live on arbitrary paths / network shares).
+- Added `SECURITY.md` documenting the trusted-renderer threat model and why the
+  `fs_*` commands aren't path-gated (best-practice files and repos legitimately
+  live on arbitrary paths / network shares).
+
+### Notes
+- The confidence-verdict JSON shape changed during this cycle; old verdicts still
+  render (back-compat), no migration needed.
 
 ## [0.4.0] - 2026-05-26
 
