@@ -7,6 +7,57 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [Unreleased]
+
+A ground-up audit and cleanup pass: latent bug fixes, dead-code removal, settings
+hygiene, a source-branch toggle, simpler helper text, and added test coverage —
+all with no breaking changes to persisted data or ADO payloads.
+
+### Added
+- **"Tag with source branch" toggle** in the generator input form (default on,
+  shown for git source dirs): stamps the resolved branch onto published cases'
+  code links and the source-dir commit onto bug code refs, so links point at the
+  code they were generated from. Turn it off to publish without provenance.
+- **Custom instructions** UI in Settings → Models. The field was already injected
+  into every AI feature's system prompt but had no control — now editable instead
+  of config-file-only.
+- Added test coverage for batch parsing, bug→case linking, branch resolution, and
+  confidence readiness, plus `docs/manual-test-checklist.md` and `SECURITY.md`.
+
+### Fixed
+- **Bugs linked to the wrong parent case** when an earlier case was skipped before
+  publishing (the link index addressed the unfiltered case array). Now resolved
+  through the full array — bugs always attach to their intended case.
+- **Stale confidence verdicts**: editing a case's steps after evaluating no longer
+  leaves a misleading pass-readiness % on screen; the chip resets to "Evaluate"
+  (and the stored verdict is cleared for published cases).
+- **429 Retry-After** was read from the response body (where it never is) instead
+  of the HTTP header, so rate-limited calls always backed off a hardcoded 30s.
+- **Large suites truncated**: `list_suite_cases` now follows ADO continuation
+  tokens, so suites with 200+ cases load fully.
+- Cross-window settings sync for keyboard shortcuts (changes in the Settings
+  window now reach the main window).
+- A leaked PTY event listener when a terminal tab was closed during spawn.
+- Backend no longer panics on a poisoned mutex; case-insensitive SSO detection;
+  non-JSON CLI output and dropped autosaves/branch-list failures are now logged.
+
+### Changed
+- Suite Chat header no longer shows a redundant "N cases" count beside the context
+  chip; verbose tooltips (Narrow-AI-scope, code-review diff stats) tightened.
+- Icon-only buttons in Settings now use real tooltips (not bare `title`).
+- ADO connection status polling eased from 15s to 30s + on focus.
+
+### Removed
+- Dead settings: `vimMode`, `showHidden`, the autocomplete trio, and the unused
+  `ado.defaultPlanId` field (existing settings files load fine — leftover keys are
+  ignored). 10 confirmed-unused npm packages (incl. `@anthropic-ai/claude-agent-sdk`
+  — the engine is driven by the `claude` CLI, not the SDK).
+
+### Security
+- Added `SECURITY.md` documenting the trusted-renderer threat model and the
+  rationale for not path-gating the `fs_*` commands (best-practice files and repos
+  legitimately live on arbitrary paths / network shares).
+
 ## [0.4.0] - 2026-05-26
 
 This release brings test execution into the workflow — record Pass / Fail / Blocked outcomes from the test-case tab, Suite Chat, and the generator review tab — adds image & file attachments with real vision to every chat surface, bulk edits in Suite Chat, and a "what the last refine changed" diff in the generator. The stale-case detection feature is removed.

@@ -6,7 +6,7 @@ DevOps Studio is a Tauri 2 desktop app for QA testers working in Azure DevOps Te
 
 - **Desktop shell:** Tauri 2 (Rust backend + webview frontend)
 - **Frontend:** React 19 + Vite 7 + TypeScript 5.8
-- **UI:** shadcn (radix-luma variant) + Tailwind CSS v4 + oklch color tokens + Inter Variable / JetBrains Mono
+- **UI:** shadcn (radix-luma variant) + Tailwind CSS v4 + oklch color tokens + Geist Variable / JetBrains Mono
 - **Icons:** `@hugeicons/react` for app glyphs, `simple-icons` for brand marks (ADO, Anthropic, OpenAI, etc.) via `src/components/BrandIcon.tsx`
 - **State:** Zustand stores under `src/modules/*/store/`
 - **AI:** Vercel AI SDK (multi-provider) and Claude Code CLI (subprocess, OAuth + API-key)
@@ -63,7 +63,7 @@ Tauri commands are `#[tauri::command] async fn` in Rust. The frontend invokes th
 All Rust handlers are registered in `src-tauri/src/lib.rs` inside `tauri::generate_handler![...]`. If you add a command, add it to that list.
 
 ADO requires a connection that's persisted by:
-- `devops-studio-settings.json` (Tauri Store plugin) — org URL, project, default plan, default tracking branch
+- `devops-studio-settings.json` (Tauri Store plugin) — org URL, project, default tracking branch
 - OS keychain (account `ado.pat`) — PAT only
 
 ## Theme & dark mode
@@ -86,7 +86,7 @@ UI text caps at 13 px because this is an editor. Allowed sizes:
 | Emphasis (titles in cards) | 12.5 px |
 | Section headings | 13 px |
 
-Monospace is JetBrains Mono Variable for `<code>`/`<pre>`/IDs. Sans is Inter Variable everywhere else.
+Monospace is JetBrains Mono Variable for `<code>`/`<pre>`/IDs. Sans is Geist Variable everywhere else.
 
 ## shadcn defaults (after the consistency pass)
 
@@ -117,6 +117,8 @@ Generator can re-target itself mid-session via `setTarget(planId, suiteId)` so r
 The bottom status bar shows the current git branch of the user's source directory (`usePreferencesStore.sourceRoot`). Reading is done by `src/modules/git/useSourceDirGitInfo.ts` → Rust `git_repo_info`, polled every 30 s and on window focus.
 
 If `AzureDevOpsSection`'s tracking branch is set to the sentinel `$current`, the generator resolves it at publish-time from the live source-dir branch instead of using the saved value, so code-link chips on published cases point at the branch you're actually working on.
+
+The generator input form has a **"Tag with source branch"** switch (`tagSourceBranch`, default on, shown only when the source dir is a git repo). When on, published cases' source links carry the resolved branch and bug code refs carry the source-dir HEAD commit, so links point at the code they were generated from; off stamps no provenance. It's session-scoped like `allowCodeSearch` (resets to on per run).
 
 ## Release process
 
@@ -226,7 +228,7 @@ Tabs are a discriminated union (`AppTab` in `src/modules/tabs/store/types.ts`). 
 | `suite-chat`  | `planId + suiteId`              | Per-suite chat. Threads live inside the tab via the switcher.    |
 | `generator`   | `runId` (only when set)         | Fresh generator drafts deliberately stack; bound drafts dedup.   |
 | `terminal`    | **never**                       | Each `pty_spawn` is a real OS process — N tabs = N shells.       |
-| `code-review` | **never**                       | User wants to keep parallel reviews open against the same diff.  |
+| `code-review` | `cwd` (fresh) / `rehydrateThreadId` | Re-opening "Code Review" focuses the existing fresh review for that source dir; a saved thread reopens its own tab. **Duplicate** clones for a parallel review on the same diff. |
 
 When you add a new kind, set the rule explicitly. The dedup rule is also where the user's "why can't I open two of these?" frustration lives — if a kind doesn't dedup naturally, it should NOT dedup in the openTab switch.
 
