@@ -115,30 +115,46 @@ export function CodeViewerPane({ path, startLine, endLine }: Props) {
   // state so re-loads behave the same.
   useEffect(() => {
     if (state.kind !== "ok") return;
-    const view = viewRef.current?.view;
-    if (!view) return;
-    const start = clampLine(startLine ?? 1, view.state.doc.lines);
-    const end = clampLine(endLine ?? startLine ?? 1, view.state.doc.lines);
-    const fromPos = view.state.doc.line(start).from;
-    const toPos = view.state.doc.line(end).to;
-    // Setting `pulse: true` triggers the keyframe animation defined in
-    // rangeHighlightTheme; the class is auto-removed by the next dispatch.
-    view.dispatch({
-      effects: [
-        setHighlightedRange.of({ from: fromPos, to: toPos, pulse: true }),
-        EditorView.scrollIntoView(fromPos, { y: "center" }),
-      ],
-    });
-    // After the animation finishes, drop the pulse class but keep the
-    // static highlight so the user can still see WHICH block we jumped to.
-    const id = window.setTimeout(() => {
-      const v = viewRef.current?.view;
-      if (!v) return;
-      v.dispatch({
-        effects: [setHighlightedRange.of({ from: fromPos, to: toPos, pulse: false })],
+    let scrollRaf = 0;
+    let pulseTimer = 0;
+    const run = () => {
+      // @uiw/react-codemirror attaches the EditorView inside its OWN effect,
+      // so on first load this passive effect can fire a frame before the view
+      // is mounted + measured — and a scrollIntoView against an unmeasured
+      // editor silently no-ops. Wait a frame, then retry until the view is
+      // live, which is why the jump used to "work in theory" but not on click.
+      const view = viewRef.current?.view;
+      if (!view) {
+        scrollRaf = requestAnimationFrame(run);
+        return;
+      }
+      const start = clampLine(startLine ?? 1, view.state.doc.lines);
+      const end = clampLine(endLine ?? startLine ?? 1, view.state.doc.lines);
+      const fromPos = view.state.doc.line(start).from;
+      const toPos = view.state.doc.line(end).to;
+      // Setting `pulse: true` triggers the keyframe animation defined in
+      // globals.css; the class is auto-removed by the next dispatch.
+      view.dispatch({
+        effects: [
+          setHighlightedRange.of({ from: fromPos, to: toPos, pulse: true }),
+          EditorView.scrollIntoView(fromPos, { y: "center" }),
+        ],
       });
-    }, 1600);
-    return () => window.clearTimeout(id);
+      // After the animation finishes, drop the pulse class but keep the
+      // static highlight so the user can still see WHICH block we jumped to.
+      pulseTimer = window.setTimeout(() => {
+        const v = viewRef.current?.view;
+        if (!v) return;
+        v.dispatch({
+          effects: [setHighlightedRange.of({ from: fromPos, to: toPos, pulse: false })],
+        });
+      }, 1600);
+    };
+    scrollRaf = requestAnimationFrame(run);
+    return () => {
+      cancelAnimationFrame(scrollRaf);
+      window.clearTimeout(pulseTimer);
+    };
   }, [state, startLine, endLine, pulseTick]);
 
   // External re-pulse channel. Fired by the tab dispatcher when the user

@@ -277,7 +277,7 @@ export function GeneralSection() {
           </SettingRow>
           <SettingRow
             title="Highlight the active line"
-            description="Tint the row containing the cursor (or the highlighted range from a bug code link)."
+            description="Tint the row your cursor sits on in the code viewer. (Jumping to a code link always scrolls to and highlights its line, regardless of this toggle.)"
           >
             <Switch
               checked={editorHighlightActiveLine}
