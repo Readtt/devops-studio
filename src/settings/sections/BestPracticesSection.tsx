@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Tooltip,
   TooltipContent,
@@ -11,6 +12,7 @@ import { cn } from "@/lib/utils";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   setBestPracticeFiles,
+  setCustomInstructions,
   type BestPracticeFile,
 } from "@/modules/settings/store";
 import {
@@ -39,6 +41,7 @@ function baseName(path: string): string {
  */
 export function BestPracticesPanel() {
   const files = usePreferencesStore((s) => s.bestPracticeFiles);
+  const customInstructions = usePreferencesStore((s) => s.customInstructions);
   const [status, setStatus] = useState<Record<string, ReadStatus>>({});
 
   // Re-check readability whenever the SET of paths changes. A best-practices
@@ -107,7 +110,29 @@ export function BestPracticesPanel() {
   };
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-5">
+      {/* Free-text instructions appended to the system prompt of every AI
+          feature. Was wired into the prompt pipeline but had no UI — you could
+          only set it by hand-editing the config file. */}
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium tracking-tight text-muted-foreground">
+            Custom instructions
+          </span>
+          <p className="max-w-[440px] text-[10.5px] leading-relaxed text-muted-foreground/70">
+            Added to every AI feature's system prompt (generation, suite chat,
+            review chat, code review). Use it for house style, terminology, or
+            standing rules — e.g. &ldquo;always write Gherkin-style steps.&rdquo;
+          </p>
+        </div>
+        <Textarea
+          value={customInstructions}
+          placeholder="e.g. Prefer concise, imperative test steps. Reference the ticket id in each case title."
+          onChange={(e) => void setCustomInstructions(e.currentTarget.value)}
+          className="min-h-[88px] text-[12px] leading-relaxed"
+        />
+      </div>
+
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col gap-0.5">
           <span className="text-[11px] font-medium tracking-tight text-muted-foreground">
