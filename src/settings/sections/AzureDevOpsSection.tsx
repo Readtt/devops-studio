@@ -219,7 +219,7 @@ export function AzureDevOpsSection() {
             </Label>
             <Input
               id="ado-org"
-              placeholder="macroagility  —  or  https://dev.azure.com/macroagility"
+              placeholder="contoso  —  or  https://dev.azure.com/contoso"
               value={orgUrl}
               onChange={(e) => setOrgUrl(e.target.value)}
               spellCheck={false}

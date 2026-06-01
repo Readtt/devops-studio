@@ -153,22 +153,22 @@ mod url_tests {
 
     #[test]
     fn rewrites_legacy_visualstudio_to_dev_azure() {
-        assert_eq!(normalize_org_url("https://macroagility.visualstudio.com"), "https://dev.azure.com/macroagility");
-        assert_eq!(normalize_org_url("https://macroagility.visualstudio.com/"), "https://dev.azure.com/macroagility");
-        assert_eq!(normalize_org_url("macroagility.visualstudio.com"), "https://dev.azure.com/macroagility");
-        assert_eq!(normalize_org_url("MacroAgility.VisualStudio.com"), "https://dev.azure.com/macroagility");
+        assert_eq!(normalize_org_url("https://contoso.visualstudio.com"), "https://dev.azure.com/contoso");
+        assert_eq!(normalize_org_url("https://contoso.visualstudio.com/"), "https://dev.azure.com/contoso");
+        assert_eq!(normalize_org_url("contoso.visualstudio.com"), "https://dev.azure.com/contoso");
+        assert_eq!(normalize_org_url("Contoso.VisualStudio.com"), "https://dev.azure.com/contoso");
     }
 
     #[test]
     fn accepts_bare_org_slug() {
-        assert_eq!(normalize_org_url("macroagility"), "https://dev.azure.com/macroagility");
+        assert_eq!(normalize_org_url("contoso"), "https://dev.azure.com/contoso");
         assert_eq!(normalize_org_url("  myorg  "), "https://dev.azure.com/myorg");
     }
 
     #[test]
     fn strips_trailing_path_segments() {
         assert_eq!(normalize_org_url("https://dev.azure.com/myorg/SomeProject"), "https://dev.azure.com/myorg");
-        assert_eq!(normalize_org_url("https://macroagility.visualstudio.com/SomeProject"), "https://dev.azure.com/macroagility");
+        assert_eq!(normalize_org_url("https://contoso.visualstudio.com/SomeProject"), "https://dev.azure.com/contoso");
     }
 
     #[test]
