@@ -11,9 +11,6 @@ vi.mock("ai", () => ({
   generateText: (...a: unknown[]) => generateText(...a),
   streamText: (...a: unknown[]) => streamText(...a),
   stepCountIs: (n: number) => ({ __stepCountIs: n }),
-  Output: {
-    object: ({ schema }: { schema: unknown }) => ({ __output: schema }),
-  },
 }));
 
 // Stub model construction + system assembly (system assembly is the identity
@@ -49,16 +46,19 @@ describe("runTask mode dispatch", () => {
     if (r.ok) expect(r.object).toEqual({ a: 1 });
   });
 
-  it("schema + tools → generateText with experimental_output + the passed tools", async () => {
+  it("schema + tools → generateText (no experimental_output), validates final text", async () => {
     const schema = z.object({ a: z.number() });
-    generateText.mockResolvedValue({ text: "", experimental_output: { a: 2 } });
+    // Model runs its tool loop and emits the object as its final text.
+    generateText.mockResolvedValue({ text: JSON.stringify({ a: 2 }) });
     const tools = { read_file: { description: "read" } } as never;
     const r = await runTask({ ...baseInput, schema, tools });
     expect(generateText).toHaveBeenCalledTimes(1);
     const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
-    expect(arg.experimental_output).toBeDefined();
+    // We deliberately do NOT use the unreliable experimental_output.
+    expect(arg.experimental_output).toBeUndefined();
     // The runner passes the caller's tools through UNCHANGED — never injects.
     expect(arg.tools).toBe(tools);
+    expect(r.ok).toBe(true);
     if (r.ok) expect(r.object).toEqual({ a: 2 });
   });
 
@@ -123,13 +123,13 @@ describe("streamTask", () => {
     }
   });
 
-  it("structured stream resolves the validated object via experimental_output", async () => {
+  it("structured stream validates the accumulated final text against the schema", async () => {
     const schema = z.object({ a: z.number() });
     streamText.mockReturnValue({
       textStream: (async function* () {
-        yield "{}";
+        yield '{"a":';
+        yield "9}";
       })(),
-      experimental_output: Promise.resolve({ a: 9 }),
     });
     const r = await streamTask({
       ...baseInput,

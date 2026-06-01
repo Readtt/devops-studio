@@ -3,10 +3,13 @@
 // SDK only; there is no second engine.
 //
 // Modes (auto-selected from `schema` + `tools`):
-//   • schema, no tools → generateObject({ schema, experimental_repairText })
-//   • schema + tools   → generateText/streamText with experimental_output
-//                        = Output.object({ schema }) so the agentic read loop
-//                        still produces a validated object
+//   • schema, no tools → generateObject (SDK-native structured output + repair)
+//   • schema + tools   → generateText/streamText runs the agentic read loop,
+//                        then the model's final text is validated against the
+//                        schema here. (We deliberately do NOT use the SDK's
+//                        experimental_output: it throws "No output generated"
+//                        when the model returns the object as plain text after
+//                        a tool loop — unreliable for the tools+output combo.)
 //   • no schema        → generateText/streamText (prose; Code Review, Suite Chat)
 //
 // @readonly — the `tools` a caller passes are the read-only source tools
@@ -14,7 +17,6 @@
 // write / edit / bash / delegation tools. Keep it that way.
 
 import {
-  Output,
   generateObject,
   generateText,
   stepCountIs,
@@ -29,6 +31,7 @@ import {
   type LocalProviderConfig,
 } from "./agent";
 import type { ProviderKeys } from "./keyring";
+import { extractJsonBlock } from "./extractJson";
 import { buildUserTurn } from "./visionMessage";
 import {
   stepToActivity,
@@ -173,9 +176,6 @@ export async function runTask<
     system,
     ...userTurn,
     ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
-    ...(input.schema
-      ? { experimental_output: Output.object({ schema: input.schema }) }
-      : {}),
     ...(input.temperature !== undefined
       ? { temperature: input.temperature }
       : {}),
@@ -186,8 +186,12 @@ export async function runTask<
 
   const text = r.text ?? "";
   if (input.schema) {
-    const obj = readExperimentalOutput(r);
-    if (obj === undefined) {
+    // The model ran its tool loop and emitted the object as its final text;
+    // validate that against the schema (the prompts instruct "return ONLY the
+    // JSON"). On failure the surface's own salvage/parse fallback can still
+    // recover partial output from `text`.
+    const parsed = validateAgainstSchema(text, input.schema);
+    if (!parsed.ok) {
       return {
         ok: false,
         reason: "schema_violation",
@@ -198,7 +202,7 @@ export async function runTask<
     return {
       ok: true,
       text,
-      object: obj as InferObject<S>,
+      object: parsed.value as InferObject<S>,
       durationMs: Date.now() - start,
     };
   }
@@ -235,9 +239,6 @@ export async function streamTask<
     system,
     ...userTurn,
     ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
-    ...(input.schema
-      ? { experimental_output: Output.object({ schema: input.schema }) }
-      : {}),
     ...(input.temperature !== undefined
       ? { temperature: input.temperature }
       : {}),
@@ -253,17 +254,8 @@ export async function streamTask<
   }
 
   if (input.schema) {
-    let obj: unknown;
-    try {
-      // experimental_output isn't on the inferred result type when the output
-      // is set behind a conditional spread; read it through a cast. It resolves
-      // after the stream drains (which we just awaited above).
-      obj = await (result as { experimental_output?: unknown })
-        .experimental_output;
-    } catch {
-      obj = undefined;
-    }
-    if (obj === undefined) {
+    const parsed = validateAgainstSchema(acc, input.schema);
+    if (!parsed.ok) {
       return {
         ok: false,
         reason: "schema_violation",
@@ -274,7 +266,7 @@ export async function streamTask<
     return {
       ok: true,
       text: acc,
-      object: obj as InferObject<S>,
+      object: parsed.value as InferObject<S>,
       durationMs: Date.now() - start,
     };
   }
@@ -296,14 +288,19 @@ function extractTextFromError(e: unknown): string {
   return "";
 }
 
-/** Read the completed structured output from a generateText result, tolerating
- *  the throw the SDK does when the model never produced a valid object. */
-function readExperimentalOutput(r: {
-  experimental_output?: unknown;
-}): unknown {
+/** Validate a model's final text against a schema — slice the JSON out of any
+ *  fenced/prose wrapping, parse, then safeParse. Used by the tool-bearing paths
+ *  where the SDK's experimental_output isn't reliable. */
+function validateAgainstSchema(
+  text: string,
+  schema: z.ZodTypeAny,
+): { ok: true; value: unknown } | { ok: false } {
+  let json: unknown;
   try {
-    return r.experimental_output;
+    json = JSON.parse(extractJsonBlock(text.trim()));
   } catch {
-    return undefined;
+    return { ok: false };
   }
+  const r = schema.safeParse(json);
+  return r.success ? { ok: true, value: r.data } : { ok: false };
 }
