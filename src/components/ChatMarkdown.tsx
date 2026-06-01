@@ -434,6 +434,19 @@ const BlockRenderer = memo(function BlockRenderer({
     case "hr":
       return <hr className="my-1 border-border/40" />;
     case "code":
+      // While an actionable block is still the streaming tail its JSON is
+      // necessarily incomplete, so schema validation would fail and flash a
+      // "skipped a malformed block" warning on every token until the closing
+      // fence arrives. Show a calm "writing…" placeholder instead and only
+      // validate once the block is complete (no longer the tail).
+      if (
+        streamingTail &&
+        (block.lang === "devops-edit" ||
+          block.lang === "devops-bulk-edit" ||
+          block.lang === "code-review-patch")
+      ) {
+        return <PendingActionBlock lang={block.lang} />;
+      }
       if (block.lang === "devops-edit" && onApplyEdit) {
         // Validate the edit shape up front so a malformed block reads as a
         // plain warning instead of an apply card the user can't action.
@@ -500,6 +513,28 @@ const BlockRenderer = memo(function BlockRenderer({
       );
   }
 }, blockRendererEqual);
+
+/** Shown while an actionable block (edit / bulk-edit / patch) is still
+ *  streaming, so the user sees a card forming instead of a flickering
+ *  "malformed" warning. Mirrors the three-dot streaming idiom used elsewhere. */
+function PendingActionBlock({ lang }: { lang: string }) {
+  const label =
+    lang === "code-review-patch"
+      ? "Preparing a patch"
+      : lang === "devops-bulk-edit"
+        ? "Preparing bulk edits"
+        : "Preparing an edit";
+  return (
+    <div className="my-1 flex items-center gap-2 rounded-md border border-border/55 bg-card/55 px-2.5 py-1.5 text-[11px] text-muted-foreground">
+      <span className="flex items-center gap-0.5" aria-hidden>
+        <span className="inline-flex h-1.5 w-1.5 animate-[chat-thinking-pulse_1.2s_ease-in-out_infinite] rounded-full bg-current" />
+        <span className="inline-flex h-1.5 w-1.5 animate-[chat-thinking-pulse_1.2s_ease-in-out_infinite] rounded-full bg-current [animation-delay:0.18s]" />
+        <span className="inline-flex h-1.5 w-1.5 animate-[chat-thinking-pulse_1.2s_ease-in-out_infinite] rounded-full bg-current [animation-delay:0.36s]" />
+      </span>
+      {label}…
+    </div>
+  );
+}
 
 /** Rendered in place of an apply card when a `code-review-patch` block fails
  *  schema validation — better than a half-broken card the user can't act on. */
