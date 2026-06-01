@@ -7,6 +7,8 @@
 // Centralised so a Windows-vs-POSIX separator quirk only needs to be fixed
 // once.
 
+import { invoke } from "@tauri-apps/api/core";
+
 const ABS_POSIX = /^\//;
 const ABS_WIN = /^[a-zA-Z]:[\\/]/;
 
@@ -50,4 +52,31 @@ export function resolveSourcePath(
   const trimmedRoot = sourceRoot.replace(/[\\/]+$/, "");
   const trimmedFile = file.replace(/^[\\/]+/, "");
   return normalizeSeparators(`${trimmedRoot}/${trimmedFile}`);
+}
+
+/** Like {@link resolveSourcePath}, but verifies the file actually exists under
+ *  the source root and, when a naive join would 404, asks the backend to find
+ *  the real location by path-suffix / basename match. This is what makes a
+ *  citation like a bare "ReportDeltaProcess.cs" (the file actually lives in a
+ *  subdirectory) open correctly instead of failing with "file not found".
+ *
+ *  Falls back to the naive join on any error, so the viewer still has a path to
+ *  show in its not-found hint. */
+export async function resolveSourcePathDeep(
+  sourceRoot: string | null,
+  file: string,
+): Promise<string | null> {
+  const naive = resolveSourcePath(sourceRoot, file);
+  if (!file || !sourceRoot) return naive;
+  if (isAbsolutePath(file)) return naive;
+  try {
+    const found = await invoke<string | null>("fs_resolve_source_path", {
+      root: sourceRoot,
+      path: file,
+    });
+    if (found) return normalizeSeparators(found);
+  } catch {
+    // Backend unavailable / errored — fall through to the naive join.
+  }
+  return naive;
 }

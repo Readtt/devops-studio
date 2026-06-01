@@ -162,7 +162,10 @@ BUG CODE REFERENCES (\`codeRefs\`)
 - Format per ref: \`{ "file": "src/auth/login.ts", "startLine": 42, "endLine": 58, "symbol": "LoginController.Authenticate" }\`.
   \`endLine\` and \`symbol\` are optional but include them when you can.
 - Use paths RELATIVE to the user's source directory (the working dir you
-  were given). No absolute paths.
+  were given). No absolute paths. Emit the FULL relative path EXACTLY as your
+  Read / Glob / Grep tools reported it (e.g. \`src/Data/ReportDeltaProcess.cs\`),
+  including every directory segment — NEVER abbreviate to a bare filename like
+  \`ReportDeltaProcess.cs\`. A bare filename can't be located and breaks the link.
 - Do NOT include, assume, or invent a git branch name or commit SHA anywhere.
   Emit only \`file\` / \`startLine\` / \`endLine\` / \`symbol\`. The app stamps the
   actual branch + commit at publish time from the local working directory —
@@ -181,6 +184,8 @@ SOURCE LINKS
   the files it actually exercises in \`sourceLinks\`. The reviewer relies on
   these to trace tests back to the implementation.
 - Format per link: \`{ "repoName": "MyApp", "filePath": "src/auth/login.cs", "symbol": "LoginController.Authenticate" }\`.
+- \`filePath\` is the FULL path relative to the source directory, exactly as the
+  tools reported it — every directory segment, never a bare filename.
 - Do NOT include, assume, or invent a git branch name or commit SHA — emit only
   the repo name, file path, and symbol. The app resolves and stamps the real
   branch at publish time from the local working directory.

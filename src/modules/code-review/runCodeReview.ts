@@ -78,7 +78,7 @@ This is the highest-value part of the review: don't only judge the changed lines
 When the review unit is a single commit or pull request, make this the primary lens — the author wants to know "does this delta break anything that already worked?" Put genuine breakage under **Blockers**, citing BOTH the changed location and the caller it breaks (each \`file:line\`), and emit a patch when the fix is concrete.
 
 CITATIONS
-Every finding MUST cite the file and starting line in the form \`path/to/file.ext:LINE\`. Use exactly that format — no leading slash, no surrounding parentheses, no Markdown link wrapping. The UI auto-links those citations to the code viewer, so getting the format wrong breaks navigation.
+Every finding MUST cite the file and starting line in the form \`path/to/file.ext:LINE\`. Use exactly that format — no leading slash, no surrounding parentheses, no Markdown link wrapping. The path is the FULL path relative to the user's source directory (matching the form Read/Glob/Grep and the diff use), with every directory segment — NEVER a bare filename. The UI auto-links those citations to the code viewer, so a wrong or abbreviated path breaks navigation.
 
 For renamed files, cite the NEW path (post-rename). For deleted files, note the deletion under Suggestions / Blockers as relevant — citations don't make sense for files that no longer exist.
 

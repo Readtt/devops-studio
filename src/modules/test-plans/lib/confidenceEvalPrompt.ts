@@ -18,7 +18,7 @@ HOW TO EVALUATE (do this in order)
 3. After all steps, estimate the overall passLikelihood (0-100) and pick the matching categorical outcome.
 
 MANDATORY EVIDENCE
-- Every step gets an evidence entry with a "ref" = the "path/to/file.ext:LINE" (or ":START-END") you traced it to. If you could not find the code for a step, set "ref": null and say so in "finding" — that step is UNVERIFIED.
+- Every step gets an evidence entry with a "ref" = the "path/to/file.ext:LINE" (or ":START-END") you traced it to. The path is the FULL path relative to the source directory, exactly as your Read/Glob/Grep tools reported it — every directory segment, never a bare filename (a bare filename can't be located and breaks the link). If you could not find the code for a step, set "ref": null and say so in "finding" — that step is UNVERIFIED.
 - Unverified steps DRAG DOWN passLikelihood. One unverified load-bearing step → passLikelihood cannot exceed 55. Several → lower.
 - NEVER invent a file path or a line number. A null ref is honest; a fabricated ref is a critical failure.
 

@@ -35,7 +35,7 @@ import {
 import { GeneratorCallbacksProvider } from "@/modules/generator/callbacksContext";
 import { PaneTreeRenderer } from "@/modules/tabs/PaneTreeRenderer";
 import { DndProvider as TabsDndProvider } from "@/modules/tabs/dnd/DndProvider";
-import { resolveSourcePath } from "@/modules/code-viewer/resolveSourcePath";
+import { resolveSourcePathDeep } from "@/modules/code-viewer/resolveSourcePath";
 import { ThemeProvider } from "@/modules/theme";
 import { UpdaterStatusPill, UpdaterToast, useUpdater } from "@/modules/updater";
 import {
@@ -382,7 +382,7 @@ function AppShell() {
   );
 
   const openCodeViewerTab = useCallback(
-    (input: {
+    async (input: {
       path: string;
       startLine?: number;
       endLine?: number;
@@ -393,11 +393,13 @@ function AppShell() {
       besideLeafId?: string;
     }) => {
       // Bug code refs and analyst Read entries arrive as relative paths
-      // (e.g. "src/auth/sms.ts"). The Rust fs_read_file handler treats
-      // whatever it gets literally, so resolving against the user's
-      // sourceRoot here is the single point that fixes every dispatcher.
+      // (e.g. "src/auth/sms.ts") — and sometimes as a bare filename the model
+      // abbreviated to. Resolving against the user's sourceRoot here is the
+      // single point that fixes every dispatcher; the deep resolver also asks
+      // the backend to locate the real file when a naive join would 404.
       const liveSourceRoot = usePreferencesStore.getState().sourceRoot;
-      const absPath = resolveSourcePath(liveSourceRoot, input.path) ?? input.path;
+      const absPath =
+        (await resolveSourcePathDeep(liveSourceRoot, input.path)) ?? input.path;
       const titleFor = (p: string) => {
         const base = p.replace(/\\/g, "/").split("/").pop() || p;
         return input.startLine
@@ -643,7 +645,7 @@ function AppShell() {
     const onOpen = (e: Event) => {
       const ce = e as CustomEvent<Detail>;
       if (!ce.detail?.path) return;
-      openCodeViewerTab(ce.detail);
+      void openCodeViewerTab(ce.detail);
     };
     window.addEventListener("devops-studio:open-code-viewer", onOpen);
     return () =>

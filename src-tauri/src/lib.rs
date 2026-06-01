@@ -487,6 +487,7 @@ pub fn run() {
             fs::file::fs_canonicalize,
             fs::search::fs_search,
             fs::search::fs_list_files,
+            fs::search::fs_resolve_source_path,
             fs::grep::fs_grep,
             fs::grep::fs_glob,
             workspace::workspace_authorize,
