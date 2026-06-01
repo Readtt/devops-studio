@@ -1,6 +1,7 @@
 import { SURFACE_STEP_CAPS, type ModelId } from "@/modules/ai/config";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import { runTask } from "@/modules/ai/lib/taskRunner";
+import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
 import {
   DraftBatchLLMSchema,
   clampBugLinks,
@@ -82,6 +83,10 @@ export type RunInput = {
   keys: ProviderKeys;
   modelId: ModelId;
   lmstudioBaseURL?: string;
+  /** When set (global code-search toggle on + a source dir), the analyzer gets
+   *  read-only Read/Glob/Grep tools so it can trace the spec against real code
+   *  — deeper, code-grounded cases. null ⇒ tool-less (spec + attachments only). */
+  sourceRoot?: string | null;
   /** Structured per-step activity for the streaming log UI. Called for each
    *  tool call (with input + result) and for "thinking" steps without tools. */
   onActivity?: (entry: ActivityEntry) => void;
@@ -114,11 +119,15 @@ export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
   ];
   const start = Date.now();
 
+  // Read-only source tools when code search is on — the analyzer can trace the
+  // spec across real files instead of guessing from the prompt alone. SAFETY:
+  // these are READ-ONLY (read_file / list_files / grep); the runner never
+  // injects write/edit/bash tools.
+  const tools = buildSuiteChatTools(input.sourceRoot ?? null);
+
   // Schema-validated, temperature-0 structured output via the shared runner.
-  // Tool-less here ⇒ the runner uses generateObject; once code-search tools are
-  // wired in (the runner switches to experimental_output automatically) the
-  // schema is still enforced. SAFETY: any tools handed in are READ-ONLY — the
-  // runner never injects write/edit/bash tools.
+  // With tools the runner uses experimental_output (schema still enforced);
+  // tool-less it uses generateObject.
   const r = await runTask({
     modelId: input.modelId,
     keys: input.keys,
@@ -126,6 +135,7 @@ export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
     systemPrompt: QA_ANALYST_PROMPT,
     prompt: userPrompt,
     attachments,
+    tools: tools ?? null,
     temperature: 0,
     maxSteps: SURFACE_STEP_CAPS.generator,
     schema: DraftBatchLLMSchema,

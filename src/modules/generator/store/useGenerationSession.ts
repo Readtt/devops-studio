@@ -698,6 +698,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         mode,
         keys,
         modelId,
+        sourceRoot: prefs.codeSearchEnabled ? prefs.sourceRoot : null,
         contextBlocks,
         onActivity,
       });
@@ -1334,6 +1335,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         mode: s.mode,
         keys,
         modelId,
+        sourceRoot: prefs.codeSearchEnabled ? prefs.sourceRoot : null,
         contextBlocks,
         onActivity,
         userPromptOverride: userPrompt,

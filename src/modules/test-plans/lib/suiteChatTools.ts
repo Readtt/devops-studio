@@ -18,10 +18,12 @@ type RawReadResult =
   | { kind: "binary"; size: number }
   | { kind: "toolarge"; size: number; limit: number };
 
-/** Default windowing caps for the read tool. Same numbers the Claude CLI
- *  path uses, so model behavior stays comparable across engines. */
-const READ_LINE_CAP = 600;
-const READ_BYTE_CAP = 18 * 1024;
+/** Default windowing caps for the read tool. Raised so the agentic read loop
+ *  can pull a whole module in one call (deeper, Claude-Code-level reading)
+ *  instead of paging a long file across many tool calls. The truncation hint
+ *  still lets it chain when a file genuinely overflows. */
+const READ_LINE_CAP = 1500;
+const READ_BYTE_CAP = 24 * 1024;
 
 /** Build the set of read-only fs tools the BYOK suite-chat runner can
  *  hand to the model. Returns `undefined` when no source dir is set — the
@@ -33,7 +35,7 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
   return {
     read_file: tool({
       description:
-        "Read a UTF-8 text file from the user's source directory. Returns up to 600 lines / 18 KB by default; use `offset` and `limit` to window large files. Refuses binary files. Use this to verify whether a test case's steps match how the code actually behaves — quote the exact lines back to the user with file:line refs.",
+        "Read a UTF-8 text file from the user's source directory. Returns up to 1500 lines / 24 KB by default; use `offset` and `limit` to window large files. Refuses binary files. Use this to verify whether a test case's steps match how the code actually behaves — quote the exact lines back to the user with file:line refs.",
       inputSchema: z.object({
         path: z
           .string()
@@ -50,9 +52,9 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
           .number()
           .int()
           .min(1)
-          .max(2000)
+          .max(3000)
           .optional()
-          .describe("Max lines to return. Default 600."),
+          .describe("Max lines to return. Default 1500."),
       }),
       execute: async ({ path, offset, limit }) => {
         try {
