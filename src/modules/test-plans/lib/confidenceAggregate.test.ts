@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { aggregate } from "./runConfidenceEval";
-import type { ConfidenceVerdictLLM, PredictedOutcome } from "./confidence";
+import { aggregate, withSafetyCaveats } from "./runConfidenceEval";
+import type {
+  ConfidenceVerdictLLM,
+  EvidenceItem,
+  PredictedOutcome,
+} from "./confidence";
 
 function v(
   predictedOutcome: PredictedOutcome,
   passLikelihood: number,
   caveats: string[] = [],
+  evidence: EvidenceItem[] = [],
 ): ConfidenceVerdictLLM {
-  return { predictedOutcome, passLikelihood, evidence: [], reasoning: "", caveats };
+  return { predictedOutcome, passLikelihood, evidence, reasoning: "", caveats };
 }
 
 describe("aggregate (self-consistency)", () => {
@@ -42,5 +47,30 @@ describe("aggregate (self-consistency)", () => {
     const out = aggregate([]);
     expect(out.predictedOutcome).toBe("Unknown");
     expect(out.passLikelihood).toBe(0);
+  });
+});
+
+describe("withSafetyCaveats", () => {
+  const grounded: EvidenceItem = { step: 1, finding: "ok", ref: "src/a.ts:10" };
+  const ungrounded: EvidenceItem = { step: 2, finding: "guess", ref: null };
+
+  it("adds a manual-test caveat for a high Pass with an ungrounded step", () => {
+    const out = withSafetyCaveats(v("Pass", 95, [], [grounded, ungrounded]));
+    expect(out.caveats.join(" ")).toMatch(/manual test recommended/i);
+  });
+
+  it("leaves a fully-grounded high Pass untouched", () => {
+    const out = withSafetyCaveats(v("Pass", 95, [], [grounded]));
+    expect(out.caveats).toEqual([]);
+  });
+
+  it("does not caveat a sub-threshold score even with a null ref", () => {
+    const out = withSafetyCaveats(v("Pass", 70, [], [ungrounded]));
+    expect(out.caveats).toEqual([]);
+  });
+
+  it("does not caveat a non-Pass outcome", () => {
+    const out = withSafetyCaveats(v("Fail", 95, [], [ungrounded]));
+    expect(out.caveats).toEqual([]);
   });
 });

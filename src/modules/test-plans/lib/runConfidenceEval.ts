@@ -4,10 +4,9 @@
 // Reliability lever: `runs` > 1 evaluates N times and only allows a high final
 // confidence when the runs agree (self-consistency).
 
-import { generateText, stepCountIs } from "ai";
-import { getModel, type ModelId } from "@/modules/ai/config";
-import { buildLanguageModel } from "@/modules/ai/lib/agent";
+import { SURFACE_STEP_CAPS, type ModelId } from "@/modules/ai/config";
 import { type ProviderKeys } from "@/modules/ai/lib/keyring";
+import { runTask } from "@/modules/ai/lib/taskRunner";
 import { buildSuiteChatTools } from "./suiteChatTools";
 import {
   formatContextBlocks,
@@ -15,6 +14,8 @@ import {
 } from "@/modules/ai/lib/contextBlocks";
 import { CONFIDENCE_EVAL_SYSTEM_PROMPT } from "./confidenceEvalPrompt";
 import {
+  AUTO_PASS_THRESHOLD,
+  ConfidenceVerdictLLMSchema,
   parseConfidenceVerdict,
   type ConfidenceVerdict,
   type ConfidenceVerdictLLM,
@@ -69,18 +70,41 @@ export async function evaluateConfidence(
   const verdicts: ConfidenceVerdictLLM[] = [];
   for (let i = 0; i < runs; i++) {
     if (input.signal?.aborted) throw abortError();
-    const v = await runOnceVercel(input, prompt);
+    const v = await runConfidenceOnce(input, prompt);
     if (v) verdicts.push(v);
   }
   if (input.signal?.aborted) throw abortError();
 
-  const aggregated = aggregate(verdicts);
+  const aggregated = withSafetyCaveats(aggregate(verdicts));
   return {
     ...aggregated,
     evaluatedAt: new Date().toISOString(),
     modelId: input.modelId,
     runs,
   };
+}
+
+/** Non-blocking safety caveats layered on the final (aggregated) verdict. A
+ *  high pass-likelihood that leans on a step the model couldn't ground in code
+ *  (a null evidence ref) is exactly the case a tester should still run by hand
+ *  — say so explicitly rather than letting the green chip imply "safe to pass".
+ *  (Evidence-ref line-bounds verification against the actual files is deferred;
+ *  it overlaps the code-review post-hoc citation check.) */
+export function withSafetyCaveats(
+  v: ConfidenceVerdictLLM,
+): ConfidenceVerdictLLM {
+  if (
+    v.predictedOutcome !== "Pass" ||
+    v.passLikelihood < AUTO_PASS_THRESHOLD
+  ) {
+    return v;
+  }
+  const hasUngroundedStep = v.evidence.some((e) => e.ref == null);
+  if (!hasUngroundedStep) return v;
+  const caveat =
+    "High confidence, but at least one step isn't grounded in code — manual test recommended.";
+  if (v.caveats.includes(caveat)) return v;
+  return { ...v, caveats: [caveat, ...v.caveats] };
 }
 
 // --- Aggregation ------------------------------------------------------------
@@ -164,25 +188,31 @@ export function aggregate(verdicts: ConfidenceVerdictLLM[]): ConfidenceVerdictLL
   };
 }
 
-// --- Engine paths -----------------------------------------------------------
+// --- Single run -------------------------------------------------------------
 
-async function runOnceVercel(
+async function runConfidenceOnce(
   input: ConfidenceEvalInput,
   prompt: string,
 ): Promise<ConfidenceVerdictLLM | null> {
-  const model = getModel(input.modelId);
-  const lm = await buildLanguageModel(model.provider, input.keys, model.id, {
-    lmstudioBaseURL: input.lmstudioBaseURL,
-  });
   const tools = buildSuiteChatTools(input.sourceRoot);
-  const result = await generateText({
-    model: lm,
-    system: CONFIDENCE_EVAL_SYSTEM_PROMPT,
+  // Schema-validated, temperature-0. With code-search tools the runner uses
+  // experimental_output; tool-less it uses generateObject — either way the
+  // verdict shape is enforced.
+  const r = await runTask({
+    modelId: input.modelId,
+    keys: input.keys,
+    local: { lmstudioBaseURL: input.lmstudioBaseURL },
+    systemPrompt: CONFIDENCE_EVAL_SYSTEM_PROMPT,
     prompt,
-    abortSignal: input.signal,
-    ...(tools ? { tools, stopWhen: stepCountIs(10) } : {}),
+    temperature: 0,
+    maxSteps: SURFACE_STEP_CAPS.confidence,
+    schema: ConfidenceVerdictLLMSchema,
+    tools: tools ?? null,
+    signal: input.signal,
   });
-  return parseConfidenceVerdict(result.text ?? "");
+  // On a validated object use it directly; otherwise fall back to the lenient
+  // text parser (which also understands the legacy confidence shape).
+  return r.ok ? r.object : parseConfidenceVerdict(r.text);
 }
 
 /** A DOMException the callers recognise as "user cancelled" (name === "AbortError"). */
