@@ -32,7 +32,9 @@ export function RefineChangesPanel() {
   const cases = useGenerationSession((s) => s.cases);
   const bugs = useGenerationSession((s) => s.bugs);
   const undoRefine = useGenerationSession((s) => s.undoRefine);
-  const [expanded, setExpanded] = useState(true);
+  // Default collapsed: the last-refine summary is reference material the user
+  // expands on demand, not something that should dominate the review pane.
+  const [expanded, setExpanded] = useState(false);
 
   const diff = useMemo(() => {
     if (!snapshot) return null;

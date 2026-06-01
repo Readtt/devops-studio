@@ -28,7 +28,7 @@ function KbdGroup({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <kbd
       data-slot="kbd-group"
-      className={cn("inline-flex items-center gap-0.5", className)}
+      className={cn("inline-flex flex-wrap items-center gap-0.5", className)}
       {...props}
     />
   );

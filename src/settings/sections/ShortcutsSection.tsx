@@ -189,19 +189,19 @@ function ShortcutRow({
   const hasBindings = bindings && bindings.length > 0;
 
   return (
-    <div className="group flex items-center justify-between px-3 py-2.5 transition-colors hover:bg-muted/30">
-      <div className="flex flex-col gap-0.5">
-        <span className="text-[12.5px] font-medium">{shortcut.label}</span>
+    <div className="group flex items-center justify-between gap-2 px-3 py-2.5 transition-colors hover:bg-muted/30">
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <span className="truncate text-[12.5px] font-medium">{shortcut.label}</span>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex shrink-0 items-center gap-2">
         {isRecording ? (
           <Recorder onRecord={onRecord} onCancel={onStopRecording} />
         ) : (
           <>
             <div
               onClick={onStartRecording}
-              className="flex min-w-[100px] cursor-pointer items-center justify-end gap-1"
+              className="flex min-w-[100px] max-w-[160px] cursor-pointer items-center justify-end gap-1"
             >
               {hasBindings ? (
                 <KbdGroup>
