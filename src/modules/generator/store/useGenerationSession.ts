@@ -1376,15 +1376,34 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         return;
       }
 
-      const nextCases: ReviewedCase[] = result.batch.cases.map((c) => ({
-        ...c,
-        uid: uid(),
-        decision: "keep",
-        // Similarity is computed against ADO-side existing cases, not the
-        // in-session draft. Reusing the snapshot's matches would be wrong;
-        // leaving empty is the honest default until an ADO refresh runs.
-        similarMatches: [],
-      }));
+      // Carry forward analysis the refine didn't invalidate. Similarity is
+      // title-based, so a case the refine kept titled the same keeps its
+      // "similar to #X" matches. The confidence verdict and the reviewer's
+      // chosen outcome are CONTENT-based, so they only survive when the case is
+      // unchanged (same steps + description) — a genuinely edited case gets a
+      // clean slate so a stale score can't mislead. New/renamed cases start
+      // empty. This is why undo no longer has to "bring back" similarity /
+      // confidence for cases the refine never touched.
+      const normTitle = (t: string) => t.trim().toLowerCase();
+      const prevByTitle = new Map<string, ReviewedCase>();
+      for (const pc of snapshot.cases) prevByTitle.set(normTitle(pc.title), pc);
+      const nextCases: ReviewedCase[] = result.batch.cases.map((c) => {
+        const prev = prevByTitle.get(normTitle(c.title));
+        const contentUnchanged =
+          !!prev &&
+          JSON.stringify(prev.steps) === JSON.stringify(c.steps) &&
+          (prev.description ?? "") === (c.description ?? "");
+        return {
+          ...c,
+          uid: uid(),
+          decision: "keep" as const,
+          similarMatches: prev ? prev.similarMatches : [],
+          ...(contentUnchanged && prev?.verdict ? { verdict: prev.verdict } : {}),
+          ...(contentUnchanged && prev?.desiredOutcome
+            ? { desiredOutcome: prev.desiredOutcome }
+            : {}),
+        };
+      });
       const nextBugs: ReviewedBug[] = result.batch.bugs.map((b) => ({
         ...b,
         uid: uid(),

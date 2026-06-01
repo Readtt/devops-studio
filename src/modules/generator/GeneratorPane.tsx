@@ -1593,10 +1593,27 @@ function ReviewPhase({
           const ac = new AbortController();
           evalAbortsRef.current.set(t.uid, ac);
           try {
-            const v = await evaluateCaseConfidence(
+            let v = await evaluateCaseConfidence(
               { title: t.title, steps: t.steps },
               { signal: ac.signal },
             );
+            // A verdict that came back as the "failed to produce structured
+            // output" sentinel is usually a transient hiccup under the
+            // concurrent batch (rate-limit, or a local proxy choking on
+            // parallel requests) rather than a genuine Unknown. Give it ONE
+            // retry before recording it — single-case evals don't hit this
+            // because they never run in parallel.
+            if (
+              !ac.signal.aborted &&
+              v.predictedOutcome === "Unknown" &&
+              v.passLikelihood === 0 &&
+              v.caveats.some((c) => c.includes("structured output"))
+            ) {
+              v = await evaluateCaseConfidence(
+                { title: t.title, steps: t.steps },
+                { signal: ac.signal },
+              );
+            }
             setCaseVerdict(t.uid, v);
           } catch (e) {
             if ((e as { name?: string } | null)?.name !== "AbortError") {
@@ -1615,7 +1632,11 @@ function ReviewPhase({
           }
         }
       };
-      const CONCURRENCY = 3;
+      // Keep the batch gentle: 2-wide is plenty for throughput while being far
+      // kinder to rate-limited providers and local CLI proxies that fall over
+      // when several heavy tool-loop requests land at once (the failure mode
+      // behind "evaluate couldn't produce structured output" in bulk).
+      const CONCURRENCY = 2;
       await Promise.all(
         Array.from({ length: Math.min(CONCURRENCY, targets.length) }, worker),
       );
