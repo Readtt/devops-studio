@@ -1,7 +1,4 @@
-import {
-  type LanguageModel,
-  type ModelMessage,
-} from "ai";
+import { type LanguageModel } from "ai";
 import {
   getModel,
   getProvider,
@@ -249,44 +246,3 @@ export function buildStableSystem(
       : "";
   return `${base}${memoryBlock}${customBlock}`;
 }
-
-// OpenAI / Gemini / DeepSeek apply prefix caching automatically; only
-// Anthropic needs explicit breakpoints. Mark the stable system prefix and
-// the rotating conversation tail.
-export function applyCacheBreakpoints(
-  messages: ModelMessage[],
-  provider: ProviderId,
-): ModelMessage[] {
-  if (provider !== "anthropic" || messages.length === 0) return messages;
-  const marker = {
-    anthropic: { cacheControl: { type: "ephemeral" as const } },
-  };
-  const withMarker = (m: ModelMessage): ModelMessage => ({
-    ...m,
-    providerOptions: { ...(m.providerOptions ?? {}), ...marker },
-  });
-  const out = messages.slice();
-  out[0] = withMarker(out[0]);
-  const lastIdx = out.length - 1;
-  if (lastIdx > 0) out[lastIdx] = withMarker(out[lastIdx]);
-  return out;
-}
-
-export type AgentUsage = {
-  inputTokens: number;
-  outputTokens: number;
-  cachedInputTokens: number;
-};
-
-export type AgentUsageDelta = AgentUsage & {
-  lastInputTokens: number;
-  lastCachedTokens: number;
-};
-
-const EMPTY_USAGE: AgentUsage = {
-  inputTokens: 0,
-  outputTokens: 0,
-  cachedInputTokens: 0,
-};
-
-export { EMPTY_USAGE };

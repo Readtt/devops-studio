@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { extractJsonBlock } from "@/modules/ai/lib/extractJson";
 import type { ExecutionOutcome } from "@/modules/ado";
 import type { ConfidenceVerdict } from "@/modules/test-plans/lib/confidence";
 
@@ -97,18 +98,10 @@ export type ReviewedBug = DraftBugLLM & {
   decision: "keep" | "skip";
 };
 
-/** Pull the JSON object out of a model response that may be fenced or wrapped
- *  in prose. Shared by both run engines (Vercel + Claude CLI). */
-export function extractBatchJson(s: string): string {
-  // Strip a ```json … ``` fence if present.
-  const fence = s.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-  if (fence) return fence[1].trim();
-  // Otherwise take from the first { to the last } if there's surrounding prose.
-  const first = s.indexOf("{");
-  const last = s.lastIndexOf("}");
-  if (first >= 0 && last > first) return s.slice(first, last + 1);
-  return s;
-}
+/** Pull the JSON object out of a (possibly fenced/prose-wrapped) model
+ *  response. Re-exported from the shared helper so the generator keeps one
+ *  import name; the slicing logic lives in one place now. */
+export const extractBatchJson = extractJsonBlock;
 
 /** Parse a model batch response into a validated DraftBatch. Permissive by
  *  design — an unparseable/invalid response yields an empty batch rather than

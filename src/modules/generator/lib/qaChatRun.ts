@@ -1,7 +1,7 @@
 // Free-text Q&A about the current draft. Distinct from refine() — the chat
 // path returns markdown the user reads inline; it never rewrites the draft.
 
-import { generateText, streamText } from "ai";
+import { streamText } from "ai";
 import { getModel, type ModelId } from "@/modules/ai/config";
 import { buildLanguageModel } from "@/modules/ai/lib/agent";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
@@ -93,7 +93,7 @@ export type ChatRunResult = {
   durationMs: number;
 };
 
-// --- Vercel SDK path (any provider) -----------------------------------------
+// --- Runner entrypoint ------------------------------------------------------
 
 export type ChatTaskInput = ChatRunInput & {
   modelId: ModelId;
@@ -101,26 +101,8 @@ export type ChatTaskInput = ChatRunInput & {
   lmstudioBaseURL?: string;
 };
 
-export async function runChatTask(input: ChatTaskInput): Promise<ChatRunResult> {
-  const model = getModel(input.modelId);
-  const lm = await buildLanguageModel(model.provider, input.keys, model.id, {
-    lmstudioBaseURL: input.lmstudioBaseURL,
-  });
-  const userPrompt = buildChatUserPrompt(input);
-  const start = Date.now();
-  const result = await generateText({
-    model: lm,
-    system: CHAT_SYSTEM_PROMPT,
-    ...buildUserTurn(userPrompt, [
-      ...input.attachments,
-      ...collectContextImages(input.contextBlocks ?? []),
-    ]),
-  });
-  return { text: result.text ?? "", durationMs: Date.now() - start };
-}
-
-/** Streaming variant of runChatTask. Calls `onText` with each delta as the
- *  model produces it; resolves with the full accumulated text. Mirrors
+/** Streaming draft-chat run. Calls `onText` with each delta as the model
+ *  produces it; resolves with the full accumulated text. Mirrors
  *  streamSuiteChatTask so the review-pane "Ask" reads tokens live like every
  *  other chat surface in the app. */
 export async function streamChatTask(

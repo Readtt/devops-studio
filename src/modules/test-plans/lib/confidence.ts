@@ -13,6 +13,7 @@
 // the case an auto-pass candidate; anything below is flagged for manual testing.
 
 import { z } from "zod";
+import { extractJsonBlock } from "@/modules/ai/lib/extractJson";
 
 export const AUTO_PASS_THRESHOLD = 90;
 
@@ -130,7 +131,7 @@ export function isAutoPassCandidate(v: ConfidenceVerdict | null | undefined): bo
  *  so the caller can surface an honest "couldn't evaluate" instead of a
  *  fabricated score. */
 export function parseConfidenceVerdict(text: string): ConfidenceVerdictLLM | null {
-  const candidate = extractJson(text.trim());
+  const candidate = extractJsonBlock(text.trim());
   let obj: unknown;
   try {
     obj = JSON.parse(candidate);
@@ -157,13 +158,4 @@ export function parseConfidenceVerdict(text: string): ConfidenceVerdictLLM | nul
     };
   }
   return null;
-}
-
-function extractJson(s: string): string {
-  const fence = s.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-  if (fence) return fence[1].trim();
-  const first = s.indexOf("{");
-  const last = s.lastIndexOf("}");
-  if (first >= 0 && last > first) return s.slice(first, last + 1);
-  return s;
 }

@@ -9,7 +9,7 @@
 
 import { SURFACE_STEP_CAPS, type ModelId } from "@/modules/ai/config";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
-import { runTask, streamTask } from "@/modules/ai/lib/taskRunner";
+import { streamTask } from "@/modules/ai/lib/taskRunner";
 import type { TestCase } from "@/modules/ado";
 import { buildSuiteChatTools } from "./suiteChatTools";
 import {
@@ -328,42 +328,19 @@ export type SuiteChatRunResult = {
   durationMs: number;
 };
 
-// --- Vercel SDK path --------------------------------------------------------
+// --- Runner entrypoint ------------------------------------------------------
 
 export type SuiteChatTaskInput = SuiteChatRunInput & {
   modelId: ModelId;
   keys: ProviderKeys;
   lmstudioBaseURL?: string;
-  /** When set, the BYOK runner exposes Read/Glob/Grep tools to the model
-   *  backed by the user's source directory — so code-grounded answers
-   *  work just like they do on the Claude CLI path. When null, the
-   *  runner is text-only and the prompt warns the model. */
+  /** When set, the runner exposes read-only Read/Glob/Grep tools to the model
+   *  backed by the user's source directory so answers are code-grounded. When
+   *  null, the run is text-only and the prompt warns the model. */
   sourceRoot: string | null;
 };
 
-export async function runSuiteChatTask(
-  input: SuiteChatTaskInput,
-): Promise<SuiteChatRunResult> {
-  const userPrompt = buildSuiteChatUserPrompt(input, input.sourceRoot);
-  const tools = buildSuiteChatTools(input.sourceRoot);
-  const r = await runTask({
-    modelId: input.modelId,
-    keys: input.keys,
-    local: { lmstudioBaseURL: input.lmstudioBaseURL },
-    systemPrompt: SUITE_CHAT_SYSTEM_PROMPT,
-    prompt: userPrompt,
-    attachments: [
-      ...(input.attachments ?? []),
-      ...collectContextImages(input.contextBlocks ?? []),
-    ],
-    tools: tools ?? null,
-    temperature: 0,
-    maxSteps: SURFACE_STEP_CAPS.suiteChat,
-  });
-  return { text: r.text, durationMs: r.durationMs };
-}
-
-/** Streaming variant of runSuiteChatTask. Calls `onText` with each text delta
+/** Streaming suite-chat run. Calls `onText` with each text delta
  *  as the model produces it; resolves once the stream finishes. When a source
  *  dir is set the model gets read-only Read/Glob/Grep tools so answers are
  *  code-grounded; temperature 0 keeps them reproducible. */
