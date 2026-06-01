@@ -1,12 +1,10 @@
 // Free-text Q&A about the current draft. Distinct from refine() — the chat
 // path returns markdown the user reads inline; it never rewrites the draft.
 
-import { streamText } from "ai";
 import { type ModelId } from "@/modules/ai/config";
-import {
-  buildConfiguredLanguageModel,
-  type LocalProviderConfig,
-} from "@/modules/ai/lib/agent";
+import { type LocalProviderConfig } from "@/modules/ai/lib/agent";
+import { streamTask } from "@/modules/ai/lib/taskRunner";
+import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import type { ReviewedBug, ReviewedCase } from "./draftBatchSchema";
 import {
@@ -16,7 +14,6 @@ import {
   type RunAttachment,
   type TargetContext,
 } from "./qaAnalystRun";
-import { buildUserTurn } from "@/modules/ai/lib/visionMessage";
 import {
   collectContextImages,
   formatContextBlocks,
@@ -57,10 +54,13 @@ ROLE
 OUTPUT
 - Plain markdown. Bullet lists, short paragraphs, fenced code when quoting
   source. No JSON. No HTML.
+- When source access is available you have read-only Read / Glob / Grep tools —
+  use them to ground answers in the actual code rather than guessing.
 - When you point at a source file, write the citation as bare text in the form
-  path/to/file.ext:LINE (or :START-END) — relative path, forward slashes, no
-  leading slash, no parentheses. The UI auto-links it to the in-app code viewer,
-  so the user can click straight to it.
+  path/to/file.ext:LINE (or :START-END) — the FULL path relative to the source
+  directory (every directory segment, exactly as the tools reported it), forward
+  slashes, no leading slash, no parentheses, never a bare filename. The UI
+  auto-links it to the in-app code viewer, so the user can click straight to it.
 - Keep responses under ~12 lines unless the user asks for depth.`;
 
 export type ChatRunInput = {
@@ -86,9 +86,11 @@ export type ChatRunInput = {
   /** Extra context blocks (best-practices files, attached bugs) appended to
    *  the prompt and lifted into vision input. Empty/absent ⇒ prompt unchanged. */
   contextBlocks?: ContextBlock[];
-  /** Tool-activity callback for the live strip (Claude CLI path only — the
-   *  Vercel path here runs without tools). Entries upsert by id. */
+  /** Tool-activity callback for the live strip. Entries upsert by id. */
   onToolEvent?: (e: ActivityEntry) => void;
+  /** Source directory for the read-only tools. null ⇒ run tool-less (code
+   *  search disabled or no source set). */
+  sourceRoot?: string | null;
 };
 
 export type ChatRunResult = {
@@ -111,27 +113,28 @@ export type ChatTaskInput = ChatRunInput & {
 export async function streamChatTask(
   input: ChatTaskInput & { onText: (delta: string) => void },
 ): Promise<ChatRunResult> {
-  const lm = await buildConfiguredLanguageModel(
-    input.modelId,
-    input.keys,
-    input.local ?? {},
-  );
+  // Route through the SHARED task runner like every other surface (Suite Chat,
+  // Code Review, Confidence) so the Ask gets the same read-only source tools,
+  // live tool-call strip, and citation grounding — previously it called
+  // streamText directly with no tools, which is why tool calls never showed
+  // and source citations couldn't be grounded in real code.
   const userPrompt = buildChatUserPrompt(input);
-  const start = Date.now();
-  const result = streamText({
-    model: lm,
-    system: CHAT_SYSTEM_PROMPT,
-    ...buildUserTurn(userPrompt, [
+  const tools = buildSuiteChatTools(input.sourceRoot ?? null);
+  const r = await streamTask({
+    modelId: input.modelId,
+    keys: input.keys,
+    local: input.local,
+    systemPrompt: CHAT_SYSTEM_PROMPT,
+    prompt: userPrompt,
+    attachments: [
       ...input.attachments,
       ...collectContextImages(input.contextBlocks ?? []),
-    ]),
+    ],
+    tools: tools ?? null,
+    onText: input.onText,
+    onToolEvent: input.onToolEvent,
   });
-  let acc = "";
-  for await (const chunk of result.textStream) {
-    acc += chunk;
-    input.onText(chunk);
-  }
-  return { text: acc, durationMs: Date.now() - start };
+  return { text: r.text, durationMs: r.durationMs };
 }
 
 // --- Shared user-prompt builder --------------------------------------------

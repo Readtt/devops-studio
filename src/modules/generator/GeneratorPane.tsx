@@ -1342,7 +1342,7 @@ function AnalyzingPhase() {
         <h2 className="mb-1.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
           Activity
         </h2>
-        <AnalyzeActivityLog entries={activityLog} />
+        <AnalyzeActivityLog entries={activityLog} running />
       </div>
 
       {/* Collapsible spec — defaults to closed for long pastes so the user

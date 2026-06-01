@@ -108,7 +108,11 @@ export function stepToActivity(
     const raw = match ? stringifyResult(match.output) : undefined;
     const toolName = call.toolName ?? "tool";
     return {
-      id: newActivityId(),
+      // Key by toolCallId so a live "tool-call" event (emitted from the
+      // streaming onChunk handler) and this step-finish event upsert into the
+      // SAME row instead of duplicating. Falls back to a fresh id when the SDK
+      // didn't surface a call id.
+      id: call.toolCallId ?? newActivityId(),
       ts: Date.now() - startMs,
       kind: "tool" as const,
       toolName,
@@ -122,7 +126,7 @@ export function stepToActivity(
   });
 }
 
-function stringifyResult(output: unknown): string {
+export function stringifyResult(output: unknown): string {
   if (output == null) return "";
   if (typeof output === "string") return output;
   try {

@@ -314,7 +314,7 @@ export function RefineComposer({ isRefining }: Props) {
               </Button>
             </div>
           </div>
-          <AnalyzeActivityLog entries={activityLog} />
+          <AnalyzeActivityLog entries={activityLog} running />
         </div>
       </section>
     );

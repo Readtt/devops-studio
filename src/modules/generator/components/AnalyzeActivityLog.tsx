@@ -4,6 +4,7 @@ import {
   ArrowRight01Icon,
   AlertCircleIcon,
   ExternalLink,
+  Loading03Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { cn } from "@/lib/utils";
@@ -12,6 +13,10 @@ import type { ActivityEntry } from "../lib/activityLog";
 type Props = {
   entries: ActivityEntry[];
   className?: string;
+  /** True while the run is actively in flight. Drives the live "working…"
+   *  indicator (with an elapsed timer) so an analyze/refine that hasn't made a
+   *  tool call yet reads as busy instead of frozen at "waiting…". */
+  running?: boolean;
   /** Tighter vertical bound for embedded contexts (refine rounds history
    *  shows the log inside a scrollable dialog already). Defaults to `max-h-72`. */
   maxHeightClass?: string;
@@ -35,6 +40,7 @@ type Props = {
 export function AnalyzeActivityLog({
   entries,
   className,
+  running = false,
   maxHeightClass = "max-h-72",
   wrap = false,
 }: Props) {
@@ -59,19 +65,26 @@ export function AnalyzeActivityLog({
     return (
       <div
         className={cn(
-          "relative overflow-hidden rounded-md border border-border/60 bg-[oklch(0.985_0_0)] dark:bg-[oklch(0.08_0.005_240)]",
+          "relative overflow-hidden rounded-md border border-border/60 bg-card/40",
           className,
         )}
       >
-        <LogChrome />
-        <div className="flex items-center gap-2 px-3 py-3 font-mono text-[11px]">
-          <span className="inline-block size-1.5 animate-pulse rounded-full bg-primary/80" />
-          <span className="text-muted-foreground/85">stdin</span>
-          <span className="text-muted-foreground/40">»</span>
-          <span className="text-muted-foreground/70">
-            waiting for the model to start…
-          </span>
-        </div>
+        <LogChrome running={running} />
+        {running ? (
+          <div className="flex items-center gap-2 px-3 py-3 text-[11.5px] text-muted-foreground">
+            <span className="flex items-center gap-0.5" aria-hidden>
+              <span className="inline-flex h-1.5 w-1.5 animate-[chat-thinking-pulse_1.2s_ease-in-out_infinite] rounded-full bg-primary" />
+              <span className="inline-flex h-1.5 w-1.5 animate-[chat-thinking-pulse_1.2s_ease-in-out_infinite] rounded-full bg-primary [animation-delay:0.18s]" />
+              <span className="inline-flex h-1.5 w-1.5 animate-[chat-thinking-pulse_1.2s_ease-in-out_infinite] rounded-full bg-primary [animation-delay:0.36s]" />
+            </span>
+            <span>Working — the model is reasoning about your draft</span>
+            <Elapsed className="ml-auto" />
+          </div>
+        ) : (
+          <div className="px-3 py-3 text-[11.5px] text-muted-foreground/70">
+            No tool activity recorded.
+          </div>
+        )}
       </div>
     );
   }
@@ -79,11 +92,11 @@ export function AnalyzeActivityLog({
   return (
     <div
       className={cn(
-        "relative w-full min-w-0 overflow-hidden rounded-md border border-border/60 bg-[oklch(0.985_0_0)] shadow-sm dark:bg-[oklch(0.08_0.005_240)]",
+        "relative w-full min-w-0 overflow-hidden rounded-md border border-border/60 bg-card/40 shadow-sm",
         className,
       )}
     >
-      <LogChrome count={entries.length} />
+      <LogChrome count={entries.length} running={running} />
       <div
         ref={containerRef}
         onScroll={onScroll}
@@ -114,19 +127,24 @@ export function AnalyzeActivityLog({
   );
 }
 
-/** Faux terminal/editor chrome — three dots, a path-style title, and an
- *  entry-count badge on the right. Adds enough framing to read as a
- *  dedicated surface without the heaviness of a full card header. */
-function LogChrome({ count }: { count?: number }) {
+/** Clean header consistent with the app's other surfaces (no faux-terminal
+ *  traffic lights): a small status glyph + label, with a step-count badge on
+ *  the right. A spinner replaces the dot while the run is in flight. */
+function LogChrome({ count, running }: { count?: number; running?: boolean }) {
   return (
-    <div className="flex h-6 items-center gap-2 border-b border-border/40 bg-foreground/[0.025] px-3">
-      <div className="flex items-center gap-1">
-        <span className="size-2 rounded-full bg-rose-400/60" />
-        <span className="size-2 rounded-full bg-amber-400/60" />
-        <span className="size-2 rounded-full bg-emerald-400/60" />
-      </div>
-      <span className="ml-1 font-mono text-[10px] tracking-tight text-muted-foreground/80">
-        analyst.log
+    <div className="flex h-7 items-center gap-2 border-b border-border/40 bg-foreground/[0.02] px-3">
+      {running ? (
+        <HugeiconsIcon
+          icon={Loading03Icon}
+          size={11}
+          strokeWidth={2}
+          className="shrink-0 animate-spin text-muted-foreground/70"
+        />
+      ) : (
+        <span className="size-1.5 shrink-0 rounded-full bg-emerald-500/70" />
+      )}
+      <span className="text-[11px] font-medium tracking-tight text-foreground/80">
+        Analyst activity
       </span>
       {count !== undefined ? (
         <span className="ml-auto rounded-sm bg-foreground/[0.06] px-1.5 py-px font-mono text-[9.5px] tabular-nums text-muted-foreground/85">
@@ -134,6 +152,24 @@ function LogChrome({ count }: { count?: number }) {
         </span>
       ) : null}
     </div>
+  );
+}
+
+/** Self-ticking elapsed-time readout (+3s …) so a running step that hasn't
+ *  produced a tool call yet still visibly advances. */
+function Elapsed({ className }: { className?: string }) {
+  const [startedAt] = useState(() => Date.now());
+  const [, force] = useState(0);
+  useEffect(() => {
+    const t = window.setInterval(() => force((n) => n + 1), 500);
+    return () => window.clearInterval(t);
+  }, []);
+  const secs = Math.max(0, (Date.now() - startedAt) / 1000);
+  const label = secs < 60 ? `${Math.round(secs)}s` : `${Math.floor(secs / 60)}m${Math.round(secs % 60).toString().padStart(2, "0")}s`;
+  return (
+    <span className={cn("shrink-0 tabular-nums text-[10.5px] text-muted-foreground/55", className)}>
+      {label}
+    </span>
   );
 }
 

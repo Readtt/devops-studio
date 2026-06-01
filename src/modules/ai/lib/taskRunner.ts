@@ -34,7 +34,12 @@ import type { ProviderKeys } from "./keyring";
 import { extractJsonBlock } from "./extractJson";
 import { buildUserTurn } from "./visionMessage";
 import {
+  clampOutputFull,
+  clampOutputSummary,
+  newActivityId,
   stepToActivity,
+  stringifyResult,
+  summarizeToolInput,
   type ActivityEntry,
 } from "@/modules/generator/lib/activityLog";
 
@@ -110,6 +115,60 @@ function onStepFinishFor(
   if (!onToolEvent) return undefined;
   return (step: Parameters<typeof stepToActivity>[0]) => {
     for (const e of stepToActivity(step, start)) onToolEvent(e);
+  };
+}
+
+/** Live tool activity for the STREAMING surfaces. `onStepFinish` only fires
+ *  once a whole step (model turn + all its tool round-trips) completes, so the
+ *  chat went silent — showing just a "thinking" placeholder — while the model
+ *  read files. This emits a pending "tool" entry the moment a tool is called
+ *  (spinner in the strip) and upserts it to "done" with output + duration when
+ *  the result arrives. Entries are keyed by toolCallId so they merge with the
+ *  step-finish events (which now share that id) instead of duplicating. */
+function liveToolOnChunk(
+  start: number,
+  toolStart: Map<string, number>,
+  onToolEvent: ((e: ActivityEntry) => void) | undefined,
+) {
+  if (!onToolEvent) return undefined;
+  return ({ chunk }: { chunk: unknown }) => {
+    const c = chunk as {
+      type?: string;
+      toolCallId?: string;
+      toolName?: string;
+      input?: unknown;
+      args?: unknown;
+      output?: unknown;
+      result?: unknown;
+    };
+    if (c.type === "tool-call") {
+      const id = c.toolCallId ?? newActivityId();
+      toolStart.set(id, Date.now());
+      const toolName = c.toolName ?? "tool";
+      onToolEvent({
+        id,
+        ts: Date.now() - start,
+        kind: "tool",
+        toolName,
+        inputSummary: summarizeToolInput(
+          toolName,
+          (c.input ?? c.args ?? {}) as Record<string, unknown>,
+        ),
+      });
+    } else if (c.type === "tool-result") {
+      const id = c.toolCallId ?? newActivityId();
+      const startedAt = toolStart.get(id);
+      const raw = stringifyResult(c.output ?? c.result);
+      onToolEvent({
+        id,
+        ts: Date.now() - start,
+        kind: "tool",
+        toolName: c.toolName ?? "tool",
+        durationMs: startedAt != null ? Date.now() - startedAt : 0,
+        outputSummary: raw ? clampOutputSummary(raw) : undefined,
+        outputFull: raw ? clampOutputFull(raw) : undefined,
+      });
+    }
   };
 }
 
@@ -234,6 +293,7 @@ export async function streamTask<
   const tools = input.tools ?? undefined;
   const maxSteps = input.maxSteps ?? MAX_AGENT_STEPS;
 
+  const toolStart = new Map<string, number>();
   const result = streamText({
     model,
     system,
@@ -244,6 +304,9 @@ export async function streamTask<
       : {}),
     ...(input.seed !== undefined ? { seed: input.seed } : {}),
     abortSignal: input.signal,
+    // Live per-tool events (spinner → done) plus the step-finish sweep as a
+    // backstop; both key entries by toolCallId so they merge, not duplicate.
+    onChunk: liveToolOnChunk(start, toolStart, input.onToolEvent),
     onStepFinish: onStepFinishFor(start, input.onToolEvent),
   });
 
