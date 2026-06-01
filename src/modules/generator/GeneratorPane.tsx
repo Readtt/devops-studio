@@ -667,10 +667,10 @@ function InputPhase() {
   const activeModel = getModel(activeModelId);
   const defaultModel = getModel(defaultModelId);
   const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
-  const aiEngine = usePreferencesStore((s) => s.aiEngine);
   const availability = useModelAvailability();
-  const showCodeSearchToggle =
-    aiEngine === "claude-agent-sdk" && !!sourceRoot;
+  // The per-run code-search toggle is being replaced by a global setting; it
+  // is not shown on the BYOK path. See the codeSearchEnabled preference.
+  const showCodeSearchToggle = false;
   const [isDragOver, setIsDragOver] = useState(false);
   const [ingestErrors, setIngestErrors] = useState<string[]>([]);
   const filePickerRef = useRef<HTMLInputElement | null>(null);
@@ -1084,14 +1084,7 @@ function InputPhase() {
             side="top"
             align="start"
             emptyMessage={
-              aiEngine === "claude-agent-sdk" ? (
-                <>
-                  Claude Code drives Anthropic models only. Switch engines in
-                  Settings → Models for BYOK access.
-                </>
-              ) : (
-                <>No providers connected. Add one in Settings → Models.</>
-              )
+              <>No providers connected. Add one in Settings → Models.</>
             }
             trigger={({ provider }) => (
               <Tooltip>

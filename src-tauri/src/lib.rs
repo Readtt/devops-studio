@@ -1,7 +1,7 @@
 mod modules;
 
 use modules::{
-    ado, chat_threads, claude, confidence_store, fs, git, history, net, pty, secrets, workspace,
+    ado, chat_threads, confidence_store, fs, git, history, net, pty, secrets, workspace,
 };
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -433,7 +433,6 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(secrets::SecretsState::default())
-        .manage(claude::ClaudeState::default())
         .manage(pty::PtyState::default())
         .manage(ado::client::AdoState::default())
         .manage(chat_threads::ChatThreadsState::default())
@@ -561,13 +560,6 @@ pub fn run() {
             history::history_list_runs,
             history::history_get_run,
             history::history_delete_run,
-            // --- Claude Code CLI driver ---
-            claude::claude_probe,
-            claude::claude_run_query,
-            claude::claude_cancel_run,
-            claude::claude_setup_token,
-            claude::claude_cancel_setup_token,
-            claude::claude_check_auth,
             // --- Source-dir git introspection ---
             git::git_repo_info,
             git::git_diff,

@@ -4,17 +4,12 @@
 // Read/Glob/Grep to evaluate whether the suite actually exercises the
 // behavior the cases claim to.
 //
-// Two engine paths mirror the analyst runners — Vercel SDK for users on an
-// API-key flow, Claude CLI for users on OAuth (no API key). The CLI path is
-// the more useful one here because the file-system tools let the model
-// validate test cases against the real codebase.
+// The file-system tools let the model validate test cases against the real
+// codebase via Read/Glob/Grep.
 
 import { generateText, stepCountIs, streamText } from "ai";
 import { getModel, type ModelId } from "@/modules/ai/config";
 import { buildLanguageModel } from "@/modules/ai/lib/agent";
-import { runClaudeQuery, type ClaudeEvent } from "@/modules/ai/lib/claude";
-import type { ClaudeAuthMode } from "@/modules/ai/lib/engine";
-import { getKey } from "@/modules/ai/lib/keyring";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import type { TestCase } from "@/modules/ado";
 import { buildSuiteChatTools } from "./suiteChatTools";
@@ -24,11 +19,7 @@ import {
   formatContextBlocks,
   type ContextBlock,
 } from "@/modules/ai/lib/contextBlocks";
-import {
-  imageAttachmentToBase64,
-  type Attachment,
-} from "@/components/chat/attachments";
-import { ClaudeActivityTracker } from "@/modules/ai/lib/claudeActivity";
+import { type Attachment } from "@/components/chat/attachments";
 import {
   vercelStepToActivity,
   type ActivityEntry,
@@ -417,123 +408,6 @@ export async function streamSuiteChat(
     input.onText(chunk);
   }
   return { text: acc, durationMs: Date.now() - start };
-}
-
-// --- Claude CLI path --------------------------------------------------------
-
-export type ClaudeSuiteChatInput = SuiteChatRunInput & {
-  modelId: ModelId;
-  sourceRoot: string | null;
-  authMode: ClaudeAuthMode;
-  runId: string;
-};
-
-/** Lift image attachments into stream-json image blocks for the CLI path.
- *  Returns undefined when there are none so the plain-text stdin path stays. */
-function claudeImages(
-  attachments: Attachment[] | undefined,
-): { mediaType: string; dataBase64: string }[] | undefined {
-  const imgs = (attachments ?? [])
-    .map(imageAttachmentToBase64)
-    .filter((x): x is { mediaType: string; dataBase64: string } => x !== null);
-  return imgs.length > 0 ? imgs : undefined;
-}
-
-export async function runSuiteChatClaude(
-  input: ClaudeSuiteChatInput,
-): Promise<SuiteChatRunResult> {
-  const env: Record<string, string> = {};
-  if (input.authMode === "api-key") {
-    const key = await getKey("anthropic");
-    if (key) env.ANTHROPIC_API_KEY = key;
-  }
-  const userPrompt = buildSuiteChatUserPrompt(input, input.sourceRoot);
-  const start = Date.now();
-  const result = await runClaudeQuery({
-    runId: input.runId,
-    prompt: userPrompt,
-    images: claudeImages([
-      ...(input.attachments ?? []),
-      ...collectContextImages(input.contextBlocks ?? []),
-    ]),
-    systemPrompt: SUITE_CHAT_SYSTEM_PROMPT,
-    cwd: input.sourceRoot ?? undefined,
-    model: input.modelId,
-    permissionMode: "bypassPermissions",
-    allowedTools: ["Read", "Glob", "Grep"],
-    bare: input.authMode === "api-key",
-    env,
-  });
-  return { text: result.text ?? "", durationMs: Date.now() - start };
-}
-
-/** Streaming Claude CLI variant. The CLI emits one `assistant` event per
- *  model message; each event's content array can have `text` blocks (what
- *  we surface as a delta) and `tool_use` blocks (which we ignore for chat
- *  UX — the user only needs the prose). We dedup-by-emitted-prefix so the
- *  final-text reconciliation in the runner doesn't double-append. */
-export async function streamSuiteChatClaude(
-  input: ClaudeSuiteChatInput & { onText: (delta: string) => void },
-): Promise<SuiteChatRunResult> {
-  const env: Record<string, string> = {};
-  if (input.authMode === "api-key") {
-    const key = await getKey("anthropic");
-    if (key) env.ANTHROPIC_API_KEY = key;
-  }
-  const userPrompt = buildSuiteChatUserPrompt(input, input.sourceRoot);
-  const start = Date.now();
-  // Track already-emitted text by message id so a repeated assistant event
-  // (which the CLI sometimes does as it consolidates) doesn't duplicate.
-  const seenByMsgId = new Map<string, string>();
-  // Tool activity (Read/Glob/Grep) → the live strip. emitThinking=false: the
-  // chat strip only wants tool/error rows, not a breadcrumb per text turn.
-  const tracker = new ClaudeActivityTracker(start, input.onToolEvent, false);
-  const onEvent = (event: ClaudeEvent) => {
-    tracker.consume(event);
-    if (event.type !== "assistant") return;
-    const msg = event.message as
-      | { id?: string; content?: Array<Record<string, unknown>> }
-      | undefined;
-    const msgId = msg?.id ?? "anon";
-    const blocks = msg?.content ?? [];
-    let combined = "";
-    for (const b of blocks) {
-      if (b && (b as { type?: string }).type === "text") {
-        const t = (b as { text?: string }).text ?? "";
-        combined += t;
-      }
-    }
-    const prior = seenByMsgId.get(msgId) ?? "";
-    if (combined.length > prior.length && combined.startsWith(prior)) {
-      const delta = combined.slice(prior.length);
-      seenByMsgId.set(msgId, combined);
-      input.onText(delta);
-    } else if (combined && combined !== prior) {
-      // Non-prefix update (rare — CLI rewrote the body). Emit the whole
-      // thing as a new chunk so the user still sees the model output.
-      seenByMsgId.set(msgId, combined);
-      input.onText(combined);
-    }
-  };
-  const result = await runClaudeQuery(
-    {
-      runId: input.runId,
-      prompt: userPrompt,
-      images: claudeImages([
-      ...(input.attachments ?? []),
-      ...collectContextImages(input.contextBlocks ?? []),
-    ]),
-      systemPrompt: SUITE_CHAT_SYSTEM_PROMPT,
-      cwd: input.sourceRoot ?? undefined,
-      model: input.modelId,
-      permissionMode: "bypassPermissions",
-      allowedTools: ["Read", "Glob", "Grep"],
-      bare: input.authMode === "api-key",
-      env,
-    },
-    onEvent,
-  );
-  return { text: result.text ?? "", durationMs: Date.now() - start };
 }
 
 // --- Shared prompt builder --------------------------------------------------

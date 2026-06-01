@@ -21,15 +21,12 @@ import {
   type TestPlanRef,
 } from "@/modules/ado";
 import { useChatStore } from "@/modules/ai/store/chatStore";
-import { cancelClaudeRun, claudeErrorMessage } from "@/modules/ai/lib/claude";
 import {
   type GenerationMode as Mode,
   type RunResult,
   type TargetContext,
   runQaAnalyst,
 } from "../lib/qaAnalystRun";
-import { runQaAnalystClaude } from "../lib/qaAnalystRunClaude";
-import { resolveClaudeModelId, selectEngine } from "@/modules/ai/lib/engine";
 import { resolveTrackingBranch } from "@/modules/git";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { invoke } from "@tauri-apps/api/core";
@@ -58,7 +55,6 @@ import { entryToLabel, type ActivityEntry } from "../lib/activityLog";
 import { buildRefineUserPrompt } from "../lib/qaAnalystRefinePrompt";
 import {
   streamQaChat,
-  streamQaChatClaude,
   newChatMessageId,
   type ChatMessage,
 } from "../lib/qaChatRun";
@@ -123,10 +119,9 @@ export type SessionState = {
   planName: string | null;
   suiteName: string | null;
   mode: GenerationMode;
-  /** Let the Claude Code agent search the user's source directory while
-   *  generating. Only meaningful when engine === "claude-agent-sdk" AND a
-   *  source root is set. Defaults to true so first-time users get the
-   *  better experience without having to find a hidden toggle. */
+  /** Let the analyzer search the user's source directory while generating.
+   *  Only meaningful when a source root is set. Defaults to true. (Being
+   *  superseded by the global codeSearchEnabled preference.) */
   allowCodeSearch: boolean;
   /** Stamp the local source branch / commit onto published artifacts so their
    *  code links point at the code they were generated from: the branch on each
@@ -259,11 +254,6 @@ export type SessionState = {
   /** Kill the in-flight refine subprocess and return the UI to the composer.
    *  ESC during refine wires here. Tolerated when nothing is running. */
   cancelRefine: () => void;
-  /** Run id of the active claude subprocess (analyze or refine), if any.
-   *  Populated via the runner's onRunStart callback so cancel commands have
-   *  a target to signal. Cleared when the run settles. */
-  activeClaudeRunId: string | null;
-
   // --- Review-phase chat ---
   /** Messages in the floating Q&A chat over the current draft. Oldest first.
    *  This is conversational — NOT the structured refine history. The user
@@ -275,9 +265,6 @@ export type SessionState = {
   /** Last chat error surfaced inline in the chat panel. Cleared on the next
    *  sendChatMessage. */
   chatError: string | null;
-  /** Run id of the in-flight chat subprocess, when the engine is Claude
-   *  CLI. Lets a cancel button abort the round mid-stream. */
-  chatActiveClaudeRunId: string | null;
   /** Id of the assistant message currently being streamed into, so the UI
    *  can render the live caret / thinking placeholder on the right bubble.
    *  Null when no response is streaming. */
@@ -403,7 +390,6 @@ const initialState: Omit<
   error: null,
   errorPhase: null,
   isRefining: false,
-  activeClaudeRunId: null,
   refineUndoSnapshot: null,
   refineError: null,
   refineHistory: [],
@@ -412,7 +398,6 @@ const initialState: Omit<
   chatBusy: false,
   chatStreamingId: null,
   chatError: null,
-  chatActiveClaudeRunId: null,
 };
 
 const REFINE_HISTORY_MAX = 12;
@@ -585,7 +570,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
   clearWorkItems: () => set({ attachedWorkItems: [] }),
 
   analyze: async () => {
-    const { requirements, changesets, attachments, attachedWorkItems, planId, suiteId, mode, allowCodeSearch, overrideModelId } = get();
+    const { requirements, changesets, attachments, attachedWorkItems, planId, suiteId, mode, overrideModelId } = get();
     if (!requirements.trim()) {
       set({
         phase: "error",
@@ -692,12 +677,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     // user explicitly picks a model again.
     const modelId = overrideModelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
-    const engineSel = selectEngine(modelId);
-    const usingClaude =
-      engineSel.engine === "claude-agent-sdk" && engineSel.active;
     const { blocks: bpBlocks, warnings: bpWarnings } =
       await loadBestPracticeBlocks(prefs.bestPracticeFiles, {
-        visionCapable: usingClaude ? true : supportsVision(modelId),
+        visionCapable: supportsVision(modelId),
       });
     if (bpWarnings.length > 0) {
       console.warn("[generator] best-practices skipped:", bpWarnings);
@@ -713,46 +695,20 @@ export function createGenerationSessionStore(): GenerationSessionStore {
 
     try {
       set({ stepLabel: "Calling model…" });
-      let result: RunResult;
-      if (usingClaude) {
-        result = await runQaAnalystClaude({
-          requirements,
-          changesets,
-          attachments,
-          existingCaseTitles,
-          existingCases,
-          relatedCases,
-          targetContext,
-          mode,
-          // Claude CLI only understands anthropic model ids; substitute a
-          // safe default when the user's globally-selected model is from a
-          // different provider so the run doesn't fail on `--model gpt-…`.
-          modelId: resolveClaudeModelId(modelId) as typeof modelId,
-          // Gate the agent's file-system tools behind the user's explicit
-          // toggle. When off (or no source root), the CLI runs without a
-          // cwd and can only reason from the spec + any inline attachments.
-          sourceRoot: allowCodeSearch ? prefs.sourceRoot : null,
-          authMode: engineSel.authMode ?? "api-key",
-          contextBlocks,
-          onActivity,
-          onRunStart: (rid) => set({ activeClaudeRunId: rid }),
-        });
-      } else {
-        result = await runQaAnalyst({
-          requirements,
-          changesets,
-          attachments,
-          existingCaseTitles,
-          existingCases,
-          relatedCases,
-          targetContext,
-          mode,
-          keys,
-          modelId,
-          contextBlocks,
-          onActivity,
-        });
-      }
+      const result: RunResult = await runQaAnalyst({
+        requirements,
+        changesets,
+        attachments,
+        existingCaseTitles,
+        existingCases,
+        relatedCases,
+        targetContext,
+        mode,
+        keys,
+        modelId,
+        contextBlocks,
+        onActivity,
+      });
       const cases: ReviewedCase[] = result.batch.cases.map((c) => ({
         ...c,
         uid: uid(),
@@ -1362,12 +1318,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     const keys = chat.apiKeys;
     const modelId = s.overrideModelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
-    const engineSel = selectEngine(modelId);
-    const usingClaude =
-      engineSel.engine === "claude-agent-sdk" && engineSel.active;
     const { blocks: bpBlocks, warnings: bpWarnings } =
       await loadBestPracticeBlocks(prefs.bestPracticeFiles, {
-        visionCapable: usingClaude ? true : supportsVision(modelId),
+        visionCapable: supportsVision(modelId),
       });
     if (bpWarnings.length > 0) {
       console.warn("[generator] best-practices skipped:", bpWarnings);
@@ -1380,42 +1333,19 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     const contextBlocks = [...bpBlocks, ...bugBlocks];
 
     try {
-      let result: RunResult;
-      if (usingClaude) {
-        result = await runQaAnalystClaude({
-          requirements: s.requirements,
-          attachments: s.attachments,
-          existingCaseTitles: [],
-          relatedCases,
-          targetContext,
-          mode: s.mode,
-          modelId: resolveClaudeModelId(modelId) as typeof modelId,
-          sourceRoot: s.allowCodeSearch ? prefs.sourceRoot : null,
-          authMode: engineSel.authMode ?? "api-key",
-          contextBlocks,
-          onActivity,
-          userPromptOverride: userPrompt,
-          // Hand the runId up to the store so cancelRefine() has a target
-          // to signal. Without this an ESC press would only un-stick the UI
-          // — the subprocess would keep burning model tokens in the
-          // background until it finished on its own.
-          onRunStart: (rid) => set({ activeClaudeRunId: rid }),
-        });
-      } else {
-        result = await runQaAnalyst({
-          requirements: s.requirements,
-          attachments: s.attachments,
-          existingCaseTitles: [],
-          relatedCases,
-          targetContext,
-          mode: s.mode,
-          keys,
-          modelId,
-          contextBlocks,
-          onActivity,
-          userPromptOverride: userPrompt,
-        });
-      }
+      const result: RunResult = await runQaAnalyst({
+        requirements: s.requirements,
+        attachments: s.attachments,
+        existingCaseTitles: [],
+        relatedCases,
+        targetContext,
+        mode: s.mode,
+        keys,
+        modelId,
+        contextBlocks,
+        onActivity,
+        userPromptOverride: userPrompt,
+      });
 
       // Bail out gracefully when the model returned nothing structured —
       // better to keep the user's existing batch than to wipe it for an
@@ -1507,7 +1437,6 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       const errorText = cancelled ? "" : errToString(e);
       set((curr) => ({
         isRefining: false,
-        activeClaudeRunId: null,
         stepLabel: "",
         // Cancelled runs don't leave a banner — the user asked to abort, so
         // showing them an error after they pressed ESC is hostile UX.
@@ -1528,30 +1457,16 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         ],
       }));
       schedulePersistDraft();
-    } finally {
-      set({ activeClaudeRunId: null });
     }
   },
 
   cancelRefine: () => {
-    const { activeClaudeRunId, isRefining } = get();
+    const { isRefining } = get();
     if (!isRefining) return;
-    if (activeClaudeRunId) {
-      // Fire-and-forget — the Rust side notifies the run task, which kills
-      // the child and resolves the in-flight runQaAnalystClaude promise
-      // with a Cancelled error. Our catch above handles the rest.
-      void cancelClaudeRun(activeClaudeRunId).catch(() => {
-        // Even if the IPC fails, the local catch path will eventually
-        // settle the run; flipping isRefining here is a safety net so the
-        // UI doesn't appear stuck.
-        set({ isRefining: false, activeClaudeRunId: null, stepLabel: "" });
-      });
-    } else {
-      // No subprocess to kill (e.g. Vercel SDK path mid-flight) — just
-      // un-stick the UI; the in-flight promise will still complete but its
-      // result handler is guarded by isRefining checks downstream.
-      set({ isRefining: false, stepLabel: "" });
-    }
+    // The in-flight model run isn't abortable mid-flight; un-stick the UI.
+    // The promise still resolves but its result handler is guarded by
+    // isRefining checks downstream.
+    set({ isRefining: false, stepLabel: "" });
   },
 
   dismissRefineError: () => set({ refineError: null }),
@@ -1591,31 +1506,13 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         ),
       }));
 
-    // Tool activity onto the assistant chat message, upserting by id.
-    const mergeToolEvent = (e: ActivityEntry) =>
-      set((curr) => ({
-        chatMessages: curr.chatMessages.map((m) => {
-          if (m.id !== assistantId) return m;
-          const prior = m.toolEvents ?? [];
-          const idx = prior.findIndex((x) => x.id === e.id);
-          const toolEvents =
-            idx >= 0
-              ? prior.map((x, i) => (i === idx ? { ...x, ...e } : x))
-              : [...prior, e];
-          return { ...m, toolEvents };
-        }),
-      }));
-
     const chat = useChatStore.getState();
     const keys = chat.apiKeys;
     const modelId = s.overrideModelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
-    const engineSel = selectEngine(modelId);
-    const usingClaude =
-      engineSel.engine === "claude-agent-sdk" && engineSel.active;
     const { blocks: bpBlocks, warnings: bpWarnings } =
       await loadBestPracticeBlocks(prefs.bestPracticeFiles, {
-        visionCapable: usingClaude ? true : supportsVision(modelId),
+        visionCapable: supportsVision(modelId),
       });
     if (bpWarnings.length > 0) {
       console.warn("[generator] best-practices skipped:", bpWarnings);
@@ -1625,47 +1522,24 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     const chatContextBlocks = [...bpBlocks, ...bugBlocks];
 
     try {
-      if (usingClaude) {
-        const runId = `chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-        set({ chatActiveClaudeRunId: runId });
-        await streamQaChatClaude({
-          runId,
-          requirements: s.requirements,
-          changesets: s.changesets,
-          attachments: s.attachments,
-          cases: s.cases,
-          bugs: s.bugs,
-          targetContext: null,
-          history: priorHistory,
-          newQuestion: text,
-          modelId: resolveClaudeModelId(modelId) as typeof modelId,
-          sourceRoot: s.allowCodeSearch ? prefs.sourceRoot : null,
-          authMode: engineSel.authMode ?? "api-key",
-          contextBlocks: chatContextBlocks,
-          onText: appendDelta,
-          onToolEvent: mergeToolEvent,
-        });
-      } else {
-        await streamQaChat({
-          requirements: s.requirements,
-          changesets: s.changesets,
-          attachments: s.attachments,
-          cases: s.cases,
-          bugs: s.bugs,
-          targetContext: null,
-          history: priorHistory,
-          newQuestion: text,
-          keys,
-          modelId,
-          contextBlocks: chatContextBlocks,
-          onText: appendDelta,
-        });
-      }
+      await streamQaChat({
+        requirements: s.requirements,
+        changesets: s.changesets,
+        attachments: s.attachments,
+        cases: s.cases,
+        bugs: s.bugs,
+        targetContext: null,
+        history: priorHistory,
+        newQuestion: text,
+        keys,
+        modelId,
+        contextBlocks: chatContextBlocks,
+        onText: appendDelta,
+      });
       // Backfill a placeholder for a genuinely empty response so the bubble
       // doesn't render blank.
       set((curr) => ({
         chatBusy: false,
-        chatActiveClaudeRunId: null,
         chatStreamingId: null,
         chatMessages: curr.chatMessages.map((m) =>
           m.id === assistantId && m.content.trim() === ""
@@ -1683,7 +1557,6 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       // cancel — that text is still useful to the user).
       set((curr) => ({
         chatBusy: false,
-        chatActiveClaudeRunId: null,
         chatStreamingId: null,
         chatMessages: curr.chatMessages.filter(
           (m) => m.id !== assistantId || m.content.trim() !== "",
@@ -1694,17 +1567,12 @@ export function createGenerationSessionStore(): GenerationSessionStore {
   },
 
   cancelChat: () => {
-    const { chatActiveClaudeRunId, chatBusy } = get();
+    const { chatBusy } = get();
     if (!chatBusy) return;
-    if (chatActiveClaudeRunId) {
-      void cancelClaudeRun(chatActiveClaudeRunId).catch(() => {
-        set({ chatBusy: false, chatActiveClaudeRunId: null });
-      });
-    } else {
-      // No subprocess to kill (Vercel SDK path). The promise will still
-      // resolve; the result handler runs but chatBusy is already false.
-      set({ chatBusy: false });
-    }
+    // The streaming run isn't abortable mid-flight; un-stick the UI. The
+    // promise still resolves but its result handler is a no-op once
+    // chatBusy is false.
+    set({ chatBusy: false });
   },
 
   clearChat: () => set({ chatMessages: [], chatError: null }),
@@ -1980,18 +1848,6 @@ async function buildTargetContext(
   };
 }
 
-/** ADO Rust commands and the Claude CLI bridge both reject with discriminated
- *  unions tagged by `kind`, but the sets of kinds are disjoint and need
- *  different formatters. Anything we don't recognise gets a best-effort
- *  serialization so the error UI never shows "[object Object]". */
-const CLAUDE_ERROR_KINDS = new Set([
-  "not-installed",
-  "non-zero-exit",
-  "api-error",
-  "spawn-failed",
-  "cancelled",
-]);
-
 function errToString(e: unknown): string {
   if (e == null) return "Unknown error";
   if (typeof e === "string") return e;
@@ -1999,12 +1855,7 @@ function errToString(e: unknown): string {
   if (typeof e === "object") {
     const obj = e as Record<string, unknown>;
     if (typeof obj.kind === "string") {
-      // Claude CLI errors carry kinds the ADO formatter doesn't know about
-      // — route them to the matching formatter before the ADO fallback runs
-      // and returns undefined.
-      if (CLAUDE_ERROR_KINDS.has(obj.kind)) {
-        return claudeErrorMessage(e);
-      }
+      // ADO Rust commands reject with discriminated unions tagged by `kind`.
       return adoErrorMessage(toAdoError(e));
     }
     // Generic SDK / fetch errors typically carry a `.message` field.

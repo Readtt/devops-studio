@@ -5,11 +5,6 @@
 // cached per (planId, suiteId) and shared across every thread on that suite.
 
 import { create } from "zustand";
-import {
-  cancelClaudeRun,
-  claudeErrorMessage,
-} from "@/modules/ai/lib/claude";
-import { resolveClaudeModelId, selectEngine } from "@/modules/ai/lib/engine";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import {
   adoErrorMessage,
@@ -29,7 +24,6 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   newSuiteChatMessageId,
   streamSuiteChat,
-  streamSuiteChatClaude,
   type ContextWorkItem,
   type SuiteChatMessage,
 } from "../lib/runSuiteChat";
@@ -82,7 +76,6 @@ export type ThreadState = {
   messages: SuiteChatMessage[];
   busy: boolean;
   error: string | null;
-  activeClaudeRunId: string | null;
   modelId: ModelId | null;
   hydrated: boolean;
 };
@@ -105,7 +98,6 @@ const initialThreadState = (threadId: string): ThreadState => ({
   messages: [],
   busy: false,
   error: null,
-  activeClaudeRunId: null,
   modelId: null,
   hydrated: false,
 });
@@ -721,16 +713,13 @@ export const useSuiteChat = create<Store>((set, get) => ({
     const keys = chat.apiKeys;
     const modelId = curr.modelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
-    const engineSel = selectEngine(modelId);
     const sourceRoot = prefs.sourceRoot ?? null;
     const priorMessages = curr.messages;
-    const usingClaude =
-      engineSel.engine === "claude-agent-sdk" && engineSel.active;
-    // Best-practices standards injected as context. Claude CLI models are
-    // vision-capable; the BYOK path depends on the chosen model.
+    // Best-practices standards injected as context; vision support depends on
+    // the chosen model.
     const { blocks: bpBlocks, warnings: bpWarnings } =
       await loadBestPracticeBlocks(prefs.bestPracticeFiles, {
-        visionCapable: usingClaude ? true : supportsVision(modelId),
+        visionCapable: supportsVision(modelId),
       });
     if (bpWarnings.length > 0) {
       console.warn("[suite-chat] best-practices skipped:", bpWarnings);
@@ -749,44 +738,21 @@ export const useSuiteChat = create<Store>((set, get) => ({
     const contextBlocks = [...bpBlocks, ...bugBlocks];
 
     try {
-      if (usingClaude) {
-        const runId = `sc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-        patchThread(set, planId, suiteId, threadId, {
-          activeClaudeRunId: runId,
-        });
-        await streamSuiteChatClaude({
-          runId,
-          suiteName: suite.suiteName,
-          suitePath: suite.suitePath,
-          planName: suite.planName,
-          cases: promptCases,
-          history: priorMessages,
-          newQuestion: text,
-          attachments: atts,
-          contextBlocks,
-          modelId: resolveClaudeModelId(modelId) as typeof modelId,
-          sourceRoot,
-          authMode: engineSel.authMode ?? "api-key",
-          onText: appendDelta,
-          onToolEvent: mergeToolEvent,
-        });
-      } else {
-        await streamSuiteChat({
-          suiteName: suite.suiteName,
-          suitePath: suite.suitePath,
-          planName: suite.planName,
-          cases: promptCases,
-          history: priorMessages,
-          newQuestion: text,
-          attachments: atts,
-          contextBlocks,
-          keys,
-          modelId,
-          sourceRoot,
-          onText: appendDelta,
-          onToolEvent: mergeToolEvent,
-        });
-      }
+      await streamSuiteChat({
+        suiteName: suite.suiteName,
+        suitePath: suite.suitePath,
+        planName: suite.planName,
+        cases: promptCases,
+        history: priorMessages,
+        newQuestion: text,
+        attachments: atts,
+        contextBlocks,
+        keys,
+        modelId,
+        sourceRoot,
+        onText: appendDelta,
+        onToolEvent: mergeToolEvent,
+      });
       set((s) => {
         const next = new Map(s.byThread);
         const slice = next.get(tk);
@@ -800,7 +766,6 @@ export const useSuiteChat = create<Store>((set, get) => ({
           ...slice,
           messages,
           busy: false,
-          activeClaudeRunId: null,
         });
         return { byThread: next };
       });
@@ -822,13 +787,12 @@ export const useSuiteChat = create<Store>((set, get) => ({
           ...slice,
           messages,
           busy: false,
-          activeClaudeRunId: null,
           error: cancelled
             ? null
             : typeof e === "object" &&
                 e !== null &&
                 (e as { kind?: string }).kind
-              ? claudeErrorMessage(e) || adoErrorMessage(toAdoError(e))
+              ? adoErrorMessage(toAdoError(e))
               : String(e),
         });
         return { byThread: next };
@@ -915,16 +879,10 @@ export const useSuiteChat = create<Store>((set, get) => ({
       DEFAULT_THREAD_ID;
     const curr = get().byThread.get(threadKey(planId, suiteId, threadId));
     if (!curr?.busy) return;
-    if (curr.activeClaudeRunId) {
-      void cancelClaudeRun(curr.activeClaudeRunId).catch(() => {
-        patchThread(set, planId, suiteId, threadId, {
-          busy: false,
-          activeClaudeRunId: null,
-        });
-      });
-    } else {
-      patchThread(set, planId, suiteId, threadId, { busy: false });
-    }
+    // The streaming run isn't abortable mid-flight; flip busy off so the UI
+    // unsticks. The in-flight promise still resolves but its result handler
+    // is a no-op once busy is false.
+    patchThread(set, planId, suiteId, threadId, { busy: false });
   },
 
   clearMessages: (planId, suiteId) => {

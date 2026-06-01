@@ -1,14 +1,9 @@
 // Free-text Q&A about the current draft. Distinct from refine() — the chat
 // path returns markdown the user reads inline; it never rewrites the draft.
-// Both engines (Vercel SDK + Claude CLI) are supported because users on a
-// CLI OAuth session don't have an Anthropic API key for the SDK path.
 
 import { generateText, streamText } from "ai";
 import { getModel, type ModelId } from "@/modules/ai/config";
 import { buildLanguageModel } from "@/modules/ai/lib/agent";
-import { runClaudeQuery, type ClaudeEvent } from "@/modules/ai/lib/claude";
-import type { ClaudeAuthMode } from "@/modules/ai/lib/engine";
-import { getKey } from "@/modules/ai/lib/keyring";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import type { ReviewedBug, ReviewedCase } from "./draftBatchSchema";
 import {
@@ -19,24 +14,12 @@ import {
   type TargetContext,
 } from "./qaAnalystRun";
 import { buildUserTurn } from "@/modules/ai/lib/visionMessage";
-import { imageAttachmentToBase64 } from "@/components/chat/attachments";
 import {
   collectContextImages,
   formatContextBlocks,
   type ContextBlock,
 } from "@/modules/ai/lib/contextBlocks";
-import { ClaudeActivityTracker } from "@/modules/ai/lib/claudeActivity";
 import type { ActivityEntry } from "./activityLog";
-
-/** Lift image attachments into stream-json image blocks for the CLI path. */
-function claudeImages(
-  attachments: RunAttachment[],
-): { mediaType: string; dataBase64: string }[] | undefined {
-  const imgs = attachments
-    .map(imageAttachmentToBase64)
-    .filter((x): x is { mediaType: string; dataBase64: string } => x !== null);
-  return imgs.length > 0 ? imgs : undefined;
-}
 
 /** One message in the review-pane chat thread. */
 export type ChatMessage = {
@@ -163,104 +146,6 @@ export async function streamQaChat(
     input.onText(chunk);
   }
   return { text: acc, durationMs: Date.now() - start };
-}
-
-// --- Claude CLI path --------------------------------------------------------
-
-export type ClaudeChatInput = ChatRunInput & {
-  modelId: ModelId;
-  sourceRoot: string | null;
-  authMode: ClaudeAuthMode;
-  /** Run id for cancellation — the caller picks one and stashes it. */
-  runId: string;
-};
-
-export async function runQaChatClaude(
-  input: ClaudeChatInput,
-): Promise<ChatRunResult> {
-  const env: Record<string, string> = {};
-  if (input.authMode === "api-key") {
-    const key = await getKey("anthropic");
-    if (key) env.ANTHROPIC_API_KEY = key;
-  }
-  const userPrompt = buildChatUserPrompt(input);
-  const start = Date.now();
-  const result = await runClaudeQuery({
-    runId: input.runId,
-    prompt: userPrompt,
-    images: claudeImages([
-      ...input.attachments,
-      ...collectContextImages(input.contextBlocks ?? []),
-    ]),
-    systemPrompt: CHAT_SYSTEM_PROMPT,
-    cwd: input.sourceRoot ?? undefined,
-    model: input.modelId,
-    permissionMode: "bypassPermissions",
-    allowedTools: ["Read", "Glob", "Grep"],
-    bare: input.authMode === "api-key",
-    env,
-  });
-  return { text: result.text ?? "", durationMs: Date.now() - start };
-}
-
-/** Streaming Claude CLI variant. Surfaces each assistant text delta via
- *  `onText`, deduping by message id the same way streamSuiteChatClaude does
- *  (the CLI re-emits consolidated messages). Tool-use blocks are ignored —
- *  the chat only needs the prose. */
-export async function streamQaChatClaude(
-  input: ClaudeChatInput & { onText: (delta: string) => void },
-): Promise<ChatRunResult> {
-  const env: Record<string, string> = {};
-  if (input.authMode === "api-key") {
-    const key = await getKey("anthropic");
-    if (key) env.ANTHROPIC_API_KEY = key;
-  }
-  const userPrompt = buildChatUserPrompt(input);
-  const start = Date.now();
-  const seenByMsgId = new Map<string, string>();
-  const tracker = new ClaudeActivityTracker(start, input.onToolEvent, false);
-  const onEvent = (event: ClaudeEvent) => {
-    tracker.consume(event);
-    if (event.type !== "assistant") return;
-    const msg = event.message as
-      | { id?: string; content?: Array<Record<string, unknown>> }
-      | undefined;
-    const msgId = msg?.id ?? "anon";
-    const blocks = msg?.content ?? [];
-    let combined = "";
-    for (const b of blocks) {
-      if (b && (b as { type?: string }).type === "text") {
-        combined += (b as { text?: string }).text ?? "";
-      }
-    }
-    const prior = seenByMsgId.get(msgId) ?? "";
-    if (combined.length > prior.length && combined.startsWith(prior)) {
-      seenByMsgId.set(msgId, combined);
-      input.onText(combined.slice(prior.length));
-    } else if (combined && combined !== prior) {
-      seenByMsgId.set(msgId, combined);
-      input.onText(combined);
-    }
-  };
-  const result = await runClaudeQuery(
-    {
-      runId: input.runId,
-      prompt: userPrompt,
-      images: claudeImages([
-      ...input.attachments,
-      ...collectContextImages(input.contextBlocks ?? []),
-    ]),
-      systemPrompt: CHAT_SYSTEM_PROMPT,
-      cwd: input.sourceRoot ?? undefined,
-      model: input.modelId,
-      permissionMode: "bypassPermissions",
-      allowedTools: ["Read", "Glob", "Grep"],
-      bare: input.authMode === "api-key",
-      env,
-    },
-    onEvent,
-  );
-  return { text: result.text ?? "", durationMs: Date.now() - start };
 }
 
 // --- Shared user-prompt builder --------------------------------------------

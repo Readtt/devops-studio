@@ -17,7 +17,6 @@ export type ModelAvailability = {
 };
 
 type PrefsSnapshot = {
-  aiEngine?: string;
   lmstudioModelId?: string;
   mlxModelId?: string;
   ollamaModelId?: string;
@@ -31,22 +30,6 @@ export function isModelAvailable(
 ): ModelAvailability {
   const m = getModel(modelId);
   const { keys, prefs } = ctx;
-  const engine = prefs.aiEngine ?? "vercel-ai-sdk";
-
-  if (engine === "claude-agent-sdk") {
-    // Claude CLI only speaks Anthropic ids — everything else is unusable
-    // while this engine is active, regardless of which keys are stored.
-    if (m.provider !== "anthropic") {
-      return {
-        available: false,
-        reason: "Claude Code engine drives Anthropic models only.",
-      };
-    }
-    // CLI auth is handled separately (max-oauth or ANTHROPIC_API_KEY); we
-    // can't probe it without spawning the binary. Treat as available and
-    // let the run surface auth errors if they happen.
-    return { available: true, reason: null };
-  }
 
   switch (m.provider) {
     case "openai-compatible": {
@@ -101,7 +84,6 @@ export type Availability = {
  *  to OS-keychain change events so the picker updates the moment a user
  *  pastes a key from the Settings window. */
 export function useModelAvailability(): Availability {
-  const aiEngine = usePreferencesStore((s) => s.aiEngine);
   const lmstudioModelId = usePreferencesStore((s) => s.lmstudioModelId);
   const mlxModelId = usePreferencesStore((s) => s.mlxModelId);
   const ollamaModelId = usePreferencesStore((s) => s.ollamaModelId);
@@ -130,7 +112,6 @@ export function useModelAvailability(): Availability {
   }, []);
 
   const prefs: PrefsSnapshot = {
-    aiEngine,
     lmstudioModelId,
     mlxModelId,
     ollamaModelId,

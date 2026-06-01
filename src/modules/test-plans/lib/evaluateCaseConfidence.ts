@@ -4,7 +4,6 @@
 
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { resolveClaudeModelId, selectEngine } from "@/modules/ai/lib/engine";
 import { supportsVision } from "@/modules/ai/config";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import { evaluateConfidence, type EvalCase } from "./runConfidenceEval";
@@ -17,22 +16,14 @@ export async function evaluateCaseConfidence(
   const chat = useChatStore.getState();
   const prefs = usePreferencesStore.getState();
   const modelId = chat.selectedModelId;
-  const engineSel = selectEngine(modelId);
-  const useClaude =
-    engineSel.engine === "claude-agent-sdk" && engineSel.active;
-  const resolvedModel = useClaude
-    ? (resolveClaudeModelId(modelId) as typeof modelId)
-    : modelId;
   const { blocks } = await loadBestPracticeBlocks(prefs.bestPracticeFiles, {
-    visionCapable: useClaude ? true : supportsVision(resolvedModel),
+    visionCapable: supportsVision(modelId),
   });
   return evaluateConfidence({
     testCase,
     sourceRoot: prefs.sourceRoot ?? null,
-    modelId: resolvedModel,
-    useClaude,
+    modelId,
     keys: chat.apiKeys,
-    authMode: engineSel.authMode ?? "api-key",
     lmstudioBaseURL: prefs.lmstudioBaseURL,
     runs: opts?.runs ?? 1,
     contextBlocks: blocks,

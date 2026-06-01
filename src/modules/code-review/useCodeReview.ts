@@ -12,14 +12,11 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useTabsStore } from "@/modules/tabs/store/useTabsStore";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import { bugsToContextBlocks } from "@/modules/ado/lib/bugContextBlock";
-import { resolveClaudeModelId, selectEngine } from "@/modules/ai/lib/engine";
-import { cancelClaudeRun } from "@/modules/ai/lib/claude";
 import type { Attachment } from "@/components/chat/attachments";
 import type { AppliedPatchRecord } from "@/components/ChatMarkdown";
 import type { ActivityEntry } from "@/modules/generator/lib/activityLog";
 import {
   streamCodeReview,
-  streamCodeReviewClaude,
   type CodeReviewMessage,
   type DiffSummary,
 } from "./runCodeReview";
@@ -43,9 +40,6 @@ type TabSlice = {
   /** Renderer's cancel button. Aborts the streamText call cooperatively
    *  (Vercel path). */
   abort: AbortController | null;
-  /** Active Claude CLI run id, set while the CLI engine is streaming so Stop
-   *  can cancel the subprocess. Null on the Vercel path. */
-  activeClaudeRunId: string | null;
   error: string | null;
   /** Stable thread id minted at first send. Used to upsert into the
    *  history store so the Chats sidebar can reopen this conversation
@@ -152,7 +146,6 @@ export const useCodeReview = create<State>((set, get) => ({
         messages: hist?.messages ?? [],
         busy: false,
         abort: null,
-        activeClaudeRunId: null,
         error: null,
         threadId: hist?.id ?? null,
         modelId: modelId ?? null,
@@ -342,43 +335,21 @@ export const useCodeReview = create<State>((set, get) => ({
       // ADO source ⇒ tell the runner the diff (not the local checkout the
       // Read/Grep tools see) is authoritative.
       const adoSourceLabel = slice.source ? describeSource(slice.source) : null;
-      const engineSel = selectEngine(effectiveModelId);
-      if (engineSel.engine === "claude-agent-sdk" && engineSel.active) {
-        // Claude Code (OAuth) path — works without a BYOK API key.
-        const runId = `cr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-        patch(set, tabId, { activeClaudeRunId: runId });
-        await streamCodeReviewClaude({
-          modelId: resolveClaudeModelId(effectiveModelId) as typeof effectiveModelId,
-          keys: chat.apiKeys,
-          sourceRoot: slice.cwd,
-          diff: slice.diff,
-          history: priorMessages,
-          newQuestion: text,
-          attachments: atts,
-          contextBlocks,
-          adoSourceLabel,
-          onText: appendDelta,
-          onToolEvent: mergeToolEvent,
-          authMode: engineSel.authMode ?? "api-key",
-          runId,
-        });
-      } else {
-        await streamCodeReview({
-          modelId: effectiveModelId,
-          keys: chat.apiKeys,
-          sourceRoot: slice.cwd,
-          diff: slice.diff,
-          history: priorMessages,
-          newQuestion: text,
-          attachments: atts,
-          contextBlocks,
-          adoSourceLabel,
-          onText: appendDelta,
-          onToolEvent: mergeToolEvent,
-          signal: abort.signal,
-        });
-      }
-      patch(set, tabId, { busy: false, abort: null, activeClaudeRunId: null });
+      await streamCodeReview({
+        modelId: effectiveModelId,
+        keys: chat.apiKeys,
+        sourceRoot: slice.cwd,
+        diff: slice.diff,
+        history: priorMessages,
+        newQuestion: text,
+        attachments: atts,
+        contextBlocks,
+        adoSourceLabel,
+        onText: appendDelta,
+        onToolEvent: mergeToolEvent,
+        signal: abort.signal,
+      });
+      patch(set, tabId, { busy: false, abort: null });
       persistToHistory(tabId, threadId);
     } catch (e) {
       const aborted = (e as { name?: string } | null)?.name === "AbortError";
@@ -387,7 +358,7 @@ export const useCodeReview = create<State>((set, get) => ({
         // user to see what the model had drafted before they bailed.
         // Persist what we have so the partial review still shows up in
         // the Chats sidebar.
-        patch(set, tabId, { busy: false, abort: null, activeClaudeRunId: null });
+        patch(set, tabId, { busy: false, abort: null });
         persistToHistory(tabId, threadId);
         return;
       }
@@ -401,7 +372,6 @@ export const useCodeReview = create<State>((set, get) => ({
           ...curr,
           busy: false,
           abort: null,
-          activeClaudeRunId: null,
           messages,
           error: typeof e === "string" ? e : (e as Error).message ?? String(e),
         });
@@ -413,13 +383,6 @@ export const useCodeReview = create<State>((set, get) => ({
   stop: (tabId) => {
     const slice = get().byTab.get(tabId);
     if (!slice) return;
-    // Claude CLI path cancels the subprocess by run id; the Vercel path aborts
-    // the streamText controller.
-    if (slice.activeClaudeRunId) {
-      void cancelClaudeRun(slice.activeClaudeRunId).catch(() => undefined);
-      patch(set, tabId, { activeClaudeRunId: null });
-      return;
-    }
     if (slice.abort) slice.abort.abort();
   },
 

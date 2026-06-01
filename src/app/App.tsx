@@ -749,12 +749,10 @@ function AppShell() {
         error: null,
         errorPhase: null,
         isRefining: false,
-        activeClaudeRunId: null,
         refineError: null,
         chatBusy: false,
         chatStreamingId: null,
         chatError: null,
-        chatActiveClaudeRunId: null,
       });
 
       // Persist the copy under its new id so it survives a reload too. A

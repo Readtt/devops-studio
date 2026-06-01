@@ -1,17 +1,13 @@
-// Agentic confidence evaluation for ONE test case. Mirrors runSuiteChat's
-// dual-engine shape (Vercel SDK for BYOK, Claude CLI for OAuth) — the file
-// tools are what make the prediction code-grounded rather than a guess.
+// Agentic confidence evaluation for ONE test case. The file tools are what
+// make the prediction code-grounded rather than a guess.
 //
 // Reliability lever: `runs` > 1 evaluates N times and only allows a high final
-// confidence when the runs agree (self-consistency). The caller decides the
-// engine (via selectEngine) and passes the resolved model + auth.
+// confidence when the runs agree (self-consistency).
 
 import { generateText, stepCountIs } from "ai";
 import { getModel, type ModelId } from "@/modules/ai/config";
 import { buildLanguageModel } from "@/modules/ai/lib/agent";
-import { runClaudeQuery, cancelClaudeRun } from "@/modules/ai/lib/claude";
-import type { ClaudeAuthMode } from "@/modules/ai/lib/engine";
-import { getKey, type ProviderKeys } from "@/modules/ai/lib/keyring";
+import { type ProviderKeys } from "@/modules/ai/lib/keyring";
 import { buildSuiteChatTools } from "./suiteChatTools";
 import {
   formatContextBlocks,
@@ -38,19 +34,15 @@ export type EvalCase = {
 export type ConfidenceEvalInput = {
   testCase: EvalCase;
   sourceRoot: string | null;
-  /** Already engine-resolved model id (resolveClaudeModelId applied for CLI). */
   modelId: ModelId;
-  /** True ⇒ Claude CLI path; false ⇒ Vercel SDK path. */
-  useClaude: boolean;
   keys: ProviderKeys;
-  authMode: ClaudeAuthMode;
   lmstudioBaseURL?: string;
   /** Self-consistency runs (default 1). >1 requires agreement for a high score. */
   runs?: number;
   /** Best-practices / extra context blocks to apply during evaluation. */
   contextBlocks?: ContextBlock[];
-  /** Cooperative cancel. Aborts the Vercel stream / cancels the Claude
-   *  subprocess and makes evaluateConfidence reject with an AbortError. */
+  /** Cooperative cancel. Aborts the model run and makes evaluateConfidence
+   *  reject with an AbortError. */
   signal?: AbortSignal;
 };
 
@@ -77,9 +69,7 @@ export async function evaluateConfidence(
   const verdicts: ConfidenceVerdictLLM[] = [];
   for (let i = 0; i < runs; i++) {
     if (input.signal?.aborted) throw abortError();
-    const v = input.useClaude
-      ? await runOnceClaude(input, prompt)
-      : await runOnceVercel(input, prompt);
+    const v = await runOnceVercel(input, prompt);
     if (v) verdicts.push(v);
   }
   if (input.signal?.aborted) throw abortError();
@@ -193,38 +183,6 @@ async function runOnceVercel(
     ...(tools ? { tools, stopWhen: stepCountIs(10) } : {}),
   });
   return parseConfidenceVerdict(result.text ?? "");
-}
-
-async function runOnceClaude(
-  input: ConfidenceEvalInput,
-  prompt: string,
-): Promise<ConfidenceVerdictLLM | null> {
-  const env: Record<string, string> = {};
-  if (input.authMode === "api-key") {
-    const key = await getKey("anthropic");
-    if (key) env.ANTHROPIC_API_KEY = key;
-  }
-  const runId = `conf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  // Cancel the subprocess when the caller aborts (the chip's cancel button).
-  const onAbort = () => void cancelClaudeRun(runId).catch(() => undefined);
-  input.signal?.addEventListener("abort", onAbort, { once: true });
-  try {
-    const result = await runClaudeQuery({
-      runId,
-      prompt,
-      systemPrompt: CONFIDENCE_EVAL_SYSTEM_PROMPT,
-      cwd: input.sourceRoot ?? undefined,
-      model: input.modelId,
-      permissionMode: "bypassPermissions",
-      allowedTools: ["Read", "Glob", "Grep"],
-      bare: input.authMode === "api-key",
-      env,
-    });
-    if (input.signal?.aborted) throw abortError();
-    return parseConfidenceVerdict(result.text ?? "");
-  } finally {
-    input.signal?.removeEventListener("abort", onAbort);
-  }
 }
 
 /** A DOMException the callers recognise as "user cancelled" (name === "AbortError"). */

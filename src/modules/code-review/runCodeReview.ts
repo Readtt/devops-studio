@@ -3,17 +3,11 @@
 // tuned for "reviewing a developer's branch" rather than "evaluating an
 // existing test suite", and the inputs carry a precomputed git diff so the
 // model has the baseline in scope from message 1.
-//
-// We deliberately ship only the Vercel SDK path in v1. The Claude CLI path
-// can be added later by mirroring runSuiteChatClaude — the Read/Glob/Grep
-// tool surface here is already byok-compatible with what the CLI offers.
 
 import { stepCountIs, streamText } from "ai";
 import { getModel, type ModelId } from "@/modules/ai/config";
 import { buildLanguageModel } from "@/modules/ai/lib/agent";
-import { getKey, type ProviderKeys } from "@/modules/ai/lib/keyring";
-import { runClaudeQuery, type ClaudeEvent } from "@/modules/ai/lib/claude";
-import type { ClaudeAuthMode } from "@/modules/ai/lib/engine";
+import { type ProviderKeys } from "@/modules/ai/lib/keyring";
 import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
 import { buildUserTurn } from "@/modules/ai/lib/visionMessage";
 import {
@@ -21,12 +15,8 @@ import {
   formatContextBlocks,
   type ContextBlock,
 } from "@/modules/ai/lib/contextBlocks";
-import {
-  imageAttachmentToBase64,
-  type Attachment,
-} from "@/components/chat/attachments";
+import { type Attachment } from "@/components/chat/attachments";
 import type { AppliedPatchesMap } from "@/components/ChatMarkdown";
-import { ClaudeActivityTracker } from "@/modules/ai/lib/claudeActivity";
 import {
   vercelStepToActivity,
   type ActivityEntry,
@@ -204,85 +194,6 @@ export async function streamCodeReview(input: StreamCodeReviewInput): Promise<{
     input.onText(chunk);
   }
   return { text: acc, durationMs: Date.now() - start };
-}
-
-// --- Claude CLI path --------------------------------------------------------
-
-export type ClaudeStreamCodeReviewInput = StreamCodeReviewInput & {
-  authMode: ClaudeAuthMode;
-  /** Run id for cancellation (cancelClaudeRun). */
-  runId: string;
-};
-
-function claudeImages(
-  attachments: Attachment[] | undefined,
-  contextBlocks: ContextBlock[] | undefined,
-): { mediaType: string; dataBase64: string }[] | undefined {
-  const imgs = [
-    ...(attachments ?? []),
-    ...collectContextImages(contextBlocks ?? []),
-  ]
-    .map(imageAttachmentToBase64)
-    .filter((x): x is { mediaType: string; dataBase64: string } => x !== null);
-  return imgs.length > 0 ? imgs : undefined;
-}
-
-/** Claude CLI variant of streamCodeReview — for OAuth users with no API key,
- *  so code review works on Claude Code, not only the BYOK path. Mirrors
- *  streamSuiteChatClaude (dedup-by-message-id streaming). The diff + context
- *  are folded into the prompt; the agent reads the working tree via
- *  Read/Glob/Grep. */
-export async function streamCodeReviewClaude(
-  input: ClaudeStreamCodeReviewInput,
-): Promise<{ text: string; durationMs: number }> {
-  const env: Record<string, string> = {};
-  if (input.authMode === "api-key") {
-    const key = await getKey("anthropic");
-    if (key) env.ANTHROPIC_API_KEY = key;
-  }
-  const prompt = buildUserPrompt(input);
-  const start = Date.now();
-  const seenByMsgId = new Map<string, string>();
-  const tracker = new ClaudeActivityTracker(start, input.onToolEvent, false);
-  const onEvent = (event: ClaudeEvent) => {
-    tracker.consume(event);
-    if (event.type !== "assistant") return;
-    const msg = event.message as
-      | { id?: string; content?: Array<Record<string, unknown>> }
-      | undefined;
-    const msgId = msg?.id ?? "anon";
-    const blocks = msg?.content ?? [];
-    let combined = "";
-    for (const b of blocks) {
-      if (b && (b as { type?: string }).type === "text") {
-        combined += (b as { text?: string }).text ?? "";
-      }
-    }
-    const prior = seenByMsgId.get(msgId) ?? "";
-    if (combined.length > prior.length && combined.startsWith(prior)) {
-      seenByMsgId.set(msgId, combined);
-      input.onText(combined.slice(prior.length));
-    } else if (combined && combined !== prior) {
-      seenByMsgId.set(msgId, combined);
-      input.onText(combined);
-    }
-  };
-  const result = await runClaudeQuery(
-    {
-      runId: input.runId,
-      prompt,
-      images: claudeImages(input.attachments, input.contextBlocks),
-      systemPrompt: CODE_REVIEW_SYSTEM_PROMPT,
-      cwd: input.sourceRoot,
-      model: input.modelId,
-      permissionMode: "bypassPermissions",
-      allowedTools: ["Read", "Glob", "Grep"],
-      bare: input.authMode === "api-key",
-      env,
-    },
-    onEvent,
-  );
-  return { text: result.text ?? "", durationMs: Date.now() - start };
 }
 
 function buildUserPrompt(input: StreamCodeReviewInput): string {

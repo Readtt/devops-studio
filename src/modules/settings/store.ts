@@ -12,10 +12,6 @@ import { LazyStore } from "@tauri-apps/plugin-store";
 
 export type ThemePref = "system" | "light" | "dark";
 
-/** Which AI engine the Generator routes through. See `ai/lib/engine.ts`. */
-export type AiEngine = "vercel-ai-sdk" | "claude-agent-sdk";
-export type ClaudeAuthMode = "max-oauth" | "api-key";
-
 /**
  * Editor theme families. Each id resolves to a dark or light variant based on
  * the app's resolved theme. Themes that only have one upstream variant (atom-
@@ -119,10 +115,6 @@ export type Preferences = {
   preferredAiCli: string;
   zoomLevel: number;
   shortcuts: Record<ShortcutId, KeyBinding[]>;
-  /** Phase 5: which engine to use for AI generation. */
-  aiEngine: AiEngine;
-  /** Phase 5: how to authenticate to Anthropic when `aiEngine === "claude-agent-sdk"`. */
-  claudeAuthMode: ClaudeAuthMode;
   /** Absolute path to the user's source directory. Code-link rows in the Bug
    *  pane resolve relative paths against this when opening the code viewer. */
   sourceRoot: string | null;
@@ -175,9 +167,11 @@ const KEY_DEFAULT_SHELL_PATH = "defaultShellPath";
 const KEY_PREFERRED_AI_CLI = "preferredAiCli";
 const KEY_ZOOM_LEVEL = "zoomLevel";
 const KEY_SHORTCUTS = "shortcuts";
-const KEY_AI_ENGINE = "aiEngine";
-const KEY_CLAUDE_AUTH_MODE = "claudeAuthMode";
 const KEY_SOURCE_ROOT = "sourceRoot";
+// Removed when the app consolidated on a single BYOK engine. Kept here only so
+// loadPreferences can scrub them from older settings files.
+const KEY_LEGACY_AI_ENGINE = "aiEngine";
+const KEY_LEGACY_CLAUDE_AUTH_MODE = "claudeAuthMode";
 const KEY_EDITOR_FONT_SIZE = "editorFontSize";
 const KEY_EDITOR_LINE_NUMBERS = "editorLineNumbers";
 const KEY_EDITOR_WORD_WRAP = "editorWordWrap";
@@ -235,8 +229,6 @@ export const DEFAULT_PREFERENCES: Preferences = {
   preferredAiCli: "claude",
   zoomLevel: 1.0,
   shortcuts: {} as Record<ShortcutId, KeyBinding[]>,
-  aiEngine: "vercel-ai-sdk",
-  claudeAuthMode: "api-key",
   sourceRoot: null,
   editorFontSize: EDITOR_FONT_SIZE_DEFAULT,
   editorLineNumbers: true,
@@ -267,6 +259,15 @@ export async function loadPreferences(): Promise<Preferences> {
   const entries = await store.entries();
   const map = new Map<string, unknown>(entries);
   const get = <T>(k: string): T | undefined => map.get(k) as T | undefined;
+  // Scrub keys from the removed Claude-engine era so they don't linger in the
+  // settings file. Best-effort; never blocks the load.
+  if (map.has(KEY_LEGACY_AI_ENGINE) || map.has(KEY_LEGACY_CLAUDE_AUTH_MODE)) {
+    void store
+      .delete(KEY_LEGACY_AI_ENGINE)
+      .then(() => store.delete(KEY_LEGACY_CLAUDE_AUTH_MODE))
+      .then(() => store.save())
+      .catch(() => undefined);
+  }
   return {
     theme: get<ThemePref>(KEY_THEME) ?? DEFAULT_PREFERENCES.theme,
     defaultModelId:
@@ -333,10 +334,6 @@ export async function loadPreferences(): Promise<Preferences> {
     shortcuts:
       get<Record<ShortcutId, KeyBinding[]>>(KEY_SHORTCUTS) ??
       DEFAULT_PREFERENCES.shortcuts,
-    aiEngine: get<AiEngine>(KEY_AI_ENGINE) ?? DEFAULT_PREFERENCES.aiEngine,
-    claudeAuthMode:
-      get<ClaudeAuthMode>(KEY_CLAUDE_AUTH_MODE) ??
-      DEFAULT_PREFERENCES.claudeAuthMode,
     sourceRoot:
       get<string | null>(KEY_SOURCE_ROOT) ?? DEFAULT_PREFERENCES.sourceRoot,
     editorFontSize: clampEditorFontSize(
@@ -359,14 +356,6 @@ export async function loadPreferences(): Promise<Preferences> {
       get<BestPracticeFile[]>(KEY_BEST_PRACTICE_FILES) ??
       DEFAULT_PREFERENCES.bestPracticeFiles,
   };
-}
-
-export async function setAiEngine(value: AiEngine): Promise<void> {
-  await writePref(KEY_AI_ENGINE, value);
-}
-
-export async function setClaudeAuthMode(value: ClaudeAuthMode): Promise<void> {
-  await writePref(KEY_CLAUDE_AUTH_MODE, value);
 }
 
 export async function setSourceRoot(value: string | null): Promise<void> {
@@ -588,8 +577,6 @@ export async function onPreferencesChange(
     [KEY_PREFERRED_AI_CLI]: "preferredAiCli",
     [KEY_ZOOM_LEVEL]: "zoomLevel",
     [KEY_SHORTCUTS]: "shortcuts",
-    [KEY_AI_ENGINE]: "aiEngine",
-    [KEY_CLAUDE_AUTH_MODE]: "claudeAuthMode",
     [KEY_SOURCE_ROOT]: "sourceRoot",
     [KEY_EDITOR_FONT_SIZE]: "editorFontSize",
     [KEY_EDITOR_LINE_NUMBERS]: "editorLineNumbers",

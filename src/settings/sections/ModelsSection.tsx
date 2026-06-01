@@ -42,7 +42,6 @@ import {
   setOpenaiCompatibleModelId,
   type GenerationBusyState,
 } from "@/modules/settings/store";
-import { AiEngineSection } from "../components/AiEngineSection";
 import { BestPracticesPanel } from "./BestPracticesSection";
 import {
   Add01Icon,
@@ -112,7 +111,6 @@ export function ModelsSection() {
   const [adding, setAdding] = useState<Set<ProviderId>>(new Set());
 
   const defaultModel = usePreferencesStore((s) => s.defaultModelId);
-  const engine = usePreferencesStore((s) => s.aiEngine);
   const lmstudioBaseURL = usePreferencesStore((s) => s.lmstudioBaseURL);
   const lmstudioModelId = usePreferencesStore((s) => s.lmstudioModelId);
   const mlxBaseURL = usePreferencesStore((s) => s.mlxBaseURL);
@@ -228,12 +226,10 @@ export function ModelsSection() {
         description="Connect the providers you use. Keys live in your OS keychain and are used only by DevOps Studio."
       />
 
-      <AiEngineSection />
-
       {/* One single default-model selector for the whole app — it adapts to
-          the engine and to which providers are connected, so the picker is
-          the only place the user ever has to think about "which model". */}
-      <DefaultModelBlock defaultModel={defaultModel} engine={engine} />
+          which providers are connected, so the picker is the only place the
+          user ever has to think about "which model". */}
+      <DefaultModelBlock defaultModel={defaultModel} />
 
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
@@ -380,10 +376,8 @@ function ProviderMenuItem({
  */
 function DefaultModelBlock({
   defaultModel,
-  engine,
 }: {
   defaultModel: ModelId;
-  engine: "vercel-ai-sdk" | "claude-agent-sdk";
 }) {
   const availability = useModelAvailability();
   const current = getModel(defaultModel);
@@ -415,9 +409,7 @@ function DefaultModelBlock({
           ? "A draft is open in the generator. Start a new session to switch models."
           : "";
   const engineHint =
-    engine === "claude-agent-sdk"
-      ? "Claude Code drives Anthropic models only. Pick the one the generator and chat should default to."
-      : "Used by the test-case generator unless you override it for a single run. Only providers you've connected are pickable.";
+    "Used by the test-case generator unless you override it for a single run. Only providers you've connected are pickable.";
 
   // When the active default isn't usable under the current configuration,
   // surface it inline rather than silently substituting at run time. The
@@ -439,18 +431,10 @@ function DefaultModelBlock({
           disabled={busy.busy}
           disabledReason={lockReason}
           emptyMessage={
-            engine === "claude-agent-sdk" ? (
-              <>
-                Claude Code drives Anthropic models only. Authenticate the CLI
-                above, then switch to the BYOK engine if you want OpenAI /
-                Gemini / etc.
-              </>
-            ) : (
-              <>
-                No providers connected yet. Add one below — keys live in your
-                OS keychain.
-              </>
-            )
+            <>
+              No providers connected yet. Add one below — keys live in your
+              OS keychain.
+            </>
           }
           footer={
             lockedCount > 0 ? (
