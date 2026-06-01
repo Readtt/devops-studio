@@ -21,7 +21,8 @@ export async function evaluateCaseConfidence(
   });
   return evaluateConfidence({
     testCase,
-    sourceRoot: prefs.sourceRoot ?? null,
+    // Global code-search toggle gates source access for every surface.
+    sourceRoot: prefs.codeSearchEnabled ? (prefs.sourceRoot ?? null) : null,
     modelId,
     keys: chat.apiKeys,
     lmstudioBaseURL: prefs.lmstudioBaseURL,

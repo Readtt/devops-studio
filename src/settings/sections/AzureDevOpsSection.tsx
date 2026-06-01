@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { AzureDevOpsBrand } from "@/components/AzureDevOpsBrand";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { setCodeSearchEnabled } from "@/modules/settings/store";
 import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
 import {
@@ -50,6 +51,7 @@ export function AzureDevOpsSection() {
   const [useDynamicBranch, setUseDynamicBranch] = useState(false);
   const gitInfo = useSourceDirGitInfo();
   const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
+  const codeSearchEnabled = usePreferencesStore((s) => s.codeSearchEnabled);
   // Branch list comes from the user's source repo — that's where their
   // working branches actually exist, and ADO mirrors them by name. Pulling
   // from git locally avoids a network round-trip to ADO for something the
@@ -302,6 +304,23 @@ export function AzureDevOpsSection() {
       <div className="flex flex-col gap-2">
         <Label>Defaults</Label>
         <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card/60 px-3 py-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-col">
+              <Label className="text-[11.5px] text-foreground">
+                Allow AI to read source code
+              </Label>
+              <p className="text-[10.5px] text-muted-foreground/80">
+                {codeSearchEnabled
+                  ? "Generator, Suite Chat, Code Review and Confidence may read your source directory (read-only) to ground their answers."
+                  : "Off — every AI surface works from the spec / diff / case text alone, with no file access."}
+              </p>
+            </div>
+            <Switch
+              checked={codeSearchEnabled}
+              onCheckedChange={(v) => void setCodeSearchEnabled(v)}
+            />
+          </div>
+
           <div className="flex items-center justify-between gap-2">
             <div className="flex flex-col">
               <Label className="text-[11.5px] text-foreground">

@@ -119,10 +119,6 @@ export type SessionState = {
   planName: string | null;
   suiteName: string | null;
   mode: GenerationMode;
-  /** Let the analyzer search the user's source directory while generating.
-   *  Only meaningful when a source root is set. Defaults to true. (Being
-   *  superseded by the global codeSearchEnabled preference.) */
-  allowCodeSearch: boolean;
   /** Stamp the local source branch / commit onto published artifacts so their
    *  code links point at the code they were generated from: the branch on each
    *  case's source links, and the source-dir HEAD SHA on bug code refs.
@@ -164,7 +160,6 @@ export type SessionState = {
    *  loaded draft. Triggers a draft autosave so subsequent reopens use
    *  the resolved labels without another ADO lookup. */
   setPlanSuiteNames: (planName: string | null, suiteName: string | null) => void;
-  setAllowCodeSearch: (v: boolean) => void;
   setTagSourceBranch: (v: boolean) => void;
   /** Set or clear (null) the per-generation model override. */
   setOverrideModelId: (id: ModelId | null) => void;
@@ -324,7 +319,6 @@ const initialState: Omit<
   | "setMode"
   | "setTarget"
   | "setPlanSuiteNames"
-  | "setAllowCodeSearch"
   | "setTagSourceBranch"
   | "setOverrideModelId"
   | "addAttachment"
@@ -376,7 +370,6 @@ const initialState: Omit<
   planName: null,
   suiteName: null,
   mode: "thorough",
-  allowCodeSearch: true,
   tagSourceBranch: true,
   overrideModelId: null,
   stepLabel: "",
@@ -520,7 +513,6 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     set({ planName, suiteName });
     schedulePersistDraft();
   },
-  setAllowCodeSearch: (v) => set({ allowCodeSearch: v }),
   setTagSourceBranch: (v) => set({ tagSourceBranch: v }),
   setOverrideModelId: (id) => set({ overrideModelId: id }),
   addAttachment: (path, content) =>

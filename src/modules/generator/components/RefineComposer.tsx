@@ -114,7 +114,7 @@ export function RefineComposer({ isRefining }: Props) {
   const refine = useGenerationSession((s) => s.refine);
   const cases = useGenerationSession((s) => s.cases);
   const bugs = useGenerationSession((s) => s.bugs);
-  const allowCodeSearch = useGenerationSession((s) => s.allowCodeSearch);
+  const codeSearchEnabled = usePreferencesStore((s) => s.codeSearchEnabled);
   const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
   const activityLog = useGenerationSession((s) => s.activityLog);
   const stepLabel = useGenerationSession((s) => s.stepLabel);
@@ -237,7 +237,7 @@ export function RefineComposer({ isRefining }: Props) {
     [bugs],
   );
 
-  const codeSearchOn = allowCodeSearch && !!sourceRoot;
+  const codeSearchOn = codeSearchEnabled && !!sourceRoot;
 
   const submit = useCallback(() => {
     const value = text.trim();

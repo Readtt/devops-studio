@@ -713,7 +713,8 @@ export const useSuiteChat = create<Store>((set, get) => ({
     const keys = chat.apiKeys;
     const modelId = curr.modelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
-    const sourceRoot = prefs.sourceRoot ?? null;
+    // Global code-search toggle gates source access for every surface.
+    const sourceRoot = prefs.codeSearchEnabled ? (prefs.sourceRoot ?? null) : null;
     const priorMessages = curr.messages;
     // Best-practices standards injected as context; vision support depends on
     // the chosen model.

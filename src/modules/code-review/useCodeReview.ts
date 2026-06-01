@@ -338,7 +338,9 @@ export const useCodeReview = create<State>((set, get) => ({
       await streamCodeReview({
         modelId: effectiveModelId,
         keys: chat.apiKeys,
-        sourceRoot: slice.cwd,
+        // Global code-search toggle gates the Read/Glob/Grep tools; off ⇒ the
+        // reviewer works from the diff alone.
+        sourceRoot: prefs.codeSearchEnabled ? slice.cwd : null,
         diff: slice.diff,
         history: priorMessages,
         newQuestion: text,

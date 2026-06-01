@@ -54,7 +54,6 @@ import {
   type ExecutionOutcome,
 } from "@/modules/ado";
 import { useSourceDirGitInfo } from "@/modules/git";
-import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   AiBrain01Icon,
   AlertCircleIcon,
@@ -629,7 +628,6 @@ function InputPhase() {
   const mode = useGenerationSession((s) => s.mode);
   const planId = useGenerationSession((s) => s.planId);
   const suiteId = useGenerationSession((s) => s.suiteId);
-  const allowCodeSearch = useGenerationSession((s) => s.allowCodeSearch);
   const tagSourceBranch = useGenerationSession((s) => s.tagSourceBranch);
   const setTagSourceBranch = useGenerationSession((s) => s.setTagSourceBranch);
   const attachments = useGenerationSession((s) => s.attachments);
@@ -637,7 +635,6 @@ function InputPhase() {
   const setRequirements = useGenerationSession((s) => s.setRequirements);
   const setMode = useGenerationSession((s) => s.setMode);
   const setTarget = useGenerationSession((s) => s.setTarget);
-  const setAllowCodeSearch = useGenerationSession((s) => s.setAllowCodeSearch);
   const setOverrideModelId = useGenerationSession((s) => s.setOverrideModelId);
   const addRichAttachment = useGenerationSession((s) => s.addRichAttachment);
   const removeAttachment = useGenerationSession((s) => s.removeAttachment);
@@ -666,11 +663,7 @@ function InputPhase() {
   const activeModelId = overrideModelId ?? defaultModelId;
   const activeModel = getModel(activeModelId);
   const defaultModel = getModel(defaultModelId);
-  const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
   const availability = useModelAvailability();
-  // The per-run code-search toggle is being replaced by a global setting; it
-  // is not shown on the BYOK path. See the codeSearchEnabled preference.
-  const showCodeSearchToggle = false;
   const [isDragOver, setIsDragOver] = useState(false);
   const [ingestErrors, setIngestErrors] = useState<string[]>([]);
   const filePickerRef = useRef<HTMLInputElement | null>(null);
@@ -993,42 +986,6 @@ function InputPhase() {
           </RadioGroup>
         </Field>
 
-        {showCodeSearchToggle ? (
-          <label
-            className={cn(
-              "flex cursor-pointer items-start gap-2.5 rounded-md border px-3 py-2 transition-colors hover:bg-foreground/[0.03]",
-              allowCodeSearch
-                ? "border-primary/40 bg-primary/[0.04]"
-                : "border-border/50",
-            )}
-          >
-            <Switch
-              checked={allowCodeSearch}
-              onCheckedChange={setAllowCodeSearch}
-              className="mt-0.5"
-            />
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <span className="text-[11.5px] font-medium">
-                  Let the analyzer read source code
-                </span>
-                <span className="rounded-sm bg-foreground/[0.06] px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-muted-foreground">
-                  Claude Code
-                </span>
-              </div>
-              <p className="mt-0.5 text-[10.5px] leading-relaxed text-muted-foreground">
-                Runs the agent at{" "}
-                <span className="font-mono text-foreground/85">
-                  {sourceRoot}
-                </span>{" "}
-                with Read / Glob / Grep so cases are grounded in actual
-                code paths. Off = spec + attachments only (faster, no disk
-                access).
-              </p>
-            </div>
-          </label>
-        ) : null}
-
         {git.branch ? (
           <label
             className={cn(
@@ -1320,21 +1277,6 @@ function InputPhase() {
               )
             }
           />
-          {showCodeSearchToggle ? (
-            <PreviewRow
-              label="Code search"
-              value={
-                <span
-                  className={cn(
-                    "font-mono text-[10.5px]",
-                    allowCodeSearch ? "text-primary" : "text-muted-foreground",
-                  )}
-                >
-                  {allowCodeSearch ? "enabled" : "off"}
-                </span>
-              }
-            />
-          ) : null}
         </ul>
         <p className="text-[10px] leading-relaxed text-muted-foreground/85">
           The analyzer will read the spec above + any source files you've

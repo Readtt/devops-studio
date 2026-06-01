@@ -126,7 +126,9 @@ When you literally have nothing to flag, say "Looks clean — no blockers, sugge
 export type StreamCodeReviewInput = {
   modelId: ModelId;
   keys: ProviderKeys;
-  sourceRoot: string;
+  /** The local checkout the Read/Glob/Grep tools read. null when the global
+   *  code-search toggle is off — the reviewer then works from the diff alone. */
+  sourceRoot: string | null;
   /** Precomputed diff from the `git_diff` command. */
   diff: DiffSummary;
   /** Prior assistant + user messages in this thread. */

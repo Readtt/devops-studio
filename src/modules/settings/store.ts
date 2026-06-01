@@ -118,6 +118,10 @@ export type Preferences = {
   /** Absolute path to the user's source directory. Code-link rows in the Bug
    *  pane resolve relative paths against this when opening the code viewer. */
   sourceRoot: string | null;
+  /** Master switch: may the AI read the source directory (read-only
+   *  Read/Glob/Grep) to ground its answers? Applies to every surface —
+   *  Generator, Suite Chat, Code Review, Confidence. Default on. */
+  codeSearchEnabled: boolean;
   // Code editor preferences — applied to the read-only CodeMirror pane.
   /** Editor font size in px. */
   editorFontSize: number;
@@ -168,6 +172,7 @@ const KEY_PREFERRED_AI_CLI = "preferredAiCli";
 const KEY_ZOOM_LEVEL = "zoomLevel";
 const KEY_SHORTCUTS = "shortcuts";
 const KEY_SOURCE_ROOT = "sourceRoot";
+const KEY_CODE_SEARCH_ENABLED = "codeSearchEnabled";
 // Removed when the app consolidated on a single BYOK engine. Kept here only so
 // loadPreferences can scrub them from older settings files.
 const KEY_LEGACY_AI_ENGINE = "aiEngine";
@@ -230,6 +235,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   zoomLevel: 1.0,
   shortcuts: {} as Record<ShortcutId, KeyBinding[]>,
   sourceRoot: null,
+  codeSearchEnabled: true,
   editorFontSize: EDITOR_FONT_SIZE_DEFAULT,
   editorLineNumbers: true,
   editorWordWrap: false,
@@ -336,6 +342,9 @@ export async function loadPreferences(): Promise<Preferences> {
       DEFAULT_PREFERENCES.shortcuts,
     sourceRoot:
       get<string | null>(KEY_SOURCE_ROOT) ?? DEFAULT_PREFERENCES.sourceRoot,
+    codeSearchEnabled:
+      get<boolean>(KEY_CODE_SEARCH_ENABLED) ??
+      DEFAULT_PREFERENCES.codeSearchEnabled,
     editorFontSize: clampEditorFontSize(
       get<number>(KEY_EDITOR_FONT_SIZE) ?? DEFAULT_PREFERENCES.editorFontSize,
     ),
@@ -360,6 +369,10 @@ export async function loadPreferences(): Promise<Preferences> {
 
 export async function setSourceRoot(value: string | null): Promise<void> {
   await writePref(KEY_SOURCE_ROOT, value);
+}
+
+export async function setCodeSearchEnabled(value: boolean): Promise<void> {
+  await writePref(KEY_CODE_SEARCH_ENABLED, value);
 }
 
 export async function setTheme(value: ThemePref): Promise<void> {
@@ -578,6 +591,7 @@ export async function onPreferencesChange(
     [KEY_ZOOM_LEVEL]: "zoomLevel",
     [KEY_SHORTCUTS]: "shortcuts",
     [KEY_SOURCE_ROOT]: "sourceRoot",
+    [KEY_CODE_SEARCH_ENABLED]: "codeSearchEnabled",
     [KEY_EDITOR_FONT_SIZE]: "editorFontSize",
     [KEY_EDITOR_LINE_NUMBERS]: "editorLineNumbers",
     [KEY_EDITOR_WORD_WRAP]: "editorWordWrap",

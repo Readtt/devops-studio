@@ -731,7 +731,6 @@ function AppShell() {
         planName: s.planName,
         suiteName: s.suiteName,
         mode: s.mode,
-        allowCodeSearch: s.allowCodeSearch,
         overrideModelId: s.overrideModelId,
         durationMs: s.durationMs,
         cases: s.cases,
