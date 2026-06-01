@@ -36,7 +36,7 @@ export type ChatMessage = {
   toolEvents?: ActivityEntry[];
 };
 
-const CHAT_SYSTEM_PROMPT = `You are a senior QA test analyst chatting with the user about a draft test plan they have on screen. The plan was already generated; this conversation is for *understanding and improving* the draft, NOT for editing it. The user has a separate "refine" action when they want changes applied.
+export const CHAT_SYSTEM_PROMPT = `You are a senior QA test analyst chatting with the user about a draft test plan they have on screen. The plan was already generated; this conversation is for *understanding and improving* the draft, NOT for editing it. The user has a separate "refine" action when they want changes applied.
 
 ROLE
 - Be terse and specific. The user is a senior QA tester — they don't need
