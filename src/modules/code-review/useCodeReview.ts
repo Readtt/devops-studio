@@ -16,7 +16,7 @@ import type { Attachment } from "@/components/chat/attachments";
 import type { AppliedPatchRecord } from "@/components/ChatMarkdown";
 import type { ActivityEntry } from "@/modules/generator/lib/activityLog";
 import {
-  streamCodeReview,
+  streamCodeReviewTask,
   type CodeReviewMessage,
   type DiffSummary,
 } from "./runCodeReview";
@@ -335,7 +335,7 @@ export const useCodeReview = create<State>((set, get) => ({
       // ADO source ⇒ tell the runner the diff (not the local checkout the
       // Read/Grep tools see) is authoritative.
       const adoSourceLabel = slice.source ? describeSource(slice.source) : null;
-      await streamCodeReview({
+      await streamCodeReviewTask({
         modelId: effectiveModelId,
         keys: chat.apiKeys,
         // Global code-search toggle gates the Read/Glob/Grep tools; off ⇒ the

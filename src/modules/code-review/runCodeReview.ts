@@ -156,7 +156,7 @@ export type StreamCodeReviewInput = {
   adoSourceLabel?: string | null;
 };
 
-export async function streamCodeReview(input: StreamCodeReviewInput): Promise<{
+export async function streamCodeReviewTask(input: StreamCodeReviewInput): Promise<{
   text: string;
   durationMs: number;
 }> {

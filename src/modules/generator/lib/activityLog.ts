@@ -91,7 +91,7 @@ export function summarizeToolInput(
  *  a single "thinking" entry when the step ran no tools so the log still has a
  *  breadcrumb. Mirrors the generator analyze path so chats and the generator
  *  surface tool activity identically. */
-export function vercelStepToActivity(
+export function stepToActivity(
   step: {
     toolCalls?: Array<{ toolCallId?: string; toolName?: string; input?: unknown }>;
     toolResults?: Array<{ toolCallId?: string; output?: unknown }>;

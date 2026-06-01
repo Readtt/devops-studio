@@ -54,7 +54,7 @@ import {
 import { entryToLabel, type ActivityEntry } from "../lib/activityLog";
 import { buildRefineUserPrompt } from "../lib/qaAnalystRefinePrompt";
 import {
-  streamQaChat,
+  streamChatTask,
   newChatMessageId,
   type ChatMessage,
 } from "../lib/qaChatRun";
@@ -1516,7 +1516,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     const chatContextBlocks = [...bpBlocks, ...bugBlocks];
 
     try {
-      await streamQaChat({
+      await streamChatTask({
         requirements: s.requirements,
         changesets: s.changesets,
         attachments: s.attachments,

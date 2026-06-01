@@ -23,7 +23,7 @@ import type { Attachment } from "@/components/chat/attachments";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   newSuiteChatMessageId,
-  streamSuiteChat,
+  streamSuiteChatTask,
   type ContextWorkItem,
   type SuiteChatMessage,
 } from "../lib/runSuiteChat";
@@ -739,7 +739,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
     const contextBlocks = [...bpBlocks, ...bugBlocks];
 
     try {
-      await streamSuiteChat({
+      await streamSuiteChatTask({
         suiteName: suite.suiteName,
         suitePath: suite.suitePath,
         planName: suite.planName,

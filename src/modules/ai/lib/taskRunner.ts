@@ -31,7 +31,7 @@ import {
 import type { ProviderKeys } from "./keyring";
 import { buildUserTurn } from "./visionMessage";
 import {
-  vercelStepToActivity,
+  stepToActivity,
   type ActivityEntry,
 } from "@/modules/generator/lib/activityLog";
 
@@ -105,8 +105,8 @@ function onStepFinishFor(
   onToolEvent: ((e: ActivityEntry) => void) | undefined,
 ) {
   if (!onToolEvent) return undefined;
-  return (step: Parameters<typeof vercelStepToActivity>[0]) => {
-    for (const e of vercelStepToActivity(step, start)) onToolEvent(e);
+  return (step: Parameters<typeof stepToActivity>[0]) => {
+    for (const e of stepToActivity(step, start)) onToolEvent(e);
   };
 }
 

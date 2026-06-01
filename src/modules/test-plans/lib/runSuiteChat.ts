@@ -330,7 +330,7 @@ export type SuiteChatRunResult = {
 
 // --- Vercel SDK path --------------------------------------------------------
 
-export type VercelSuiteChatInput = SuiteChatRunInput & {
+export type SuiteChatTaskInput = SuiteChatRunInput & {
   modelId: ModelId;
   keys: ProviderKeys;
   lmstudioBaseURL?: string;
@@ -341,8 +341,8 @@ export type VercelSuiteChatInput = SuiteChatRunInput & {
   sourceRoot: string | null;
 };
 
-export async function runSuiteChat(
-  input: VercelSuiteChatInput,
+export async function runSuiteChatTask(
+  input: SuiteChatTaskInput,
 ): Promise<SuiteChatRunResult> {
   const userPrompt = buildSuiteChatUserPrompt(input, input.sourceRoot);
   const tools = buildSuiteChatTools(input.sourceRoot);
@@ -363,12 +363,12 @@ export async function runSuiteChat(
   return { text: r.text, durationMs: r.durationMs };
 }
 
-/** Streaming variant of runSuiteChat. Calls `onText` with each text delta as
- *  the model produces it; resolves once the stream finishes. When a source dir
- *  is set the model gets read-only Read/Glob/Grep tools so answers are
+/** Streaming variant of runSuiteChatTask. Calls `onText` with each text delta
+ *  as the model produces it; resolves once the stream finishes. When a source
+ *  dir is set the model gets read-only Read/Glob/Grep tools so answers are
  *  code-grounded; temperature 0 keeps them reproducible. */
-export async function streamSuiteChat(
-  input: VercelSuiteChatInput & { onText: (delta: string) => void },
+export async function streamSuiteChatTask(
+  input: SuiteChatTaskInput & { onText: (delta: string) => void },
 ): Promise<SuiteChatRunResult> {
   const userPrompt = buildSuiteChatUserPrompt(input, input.sourceRoot);
   const tools = buildSuiteChatTools(input.sourceRoot);

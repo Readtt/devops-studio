@@ -95,13 +95,13 @@ export type ChatRunResult = {
 
 // --- Vercel SDK path (any provider) -----------------------------------------
 
-export type VercelChatInput = ChatRunInput & {
+export type ChatTaskInput = ChatRunInput & {
   modelId: ModelId;
   keys: ProviderKeys;
   lmstudioBaseURL?: string;
 };
 
-export async function runQaChat(input: VercelChatInput): Promise<ChatRunResult> {
+export async function runChatTask(input: ChatTaskInput): Promise<ChatRunResult> {
   const model = getModel(input.modelId);
   const lm = await buildLanguageModel(model.provider, input.keys, model.id, {
     lmstudioBaseURL: input.lmstudioBaseURL,
@@ -119,12 +119,12 @@ export async function runQaChat(input: VercelChatInput): Promise<ChatRunResult> 
   return { text: result.text ?? "", durationMs: Date.now() - start };
 }
 
-/** Streaming variant of runQaChat. Calls `onText` with each delta as the
+/** Streaming variant of runChatTask. Calls `onText` with each delta as the
  *  model produces it; resolves with the full accumulated text. Mirrors
- *  streamSuiteChat so the review-pane "Ask" reads tokens live like every
+ *  streamSuiteChatTask so the review-pane "Ask" reads tokens live like every
  *  other chat surface in the app. */
-export async function streamQaChat(
-  input: VercelChatInput & { onText: (delta: string) => void },
+export async function streamChatTask(
+  input: ChatTaskInput & { onText: (delta: string) => void },
 ): Promise<ChatRunResult> {
   const model = getModel(input.modelId);
   const lm = await buildLanguageModel(model.provider, input.keys, model.id, {
