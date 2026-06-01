@@ -1,0 +1,309 @@
+// The single shared task runner for every read-only BYOK surface — Generator,
+// Suite Chat, Code Review, and Confidence all funnel through here. Vercel AI
+// SDK only; there is no second engine.
+//
+// Modes (auto-selected from `schema` + `tools`):
+//   • schema, no tools → generateObject({ schema, experimental_repairText })
+//   • schema + tools   → generateText/streamText with experimental_output
+//                        = Output.object({ schema }) so the agentic read loop
+//                        still produces a validated object
+//   • no schema        → generateText/streamText (prose; Code Review, Suite Chat)
+//
+// @readonly — the `tools` a caller passes are the read-only source tools
+// (read_file / list_files / grep / glob). The runner NEVER builds or injects
+// write / edit / bash / delegation tools. Keep it that way.
+
+import {
+  Output,
+  generateObject,
+  generateText,
+  stepCountIs,
+  streamText,
+  type ToolSet,
+} from "ai";
+import type { z } from "zod";
+import { MAX_AGENT_STEPS, type ModelId } from "../config";
+import {
+  buildConfiguredLanguageModel,
+  buildStableSystem,
+  type LocalProviderConfig,
+} from "./agent";
+import type { ProviderKeys } from "./keyring";
+import { buildUserTurn } from "./visionMessage";
+import {
+  vercelStepToActivity,
+  type ActivityEntry,
+} from "@/modules/generator/lib/activityLog";
+
+/** Minimal attachment shape the vision helper understands. */
+type ImageLike = { kind?: string; content: string; mime?: string };
+
+export type TaskInput<S extends z.ZodTypeAny | undefined = undefined> = {
+  modelId: ModelId;
+  keys: ProviderKeys;
+  /** Local-provider base URLs / model ids (LM Studio, MLX, Ollama, …). */
+  local?: LocalProviderConfig;
+  /** The surface's base system prompt (from systemPrompts.ts). */
+  systemPrompt: string;
+  /** The user turn. Text attachments are assumed already folded in by the
+   *  caller; only images are lifted into vision parts. */
+  prompt: string;
+  attachments?: ImageLike[];
+  /** Read-only tool set (build*Tools). null/undefined ⇒ tool-less. */
+  tools?: ToolSet | null;
+  /** Explicit per call. Omit ⇒ provider default (no hidden global). */
+  temperature?: number;
+  seed?: number;
+  /** Step cap for the agentic loop (only meaningful with tools). */
+  maxSteps?: number;
+  /** Present ⇒ structured mode (the result carries a validated `object`). */
+  schema?: S;
+  /** Optional blocks layered below the base prompt. Surfaces that don't pass
+   *  these get the base prompt verbatim. */
+  customInstructions?: string;
+  projectMemory?: string | null;
+  /** Schema repair attempts before the circuit breaker trips. Default 2. */
+  repairAttempts?: number;
+  /** Tool-activity callback (Read/Glob/Grep), upsert by id. */
+  onToolEvent?: (e: ActivityEntry) => void;
+  signal?: AbortSignal;
+};
+
+type InferObject<S extends z.ZodTypeAny | undefined> = S extends z.ZodTypeAny
+  ? z.infer<S>
+  : undefined;
+
+export type TaskResult<S extends z.ZodTypeAny | undefined = undefined> =
+  | {
+      ok: true;
+      text: string;
+      object: InferObject<S>;
+      durationMs: number;
+    }
+  | {
+      ok: false;
+      /** schema_violation ⇒ repair budget exhausted; empty ⇒ no usable text. */
+      reason: "schema_violation" | "empty";
+      text: string;
+      durationMs: number;
+    };
+
+const DEFAULT_REPAIR_ATTEMPTS = 2;
+
+/** Assemble the system prompt: base + optional project memory + custom
+ *  instructions. Surfaces that pass neither get the base verbatim. */
+function assembleSystem(input: TaskInput<z.ZodTypeAny | undefined>): string {
+  return buildStableSystem(
+    input.systemPrompt,
+    input.customInstructions,
+    input.projectMemory ?? null,
+  );
+}
+
+function onStepFinishFor(
+  start: number,
+  onToolEvent: ((e: ActivityEntry) => void) | undefined,
+) {
+  if (!onToolEvent) return undefined;
+  return (step: Parameters<typeof vercelStepToActivity>[0]) => {
+    for (const e of vercelStepToActivity(step, start)) onToolEvent(e);
+  };
+}
+
+/** Non-streaming run. Returns prose text and, in structured mode, a validated
+ *  `object`. On repeated schema failure returns `{ ok: false }` so surfaces can
+ *  map it to their existing empty / UNEVALUABLE / warning states. */
+export async function runTask<
+  S extends z.ZodTypeAny | undefined = undefined,
+>(input: TaskInput<S>): Promise<TaskResult<S>> {
+  const start = Date.now();
+  const model = await buildConfiguredLanguageModel(
+    input.modelId,
+    input.keys,
+    input.local ?? {},
+  );
+  const system = assembleSystem(input);
+  const userTurn = buildUserTurn(input.prompt, input.attachments);
+  const tools = input.tools ?? undefined;
+  const maxSteps = input.maxSteps ?? MAX_AGENT_STEPS;
+  const repairAttempts = input.repairAttempts ?? DEFAULT_REPAIR_ATTEMPTS;
+
+  // --- Structured, tool-less: generateObject -------------------------------
+  if (input.schema && !tools) {
+    let attempt = 0;
+    let lastText = "";
+    // generateObject already self-repairs once via experimental_repairText;
+    // the outer loop is the circuit breaker for hard validation failures.
+    while (attempt <= repairAttempts) {
+      try {
+        const r = await generateObject({
+          model,
+          system,
+          ...userTurn,
+          schema: input.schema,
+          ...(input.temperature !== undefined
+            ? { temperature: input.temperature }
+            : {}),
+          ...(input.seed !== undefined ? { seed: input.seed } : {}),
+          abortSignal: input.signal,
+        });
+        return {
+          ok: true,
+          text: JSON.stringify(r.object),
+          object: r.object as InferObject<S>,
+          durationMs: Date.now() - start,
+        };
+      } catch (e) {
+        if (input.signal?.aborted) throw e;
+        lastText = extractTextFromError(e) || lastText;
+        attempt++;
+      }
+    }
+    return {
+      ok: false,
+      reason: "schema_violation",
+      text: lastText,
+      durationMs: Date.now() - start,
+    };
+  }
+
+  // --- Structured + tools, or prose: generateText --------------------------
+  const r = await generateText({
+    model,
+    system,
+    ...userTurn,
+    ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
+    ...(input.schema
+      ? { experimental_output: Output.object({ schema: input.schema }) }
+      : {}),
+    ...(input.temperature !== undefined
+      ? { temperature: input.temperature }
+      : {}),
+    ...(input.seed !== undefined ? { seed: input.seed } : {}),
+    abortSignal: input.signal,
+    onStepFinish: onStepFinishFor(start, input.onToolEvent),
+  });
+
+  const text = r.text ?? "";
+  if (input.schema) {
+    const obj = readExperimentalOutput(r);
+    if (obj === undefined) {
+      return {
+        ok: false,
+        reason: "schema_violation",
+        text,
+        durationMs: Date.now() - start,
+      };
+    }
+    return {
+      ok: true,
+      text,
+      object: obj as InferObject<S>,
+      durationMs: Date.now() - start,
+    };
+  }
+  return {
+    ok: true,
+    text,
+    object: undefined as InferObject<S>,
+    durationMs: Date.now() - start,
+  };
+}
+
+export type StreamTaskInput<S extends z.ZodTypeAny | undefined = undefined> =
+  TaskInput<S> & { onText: (delta: string) => void };
+
+/** Streaming run for the prose surfaces (Code Review, Suite Chat). Calls
+ *  `onText` with each delta and resolves with the same result shape as
+ *  `runTask` once the stream completes. */
+export async function streamTask<
+  S extends z.ZodTypeAny | undefined = undefined,
+>(input: StreamTaskInput<S>): Promise<TaskResult<S>> {
+  const start = Date.now();
+  const model = await buildConfiguredLanguageModel(
+    input.modelId,
+    input.keys,
+    input.local ?? {},
+  );
+  const system = assembleSystem(input);
+  const userTurn = buildUserTurn(input.prompt, input.attachments);
+  const tools = input.tools ?? undefined;
+  const maxSteps = input.maxSteps ?? MAX_AGENT_STEPS;
+
+  const result = streamText({
+    model,
+    system,
+    ...userTurn,
+    ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
+    ...(input.schema
+      ? { experimental_output: Output.object({ schema: input.schema }) }
+      : {}),
+    ...(input.temperature !== undefined
+      ? { temperature: input.temperature }
+      : {}),
+    ...(input.seed !== undefined ? { seed: input.seed } : {}),
+    abortSignal: input.signal,
+    onStepFinish: onStepFinishFor(start, input.onToolEvent),
+  });
+
+  let acc = "";
+  for await (const chunk of result.textStream) {
+    acc += chunk;
+    input.onText(chunk);
+  }
+
+  if (input.schema) {
+    let obj: unknown;
+    try {
+      // experimental_output isn't on the inferred result type when the output
+      // is set behind a conditional spread; read it through a cast. It resolves
+      // after the stream drains (which we just awaited above).
+      obj = await (result as { experimental_output?: unknown })
+        .experimental_output;
+    } catch {
+      obj = undefined;
+    }
+    if (obj === undefined) {
+      return {
+        ok: false,
+        reason: "schema_violation",
+        text: acc,
+        durationMs: Date.now() - start,
+      };
+    }
+    return {
+      ok: true,
+      text: acc,
+      object: obj as InferObject<S>,
+      durationMs: Date.now() - start,
+    };
+  }
+  return {
+    ok: true,
+    text: acc,
+    object: undefined as InferObject<S>,
+    durationMs: Date.now() - start,
+  };
+}
+
+/** Best-effort: pull the model's raw text out of a NoObjectGeneratedError so a
+ *  schema-violation result still surfaces what the model said. */
+function extractTextFromError(e: unknown): string {
+  if (e && typeof e === "object") {
+    const t = (e as { text?: unknown }).text;
+    if (typeof t === "string") return t;
+  }
+  return "";
+}
+
+/** Read the completed structured output from a generateText result, tolerating
+ *  the throw the SDK does when the model never produced a valid object. */
+function readExperimentalOutput(r: {
+  experimental_output?: unknown;
+}): unknown {
+  try {
+    return r.experimental_output;
+  } catch {
+    return undefined;
+  }
+}

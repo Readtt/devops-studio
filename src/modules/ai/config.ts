@@ -761,3 +761,14 @@ export const OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1";
 export const OPENAI_COMPATIBLE_DEFAULT_BASE_URL = "";
 export const MAX_AGENT_STEPS = 24;
 export const TERMINAL_BUFFER_LINES = 300;
+
+/** Per-surface caps on the agentic read loop (how many tool-calling steps the
+ *  model may take before it's forced to produce its final answer). The
+ *  Generator gets the most room because it traces across many files; the chat
+ *  surfaces answer narrower questions. */
+export const SURFACE_STEP_CAPS = {
+  generator: 24,
+  suiteChat: 12,
+  codeReview: 15,
+  confidence: 12,
+} as const;
