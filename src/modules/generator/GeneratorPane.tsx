@@ -83,6 +83,7 @@ import { ReviewChat } from "./components/ReviewChat";
 import { TargetContextChip } from "./components/TargetContextChip";
 import { BugCaseLinkPicker } from "./components/BugCaseLinkPicker";
 import { CopyableSectionHeader } from "@/components/CopyableSectionHeader";
+import { SeverityChip } from "@/components/chat/ApplyEditCard";
 import { RefineChangesPanel } from "./RefineChangesPanel";
 import {
   AttachmentList,
@@ -2344,48 +2345,10 @@ function BugParentRow({
   );
 }
 
-/** Severity indicator in the project's editor-native voice: a vertical
- *  accent bar in the severity color (sharper than a soft pastel pill),
- *  with the severity rendered as a monospace shorthand (1·crit / 2·high /
- *  3·med / 4·low) so the badges line up vertically across the bug list. */
+/** Severity badge — delegates to the shared `SeverityChip` so bug severity
+ *  reads identically here, in the AI apply cards, and anywhere else it shows. */
 function SeverityBadge({ severity }: { severity: string }) {
-  const grade = severity.startsWith("1")
-    ? { code: "1·crit", text: "text-destructive", bar: "bg-destructive" }
-    : severity.startsWith("2")
-      ? {
-          code: "2·high",
-          text: "text-rose-600 dark:text-rose-300",
-          bar: "bg-rose-500",
-        }
-      : severity.startsWith("3")
-        ? {
-            code: "3·med",
-            text: "text-amber-700 dark:text-amber-300",
-            bar: "bg-amber-500",
-          }
-        : {
-            code: "4·low",
-            text: "text-muted-foreground",
-            bar: "bg-muted-foreground/60",
-          };
-  return (
-    <span
-      title={severity}
-      className={cn(
-        "inline-flex shrink-0 items-stretch overflow-hidden rounded-sm border border-border/60 bg-card/60",
-      )}
-    >
-      <span className={cn("w-[3px] shrink-0", grade.bar)} />
-      <span
-        className={cn(
-          "px-1.5 py-0.5 font-mono text-[10px] tracking-tight",
-          grade.text,
-        )}
-      >
-        {grade.code}
-      </span>
-    </span>
-  );
+  return <SeverityChip severity={severity} />;
 }
 
 /** Compact row of clickable code references on a bug suggestion. Clicking

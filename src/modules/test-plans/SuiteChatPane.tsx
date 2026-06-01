@@ -244,18 +244,17 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
   // Bugs aren't in the suite's case cache, so this reads them on demand — the
   // card only calls it when the user expands a bug edit's diff.
   const fetchBug = useCallback<BugLookup>(async (bugId: number) => {
-    try {
-      const b = await getBug(bugId);
-      return {
-        id: b.id,
-        title: b.title,
-        state: b.state ?? null,
-        severity: b.severity ?? null,
-        reproText: stripHtml(b.reproStepsHtml) || null,
-      };
-    } catch {
-      return null;
-    }
+    // Let the error propagate (rather than collapsing to null) so the diff
+    // shows WHY the current state couldn't be read instead of a bare
+    // "unavailable". useBugSnapshot catches it and renders the reason.
+    const b = await getBug(bugId);
+    return {
+      id: b.id,
+      title: b.title,
+      state: b.state ?? null,
+      severity: b.severity ?? null,
+      reproText: stripHtml(b.reproStepsHtml) || null,
+    };
   }, []);
 
   // NOTE: handleApplyEdit must be declared BEFORE any conditional early

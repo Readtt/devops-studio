@@ -103,7 +103,7 @@ function normalizeOutcome(raw: unknown): string | null {
 }
 
 /** Display label + dot colour for an outcome chip on a set-outcome card. */
-function outcomeChip(outcome: string | null): { label: string; className: string } {
+export function outcomeChip(outcome: string | null): { label: string; className: string } {
   switch (outcome) {
     case "Passed":
       return { label: "Passed", className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300" };
@@ -118,6 +118,47 @@ function outcomeChip(outcome: string | null): { label: string; className: string
     default:
       return { label: "Unknown", className: "bg-destructive/15 text-destructive" };
   }
+}
+
+/** Display label + tint for a bug severity, in the same soft-pill vocabulary
+ *  as {@link outcomeChip}. The single source of truth for severity badges so
+ *  every surface (bug list, create/update previews) reads identically. */
+export function severityChip(severity: string | null): {
+  label: string;
+  className: string;
+} {
+  const s = (severity ?? "").trim();
+  if (s.startsWith("1"))
+    return { label: "Critical", className: "bg-destructive/15 text-destructive" };
+  if (s.startsWith("2"))
+    return {
+      label: "High",
+      className: "bg-rose-500/15 text-rose-600 dark:text-rose-300",
+    };
+  if (s.startsWith("3"))
+    return {
+      label: "Medium",
+      className: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+    };
+  if (s.startsWith("4"))
+    return { label: "Low", className: "bg-foreground/[0.08] text-muted-foreground" };
+  return { label: s || "Severity", className: "bg-foreground/[0.08] text-muted-foreground" };
+}
+
+/** Shared severity pill. One look everywhere severity is shown. */
+export function SeverityChip({ severity }: { severity: string | null }) {
+  const chip = severityChip(severity);
+  return (
+    <span
+      title={severity ?? undefined}
+      className={cn(
+        "inline-flex shrink-0 items-center rounded-sm px-1.5 py-px text-[9.5px] font-medium uppercase tracking-wider",
+        chip.className,
+      )}
+    >
+      {chip.label}
+    </span>
+  );
 }
 
 /** Edit kinds that target an existing case and therefore require a caseId.
@@ -398,7 +439,9 @@ export function ApplyEditCard({
               <span className="text-[11.5px] font-medium leading-tight text-foreground">
                 {`Applied · ${kindLabel.toLowerCase()}`}
               </span>
-              {parsed.bugId != null ? <BugRefBadge bugId={parsed.bugId} /> : null}
+              {parsed.bugId != null ? (
+                <BugRefBadge bugId={parsed.bugId} title={bugSnap.snapshot?.title ?? null} />
+              ) : null}
               {parsed.caseId != null ? (
                 <CaseRefBadge
                   caseId={parsed.caseId}
@@ -479,7 +522,9 @@ export function ApplyEditCard({
                 {parsed.kind === "create-bug" ? "new bug" : "new"}
               </span>
             ) : null}
-            {parsed.bugId != null ? <BugRefBadge bugId={parsed.bugId} /> : null}
+            {parsed.bugId != null ? (
+              <BugRefBadge bugId={parsed.bugId} title={bugSnap.snapshot?.title ?? null} />
+            ) : null}
             {parsed.caseId != null ? (
               <CaseRefBadge
                 caseId={parsed.caseId}
@@ -977,7 +1022,9 @@ export function BugCreatePreview({
         {title}
       </BugFieldBlock>
       {severity ? (
-        <BugFieldBlock label="Severity">{severity}</BugFieldBlock>
+        <BugFieldBlock label="Severity">
+          <SeverityChip severity={severity} />
+        </BugFieldBlock>
       ) : null}
       {linkCaseId != null ? (
         <BugFieldBlock label="Links to">#{linkCaseId}</BugFieldBlock>
@@ -1413,14 +1460,72 @@ export function CaseRefBadge({
   );
 }
 
-/** Minimal non-interactive reference chip for a bug id. Bugs don't have the
- *  in-scope lookup cases get, so this is just the id — enough to anchor the
- *  card to a specific work item. */
-export function BugRefBadge({ bugId }: { bugId: number }) {
+/** Clickable reference chip for a bug id — opens the bug in-app (matching
+ *  CaseRefBadge), with middle-click → Azure DevOps when a web URL is known.
+ *  Bugs don't have the in-scope title lookup cases get, so the id is enough
+ *  to anchor the card; an optional title enriches the tooltip when available. */
+export function BugRefBadge({
+  bugId,
+  title,
+  webUrl,
+}: {
+  bugId: number;
+  title?: string | null;
+  webUrl?: string | null;
+}) {
+  const onOpen = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    window.dispatchEvent(
+      new CustomEvent("devops-studio:open-bug", {
+        detail: { bugId, title: title ? `Bug #${bugId} · ${title}` : `Bug #${bugId}` },
+      }),
+    );
+  };
   return (
-    <span className="inline-flex items-center gap-1 rounded-sm border border-border/55 bg-foreground/[0.04] px-1 py-px font-mono text-[10px] text-foreground/85">
-      bug #{bugId}
-    </span>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onOpen}
+          onAuxClick={(e) => {
+            if (webUrl) {
+              e.preventDefault();
+              void openUrl(webUrl);
+            }
+          }}
+          className="inline-flex max-w-[14rem] items-center gap-1 truncate rounded-sm border border-border/55 bg-foreground/[0.04] px-1 py-px font-mono text-[10px] text-foreground/85 transition-colors hover:bg-foreground/[0.08]"
+        >
+          <span>bug #{bugId}</span>
+          {title ? (
+            <span className="truncate font-sans text-foreground/65">{title}</span>
+          ) : null}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" variant="panel" className="max-w-[280px] p-0">
+        <div className="px-3 py-2">
+          <div className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/85">
+            Bug #{bugId}
+          </div>
+          {title ? (
+            <p className="mt-1 text-[12px] font-medium leading-snug text-foreground">
+              {title}
+            </p>
+          ) : null}
+        </div>
+        <div className="border-t border-border/40 bg-foreground/[0.03] px-3 py-1.5 text-[10.5px] leading-snug text-muted-foreground">
+          {webUrl ? (
+            <>
+              Click to open in app
+              <span className="mx-1 text-muted-foreground/55">·</span>
+              middle-click for Azure DevOps
+            </>
+          ) : (
+            "Click to open in app"
+          )}
+        </div>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 

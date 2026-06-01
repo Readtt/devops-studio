@@ -18,6 +18,7 @@ import {
   CaseRefBadge,
   CreateCasePreview,
   diffSteps,
+  outcomeChip,
   parseEdit,
   RenameDiff,
   StepsDiff,
@@ -402,6 +403,16 @@ function BulkRow({
                 webUrl={current?.webUrl ?? null}
                 suite={current?.suite ?? null}
               />
+            ) : null}
+            {parsed.kind === "set-outcome" ? (
+              <span
+                className={cn(
+                  "rounded-sm px-1.5 py-px text-[9.5px] font-medium uppercase tracking-wider",
+                  outcomeChip(parsed.outcome).className,
+                )}
+              >
+                {outcomeChip(parsed.outcome).label}
+              </span>
             ) : null}
           </div>
           <p
