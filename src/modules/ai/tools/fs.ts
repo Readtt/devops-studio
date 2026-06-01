@@ -1,11 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { native } from "../lib/native";
-import {
-  checkReadableCanonical,
-  checkWritableCanonical,
-} from "../lib/security";
-import { newQueuedEditId, usePlanStore } from "../store/planStore";
+import { checkReadableCanonical } from "../lib/security";
 import { resolvePath, type ToolContext } from "./context";
 
 const READ_BYTE_CAP = 25 * 1024;
@@ -127,87 +123,6 @@ export function buildFsTools(ctx: ToolContext) {
             path: abs,
             entries: entries.map((e) => ({ name: e.name, kind: e.kind })),
           };
-        } catch (e) {
-          return { error: String(e), path: abs };
-        }
-      },
-    }),
-
-    write_file: tool({
-      description:
-        "Create or overwrite a file with the given content. Always asks the user before running. Prefer `edit` / `multi_edit` for in-place changes — only use `write_file` for creating a brand-new file or fully replacing a tiny one.",
-      inputSchema: z.object({
-        path: z.string(),
-        content: z.string(),
-      }),
-      needsApproval: true,
-      execute: async ({ path, content }) => {
-        const reqPath = resolvePath(path, ctx.getCwd());
-        const safety = await checkWritableCanonical(reqPath, native.canonicalize);
-        if (!safety.ok) return { error: safety.reason, path: reqPath };
-        const abs = safety.canonical;
-
-        if (usePlanStore.getState().active) {
-          let original = "";
-          let isNewFile = false;
-          try {
-            const r = await native.readFile(abs);
-            if (r.kind === "text") original = r.content;
-          } catch {
-            isNewFile = true;
-          }
-          usePlanStore.getState().enqueue({
-            id: newQueuedEditId(),
-            kind: "write_file",
-            path: abs,
-            originalContent: original,
-            proposedContent: content,
-            isNewFile,
-          });
-          return {
-            path: abs,
-            queued_for_plan_review: true,
-            ok: true,
-          };
-        }
-
-        try {
-          await native.writeFile(abs, content);
-          ctx.readCache.set(abs, { size: content.length, hash: djb2(content) });
-          return { path: abs, bytesWritten: content.length, ok: true };
-        } catch (e) {
-          return { error: String(e), path: abs };
-        }
-      },
-    }),
-
-    create_directory: tool({
-      description:
-        "Create a directory (and any missing parents). Always asks the user before running.",
-      inputSchema: z.object({
-        path: z.string(),
-      }),
-      needsApproval: true,
-      execute: async ({ path }) => {
-        const reqPath = resolvePath(path, ctx.getCwd());
-        const safety = await checkWritableCanonical(reqPath, native.canonicalize);
-        if (!safety.ok) return { error: safety.reason, path: reqPath };
-        const abs = safety.canonical;
-        if (usePlanStore.getState().active) {
-          usePlanStore.getState().enqueue({
-            id: newQueuedEditId(),
-            kind: "create_directory",
-            path: abs,
-            originalContent: "",
-            proposedContent: "",
-            isNewFile: true,
-            description: "Create directory",
-          });
-          return { path: abs, queued_for_plan_review: true, ok: true };
-        }
-        try {
-          await native.createDir(abs);
-          return { path: abs, ok: true };
         } catch (e) {
           return { error: String(e), path: abs };
         }

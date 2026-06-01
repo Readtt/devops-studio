@@ -1,64 +1,21 @@
 import {
-  convertToModelMessages,
-  stepCountIs,
-  streamText,
   type LanguageModel,
   type ModelMessage,
-  type UIMessage,
 } from "ai";
 import {
-  DEFAULT_MODEL_ID,
   getModel,
-  getModelContextLimit,
   getProvider,
   LMSTUDIO_DEFAULT_BASE_URL,
   MLX_DEFAULT_BASE_URL,
   OLLAMA_DEFAULT_BASE_URL,
-  MAX_AGENT_STEPS,
   providerNeedsKey,
-  selectSystemPrompt,
   type ModelId,
   type ProviderId,
 } from "../config";
-import { buildTools, type ToolContext } from "../tools/tools";
-import { compactModelMessagesDetailed } from "./compact";
 import type { ProviderKeys } from "./keyring";
 import { createProxyFetch } from "./proxyFetch";
 
 const localProxyFetch = createProxyFetch({ allowPrivateNetwork: true });
-
-const TOOL_LABELS: Record<string, (input: Record<string, unknown>) => string> =
-  {
-    read_file: (i) => `Reading ${shortPath(i.path)}`,
-    list_directory: (i) => `Listing ${shortPath(i.path)}`,
-    grep: (i) => `Grepping ${ellipsize(String(i.pattern ?? ""), 40)}`,
-    glob: (i) => `Globbing ${ellipsize(String(i.pattern ?? ""), 40)}`,
-    edit: (i) => `Editing ${shortPath(i.path)}`,
-    multi_edit: (i) => `Editing ${shortPath(i.path)}`,
-    write_file: (i) => `Writing ${shortPath(i.path)}`,
-    create_directory: (i) => `Creating ${shortPath(i.path)}`,
-    bash_run: (i) => `Running ${ellipsize(String(i.command ?? ""), 60)}`,
-    bash_background: (i) =>
-      `Spawning ${ellipsize(String(i.command ?? ""), 60)}`,
-    bash_logs: () => `Reading logs`,
-    bash_list: () => `Listing background processes`,
-    bash_kill: () => `Stopping background process`,
-    suggest_command: (i) =>
-      `Suggesting ${ellipsize(String(i.command ?? ""), 60)}`,
-    todo_write: (i) =>
-      `Updating plan (${Array.isArray(i.todos) ? i.todos.length : 0} items)`,
-    run_subagent: (i) => `Spawning ${String(i.type ?? "subagent")} subagent`,
-  };
-
-function shortPath(p: unknown): string {
-  if (typeof p !== "string") return "";
-  const i = p.lastIndexOf("/");
-  return i === -1 ? p : p.slice(i + 1);
-}
-
-function ellipsize(s: string, max: number): string {
-  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
-}
 
 export type BuildModelOptions = {
   modelIdOverride?: string;
@@ -274,19 +231,15 @@ export function buildConfiguredLanguageModel(
   });
 }
 
-const PLAN_MODE_PROMPT = `## PLAN MODE — ACTIVE
-Mutating tools (write_file, edit, multi_edit, create_directory) will queue their changes for the user to review as a single diff. Do NOT execute bash_run or bash_background while plan mode is active — restrict yourself to reads (read_file, grep, glob, list_directory) and the queued mutations. After queueing the full set of edits, stop and return a brief summary; do not continue acting until the user has accepted/rejected.`;
-
-function buildStableSystem(
-  modelId: ModelId,
-  persona: { name: string; instructions: string } | null,
+// Assemble the stable system prefix for a surface: the surface's base prompt,
+// then optional project memory and user custom instructions. The runner passes
+// the per-surface base (from systemPrompts.ts); this helper only layers the
+// shared blocks so cache breakpoints land on identical bytes across turns.
+export function buildStableSystem(
+  base: string,
   customInstructions: string | undefined,
   projectMemory: string | null,
 ): string {
-  const base = selectSystemPrompt(getModel(modelId).id);
-  const personaBlock = persona?.instructions.trim()
-    ? `\n\n## ACTIVE AGENT — ${persona.name}\n${persona.instructions.trim()}`
-    : "";
   const customBlock = customInstructions?.trim()
     ? `\n\n## USER CUSTOM INSTRUCTIONS — follow unless they conflict with safety rules above\n${customInstructions.trim()}`
     : "";
@@ -294,13 +247,13 @@ function buildStableSystem(
     projectMemory && projectMemory.trim().length > 0
       ? `\n\n## PROJECT — DEVOPS_STUDIO.md\n${projectMemory.trim()}`
       : "";
-  return `${base}${memoryBlock}${personaBlock}${customBlock}`;
+  return `${base}${memoryBlock}${customBlock}`;
 }
 
 // OpenAI / Gemini / DeepSeek apply prefix caching automatically; only
 // Anthropic needs explicit breakpoints. Mark the stable system prefix and
 // the rotating conversation tail.
-function applyCacheBreakpoints(
+export function applyCacheBreakpoints(
   messages: ModelMessage[],
   provider: ProviderId,
 ): ModelMessage[] {
@@ -335,116 +288,5 @@ const EMPTY_USAGE: AgentUsage = {
   outputTokens: 0,
   cachedInputTokens: 0,
 };
-
-export type RunAgentOptions = {
-  keys: ProviderKeys;
-  modelId?: ModelId;
-  customInstructions?: string;
-  agentPersona?: { name: string; instructions: string } | null;
-  toolContext: ToolContext;
-  onStep?: (step: string | null) => void;
-  onUsage?: (delta: AgentUsageDelta) => void;
-  onCompact?: (info: { droppedCount: number }) => void;
-  onFinishMeta?: (info: { hitStepCap: boolean; finishReason: string }) => void;
-  lmstudioBaseURL?: string;
-  lmstudioModelId?: string;
-  mlxBaseURL?: string;
-  mlxModelId?: string;
-  ollamaBaseURL?: string;
-  ollamaModelId?: string;
-  openaiCompatibleBaseURL?: string;
-  openaiCompatibleModelId?: string;
-  openaiCompatibleContextLimit?: number;
-  planMode?: boolean;
-  projectMemory?: string | null;
-  uiMessages: UIMessage[];
-  abortSignal?: AbortSignal;
-};
-
-export async function runAgentStream(opts: RunAgentOptions) {
-  const modelId = opts.modelId ?? DEFAULT_MODEL_ID;
-  const model = await buildConfiguredLanguageModel(modelId, opts.keys, {
-    lmstudioBaseURL: opts.lmstudioBaseURL,
-    lmstudioModelId: opts.lmstudioModelId,
-    mlxBaseURL: opts.mlxBaseURL,
-    mlxModelId: opts.mlxModelId,
-    ollamaBaseURL: opts.ollamaBaseURL,
-    ollamaModelId: opts.ollamaModelId,
-    openaiCompatibleBaseURL: opts.openaiCompatibleBaseURL,
-    openaiCompatibleModelId: opts.openaiCompatibleModelId,
-  });
-  const provider = getModel(modelId).provider;
-
-  const stableSystem = buildStableSystem(
-    modelId,
-    opts.agentPersona ?? null,
-    opts.customInstructions,
-    opts.projectMemory ?? null,
-  );
-
-  const history = await convertToModelMessages(opts.uiMessages);
-  const compact = compactModelMessagesDetailed(
-    history,
-    getModelContextLimit(getModel(modelId).id, opts.openaiCompatibleContextLimit),
-  );
-  const compactedHistory = compact.messages;
-  if (compact.compacted) {
-    opts.onCompact?.({ droppedCount: compact.droppedCount });
-  }
-
-  const messages: ModelMessage[] = [{ role: "system", content: stableSystem }];
-  if (opts.planMode) {
-    messages.push({ role: "system", content: PLAN_MODE_PROMPT });
-  }
-  messages.push(...compactedHistory);
-
-  const finalMessages = applyCacheBreakpoints(messages, provider);
-
-  let stepsSeen = 0;
-  return streamText({
-    model,
-    messages: finalMessages,
-    tools: buildTools(opts.toolContext),
-    stopWhen: stepCountIs(MAX_AGENT_STEPS),
-    abortSignal: opts.abortSignal,
-    onStepFinish: (step) => {
-      stepsSeen++;
-      if (opts.onStep) {
-        const last = step.toolCalls?.[step.toolCalls.length - 1];
-        if (last) {
-          const label = TOOL_LABELS[last.toolName];
-          opts.onStep(
-            label
-              ? label((last.input ?? {}) as Record<string, unknown>)
-              : `Calling ${last.toolName}`,
-          );
-        } else if (step.text) {
-          opts.onStep("Writing");
-        }
-      }
-      if (opts.onUsage && step.usage) {
-        const u = step.usage;
-        const stepInput = u.inputTokens ?? 0;
-        const stepCached = u.inputTokenDetails?.cacheReadTokens ?? 0;
-        opts.onUsage({
-          inputTokens: stepInput,
-          outputTokens: u.outputTokens ?? 0,
-          cachedInputTokens: stepCached,
-          lastInputTokens: stepInput,
-          lastCachedTokens: stepCached,
-        });
-      }
-    },
-    onFinish: (result) => {
-      opts.onStep?.(null);
-      const finishReason =
-        (result as { finishReason?: string } | undefined)?.finishReason ?? "";
-      opts.onFinishMeta?.({
-        hitStepCap: stepsSeen >= MAX_AGENT_STEPS,
-        finishReason,
-      });
-    },
-  });
-}
 
 export { EMPTY_USAGE };
