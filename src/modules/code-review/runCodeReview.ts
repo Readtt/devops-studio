@@ -4,12 +4,10 @@
 // existing test suite", and the inputs carry a precomputed git diff so the
 // model has the baseline in scope from message 1.
 
-import { stepCountIs, streamText } from "ai";
-import { getModel, type ModelId } from "@/modules/ai/config";
-import { buildLanguageModel } from "@/modules/ai/lib/agent";
+import { SURFACE_STEP_CAPS, type ModelId } from "@/modules/ai/config";
 import { type ProviderKeys } from "@/modules/ai/lib/keyring";
+import { streamTask } from "@/modules/ai/lib/taskRunner";
 import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
-import { buildUserTurn } from "@/modules/ai/lib/visionMessage";
 import {
   collectContextImages,
   formatContextBlocks,
@@ -17,10 +15,7 @@ import {
 } from "@/modules/ai/lib/contextBlocks";
 import { type Attachment } from "@/components/chat/attachments";
 import type { AppliedPatchesMap } from "@/components/ChatMarkdown";
-import {
-  vercelStepToActivity,
-  type ActivityEntry,
-} from "@/modules/generator/lib/activityLog";
+import type { ActivityEntry } from "@/modules/generator/lib/activityLog";
 
 export type CodeReviewMessage = {
   id: string;
@@ -163,37 +158,28 @@ export async function streamCodeReview(input: StreamCodeReviewInput): Promise<{
   text: string;
   durationMs: number;
 }> {
-  const model = getModel(input.modelId);
-  const lm = await buildLanguageModel(model.provider, input.keys, model.id, {});
-  const tools = buildSuiteChatTools(input.sourceRoot);
   const prompt = buildUserPrompt(input);
-  const start = Date.now();
-  // streamText accepts abortSignal for cooperative cancellation. The pane's
-  // "Stop" button drives this — when the user hits it, in-flight tool calls
-  // and the model stream both bail.
-  const result = streamText({
-    model: lm,
-    system: CODE_REVIEW_SYSTEM_PROMPT,
-    ...buildUserTurn(prompt, [
+  const tools = buildSuiteChatTools(input.sourceRoot);
+  // Prose + read-only tools, no top-level schema. temperature 0 so a given diff
+  // yields reproducible patches. The runner honors the abort signal — the
+  // pane's "Stop" bails the stream and in-flight tool calls.
+  const r = await streamTask({
+    modelId: input.modelId,
+    keys: input.keys,
+    systemPrompt: CODE_REVIEW_SYSTEM_PROMPT,
+    prompt,
+    attachments: [
       ...(input.attachments ?? []),
       ...collectContextImages(input.contextBlocks ?? []),
-    ]),
-    abortSignal: input.signal,
-    ...(tools ? { tools, stopWhen: stepCountIs(10) } : {}),
-    onStepFinish: input.onToolEvent
-      ? (step) => {
-          for (const e of vercelStepToActivity(step, start)) {
-            input.onToolEvent?.(e);
-          }
-        }
-      : undefined,
+    ],
+    tools: tools ?? null,
+    temperature: 0,
+    maxSteps: SURFACE_STEP_CAPS.codeReview,
+    onToolEvent: input.onToolEvent,
+    signal: input.signal,
+    onText: input.onText,
   });
-  let acc = "";
-  for await (const chunk of result.textStream) {
-    acc += chunk;
-    input.onText(chunk);
-  }
-  return { text: acc, durationMs: Date.now() - start };
+  return { text: r.text, durationMs: r.durationMs };
 }
 
 function buildUserPrompt(input: StreamCodeReviewInput): string {

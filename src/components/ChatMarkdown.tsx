@@ -14,6 +14,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { ApplyEditCard } from "@/components/chat/ApplyEditCard";
 import { BulkApplyEditCard } from "@/components/chat/BulkApplyEditCard";
 import { ApplyPatchCard } from "@/modules/code-review/ApplyPatchCard";
+import { parsePatch } from "@/modules/code-review/patchSchema";
 import { ChatCodeMirror } from "@/modules/code-viewer/ChatCodeMirror";
 
 /**
@@ -464,6 +465,12 @@ const BlockRenderer = memo(function BlockRenderer({
         );
       }
       if (block.lang === "code-review-patch") {
+        // Validate the patch shape BEFORE mounting the apply card so a
+        // malformed block reads as a plain warning, not a broken card.
+        const patch = parsePatch(block.body);
+        if (!patch.ok) {
+          return <PatchWarning error={patch.error} />;
+        }
         const blockHash = hashEditBody(block.body);
         return (
           <ApplyPatchCard
@@ -482,6 +489,16 @@ const BlockRenderer = memo(function BlockRenderer({
       );
   }
 }, blockRendererEqual);
+
+/** Rendered in place of an apply card when a `code-review-patch` block fails
+ *  schema validation — better than a half-broken card the user can't act on. */
+function PatchWarning({ error }: { error: string }) {
+  return (
+    <div className="my-1 rounded-md border border-amber-500/40 bg-amber-500/[0.08] px-2.5 py-1.5 text-[11px] text-amber-700 dark:text-amber-300">
+      Skipped a malformed patch block ({error}). Ask the reviewer to re-emit it.
+    </div>
+  );
+}
 
 function Caret() {
   // Subtle bar caret — locks to the end of the last block of a streaming

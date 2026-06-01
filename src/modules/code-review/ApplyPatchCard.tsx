@@ -17,6 +17,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
+import { parsePatch } from "./patchSchema";
 
 /**
  * Inline "Apply this patch" card rendered by ChatMarkdown when the
@@ -38,13 +39,6 @@ import { useEffect, useState } from "react";
  * "file not found" or "range out of bounds" when the diff has moved
  * since the review was generated.
  */
-
-type PatchBody = {
-  path: string;
-  startLine: number;
-  endLine: number;
-  replacement: string;
-};
 
 type ReadResult =
   | { kind: "text"; content: string; size: number }
@@ -359,36 +353,6 @@ function ReplacementPreview({
   );
 }
 
-function parsePatch(body: string):
-  | { ok: true; value: PatchBody }
-  | { ok: false; error: string } {
-  try {
-    const parsed = JSON.parse(body) as Partial<PatchBody>;
-    if (typeof parsed.path !== "string" || !parsed.path.trim()) {
-      return { ok: false, error: "missing or empty 'path'" };
-    }
-    if (typeof parsed.startLine !== "number" || parsed.startLine < 1) {
-      return { ok: false, error: "'startLine' must be a positive integer" };
-    }
-    if (typeof parsed.endLine !== "number") {
-      return { ok: false, error: "'endLine' must be a number" };
-    }
-    if (typeof parsed.replacement !== "string") {
-      return { ok: false, error: "'replacement' must be a string" };
-    }
-    return {
-      ok: true,
-      value: {
-        path: parsed.path,
-        startLine: parsed.startLine,
-        endLine: parsed.endLine,
-        replacement: parsed.replacement,
-      },
-    };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
-}
 
 /** Splice lines [startLine, endLine] (1-indexed, inclusive) with the
  *  replacement text. For pure-insert patches, the caller passes
