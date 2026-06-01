@@ -9,7 +9,7 @@ DevOps Studio is a Tauri 2 desktop app for QA testers working in Azure DevOps Te
 - **UI:** shadcn (radix-luma variant) + Tailwind CSS v4 + oklch color tokens + Geist Variable / JetBrains Mono
 - **Icons:** `@hugeicons/react` for app glyphs, `simple-icons` for brand marks (ADO, Anthropic, OpenAI, etc.) via `src/components/BrandIcon.tsx`
 - **State:** Zustand stores under `src/modules/*/store/`
-- **AI:** Vercel AI SDK (multi-provider) and Claude Code CLI (subprocess, OAuth + API-key)
+- **AI:** Vercel AI SDK — one BYOK engine, every provider via API key. All four AI surfaces (Generator, Suite Chat, Code Review, Confidence) route through **one shared task runner** (`ai/lib/taskRunner.ts`: `runTask`/`streamTask`). **Read-only against the user's source** — the AI *suggests* artifacts the user applies (test cases via `ado_*`; code-review patches via `fs_write_file` behind `ApplyPatchCard`); it never autonomously writes files or runs shell commands. Read access is gated by the global `codeSearchEnabled` preference; per-surface agentic-loop step caps live in `config.ts` `SURFACE_STEP_CAPS`.
 - **ADO client:** Native Rust HTTP via `reqwest`, PAT stored in OS keychain
 - **Code viewer:** CodeMirror 6
 - **Secrets:** Tauri `secrets` plugin → Windows Credential Manager / macOS Keychain / libsecret
@@ -23,7 +23,7 @@ src/                                      Frontend
 ├── components/BrandIcon.tsx              Simple-icons wrapper for company logos
 ├── modules/
 │   ├── ado/                              Tauri-invoke wrappers + types for ADO commands
-│   ├── ai/                               AI provider config, keyring, Claude/Vercel SDK clients
+│   ├── ai/                               AI provider config, keyring, shared task runner + system prompts
 │   ├── code-review/                      BYOK-grounded review pane for the current branch diff
 │   ├── code-viewer/                      CodeMirror panes
 │   ├── command-palette/                  Ctrl/Cmd+K palette
@@ -46,7 +46,6 @@ src-tauri/src/                            Rust backend
 └── modules/
     ├── ado/                              Typed ADO HTTP client (plans, suites, cases, bugs, repos)
     ├── chat_threads.rs                   SQLite-backed persistence for suite-chat + code-review threads
-    ├── claude.rs                         Subprocess driver for `claude` CLI (probe, run-query, setup-token)
     ├── fs/                               Filesystem reads (read/write/grep/glob/tree)
     ├── git.rs                            git rev-parse helpers (P2 addition)
     ├── history.rs                        Generation run history (SQLite)
@@ -105,10 +104,10 @@ input → analyzing → review → publishing → done
                  → error  → error      → error
 ```
 
-Phase UIs live under `src/modules/generator/phases/`. Run engines:
-
-- `qaAnalystRunClaude.ts` — drives the `claude` CLI via `claude_run_query` (full agent loop)
-- `qaAnalystRun.ts` — Vercel AI SDK with whichever provider is the user's default
+Phase UIs live under `src/modules/generator/phases/`. The analyzer runs through
+`qaAnalystRun.ts` → the shared `runTask` (schema-validated `DraftBatch`,
+`temperature: 0`); when code search is on it gets read-only Read/Glob/Grep tools
+so cases are grounded in real code.
 
 Generator can re-target itself mid-session via `setTarget(planId, suiteId)` so reusing an open tab from the context menu actually updates the form.
 

@@ -51,9 +51,7 @@ It's an editor-shaped tool: tabbed workspace, command palette, keyboard-driven, 
 - **Survives pane splits/merges** — xterm + the PTY live outside React's lifecycle, so reshaping the workspace doesn't kill the shell or wipe scrollback.
 
 ### Bring your own AI
-Two engines, swappable per generation:
-- **Vercel AI SDK** (BYOK) — OpenAI, Anthropic, Google, xAI, Cerebras, Groq, DeepSeek, Mistral, OpenRouter, any OpenAI-compatible endpoint, plus local LM Studio / MLX / Ollama.
-- **Claude Code CLI** (subprocess) — drives `claude` with OAuth or API-key auth, giving the analyst full agent-loop access to read/grep/glob your repo while it thinks.
+One BYOK engine, every provider via API key — OpenAI, Anthropic, Google, xAI, Cerebras, Groq, DeepSeek, Mistral, OpenRouter, any OpenAI-compatible endpoint, plus local LM Studio / MLX / Ollama. Every AI surface (generate, suite chat, code review, confidence) runs read-only against your source: when code search is on, the model reads/greps/globs your repo to ground its answers, but it only ever *suggests* changes you apply.
 
 API keys live in the OS keychain (Windows Credential Manager / macOS Keychain / libsecret). Per-run model override available from the generator; default model lives in the status bar.
 
@@ -106,7 +104,7 @@ Requires Node 20+ and Rust stable. The Tauri 2 toolchain handles the rest.
    - Identity Read
 3. Click **Test connection** — status should go green.
 4. Pick a **source directory** (status bar bottom-left) so the agent and code-link rows can resolve relative paths.
-5. *(Optional)* **Settings → Models** — add API keys for whichever provider you want to drive generation, or enable Claude Code CLI.
+5. *(Optional)* **Settings → Models** — add API keys for whichever provider you want to drive generation.
 
 Then open the **Test Plans** sidebar, expand a plan, click `+Generate` on any suite, paste your spec, and go.
 
@@ -117,7 +115,7 @@ Then open the **Test Plans** sidebar, expand a plan, click `+Generate` on any su
 - **UI:** shadcn (radix-luma variant) + Tailwind v4 + `oklch` color tokens
 - **Fonts:** Geist Variable + JetBrains Mono Variable
 - **State:** Zustand
-- **AI:** Vercel AI SDK + Claude Code CLI (`@anthropic-ai/claude-agent-sdk`)
+- **AI:** Vercel AI SDK (multi-provider, BYOK)
 - **ADO client:** Native Rust `reqwest`, PAT in OS keychain
 - **Code viewer:** CodeMirror 6 with hand-tuned syntax themes
 - **Storage:** Tauri Store (settings) + SQLite (generation history)
