@@ -361,7 +361,7 @@ export function ReviewChat({ onClose }: Props) {
           onDrop={onDrop}
           onDragOver={(e) => e.preventDefault()}
           className={cn(
-            "group relative flex items-end gap-1.5 rounded-sm border border-border/40 bg-input/40 px-1.5 py-1 transition-colors",
+            "group relative flex items-end gap-2 rounded-md border border-border/60 bg-input/40 px-2.5 py-1.5 transition-colors",
             "focus-within:border-primary/55 focus-within:ring-2 focus-within:ring-ring/25",
             busy && "border-primary/35 bg-primary/[0.03]",
           )}
@@ -371,7 +371,7 @@ export function ReviewChat({ onClose }: Props) {
             onFilePicker={onFilePicker}
             disabled={busy}
             iconSize={13}
-            className="size-6 rounded-sm"
+            className="size-6 rounded-md"
           />
           <textarea
             ref={inputRef}
@@ -397,14 +397,14 @@ export function ReviewChat({ onClose }: Props) {
             rows={1}
             disabled={busy}
             placeholder="Ask about the draft…  (#id to attach · Enter to send)"
-            className="min-h-[20px] w-full resize-none bg-transparent py-1 text-[11.5px] leading-[1.55] outline-none placeholder:text-muted-foreground/55"
+            className="min-h-[20px] w-full resize-none bg-transparent py-1 text-[12px] leading-[1.55] outline-none placeholder:text-muted-foreground/55"
           />
           {busy ? (
             <button
               type="button"
               onClick={() => cancel()}
               aria-label="Stop"
-              className="grid size-6 shrink-0 place-items-center rounded-sm bg-foreground/[0.08] text-foreground/80 transition-colors hover:bg-foreground/[0.14]"
+              className="grid size-6 shrink-0 place-items-center rounded-md bg-foreground/[0.08] text-foreground/80 transition-colors hover:bg-foreground/[0.14]"
             >
               <span className="size-2.5 rounded-[2px] bg-current" />
             </button>
@@ -415,7 +415,7 @@ export function ReviewChat({ onClose }: Props) {
               disabled={!draft.trim()}
               aria-label="Send message"
               className={cn(
-                "grid size-6 shrink-0 place-items-center rounded-sm transition-colors",
+                "grid size-6 shrink-0 place-items-center rounded-md transition-colors",
                 draft.trim()
                   ? "bg-primary text-primary-foreground hover:bg-primary/85"
                   : "bg-foreground/[0.06] text-muted-foreground/55",
