@@ -1088,6 +1088,10 @@ type Msg = {
   appliedEdits?: Record<string, AppliedEditRecord>;
   attachments?: Attachment[];
   toolEvents?: ActivityEntry[];
+  /** Work items the user attached with `#` on this turn. Rendered inline in
+   *  the message (like image attachments) so the reference is visible and
+   *  clickable, not just silently folded into the prompt. */
+  contextWorkItems?: { id: number; title: string; workItemType?: string | null }[];
 };
 
 function ChatThread({
@@ -1215,6 +1219,7 @@ function ChatThread({
             role={m.role}
             content={m.content}
             attachments={m.attachments}
+            contextWorkItems={m.contextWorkItems}
             toolEvents={m.toolEvents}
             streaming={busy && m.role === "assistant" && idx === messages.length - 1}
             lookupCase={lookupCase}
@@ -1257,10 +1262,53 @@ function ChatThread({
 // Message bubble
 // ---------------------------------------------------------------------------
 
+/** Inline chip for a work item the user attached with `#`. Clickable — opens
+ *  the item in-app (a Bug routes to the bug pane, anything else to the test-
+ *  case pane) so the reference is live, not a silent prompt-only attachment. */
+function MentionedWorkItemChip({
+  item,
+}: {
+  item: { id: number; title: string; workItemType?: string | null };
+}) {
+  const isBug = (item.workItemType ?? "").toLowerCase().includes("bug");
+  const open = () => {
+    window.dispatchEvent(
+      new CustomEvent(
+        isBug ? "devops-studio:open-bug" : "devops-studio:open-test-case",
+        {
+          detail: isBug
+            ? { bugId: item.id, title: `Bug #${item.id} · ${item.title}` }
+            : { caseId: item.id, title: `#${item.id} ${item.title}` },
+        },
+      ),
+    );
+  };
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={open}
+          className="inline-flex h-6 max-w-[16rem] items-center gap-1.5 rounded-md border border-border/55 bg-card/70 px-1.5 text-[10.5px] text-foreground/85 transition-colors hover:bg-foreground/[0.06]"
+        >
+          <span className="font-mono text-muted-foreground/85">
+            {isBug ? `bug #${item.id}` : `#${item.id}`}
+          </span>
+          <span className="truncate text-foreground/70">{item.title}</span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-[280px] text-[11px]">
+        Open {isBug ? "bug" : "work item"} #{item.id} in the app
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function MessageBubble({
   role,
   content,
   attachments,
+  contextWorkItems,
   streaming,
   lookupCase,
   fetchBug,
@@ -1275,6 +1323,7 @@ function MessageBubble({
   role: "user" | "assistant";
   content: string;
   attachments?: Attachment[];
+  contextWorkItems?: { id: number; title: string; workItemType?: string | null }[];
   toolEvents?: ActivityEntry[];
   streaming: boolean;
   lookupCase: CaseLookup;
@@ -1308,6 +1357,13 @@ function MessageBubble({
             attachments={attachments}
             className="max-w-[80%] justify-end"
           />
+        ) : null}
+        {contextWorkItems && contextWorkItems.length > 0 ? (
+          <div className="flex max-w-[80%] flex-wrap justify-end gap-1.5">
+            {contextWorkItems.map((wi) => (
+              <MentionedWorkItemChip key={wi.id} item={wi} />
+            ))}
+          </div>
         ) : null}
         {content ? (
           <div className="group/msg relative max-w-[80%] rounded-2xl rounded-br-sm bg-primary/12 px-3.5 py-2 text-[12px] leading-[1.55] text-foreground">
