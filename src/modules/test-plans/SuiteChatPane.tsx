@@ -1127,10 +1127,13 @@ function ChatThread({
   assistantProvider: import("@/modules/ai/config").ProviderId | null;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
   // Persistent "stick to bottom" intent. Starts true; flips to false the
-  // moment the user scrolls UP, flips back to true when they reach the
-  // bottom again (or click the jump pill).
+  // moment the user scrolls UP past the threshold, flips back to true when
+  // they reach the bottom again (or click the jump pill). We read scroll
+  // math directly off the container on every scroll — the same proven
+  // approach Code Review uses. (An earlier IntersectionObserver on a sentinel
+  // nested inside the `max-w-3xl` wrapper fired unreliably, which is why
+  // jump-to-latest got stuck at the top here.)
   const stickRef = useRef(true);
   const [showPill, setShowPill] = useState(false);
   const rafRef = useRef<number | null>(null);
@@ -1147,50 +1150,15 @@ function ChatThread({
     setShowPill(false);
   }, []);
 
-  // Detect "near bottom" using a sentinel + IntersectionObserver. This is
-  // both cheaper and more reliable than computing scroll math on every
-  // mutation — the observer fires exactly when the sentinel enters/leaves
-  // the viewport, which is the thing we actually care about.
-  useEffect(() => {
-    const root = containerRef.current;
-    const sentinel = sentinelRef.current;
-    if (!root || !sentinel) return;
-    const obs = new IntersectionObserver(
-      ([entry]) => {
-        const atBottom = entry.isIntersecting;
-        if (atBottom) {
-          stickRef.current = true;
-          setShowPill(false);
-        } else {
-          // Hide pill until the user has actually drifted away from the bottom.
-          setShowPill(true);
-        }
-      },
-      { root, threshold: 0, rootMargin: "0px 0px 64px 0px" },
-    );
-    obs.observe(sentinel);
-    return () => obs.disconnect();
-  }, []);
-
-  // Wheel / touch listener so any UP gesture immediately releases the
-  // stick-to-bottom intent — without waiting for the observer to fire.
-  useEffect(() => {
+  // Single source of truth for "am I near the bottom?" — fires on the user's
+  // own scrolling AND on programmatic re-sticks, so the pill and the stick
+  // intent stay in lockstep without a separate observer.
+  const onScroll = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      if (e.deltaY < 0) stickRef.current = false;
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "PageUp" || e.key === "ArrowUp" || e.key === "Home") {
-        stickRef.current = false;
-      }
-    };
-    el.addEventListener("wheel", onWheel, { passive: true });
-    el.addEventListener("keydown", onKey);
-    return () => {
-      el.removeEventListener("wheel", onWheel);
-      el.removeEventListener("keydown", onKey);
-    };
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
+    stickRef.current = near;
+    setShowPill((prev) => (prev === !near ? prev : !near));
   }, []);
 
   // Re-stick on every render that mutated content. Uses rAF so we run AFTER
@@ -1225,6 +1193,7 @@ function ChatThread({
   return (
     <div
       ref={containerRef}
+      onScroll={onScroll}
       className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain"
       tabIndex={-1}
     >
@@ -1261,10 +1230,9 @@ function ChatThread({
             assistantProvider={assistantProvider}
           />
         ))}
-        <div ref={sentinelRef} aria-hidden className="h-1 w-full" />
       </div>
 
-      {showPill ? (
+      {showPill && messages.length > 0 ? (
         <button
           type="button"
           onClick={() => scrollToBottom("smooth")}
