@@ -7,23 +7,18 @@
 // The file-system tools let the model validate test cases against the real
 // codebase via Read/Glob/Grep.
 
-import { generateText, stepCountIs, streamText } from "ai";
-import { getModel, type ModelId } from "@/modules/ai/config";
-import { buildLanguageModel } from "@/modules/ai/lib/agent";
+import { SURFACE_STEP_CAPS, type ModelId } from "@/modules/ai/config";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
+import { runTask, streamTask } from "@/modules/ai/lib/taskRunner";
 import type { TestCase } from "@/modules/ado";
 import { buildSuiteChatTools } from "./suiteChatTools";
-import { buildUserTurn } from "@/modules/ai/lib/visionMessage";
 import {
   collectContextImages,
   formatContextBlocks,
   type ContextBlock,
 } from "@/modules/ai/lib/contextBlocks";
 import { type Attachment } from "@/components/chat/attachments";
-import {
-  vercelStepToActivity,
-  type ActivityEntry,
-} from "@/modules/generator/lib/activityLog";
+import type { ActivityEntry } from "@/modules/generator/lib/activityLog";
 
 /** Persisted record of an ADO edit that the user applied from this message.
  *  Keyed in `SuiteChatMessage.appliedEdits` by a content hash of the
@@ -349,65 +344,51 @@ export type VercelSuiteChatInput = SuiteChatRunInput & {
 export async function runSuiteChat(
   input: VercelSuiteChatInput,
 ): Promise<SuiteChatRunResult> {
-  const model = getModel(input.modelId);
-  const lm = await buildLanguageModel(model.provider, input.keys, model.id, {
-    lmstudioBaseURL: input.lmstudioBaseURL,
-  });
   const userPrompt = buildSuiteChatUserPrompt(input, input.sourceRoot);
   const tools = buildSuiteChatTools(input.sourceRoot);
-  const start = Date.now();
-  const result = await generateText({
-    model: lm,
-    system: SUITE_CHAT_SYSTEM_PROMPT,
-    ...buildUserTurn(userPrompt, [
+  const r = await runTask({
+    modelId: input.modelId,
+    keys: input.keys,
+    local: { lmstudioBaseURL: input.lmstudioBaseURL },
+    systemPrompt: SUITE_CHAT_SYSTEM_PROMPT,
+    prompt: userPrompt,
+    attachments: [
       ...(input.attachments ?? []),
       ...collectContextImages(input.contextBlocks ?? []),
-    ]),
-    ...(tools ? { tools, stopWhen: stepCountIs(8) } : {}),
+    ],
+    tools: tools ?? null,
+    temperature: 0,
+    maxSteps: SURFACE_STEP_CAPS.suiteChat,
   });
-  return { text: result.text ?? "", durationMs: Date.now() - start };
+  return { text: r.text, durationMs: r.durationMs };
 }
 
-/** Streaming variant of runSuiteChat. Calls `onText` with each text delta
- *  as the model produces it; resolves once the stream finishes. The full
- *  accumulated text is returned for debugging/logging — the caller is
- *  expected to have already rendered it via onText. */
+/** Streaming variant of runSuiteChat. Calls `onText` with each text delta as
+ *  the model produces it; resolves once the stream finishes. When a source dir
+ *  is set the model gets read-only Read/Glob/Grep tools so answers are
+ *  code-grounded; temperature 0 keeps them reproducible. */
 export async function streamSuiteChat(
   input: VercelSuiteChatInput & { onText: (delta: string) => void },
 ): Promise<SuiteChatRunResult> {
-  const model = getModel(input.modelId);
-  const lm = await buildLanguageModel(model.provider, input.keys, model.id, {
-    lmstudioBaseURL: input.lmstudioBaseURL,
-  });
   const userPrompt = buildSuiteChatUserPrompt(input, input.sourceRoot);
   const tools = buildSuiteChatTools(input.sourceRoot);
-  const start = Date.now();
-  // When a source dir is set, hand the model read-only fs tools and let
-  // it loop through up to 8 tool-calling steps before forcing a final
-  // text turn. Mirrors the Claude CLI path's Read/Glob/Grep capability so
-  // BYOK users get the same code-grounded behaviour.
-  const result = streamText({
-    model: lm,
-    system: SUITE_CHAT_SYSTEM_PROMPT,
-    ...buildUserTurn(userPrompt, [
+  const r = await streamTask({
+    modelId: input.modelId,
+    keys: input.keys,
+    local: { lmstudioBaseURL: input.lmstudioBaseURL },
+    systemPrompt: SUITE_CHAT_SYSTEM_PROMPT,
+    prompt: userPrompt,
+    attachments: [
       ...(input.attachments ?? []),
       ...collectContextImages(input.contextBlocks ?? []),
-    ]),
-    ...(tools ? { tools, stopWhen: stepCountIs(8) } : {}),
-    onStepFinish: input.onToolEvent
-      ? (step) => {
-          for (const e of vercelStepToActivity(step, start)) {
-            input.onToolEvent?.(e);
-          }
-        }
-      : undefined,
+    ],
+    tools: tools ?? null,
+    temperature: 0,
+    maxSteps: SURFACE_STEP_CAPS.suiteChat,
+    onToolEvent: input.onToolEvent,
+    onText: input.onText,
   });
-  let acc = "";
-  for await (const chunk of result.textStream) {
-    acc += chunk;
-    input.onText(chunk);
-  }
-  return { text: acc, durationMs: Date.now() - start };
+  return { text: r.text, durationMs: r.durationMs };
 }
 
 // --- Shared prompt builder --------------------------------------------------

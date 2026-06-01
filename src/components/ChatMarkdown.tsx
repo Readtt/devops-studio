@@ -11,7 +11,7 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { ApplyEditCard } from "@/components/chat/ApplyEditCard";
+import { ApplyEditCard, parseEdit } from "@/components/chat/ApplyEditCard";
 import { BulkApplyEditCard } from "@/components/chat/BulkApplyEditCard";
 import { ApplyPatchCard } from "@/modules/code-review/ApplyPatchCard";
 import { parsePatch } from "@/modules/code-review/patchSchema";
@@ -435,6 +435,17 @@ const BlockRenderer = memo(function BlockRenderer({
       return <hr className="my-1 border-border/40" />;
     case "code":
       if (block.lang === "devops-edit" && onApplyEdit) {
+        // Validate the edit shape up front so a malformed block reads as a
+        // plain warning instead of an apply card the user can't action.
+        // parseEdit is lenient (maps unrecognized kinds to "unknown") so we
+        // also reject that here — an unknown kind has no apply path.
+        const edit = parseEdit(block.body);
+        if (!edit.ok) {
+          return <EditWarning error={edit.error} />;
+        }
+        if (edit.kind === "unknown") {
+          return <EditWarning error="unrecognized edit kind" />;
+        }
         const blockHash = hashEditBody(block.body);
         const applied = appliedEdits?.[blockHash] ?? null;
         return (
@@ -496,6 +507,16 @@ function PatchWarning({ error }: { error: string }) {
   return (
     <div className="my-1 rounded-md border border-amber-500/40 bg-amber-500/[0.08] px-2.5 py-1.5 text-[11px] text-amber-700 dark:text-amber-300">
       Skipped a malformed patch block ({error}). Ask the reviewer to re-emit it.
+    </div>
+  );
+}
+
+/** Same idea for a malformed `devops-edit` block — show the validation reason
+ *  instead of mounting an apply card the user can't action. */
+function EditWarning({ error }: { error: string }) {
+  return (
+    <div className="my-1 rounded-md border border-amber-500/40 bg-amber-500/[0.08] px-2.5 py-1.5 text-[11px] text-amber-700 dark:text-amber-300">
+      Skipped a malformed edit block ({error}). Ask the assistant to re-emit it.
     </div>
   );
 }
