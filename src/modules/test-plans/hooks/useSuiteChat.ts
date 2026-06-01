@@ -20,7 +20,10 @@ import { supportsVision, type ModelId } from "@/modules/ai/config";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import { bugsToContextBlocks } from "@/modules/ado/lib/bugContextBlock";
 import type { Attachment } from "@/components/chat/attachments";
-import { usePreferencesStore } from "@/modules/settings/preferences";
+import {
+  localProviderConfig,
+  usePreferencesStore,
+} from "@/modules/settings/preferences";
 import {
   newSuiteChatMessageId,
   streamSuiteChatTask,
@@ -750,6 +753,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
         contextBlocks,
         keys,
         modelId,
+        local: localProviderConfig(prefs),
         sourceRoot,
         onText: appendDelta,
         onToolEvent: mergeToolEvent,

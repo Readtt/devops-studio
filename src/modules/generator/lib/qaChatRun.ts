@@ -2,8 +2,11 @@
 // path returns markdown the user reads inline; it never rewrites the draft.
 
 import { streamText } from "ai";
-import { getModel, type ModelId } from "@/modules/ai/config";
-import { buildLanguageModel } from "@/modules/ai/lib/agent";
+import { type ModelId } from "@/modules/ai/config";
+import {
+  buildConfiguredLanguageModel,
+  type LocalProviderConfig,
+} from "@/modules/ai/lib/agent";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import type { ReviewedBug, ReviewedCase } from "./draftBatchSchema";
 import {
@@ -98,7 +101,7 @@ export type ChatRunResult = {
 export type ChatTaskInput = ChatRunInput & {
   modelId: ModelId;
   keys: ProviderKeys;
-  lmstudioBaseURL?: string;
+  local?: LocalProviderConfig;
 };
 
 /** Streaming draft-chat run. Calls `onText` with each delta as the model
@@ -108,10 +111,11 @@ export type ChatTaskInput = ChatRunInput & {
 export async function streamChatTask(
   input: ChatTaskInput & { onText: (delta: string) => void },
 ): Promise<ChatRunResult> {
-  const model = getModel(input.modelId);
-  const lm = await buildLanguageModel(model.provider, input.keys, model.id, {
-    lmstudioBaseURL: input.lmstudioBaseURL,
-  });
+  const lm = await buildConfiguredLanguageModel(
+    input.modelId,
+    input.keys,
+    input.local ?? {},
+  );
   const userPrompt = buildChatUserPrompt(input);
   const start = Date.now();
   const result = streamText({

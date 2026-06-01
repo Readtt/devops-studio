@@ -3,7 +3,10 @@
 // (TestCasePane, generator review) to a single await.
 
 import { useChatStore } from "@/modules/ai/store/chatStore";
-import { usePreferencesStore } from "@/modules/settings/preferences";
+import {
+  localProviderConfig,
+  usePreferencesStore,
+} from "@/modules/settings/preferences";
 import { supportsVision } from "@/modules/ai/config";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import { evaluateConfidence, type EvalCase } from "./runConfidenceEval";
@@ -25,7 +28,7 @@ export async function evaluateCaseConfidence(
     sourceRoot: prefs.codeSearchEnabled ? (prefs.sourceRoot ?? null) : null,
     modelId,
     keys: chat.apiKeys,
-    lmstudioBaseURL: prefs.lmstudioBaseURL,
+    local: localProviderConfig(prefs),
     runs: opts?.runs ?? 1,
     contextBlocks: blocks,
     signal: opts?.signal,

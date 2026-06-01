@@ -10,6 +10,7 @@
 import { SURFACE_STEP_CAPS, type ModelId } from "@/modules/ai/config";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import { streamTask } from "@/modules/ai/lib/taskRunner";
+import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import type { TestCase } from "@/modules/ado";
 import { buildSuiteChatTools } from "./suiteChatTools";
 import {
@@ -333,7 +334,7 @@ export type SuiteChatRunResult = {
 export type SuiteChatTaskInput = SuiteChatRunInput & {
   modelId: ModelId;
   keys: ProviderKeys;
-  lmstudioBaseURL?: string;
+  local?: LocalProviderConfig;
   /** When set, the runner exposes read-only Read/Glob/Grep tools to the model
    *  backed by the user's source directory so answers are code-grounded. When
    *  null, the run is text-only and the prompt warns the model. */
@@ -352,7 +353,7 @@ export async function streamSuiteChatTask(
   const r = await streamTask({
     modelId: input.modelId,
     keys: input.keys,
-    local: { lmstudioBaseURL: input.lmstudioBaseURL },
+    local: input.local ?? {},
     systemPrompt: SUITE_CHAT_SYSTEM_PROMPT,
     prompt: userPrompt,
     attachments: [

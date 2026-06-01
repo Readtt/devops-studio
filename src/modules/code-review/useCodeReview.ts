@@ -8,7 +8,10 @@ import {
 } from "@/modules/ado";
 import { describeSource, type CodeReviewSource } from "./source";
 import { useChatStore } from "@/modules/ai/store/chatStore";
-import { usePreferencesStore } from "@/modules/settings/preferences";
+import {
+  localProviderConfig,
+  usePreferencesStore,
+} from "@/modules/settings/preferences";
 import { useTabsStore } from "@/modules/tabs/store/useTabsStore";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import { bugsToContextBlocks } from "@/modules/ado/lib/bugContextBlock";
@@ -338,6 +341,7 @@ export const useCodeReview = create<State>((set, get) => ({
       await streamCodeReviewTask({
         modelId: effectiveModelId,
         keys: chat.apiKeys,
+        local: localProviderConfig(prefs),
         // Global code-search toggle gates the Read/Glob/Grep tools; off ⇒ the
         // reviewer works from the diff alone.
         sourceRoot: prefs.codeSearchEnabled ? slice.cwd : null,

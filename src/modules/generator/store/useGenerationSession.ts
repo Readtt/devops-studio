@@ -28,7 +28,10 @@ import {
   runQaAnalyst,
 } from "../lib/qaAnalystRun";
 import { resolveTrackingBranch } from "@/modules/git";
-import { usePreferencesStore } from "@/modules/settings/preferences";
+import {
+  localProviderConfig,
+  usePreferencesStore,
+} from "@/modules/settings/preferences";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   DraftSourceLink,
@@ -698,6 +701,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         mode,
         keys,
         modelId,
+        local: localProviderConfig(prefs),
         sourceRoot: prefs.codeSearchEnabled ? prefs.sourceRoot : null,
         contextBlocks,
         onActivity,
@@ -1335,6 +1339,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         mode: s.mode,
         keys,
         modelId,
+        local: localProviderConfig(prefs),
         sourceRoot: prefs.codeSearchEnabled ? prefs.sourceRoot : null,
         contextBlocks,
         onActivity,
@@ -1527,6 +1532,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         newQuestion: text,
         keys,
         modelId,
+        local: localProviderConfig(prefs),
         contextBlocks: chatContextBlocks,
         onText: appendDelta,
       });

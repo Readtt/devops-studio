@@ -1,10 +1,28 @@
 import { create } from "zustand";
+import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import {
   DEFAULT_PREFERENCES,
   loadPreferences,
   onPreferencesChange,
   type Preferences,
 } from "./store";
+
+/** Project the local-provider settings into the shape the AI runner needs to
+ *  resolve a local model (LM Studio / MLX / Ollama / OpenAI-compatible). The
+ *  surfaces pass this so the runner can resolve the user-configured model id —
+ *  without it, a local provider throws "no model id set". */
+export function localProviderConfig(p: Preferences): LocalProviderConfig {
+  return {
+    lmstudioBaseURL: p.lmstudioBaseURL,
+    lmstudioModelId: p.lmstudioModelId,
+    mlxBaseURL: p.mlxBaseURL,
+    mlxModelId: p.mlxModelId,
+    ollamaBaseURL: p.ollamaBaseURL,
+    ollamaModelId: p.ollamaModelId,
+    openaiCompatibleBaseURL: p.openaiCompatibleBaseURL,
+    openaiCompatibleModelId: p.openaiCompatibleModelId,
+  };
+}
 
 type State = Preferences & {
   hydrated: boolean;

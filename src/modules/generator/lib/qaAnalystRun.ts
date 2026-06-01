@@ -1,6 +1,7 @@
 import { SURFACE_STEP_CAPS, type ModelId } from "@/modules/ai/config";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import { runTask } from "@/modules/ai/lib/taskRunner";
+import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
 import {
   DraftBatchLLMSchema,
@@ -82,7 +83,8 @@ export type RunInput = {
   /** Provider keys hydrated from the OS keychain (chatStore.apiKeys). */
   keys: ProviderKeys;
   modelId: ModelId;
-  lmstudioBaseURL?: string;
+  /** Local-provider config (base URLs + model ids) so a local model resolves. */
+  local?: LocalProviderConfig;
   /** When set (global code-search toggle on + a source dir), the analyzer gets
    *  read-only Read/Glob/Grep tools so it can trace the spec against real code
    *  — deeper, code-grounded cases. null ⇒ tool-less (spec + attachments only). */
@@ -131,7 +133,7 @@ export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
   const r = await runTask({
     modelId: input.modelId,
     keys: input.keys,
-    local: { lmstudioBaseURL: input.lmstudioBaseURL },
+    local: input.local ?? {},
     systemPrompt: QA_ANALYST_PROMPT,
     prompt: userPrompt,
     attachments,

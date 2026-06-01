@@ -7,6 +7,7 @@
 import { SURFACE_STEP_CAPS, type ModelId } from "@/modules/ai/config";
 import { type ProviderKeys } from "@/modules/ai/lib/keyring";
 import { streamTask } from "@/modules/ai/lib/taskRunner";
+import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
 import {
   collectContextImages,
@@ -126,6 +127,7 @@ When you literally have nothing to flag, say "Looks clean — no blockers, sugge
 export type StreamCodeReviewInput = {
   modelId: ModelId;
   keys: ProviderKeys;
+  local?: LocalProviderConfig;
   /** The local checkout the Read/Glob/Grep tools read. null when the global
    *  code-search toggle is off — the reviewer then works from the diff alone. */
   sourceRoot: string | null;
@@ -168,6 +170,7 @@ export async function streamCodeReviewTask(input: StreamCodeReviewInput): Promis
   const r = await streamTask({
     modelId: input.modelId,
     keys: input.keys,
+    local: input.local ?? {},
     systemPrompt: CODE_REVIEW_SYSTEM_PROMPT,
     prompt,
     attachments: [

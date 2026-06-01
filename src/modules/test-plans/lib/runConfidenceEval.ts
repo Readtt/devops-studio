@@ -7,6 +7,7 @@
 import { SURFACE_STEP_CAPS, type ModelId } from "@/modules/ai/config";
 import { type ProviderKeys } from "@/modules/ai/lib/keyring";
 import { runTask } from "@/modules/ai/lib/taskRunner";
+import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { buildSuiteChatTools } from "./suiteChatTools";
 import {
   formatContextBlocks,
@@ -37,7 +38,7 @@ export type ConfidenceEvalInput = {
   sourceRoot: string | null;
   modelId: ModelId;
   keys: ProviderKeys;
-  lmstudioBaseURL?: string;
+  local?: LocalProviderConfig;
   /** Self-consistency runs (default 1). >1 requires agreement for a high score. */
   runs?: number;
   /** Best-practices / extra context blocks to apply during evaluation. */
@@ -201,7 +202,7 @@ async function runConfidenceOnce(
   const r = await runTask({
     modelId: input.modelId,
     keys: input.keys,
-    local: { lmstudioBaseURL: input.lmstudioBaseURL },
+    local: input.local ?? {},
     systemPrompt: CONFIDENCE_EVAL_SYSTEM_PROMPT,
     prompt,
     temperature: 0,
