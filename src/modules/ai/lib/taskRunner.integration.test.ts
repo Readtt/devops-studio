@@ -82,6 +82,22 @@ describe("taskRunner integration (real AI SDK + Zod v4, mock model)", () => {
     if (!r.ok) expect(r.reason).toBe("schema_violation");
   });
 
+  it("generateObject accepts the messages array buildUserTurn emits for images", async () => {
+    // With an image attachment buildUserTurn returns { messages } instead of
+    // { prompt }; confirm generateObject (Prompt = system + prompt|messages)
+    // accepts that shape rather than throwing.
+    mockModel = genModel(JSON.stringify({ cases: [{ title: "Img", n: 7 }] }));
+    const r = await runTask({
+      ...base,
+      schema: Schema,
+      attachments: [
+        { kind: "image", content: "data:image/png;base64,AAAA", mime: "image/png" },
+      ],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.object.cases[0]).toEqual({ title: "Img", n: 7 });
+  });
+
   it("no-schema prose path returns the model text", async () => {
     mockModel = genModel("a plain prose answer");
     const r = await runTask({ ...base });
