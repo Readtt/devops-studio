@@ -1,26 +1,21 @@
-import { generateText, stepCountIs } from "ai";
-import { getModel, type ModelId } from "@/modules/ai/config";
-import { buildLanguageModel } from "@/modules/ai/lib/agent";
+import { SURFACE_STEP_CAPS, type ModelId } from "@/modules/ai/config";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
-import { parseDraftBatch, type DraftBatchLLM } from "./draftBatchSchema";
+import { runTask } from "@/modules/ai/lib/taskRunner";
+import {
+  DraftBatchLLMSchema,
+  clampBugLinks,
+  salvageDraftBatch,
+  type DraftBatchLLM,
+} from "./draftBatchSchema";
 import { QA_ANALYST_PROMPT } from "./qaAnalystPrompt";
 import type { TestCaseRef } from "@/modules/ado";
-import {
-  clampOutputFull,
-  clampOutputSummary,
-  newActivityId,
-  summarizeToolInput,
-  type ActivityEntry,
-} from "./activityLog";
+import type { ActivityEntry } from "./activityLog";
 import { renderRelatedCases, type RelatedCase } from "./relatedCases";
-import { buildUserTurn } from "@/modules/ai/lib/visionMessage";
 import {
   collectContextImages,
   formatContextBlocks,
   type ContextBlock,
 } from "@/modules/ai/lib/contextBlocks";
-
-const MAX_STEPS = 12;
 
 export type GenerationMode = "happy" | "thorough" | "bug-hunt";
 
@@ -108,11 +103,6 @@ export type RunResult = {
 };
 
 export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
-  const model = getModel(input.modelId);
-  const lm = await buildLanguageModel(model.provider, input.keys, model.id, {
-    lmstudioBaseURL: input.lmstudioBaseURL,
-  });
-
   const ctxText = formatContextBlocks(input.contextBlocks ?? []);
   const basePrompt = input.userPromptOverride ?? buildUserPrompt(input);
   const userPrompt = ctxText ? `${basePrompt}\n\n${ctxText}` : basePrompt;
@@ -124,58 +114,30 @@ export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
   ];
   const start = Date.now();
 
-  // SAFETY: the analyst path runs WITHOUT tools — text-in, JSON-out. The
-  // model only sees attachments we pass in `userPrompt`; it can't read or
-  // mutate the user's filesystem through this path. Do NOT add a `tools`
-  // field here without revisiting the read-only contract enforced in the
-  // Claude CLI path (allowedTools: Read/Glob/Grep). If you need tools for a
-  // different flow, build a new entrypoint instead of editing this one.
-  const result = await generateText({
-    model: lm,
-    system: QA_ANALYST_PROMPT,
-    ...buildUserTurn(userPrompt, attachments),
-    stopWhen: stepCountIs(MAX_STEPS),
-    onStepFinish: (step) => {
-      const onActivity = input.onActivity;
-      if (!onActivity) return;
-      const calls = step.toolCalls ?? [];
-      const results = step.toolResults ?? [];
-      if (calls.length === 0) {
-        // No tool — record the model's thinking step so the log has a
-        // breadcrumb even when nothing observable happened.
-        onActivity({
-          id: newActivityId(),
-          ts: Date.now() - start,
-          kind: "thinking",
-        });
-        return;
-      }
-      for (const call of calls) {
-        const matching = results.find(
-          (r) => (r as { toolCallId?: string }).toolCallId === call.toolCallId,
-        );
-        const rawResult = matching
-          ? stringifyResult((matching as { output?: unknown }).output)
-          : undefined;
-        onActivity({
-          id: newActivityId(),
-          ts: Date.now() - start,
-          kind: "tool",
-          toolName: call.toolName,
-          inputSummary: summarizeToolInput(
-            call.toolName,
-            (call.input ?? {}) as Record<string, unknown>,
-          ),
-          outputSummary: rawResult ? clampOutputSummary(rawResult) : undefined,
-          outputFull: rawResult ? clampOutputFull(rawResult) : undefined,
-        });
-      }
-    },
+  // Schema-validated, temperature-0 structured output via the shared runner.
+  // Tool-less here ⇒ the runner uses generateObject; once code-search tools are
+  // wired in (the runner switches to experimental_output automatically) the
+  // schema is still enforced. SAFETY: any tools handed in are READ-ONLY — the
+  // runner never injects write/edit/bash tools.
+  const r = await runTask({
+    modelId: input.modelId,
+    keys: input.keys,
+    local: { lmstudioBaseURL: input.lmstudioBaseURL },
+    systemPrompt: QA_ANALYST_PROMPT,
+    prompt: userPrompt,
+    attachments,
+    temperature: 0,
+    maxSteps: SURFACE_STEP_CAPS.generator,
+    schema: DraftBatchLLMSchema,
+    onToolEvent: input.onActivity,
   });
 
-  const text = result.text || "";
-  const batch = parseDraftBatch(text);
-  return { batch, rawText: text, durationMs: Date.now() - start };
+  // Prefer the strictly-validated object; if the model produced a batch that
+  // didn't fully validate, salvage the valid cases/bugs from the raw text
+  // (partial-batch acceptance) instead of dropping everything. Then null out
+  // any bug→case links that point past the end of the cases array.
+  const batch = clampBugLinks(r.ok ? r.object : salvageDraftBatch(r.text));
+  return { batch, rawText: r.text, durationMs: Date.now() - start };
 }
 
 function buildUserPrompt(input: RunInput): string {
@@ -376,14 +338,4 @@ export function formatAttachmentBlock(a: RunAttachment): string {
     return `--- ${a.path} ---\n[user-attached binary: ${mime}${bytes}]`;
   }
   return `--- ${a.path} ---\n${a.content}`;
-}
-
-function stringifyResult(value: unknown): string {
-  if (value == null) return "";
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
 }

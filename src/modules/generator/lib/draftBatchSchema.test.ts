@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { extractBatchJson, parseDraftBatch } from "./draftBatchSchema";
+import {
+  clampBugLinks,
+  extractBatchJson,
+  parseDraftBatch,
+  salvageDraftBatch,
+  type DraftBatchLLM,
+} from "./draftBatchSchema";
 
 describe("extractBatchJson", () => {
   it("unwraps a ```json fenced block", () => {
@@ -63,5 +69,84 @@ describe("parseDraftBatch", () => {
     );
     expect(batch).toEqual({ cases: [], bugs: [] });
     warn.mockRestore();
+  });
+});
+
+describe("salvageDraftBatch (partial-batch acceptance)", () => {
+  it("keeps the valid cases and drops only the malformed one", () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const batch = salvageDraftBatch(
+      JSON.stringify({
+        cases: [
+          {
+            title: "A perfectly valid case title",
+            steps: [{ action: "do x", expected: "y happens" }],
+          },
+          { title: "x", steps: [] }, // invalid: title too short, no steps
+          {
+            title: "Another perfectly valid case",
+            steps: [{ action: "do z", expected: "w happens" }],
+          },
+        ],
+        bugs: [],
+      }),
+    );
+    expect(batch.cases).toHaveLength(2);
+    expect(batch.cases.map((c) => c.title)).toEqual([
+      "A perfectly valid case title",
+      "Another perfectly valid case",
+    ]);
+    expect(err).toHaveBeenCalled(); // dropped index logged
+    err.mockRestore();
+  });
+
+  it("salvages from fenced/prose-wrapped text", () => {
+    const text =
+      'Here:\n```json\n{"cases":[{"title":"A valid salvageable title","steps":[{"action":"a","expected":"b"}]}],"bugs":[]}\n```';
+    expect(salvageDraftBatch(text).cases).toHaveLength(1);
+  });
+
+  it("returns an empty batch when nothing parses", () => {
+    expect(salvageDraftBatch("not json at all")).toEqual({
+      cases: [],
+      bugs: [],
+    });
+  });
+});
+
+describe("clampBugLinks", () => {
+  const mk = (linkedDraftCaseIndex: number | null): DraftBatchLLM => ({
+    cases: [
+      {
+        title: "Only case in this batch",
+        description: "",
+        steps: [{ action: "a", expected: "b" }],
+        tags: [],
+        rationale: "",
+        sourceLinks: [],
+      },
+    ],
+    bugs: [
+      {
+        title: "A bug linked to a case",
+        reproSteps: "steps",
+        severity: "2 - High",
+        linkedDraftCaseIndex,
+        codeRefs: [],
+      },
+    ],
+  });
+
+  it("keeps an in-range link untouched", () => {
+    const out = clampBugLinks(mk(0));
+    expect(out.bugs[0].linkedDraftCaseIndex).toBe(0);
+  });
+
+  it("nulls an out-of-range link (and logs)", () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const out = clampBugLinks(mk(5));
+    expect(out.bugs[0].linkedDraftCaseIndex).toBeNull();
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
   });
 });

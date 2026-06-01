@@ -124,3 +124,67 @@ export function parseDraftBatch(text: string): DraftBatchLLM {
     return { cases: [], bugs: [] };
   }
 }
+
+/** Lenient fallback used when strict whole-batch validation fails: pull the
+ *  JSON out of the (possibly fenced/prose-wrapped) text, then `safeParse` each
+ *  case/bug INDIVIDUALLY — keeping every valid item and dropping only the
+ *  malformed ones (logged by index). One bad case no longer zeroes the whole
+ *  batch. Never throws; returns an empty batch when nothing parses. */
+export function salvageDraftBatch(text: string): DraftBatchLLM {
+  const candidate = extractBatchJson(text.trim());
+  let obj: unknown;
+  try {
+    obj = JSON.parse(candidate);
+  } catch {
+    return { cases: [], bugs: [] };
+  }
+  if (!obj || typeof obj !== "object") return { cases: [], bugs: [] };
+  const rec = obj as { cases?: unknown; bugs?: unknown };
+  return {
+    cases: salvageItems(rec.cases, DraftCaseLLMSchema, "case"),
+    bugs: salvageItems(rec.bugs, DraftBugLLMSchema, "bug"),
+  };
+}
+
+function salvageItems<T>(
+  value: unknown,
+  schema: z.ZodType<T>,
+  label: string,
+): T[] {
+  if (!Array.isArray(value)) return [];
+  const out: T[] = [];
+  const dropped: number[] = [];
+  value.forEach((item, i) => {
+    const r = schema.safeParse(item);
+    if (r.success) out.push(r.data);
+    else dropped.push(i);
+  });
+  if (dropped.length > 0) {
+    console.error(
+      `[generator] dropped ${dropped.length} invalid ${label}(s) at index ${dropped.join(", ")}`,
+    );
+  }
+  return out;
+}
+
+/** Null out any `linkedDraftCaseIndex` that points outside the cases array — a
+ *  bug linked to a non-existent draft case would otherwise mis-attach (or
+ *  crash) at publish time. Logs each dropped link. */
+export function clampBugLinks(batch: DraftBatchLLM): DraftBatchLLM {
+  const n = batch.cases.length;
+  let dropped = 0;
+  const bugs = batch.bugs.map((b) => {
+    const idx = b.linkedDraftCaseIndex;
+    if (idx != null && (idx < 0 || idx >= n)) {
+      dropped++;
+      return { ...b, linkedDraftCaseIndex: null };
+    }
+    return b;
+  });
+  if (dropped > 0) {
+    console.error(
+      `[generator] dropped ${dropped} out-of-range bug→case link(s) (cases: ${n})`,
+    );
+  }
+  return { cases: batch.cases, bugs };
+}
