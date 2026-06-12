@@ -356,6 +356,9 @@ export type SuiteChatTaskInput = SuiteChatRunInput & {
    *  backed by the user's source directory so answers are code-grounded. When
    *  null, the run is text-only and the prompt warns the model. */
   sourceRoot: string | null;
+  /** User's freeform "Custom instructions" from Settings — appended to the
+   *  system prompt on every surface. Empty/absent ⇒ base prompt unchanged. */
+  customInstructions?: string;
 };
 
 /** Streaming suite-chat run. Calls `onText` with each text delta
@@ -372,6 +375,7 @@ export async function streamSuiteChatTask(
     keys: input.keys,
     local: input.local ?? {},
     systemPrompt: SUITE_CHAT_SYSTEM_PROMPT,
+    customInstructions: input.customInstructions,
     prompt: userPrompt,
     attachments: [
       ...(input.attachments ?? []),

@@ -106,6 +106,9 @@ export type ChatTaskInput = ChatRunInput & {
   modelId: ModelId;
   keys: ProviderKeys;
   local?: LocalProviderConfig;
+  /** User's freeform "Custom instructions" from Settings — appended to the
+   *  system prompt on every surface. Empty/absent ⇒ base prompt unchanged. */
+  customInstructions?: string;
 };
 
 /** Streaming draft-chat run. Calls `onText` with each delta as the model
@@ -127,6 +130,7 @@ export async function streamChatTask(
     keys: input.keys,
     local: input.local,
     systemPrompt: CHAT_SYSTEM_PROMPT,
+    customInstructions: input.customInstructions,
     prompt: userPrompt,
     attachments: [
       ...input.attachments,

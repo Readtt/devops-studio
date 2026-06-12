@@ -351,6 +351,7 @@ export const useCodeReview = create<State>((set, get) => ({
         attachments: atts,
         contextBlocks,
         adoSourceLabel,
+        customInstructions: prefs.customInstructions || undefined,
         onText: appendDelta,
         onToolEvent: mergeToolEvent,
         signal: abort.signal,

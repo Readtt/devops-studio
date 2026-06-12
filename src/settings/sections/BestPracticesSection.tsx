@@ -112,8 +112,8 @@ export function BestPracticesPanel() {
   return (
     <div className="flex flex-col gap-5">
       {/* Free-text instructions appended to the system prompt of every AI
-          feature. Was wired into the prompt pipeline but had no UI — you could
-          only set it by hand-editing the config file. */}
+          surface (Generator, Suite Chat, review Ask, Code Review, confidence
+          scoring) via TaskInput.customInstructions → buildStableSystem. */}
       <div className="flex flex-col gap-2">
         <div className="flex flex-col gap-0.5">
           <span className="text-[11px] font-medium tracking-tight text-muted-foreground">

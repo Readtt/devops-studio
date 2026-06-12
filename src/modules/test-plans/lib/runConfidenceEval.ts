@@ -43,6 +43,9 @@ export type ConfidenceEvalInput = {
   runs?: number;
   /** Best-practices / extra context blocks to apply during evaluation. */
   contextBlocks?: ContextBlock[];
+  /** User's freeform "Custom instructions" from Settings — appended to the
+   *  system prompt on every surface. Empty/absent ⇒ base prompt unchanged. */
+  customInstructions?: string;
   /** Cooperative cancel. Aborts the model run and makes evaluateConfidence
    *  reject with an AbortError. */
   signal?: AbortSignal;
@@ -204,6 +207,7 @@ async function runConfidenceOnce(
     keys: input.keys,
     local: input.local ?? {},
     systemPrompt: CONFIDENCE_EVAL_SYSTEM_PROMPT,
+    customInstructions: input.customInstructions,
     prompt,
     temperature: 0,
     maxSteps: SURFACE_STEP_CAPS.confidence,

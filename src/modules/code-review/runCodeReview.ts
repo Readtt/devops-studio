@@ -157,6 +157,9 @@ export type StreamCodeReviewInput = {
    *  "repo · PR #12"). Tells the model the diff — not the local working copy
    *  its Read/Grep tools see — is the source of truth. Absent ⇒ local diff. */
   adoSourceLabel?: string | null;
+  /** User's freeform "Custom instructions" from Settings — appended to the
+   *  system prompt on every surface. Empty/absent ⇒ base prompt unchanged. */
+  customInstructions?: string;
 };
 
 export async function streamCodeReviewTask(input: StreamCodeReviewInput): Promise<{
@@ -173,6 +176,7 @@ export async function streamCodeReviewTask(input: StreamCodeReviewInput): Promis
     keys: input.keys,
     local: input.local ?? {},
     systemPrompt: CODE_REVIEW_SYSTEM_PROMPT,
+    customInstructions: input.customInstructions,
     prompt,
     attachments: [
       ...(input.attachments ?? []),

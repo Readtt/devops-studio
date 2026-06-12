@@ -31,6 +31,7 @@ export async function evaluateCaseConfidence(
     local: localProviderConfig(prefs),
     runs: opts?.runs ?? 1,
     contextBlocks: blocks,
+    customInstructions: prefs.customInstructions || undefined,
     signal: opts?.signal,
   });
 }

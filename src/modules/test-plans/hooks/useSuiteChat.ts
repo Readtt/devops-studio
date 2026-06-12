@@ -829,6 +829,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
         modelId,
         local: localProviderConfig(prefs),
         sourceRoot,
+        customInstructions: prefs.customInstructions || undefined,
         onText: appendDelta,
         onToolEvent: mergeToolEvent,
       });

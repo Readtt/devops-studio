@@ -744,6 +744,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         local: localProviderConfig(prefs),
         sourceRoot: prefs.codeSearchEnabled ? prefs.sourceRoot : null,
         contextBlocks,
+        customInstructions: prefs.customInstructions || undefined,
         onActivity,
       });
       const cases: ReviewedCase[] = result.batch.cases.map((c) => ({
@@ -1731,6 +1732,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         local: localProviderConfig(prefs),
         contextBlocks: chatContextBlocks,
         sourceRoot: prefs.codeSearchEnabled ? (prefs.sourceRoot ?? null) : null,
+        customInstructions: prefs.customInstructions || undefined,
         onText: appendDelta,
         onToolEvent: mergeToolEvent,
       });

@@ -101,6 +101,9 @@ export type RunInput = {
    *  the prompt and lifted into vision input. Injected for both the initial
    *  and refine paths. Empty/absent ⇒ prompt unchanged. */
   contextBlocks?: ContextBlock[];
+  /** User's freeform "Custom instructions" from Settings — appended to the
+   *  system prompt on every surface. Empty/absent ⇒ base prompt unchanged. */
+  customInstructions?: string;
 };
 
 export type RunResult = {
@@ -135,6 +138,7 @@ export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
     keys: input.keys,
     local: input.local ?? {},
     systemPrompt: QA_ANALYST_PROMPT,
+    customInstructions: input.customInstructions,
     prompt: userPrompt,
     attachments,
     tools: tools ?? null,
