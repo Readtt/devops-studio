@@ -14,6 +14,7 @@ import {
   type ConnectionStatus,
 } from "@/modules/ado";
 import { useWorkItemTitles } from "@/modules/ado/hooks/useWorkItemTitles";
+import DOMPurify from "dompurify";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { parseCodeLinks, stripCodeLinksBlock } from "./lib/codeLinksParser";
@@ -233,8 +234,13 @@ export function BugPane({ bugId, sourceRoot }: Props) {
         <Section title="Repro steps">
           <div
             className="prose prose-sm max-w-none text-[12.5px] leading-relaxed text-foreground/90 [&_*]:my-0 [&_p]:my-2"
+            // ADO repro steps are third-party HTML (anyone on the project can
+            // edit a bug) rendered inside a webview with IPC access — sanitize
+            // before injecting. The only such site in the app.
             dangerouslySetInnerHTML={{
-              __html: stripCodeLinksBlock(bug.reproStepsHtml || "<p>—</p>"),
+              __html: DOMPurify.sanitize(
+                stripCodeLinksBlock(bug.reproStepsHtml || "<p>—</p>"),
+              ),
             }}
           />
         </Section>
