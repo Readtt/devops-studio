@@ -565,12 +565,7 @@ pub(super) fn relation_to_linked(
         .and_then(|s| s.parse::<i64>().ok())?;
     let kind = friendly_rel_name(rel).to_string();
     let web_url = if !conn_org.is_empty() && !conn_project.is_empty() {
-        format!(
-            "{}/{}/_workitems/edit/{}",
-            conn_org.trim_end_matches('/'),
-            conn_project,
-            id
-        )
+        build_web_url_for_workitem(conn_org, conn_project, id)
     } else {
         String::new()
     };

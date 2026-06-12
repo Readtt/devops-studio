@@ -27,7 +27,7 @@ export function useAttachments() {
         result = {
           ok: false,
           error: {
-            reason: "unsupported",
+            reason: "read-failed",
             message: `${f.name}: ${err instanceof Error ? err.message : "could not be read"}`,
           },
         };
