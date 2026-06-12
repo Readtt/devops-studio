@@ -84,7 +84,15 @@ pub async fn list_team_members(state: &AdoState) -> AdoResult<Vec<TeamMember>> {
     let project: RawProjectDetail = get_json(state, &proj_url, "project").await?;
     let project_id = project.id.clone();
 
-    let mut team_ids = list_project_team_ids(state, &conn, &project_id).await?;
+    // Swallow a teams-endpoint failure (e.g. a PAT that can't read org teams) to
+    // an empty list so we still fall back to the default team below instead of
+    // failing the whole picker.
+    let mut team_ids = list_project_team_ids(state, &conn, &project_id)
+        .await
+        .unwrap_or_else(|e| {
+            log::warn!("list project teams failed, falling back to default team: {e}");
+            Vec::new()
+        });
     // Degrade to the default team if the project exposes no teams to this PAT.
     if team_ids.is_empty() {
         if let Some(team) = project.default_team {
