@@ -32,6 +32,9 @@ src-tauri/gen/schemas
 # OS junk
 Thumbs.db
 
+# Full-review audit tracker (local working file, see chore/full-review branch)
+REVIEW_CHECKLIST.md
+
 # Local AI-assistant working dirs — design specs / plans / scratch. These are
 # never project documentation and must not be committed (release notes belong
 # in CHANGELOG.md, not here).
