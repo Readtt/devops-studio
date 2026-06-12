@@ -89,7 +89,7 @@ export function DeveloperPicker({
         className="w-64 p-0"
       >
         <Command>
-          <CommandInput placeholder="Search people…" className="h-8 text-[12px]" />
+          <CommandInput placeholder="Search people…" />
           <CommandList className="max-h-[280px]">
             <CommandEmpty>
               {loading

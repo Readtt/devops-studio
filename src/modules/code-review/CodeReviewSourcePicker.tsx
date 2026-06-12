@@ -326,7 +326,6 @@ export function CodeReviewSourcePicker({
                     ? "Search recent commits…"
                     : "Search pull requests…"
             }
-            className="h-8 text-[12px]"
           />
           <CommandList className="max-h-[300px]">
             {/* --- Root: local + repos --- */}
@@ -337,7 +336,6 @@ export function CodeReviewSourcePicker({
                     value="__local working copy__"
                     data-checked={!source}
                     onSelect={pickLocal}
-                    className="gap-2 py-1.5"
                   >
                     <HugeiconsIcon
                       icon={HardDriveIcon}
@@ -458,7 +456,7 @@ export function CodeReviewSourcePicker({
                         key={pr.id}
                         value={`${pr.id} ${pr.title} ${pr.sourceBranch}`}
                         onSelect={() => pickPr(pr)}
-                        className="flex-col items-start gap-0.5 py-1.5"
+                        className="flex-col items-start gap-0.5"
                       >
                         <span className="text-[12px] leading-snug">
                           <span className="font-mono text-muted-foreground">
@@ -495,7 +493,7 @@ function CommitItem({
     <CommandItem
       value={`${short} ${subject}`}
       onSelect={onSelect}
-      className="flex-col items-start gap-0.5 py-1.5"
+      className="flex-col items-start gap-0.5"
     >
       <span className="w-full truncate text-[12px] leading-snug text-foreground/90">
         {subject}

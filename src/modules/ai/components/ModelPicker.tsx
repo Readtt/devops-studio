@@ -137,8 +137,8 @@ export function ModelPicker({
           maxHeight: "min(440px, var(--radix-popover-content-available-height, 440px))",
         }}
       >
-        <Command className="rounded-lg">
-          <CommandInput placeholder="Search models…" className="text-[12px]" />
+        <Command>
+          <CommandInput placeholder="Search models…" />
           <CommandList
             className="overscroll-contain"
             style={{
@@ -244,10 +244,7 @@ function ModelRow({
       // surfaces both Recent and Provider rows independently.
       value={`${section}::${model.label} ${model.id} ${model.provider} ${model.hint} ${model.description}`}
       onSelect={onPick}
-      className={cn(
-        "flex items-start gap-2 py-1.5",
-        selected && "bg-primary/[0.07]",
-      )}
+      className={cn("items-start", selected && "bg-primary/[0.07]")}
     >
       <ProviderIcon
         provider={model.provider}
