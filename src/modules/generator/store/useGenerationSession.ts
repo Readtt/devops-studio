@@ -340,14 +340,6 @@ export type SessionState = {
 let uidCounter = 0;
 const uid = () => `u${Date.now().toString(36)}-${(uidCounter++).toString(36)}`;
 
-// Abort handles for the in-flight model runs. Module-scoped imperative
-// process state, not renderable store state. Each run mints a fresh
-// controller; the matching cancel action aborts it, which stops the
-// provider request (and billing) instead of just discarding the result.
-let analyzeAbort: AbortController | null = null;
-let refineAbort: AbortController | null = null;
-let chatAbort: AbortController | null = null;
-
 /** True for the rejection a cancelled run throws — the shared runner
  *  surfaces DOM AbortError; the legacy CLI path used kind: "cancelled". */
 function isCancelledError(e: unknown): boolean {
@@ -559,6 +551,15 @@ export type GenerationSessionStore = StoreApi<SessionState>;
 export function createGenerationSessionStore(): GenerationSessionStore {
   return createStore<SessionState>((set, get) => {
     const schedulePersistDraft = makeSchedulePersistDraft(get);
+    // Abort handles for this tab's in-flight model runs. Captured per-store
+    // (like the persist timer above) — generator tabs stack, and module-
+    // level handles would let one tab's cancel abort another tab's run.
+    // Each run mints a fresh controller; the matching cancel action aborts
+    // it, which stops the provider request (and billing) instead of just
+    // discarding the result.
+    let analyzeAbort: AbortController | null = null;
+    let refineAbort: AbortController | null = null;
+    let chatAbort: AbortController | null = null;
     return ({
   ...initialState,
 
@@ -642,6 +643,12 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       // previous batch to restore once we kick a brand new run.
       refineUndoSnapshot: null,
     });
+
+    // Minted before the prep awaits so a cancel during them already-aborts
+    // the signal — the model call then rejects immediately instead of
+    // running (and billing) to completion behind the discarded result.
+    const analyzeAc = new AbortController();
+    analyzeAbort = analyzeAc;
 
     // Each activity entry either appends (new id) or replaces an earlier
     // entry (same id — used when a tool_use is later completed by its
@@ -746,8 +753,6 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         : [];
     const contextBlocks = [...bpBlocks, ...bugBlocks];
 
-    const analyzeAc = new AbortController();
-    analyzeAbort = analyzeAc;
     try {
       set({ stepLabel: "Calling model…" });
       const result: RunResult = await runQaAnalyst({
@@ -1449,6 +1454,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       refineError: null,
     });
 
+    // Minted before the prep awaits so a cancel during them already-aborts
+    // the signal — the model call then rejects immediately.
+    const refineAc = new AbortController();
+    refineAbort = refineAc;
+
     const onActivity = (entry: ActivityEntry) => {
       set((curr) => {
         const i = curr.activityLog.findIndex((e) => e.id === entry.id);
@@ -1517,8 +1527,6 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         : [];
     const contextBlocks = [...bpBlocks, ...bugBlocks];
 
-    const refineAc = new AbortController();
-    refineAbort = refineAc;
     try {
       const result: RunResult = await runQaAnalyst({
         requirements: s.requirements,
@@ -1710,6 +1718,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       chatMessages: [...priorHistory, userMsg, assistantMsg],
     });
 
+    // Minted before the prep awaits so a cancel during them already-aborts
+    // the signal — the model call then rejects immediately.
+    const chatAc = new AbortController();
+    chatAbort = chatAc;
+
     const appendDelta = (delta: string) =>
       set((curr) => ({
         chatMessages: curr.chatMessages.map((m) =>
@@ -1749,8 +1762,6 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       bugIds && bugIds.length > 0 ? await bugsToContextBlocks(bugIds) : [];
     const chatContextBlocks = [...bpBlocks, ...bugBlocks];
 
-    const chatAc = new AbortController();
-    chatAbort = chatAc;
     try {
       await streamChatTask({
         requirements: s.requirements,
