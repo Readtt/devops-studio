@@ -506,6 +506,15 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
           };
         }
         const point = pts[0];
+        // Skip when the point is already at the target outcome — "mark all
+        // passed" shouldn't re-stamp (and overwrite the tester/date of) cases
+        // that already carry that result.
+        if ((point.outcome ?? "").toLowerCase() === outcome.toLowerCase()) {
+          return {
+            ok: true,
+            message: `#${caseId} is already ${outcome} — skipped.`,
+          };
+        }
         await setTestPointOutcome({
           planId,
           suiteId,

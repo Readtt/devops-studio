@@ -205,7 +205,11 @@ Rules for edit blocks:
   login case as failed", "these three passed", "block #15310, env is down".
   It writes the latest outcome only; it does NOT attach a comment, so if the
   user gives a failure reason, mention in prose that they can add it (and
-  file a bug) from the test case's Execute bar.
+  file a bug) from the test case's Execute bar. Cases already AT the target
+  outcome are skipped automatically on apply, so "mark all the cases passed"
+  is safe — propose set-outcome for every relevant case and the already-passed
+  ones are left untouched (no re-stamping). A "Confidence:" line on a case is a
+  prior AI pass-readiness score you can cite.
 - "create-case" needs a non-empty "title" and at least one step. The new
   case is published to the active suite as soon as the user clicks Apply.
 - "rewrite-steps" steps are 1..N; the UI re-indexes on apply.
@@ -321,6 +325,12 @@ export type SuiteChatRunInput = {
   /** Tool-activity callback — each Read/Glob/Grep call (and its result) the
    *  model makes, so the UI can render a live activity strip instead of going
    *  silent. Entries upsert by id (running → done). */
+  /** Stored AI confidence verdicts keyed by case id, surfaced per case so the
+   *  model can reference pass-readiness without re-evaluating. */
+  confidence?: Record<
+    number,
+    { passLikelihood: number; predictedOutcome: string }
+  >;
   onToolEvent?: (e: ActivityEntry) => void;
 };
 
@@ -379,7 +389,7 @@ function buildSuiteChatUserPrompt(
   const sourceLine = sourceRoot
     ? `Source directory: ${sourceRoot} (use the fs tools to verify cases against actual code).`
     : "Source directory: NOT SET — code grounding isn't available. Tell the user if they ask for it.";
-  const casesBlock = renderCasesBlock(input.cases);
+  const casesBlock = renderCasesBlock(input.cases, input.confidence);
   const historyBlock = renderHistoryBlock(input.history);
   const contextText = formatContextBlocks(input.contextBlocks ?? []);
   return [
@@ -405,7 +415,10 @@ function renderSuiteLine(input: SuiteChatRunInput): string {
   return `SUITE: ${plan} › ${pathParts.join(" › ")} — ${input.cases.length} case${input.cases.length === 1 ? "" : "s"}`;
 }
 
-function renderCasesBlock(cases: TestCase[]): string {
+function renderCasesBlock(
+  cases: TestCase[],
+  confidence?: Record<number, { passLikelihood: number; predictedOutcome: string }>,
+): string {
   if (cases.length === 0) {
     return "(no cases in this suite — the user can still ask design / coverage questions)";
   }
@@ -415,6 +428,12 @@ function renderCasesBlock(cases: TestCase[]): string {
     lines.push(`Case #${c.id} — ${c.title}`);
     if (c.state) lines.push(`  State: ${c.state}`);
     if (c.priority != null) lines.push(`  Priority: ${c.priority}`);
+    const v = confidence?.[c.id];
+    if (v) {
+      lines.push(
+        `  Confidence: ${v.predictedOutcome} (${v.passLikelihood}% pass-ready, from a prior AI evaluation)`,
+      );
+    }
     if (c.tags.length > 0) lines.push(`  Tags: ${c.tags.join(", ")}`);
     if (c.steps.length === 0) {
       lines.push("  Steps: (none)");

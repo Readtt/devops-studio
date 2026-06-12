@@ -39,6 +39,8 @@ import {
   saveChatThread,
   type StoredChatThread,
 } from "../lib/chatThreadsApi";
+import { getConfidenceMany } from "../lib/confidenceApi";
+import type { ConfidenceVerdict } from "../lib/confidence";
 
 /** Cap on the number of cases we'll embed in a single chat prompt. Past
  *  this size the system prompt overwhelms most context windows AND the
@@ -795,6 +797,23 @@ export const useSuiteChat = create<Store>((set, get) => ({
       mergedBugIds.length > 0 ? await bugsToContextBlocks(mergedBugIds) : [];
     const contextBlocks = [...bpBlocks, ...bugBlocks];
 
+    // Stored AI confidence verdicts for the in-scope cases, surfaced per case
+    // so the model can cite pass-readiness without re-evaluating. Best-effort;
+    // most cases won't have one until they've been evaluated somewhere.
+    const confidenceById = await getConfidenceMany(
+      promptCases.map((c) => c.id),
+    ).catch(() => new Map<number, ConfidenceVerdict>());
+    const confidence: Record<
+      number,
+      { passLikelihood: number; predictedOutcome: string }
+    > = {};
+    for (const [id, v] of confidenceById) {
+      confidence[id] = {
+        passLikelihood: v.passLikelihood,
+        predictedOutcome: v.predictedOutcome,
+      };
+    }
+
     try {
       await streamSuiteChatTask({
         suiteName: suite.suiteName,
@@ -805,6 +824,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
         newQuestion: text,
         attachments: atts,
         contextBlocks,
+        confidence,
         keys,
         modelId,
         local: localProviderConfig(prefs),
