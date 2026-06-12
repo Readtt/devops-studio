@@ -1148,16 +1148,18 @@ function ChatThread({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
-  // Persistent "stick to bottom" intent. Starts true; flips to false the
-  // moment the user scrolls UP past the threshold, flips back to true when
-  // they reach the bottom again (or click the jump pill). We read scroll
-  // math directly off the container on every scroll — the same proven
-  // approach Code Review uses. (An earlier IntersectionObserver on a sentinel
-  // nested inside the `max-w-3xl` wrapper fired unreliably, which is why
-  // jump-to-latest got stuck at the top here.)
-  const stickRef = useRef(true);
-  const [showPill, setShowPill] = useState(false);
-  const rafRef = useRef<number | null>(null);
+  // Single source of truth: are we pinned to the bottom? Starts true; flips to
+  // false ONLY when the user scrolls up past the threshold, back to true when
+  // they return to the bottom or click the jump pill. The pill shows iff
+  // !atBottom — the same clean, proven pattern Code Review uses. (The old
+  // stickRef + ResizeObserver + rAF combo could leave the pill showing while
+  // already at the bottom, because the ref-based stick desynced from the pill
+  // state — that's the "stuck jump-to-latest" bug this replaces.)
+  const [atBottom, setAtBottom] = useState(true);
+  // Mirror into a ref so the resize observer reads the latest value without
+  // re-subscribing on every state change.
+  const atBottomRef = useRef(true);
+  atBottomRef.current = atBottom;
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     const el = containerRef.current;
@@ -1167,49 +1169,38 @@ function ChatThread({
     } else {
       el.scrollTop = el.scrollHeight;
     }
-    stickRef.current = true;
-    setShowPill(false);
+    setAtBottom(true);
   }, []);
 
-  // Single source of truth for "am I near the bottom?" — fires on the user's
-  // own scrolling AND on programmatic re-sticks, so the pill and the stick
-  // intent stay in lockstep without a separate observer.
   const onScroll = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
     const near = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
-    stickRef.current = near;
-    setShowPill((prev) => (prev === !near ? prev : !near));
+    setAtBottom((prev) => (prev === near ? prev : near));
   }, []);
 
-  // Re-stick on every render that mutated content. Uses rAF so we run AFTER
-  // the layout — otherwise the new tokens haven't expanded scrollHeight yet.
+  // Re-pin to the bottom whenever content grows AND we're stuck there. Keyed on
+  // the content-length signature so streaming tokens (which mutate the last
+  // message in place) still trigger it. useLayoutEffect pins before paint so
+  // there's no visible jump.
   const lastContent = messages.map((m) => m.content.length).join(",");
   useLayoutEffect(() => {
-    if (!stickRef.current) return;
-    if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(() => {
-      const el = containerRef.current;
-      if (!el) return;
-      el.scrollTop = el.scrollHeight;
-    });
-    return () => {
-      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
-    };
-  }, [lastContent, messages.length, busy]);
+    if (!atBottom) return;
+    const el = containerRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [lastContent, messages.length, busy, atBottom]);
 
-  // Resize observer. Critically we observe the CONTENT element, not just the
-  // scroll container: the container's box is fixed by flex, so it never
-  // resizes when messages stream in or markdown / code blocks / tool strips
-  // expand asynchronously. Watching the content means a late height change
-  // still re-pins us to the bottom — this is why jump-to-latest used to get
-  // stuck above the newest message. We still observe the container too, to
-  // follow when its own height shrinks (composer grows, a banner appears).
+  // Late async expansions — images, code blocks, the tool strip mounting after
+  // the text settles — change content height without firing a scroll event. A
+  // pin-ONLY observer re-sticks us when atBottom; it never flips atBottom, so
+  // it can't strand the pill. We watch the content element (the scroll
+  // container's own box is fixed by flex) plus the container for shrink.
   useEffect(() => {
     const el = containerRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(() => {
-      if (!stickRef.current) return;
+      if (!atBottomRef.current) return;
       el.scrollTop = el.scrollHeight;
     });
     ro.observe(el);
@@ -1264,7 +1255,7 @@ function ChatThread({
         ))}
       </div>
 
-      {showPill && messages.length > 0 ? (
+      {!atBottom && messages.length > 0 ? (
         <button
           type="button"
           onClick={() => scrollToBottom("smooth")}
