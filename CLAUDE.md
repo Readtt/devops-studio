@@ -52,7 +52,7 @@ src-tauri/src/                            Rust backend
     ├── net.rs                            HTTP + LM-Studio ping helpers
     ├── pty.rs                            portable-pty driver for the embedded terminal
     ├── secrets.rs                        OS keychain bridge
-    └── workspace.rs                      Source-dir authorization + path resolution
+    └── workspace.rs                      Launch-dir snapshot + (unused) root registry — NOT enforcement; the AI read gate is src/modules/ai/lib/security.ts
 ```
 
 ## How IPC works
@@ -68,7 +68,7 @@ ADO requires a connection that's persisted by:
 ## Theme & dark mode
 
 - Tokens live in `src/styles/globals.css` as `oklch()` CSS variables.
-- Dark mode is OLED-style: pure-black background (`oklch(0 0 0)`) with cards/popovers/sidebar lifted to ~`oklch(0.14 0.003 240)` for depth.
+- Dark mode is dimmed, not OLED black: the canvas sits at `oklch(0.18 0.004 240)` with elevated surfaces (card/popover/sidebar) stepping UP from it — see the rationale comment in globals.css (pure black + near-white text reads as glare over long sessions).
 - Light mode is unchanged.
 - Switching is driven by `src/modules/theme/ThemeProvider.tsx` which writes to localStorage shadow + Tauri store.
 
@@ -84,6 +84,9 @@ UI text caps at 13 px because this is an editor. Allowed sizes:
 | Body text / readable rows | 12 px |
 | Emphasis (titles in cards) | 12.5 px |
 | Section headings | 13 px |
+| Pane/page titles (the single h1 of a pane or settings page) | 16 px |
+
+Mono micro-badges (uppercase abbreviation chips, kbd-style) are 9.5 px mono; inline mono refs/metadata bottom out at 10.5 px (CodeRefChip is canonical).
 
 Monospace is JetBrains Mono Variable for `<code>`/`<pre>`/IDs. Sans is Geist Variable everywhere else.
 
@@ -104,7 +107,8 @@ input → analyzing → review → publishing → done
                  → error  → error      → error
 ```
 
-Phase UIs live under `src/modules/generator/phases/`. The analyzer runs through
+Phase UIs live in `src/modules/generator/GeneratorPane.tsx` and its sibling
+components (there is no `phases/` directory). The analyzer runs through
 `qaAnalystRun.ts` → the shared `runTask` (schema-validated `DraftBatch`,
 `temperature: 0`); when code search is on it gets read-only Read/Glob/Grep tools
 so cases are grounded in real code.
@@ -213,7 +217,7 @@ the matching repo secrets.
   </ContextMenuItem>
   ```
   Add a description for any item whose label isn't fully self-explanatory ("Open" can ride bare; "Generate sibling cases" cannot).
-- **Every new Windows subprocess spawn must hide the console window.** Use the `hide_console()` helper in `src-tauri/src/modules/{claude,git}.rs` (or inline `cmd.creation_flags(0x0800_0000)` for `std::process::Command` with `CommandExt` imported). Without it the spawn flashes a cmd.exe window — for a poller like `git_repo_info` that runs every 30 s, the result looks (and is) broken. (Exception: the embedded terminal in `pty.rs` deliberately spawns a *visible* shell via portable-pty's ConPTY backend, which doesn't pop a separate cmd.exe — it owns the PTY directly.)
+- **Every new Windows subprocess spawn must hide the console window.** Use the `hide_console()` helper in `src-tauri/src/modules/git.rs` (or inline `cmd.creation_flags(0x0800_0000)` for `std::process::Command` with `CommandExt` imported). Without it the spawn flashes a cmd.exe window — for a poller like `git_repo_info` that runs every 30 s, the result looks (and is) broken. (Exception: the embedded terminal in `pty.rs` deliberately spawns a *visible* shell via portable-pty's ConPTY backend, which doesn't pop a separate cmd.exe — it owns the PTY directly.)
 
 ## Tab kinds and dedup rules
 

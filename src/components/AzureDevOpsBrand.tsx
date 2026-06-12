@@ -4,10 +4,9 @@ import { cn } from "@/lib/utils";
 /**
  * Official Azure DevOps brand mark — gradient and path transcribed from
  * thesvg.org's Azure DevOps icon (the same asset @thesvg/react ships).
- * Inlined per the brand-icon convention (CLAUDE.md → Brand icons #2):
- * importing the @thesvg/react barrel defeated tree-shaking and shipped a
- * ~420 kB lazy chunk for this one glyph. License is nominative fair use
- * for identification, per thesvg.org's terms.
+ * Inlined per the brand-icon convention (CLAUDE.md → Brand icons #2),
+ * matching how ShellBrandIcon inlines the PowerShell mark. License is
+ * nominative fair use for identification, per thesvg.org's terms.
  *
  * Used on surfaces where the icon represents the platform itself — Settings
  * section header, status-bar connected indicator, Settings tab glyph.
