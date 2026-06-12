@@ -77,7 +77,7 @@ export function SearchableSelect({
           aria-label={ariaLabel}
           disabled={disabled}
           className={cn(
-            "flex h-8 w-full items-center gap-1.5 rounded-md border border-border/60 bg-input/40 px-2 text-[12px] transition-colors",
+            "group flex h-8 w-full items-center gap-1.5 rounded-md border border-border/60 bg-input/40 px-2 text-[12px] transition-colors",
             "hover:border-border focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:outline-none",
             "disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50",
             "data-[state=open]:border-ring data-[state=open]:ring-2 data-[state=open]:ring-ring/30",
@@ -101,7 +101,9 @@ export function SearchableSelect({
             icon={ArrowDown01Icon}
             size={11}
             strokeWidth={1.75}
-            className="shrink-0 text-muted-foreground transition-transform duration-150 data-[state=open]:rotate-180"
+            // data-state lives on the trigger button, so the icon reads it
+            // via group-* — a bare data-[state=open] here never matches.
+            className="shrink-0 text-muted-foreground transition-transform duration-150 group-data-[state=open]:rotate-180"
           />
         </button>
       </PopoverPrimitive.Trigger>

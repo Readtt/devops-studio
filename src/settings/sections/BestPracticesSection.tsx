@@ -129,7 +129,7 @@ export function BestPracticesPanel() {
           value={customInstructions}
           placeholder="e.g. Prefer concise, imperative test steps. Reference the ticket id in each case title."
           onChange={(e) => void setCustomInstructions(e.currentTarget.value)}
-          className="min-h-[88px] text-[12px] leading-relaxed"
+          className="min-h-[88px] leading-relaxed"
         />
       </div>
 
