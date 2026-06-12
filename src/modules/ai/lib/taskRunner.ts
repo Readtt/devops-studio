@@ -12,9 +12,11 @@
 //                        a tool loop — unreliable for the tools+output combo.)
 //   • no schema        → generateText/streamText (prose; Code Review, Suite Chat)
 //
-// @readonly — the `tools` a caller passes are the read-only source tools
-// (read_file / list_files / grep / glob). The runner NEVER builds or injects
-// write / edit / bash / delegation tools. Keep it that way.
+// @readonly — the `tools` a caller passes are read-only: source tools
+// (read_file / list_files / grep / glob) plus an allowlisted read-only command
+// runner (run_command — git/file inspection that never mutates). The runner
+// itself NEVER builds or injects tools, and nothing that writes / edits /
+// deletes / delegates ever goes in. Keep it that way.
 
 import {
   generateObject,

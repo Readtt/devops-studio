@@ -179,6 +179,33 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
         }
       },
     }),
+
+    run_command: tool({
+      description:
+        "Run ONE read-only command in the user's source directory and get its output back — a real terminal, but read-only. Best for inspecting git history and the working tree: `git log --oneline -20`, `git show <sha>`, `git diff`, `git blame <file>`, `git status`, plus `ls`, `cat`, `head`, `tail`, `grep`/`rg`, `find`, `tree`, `wc`. Rules: one command per call (no pipes, redirection, or chaining), no absolute paths, read-only programs only — anything that writes, deletes, or executes is refused. Use this to answer 'what recently changed here / is this code stable or risky' instead of guessing.",
+      inputSchema: z.object({
+        command: z
+          .string()
+          .min(1)
+          .describe(
+            'A single read-only command, e.g. `git log --oneline -10 src/auth` or `rg "TODO" src`. No pipes/redirection; no absolute paths.',
+          ),
+      }),
+      execute: async ({ command }) => {
+        try {
+          const out = await invoke<{
+            returncode: number;
+            output: string;
+            truncated: boolean;
+          }>("run_readonly_command_cmd", { root, command });
+          return out;
+        } catch (e) {
+          // A disallowed command surfaces here as the Rust error string — the
+          // model reads it and corrects (e.g. "use a read-only git subcommand").
+          return { error: String(e), command };
+        }
+      },
+    }),
   } as const;
 }
 

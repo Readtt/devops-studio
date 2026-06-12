@@ -11,6 +11,7 @@ export const CONFIDENCE_EVAL_SYSTEM_PROMPT = `You are a meticulous QA engineer e
 YOU HAVE
 - The test case: title, description, and ordered steps (each with an Action and an Expected Result).
 - Read-only code tools (Read / Glob / Grep, or read_file / list_files / grep). USE THEM. An estimate not grounded in code you actually read is worthless.
+- A read-only shell via run_command for git + file inspection (e.g. \`git log\`, \`git show\`, \`git blame\`, \`git diff\`, \`ls\`, \`cat\`, \`rg\`). Use git history/blame to judge whether a step's load-bearing code recently changed or looks unstable — a freshly-rewritten path is a real pass risk worth a "caveats" note. It's read-only; anything that writes is refused.
 
 HOW TO EVALUATE (do this in order)
 1. For EACH step, locate the code path it exercises (the handler, component, function, validation, etc.) and OPEN it.

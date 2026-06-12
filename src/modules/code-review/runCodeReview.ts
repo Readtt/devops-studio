@@ -55,6 +55,7 @@ const CODE_REVIEW_SYSTEM_PROMPT = `You are a senior software engineer reviewing 
 WHAT THE USER HAS PROVIDED
 - A precomputed diff (base...HEAD), including per-file stats and the raw patch text. The patch may be truncated; the per-file list always has the full picture.
 - Read / Glob / Grep tools scoped to the user's source directory — call these to verify context around the diff. Example: when the patch shows a changed function, read its surrounding file to see how it's called.
+- A read-only shell via run_command (\`git log\`, \`git show\`, \`git blame\`, \`git diff\`, \`ls\`, \`cat\`, \`rg\`, …). Use git history + blame to see how recently the touched code changed and what depends on it. One command per call, no pipes/redirection, read-only — anything that writes is refused.
 
 WHAT TO PRODUCE
 Group findings under three severity headings, in this order:
