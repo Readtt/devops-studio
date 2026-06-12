@@ -46,6 +46,7 @@ import {
 } from "../lib/relatedCases";
 import { renderBlock } from "@/modules/test-plans/lib/sourceLinksParser";
 import { saveConfidence } from "@/modules/test-plans/lib/confidenceApi";
+import { outcomeFromVerdict } from "../lib/confidenceOutcome";
 import type { SourceLink } from "@/modules/ado";
 import {
   newRunId,
@@ -911,14 +912,31 @@ export function createGenerationSessionStore(): GenerationSessionStore {
   setCaseOutcome: (uid, outcome) => {
     set((s) => ({
       cases: s.cases.map((c) =>
-        c.uid === uid ? { ...c, desiredOutcome: outcome ?? undefined } : c,
+        // A manual pick clears the auto flag so a later re-evaluation respects
+        // the reviewer's choice instead of overwriting it.
+        c.uid === uid
+          ? { ...c, desiredOutcome: outcome ?? undefined, outcomeAuto: false }
+          : c,
       ),
     }));
     schedulePersistDraft();
   },
   setCaseVerdict: (uid, verdict) => {
     set((s) => ({
-      cases: s.cases.map((c) => (c.uid === uid ? { ...c, verdict } : c)),
+      cases: s.cases.map((c) => {
+        if (c.uid !== uid) return c;
+        // Auto-set the run outcome from the verdict unless the reviewer has
+        // already chosen one by hand. A decisive verdict (confident Pass, or
+        // any Fail/Blocked) flips the status; an ambiguous one leaves it. The
+        // reviewer can always override afterward (which clears outcomeAuto).
+        const auto = outcomeFromVerdict(verdict);
+        const takeAuto =
+          auto !== null &&
+          (c.desiredOutcome === undefined || c.outcomeAuto === true);
+        return takeAuto
+          ? { ...c, verdict, desiredOutcome: auto, outcomeAuto: true }
+          : { ...c, verdict };
+      }),
     }));
     schedulePersistDraft();
   },
@@ -1414,7 +1432,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           similarMatches: prev ? prev.similarMatches : [],
           ...(contentUnchanged && prev?.verdict ? { verdict: prev.verdict } : {}),
           ...(contentUnchanged && prev?.desiredOutcome
-            ? { desiredOutcome: prev.desiredOutcome }
+            ? {
+                desiredOutcome: prev.desiredOutcome,
+                outcomeAuto: prev.outcomeAuto,
+              }
             : {}),
         };
       });

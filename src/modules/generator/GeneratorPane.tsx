@@ -1433,9 +1433,13 @@ const OUTCOME_SHORT: Record<Exclude<ExecutionOutcome, "Active">, string> = {
  *  it sits naturally among the row's metadata chips. */
 function ReviewOutcomePicker({
   value,
+  auto,
   onChange,
 }: {
   value: Exclude<ExecutionOutcome, "Active"> | null;
+  /** Outcome was auto-set from the confidence verdict — surfaced so the
+   *  reviewer knows it wasn't their pick and can override it. */
+  auto?: boolean;
   onChange: (next: Exclude<ExecutionOutcome, "Active"> | null) => void;
 }) {
   const current = value ? (OUTCOMES.find((o) => o.value === value) ?? null) : null;
@@ -1454,12 +1458,18 @@ function ReviewOutcomePicker({
               )}
             >
               {current ? OUTCOME_SHORT[current.value] : "status"}
+              {auto && current ? (
+                <span className="ml-1 text-[8px] font-normal normal-case tracking-normal opacity-70">
+                  auto
+                </span>
+              ) : null}
             </button>
           </DropdownMenuTrigger>
         </TooltipTrigger>
         <TooltipContent side="bottom" className="max-w-[260px] text-[11px]">
-          Set this case&apos;s run outcome (Pass / Fail / Blocked). It&apos;s
-          recorded in Azure DevOps right after the case is published.
+          {auto && current
+            ? "Auto-set from the confidence score — pick a status to override it."
+            : "Set this case's run outcome (Pass / Fail / Blocked). It's recorded in Azure DevOps right after the case is published."}
         </TooltipContent>
       </Tooltip>
       <DropdownMenuContent align="end" className="w-44">
@@ -2022,6 +2032,7 @@ function ReviewPhase({
                   />
                   <ReviewOutcomePicker
                     value={c.desiredOutcome ?? null}
+                    auto={!!c.outcomeAuto}
                     onChange={(next) => setCaseOutcome(c.uid, next)}
                   />
                 </div>

@@ -91,11 +91,18 @@ export type ReviewedCase = DraftCaseLLM & {
   /** AI confidence verdict for this draft case. Persists in the draft payload
    *  so it survives reopening a run from generation history. */
   verdict?: ConfidenceVerdict;
+  /** True when `desiredOutcome` was set automatically from the confidence
+   *  verdict rather than chosen by the reviewer. A manual pick clears it so a
+   *  later re-evaluation can't stomp the reviewer's choice. */
+  outcomeAuto?: boolean;
 };
 
 export type ReviewedBug = DraftBugLLM & {
   uid: string;
   decision: "keep" | "skip";
+  /** ADO identity (unique name / email) the published bug is assigned to. Set
+   *  via the review-phase developer picker; undefined leaves it unassigned. */
+  assignedTo?: string | null;
 };
 
 /** Pull the JSON object out of a (possibly fenced/prose-wrapped) model
