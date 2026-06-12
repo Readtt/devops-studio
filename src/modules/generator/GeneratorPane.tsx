@@ -1895,10 +1895,11 @@ function ReviewPhase({
           />
           <p className="leading-relaxed">
             {publishedByUid.size} item{publishedByUid.size === 1 ? "" : "s"}{" "}
-            already published. Edits here only change the draft —{" "}
-            <span className="font-medium">use the test case / bug pane</span>{" "}
-            to sync title changes back to ADO. Clicking Publish skips
-            already-published rows so duplicates aren&apos;t created.
+            already published to Azure DevOps. Edits here change only this
+            draft — they don&apos;t reach ADO. To change a published case or
+            bug, open it (click its{" "}
+            <span className="font-medium">#id</span>) and edit it there.
+            Publish skips already-published rows, so no duplicates are created.
           </p>
         </div>
       ) : null}
