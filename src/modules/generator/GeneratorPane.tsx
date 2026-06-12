@@ -1579,6 +1579,37 @@ function ReviewPhase({
     evalAbortsRef.current.get(uid)?.abort();
   }, []);
 
+  // Kept bugs grouped by the index of the case they're attached to — powers
+  // the "marked Passed but still has open bugs" warning so a reviewer doesn't
+  // have to open each bug to notice the conflict. (linkedDraftCaseIndex indexes
+  // the full cases array, which is exactly the map index `i` of the case row.)
+  const linkedKeptBugsByCaseIndex = useMemo(() => {
+    const m = new Map<number, typeof bugs>();
+    bugs.forEach((b) => {
+      if (b.decision !== "keep") return;
+      const idx = b.linkedDraftCaseIndex;
+      if (idx == null) return;
+      const arr = m.get(idx);
+      if (arr) arr.push(b);
+      else m.set(idx, [b]);
+    });
+    return m;
+  }, [bugs]);
+
+  // Kept bugs whose parent case is missing or itself skipped — these can't be
+  // filed (a bug publishes as a child of its case), so we warn before publish.
+  const orphanedKeptBugCount = useMemo(
+    () =>
+      bugs.filter((b) => {
+        if (b.decision !== "keep") return false;
+        const idx = b.linkedDraftCaseIndex;
+        const parent =
+          idx != null && idx >= 0 && idx < cases.length ? cases[idx] : null;
+        return !parent || parent.decision !== "keep";
+      }).length,
+    [bugs, cases],
+  );
+
   // Evaluate cases a few at a time. `force` re-analyzes every case (the
   // "Reanalyze all" action once everything has a verdict); otherwise it skips
   // already-evaluated cases so a top-up after adding a few is cheap.
@@ -2038,6 +2069,11 @@ function ReviewPhase({
                 </div>
               </div>
 
+              {c.desiredOutcome === "Passed" &&
+              (linkedKeptBugsByCaseIndex.get(i)?.length ?? 0) > 0 ? (
+                <PassedWithBugWarning bugs={linkedKeptBugsByCaseIndex.get(i)!} />
+              ) : null}
+
               {c.similarMatches.length > 0 ? (
                 <div className="ml-6 flex flex-col gap-0.5">
                   {c.similarMatches.map((m) => (
@@ -2233,6 +2269,23 @@ function ReviewPhase({
               .map((b) => ({ id: null, title: b.title }))}
             count={bugs.length}
           />
+          {orphanedKeptBugCount > 0 ? (
+            <div className="flex items-start gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/[0.06] px-2.5 py-1.5 text-[10.5px] text-amber-700 dark:text-amber-300">
+              <HugeiconsIcon
+                icon={AlertCircleIcon}
+                size={11}
+                strokeWidth={1.9}
+                className="mt-px shrink-0"
+              />
+              <span>
+                {orphanedKeptBugCount} kept bug
+                {orphanedKeptBugCount === 1 ? "" : "s"}{" "}
+                {orphanedKeptBugCount === 1 ? "isn't" : "aren't"} linked to a
+                kept case — {orphanedKeptBugCount === 1 ? "it" : "they"} won't be
+                filed. Link a parent case below.
+              </span>
+            </div>
+          ) : null}
           <ul className="flex flex-col gap-1.5">
             {bugs.map((b, i) => (
               <li key={b.uid}>
@@ -2341,7 +2394,11 @@ function BugParentRow({
   const idx = bug.linkedDraftCaseIndex;
   const parent =
     idx != null && idx >= 0 && idx < cases.length ? cases[idx] : null;
-  const parentSkipped = parent && parent.decision !== "keep";
+  const parentSkipped = !!parent && parent.decision !== "keep";
+  // A kept bug is filed as a child of its parent case. With no kept parent it
+  // can't be filed at all, so flag it now rather than letting publish quietly
+  // skip it.
+  const orphaned = bug.decision === "keep" && (!parent || parentSkipped);
 
   return (
     <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10.5px] text-muted-foreground">
@@ -2360,19 +2417,56 @@ function BugParentRow({
       ) : (
         <span className="italic text-muted-foreground/60">no parent case</span>
       )}
-      {parentSkipped ? (
-        <span className="rounded-sm border border-amber-500/40 bg-amber-500/[0.08] px-1.5 py-px font-mono text-[9.5px] text-amber-700 dark:text-amber-300">
-          parent-skipped
-        </span>
+      {orphaned ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="inline-flex cursor-help items-center gap-1 rounded-sm border border-amber-500/40 bg-amber-500/[0.08] px-1.5 py-px font-medium text-amber-700 dark:text-amber-300">
+              <HugeiconsIcon icon={AlertCircleIcon} size={10} strokeWidth={1.9} />
+              won&apos;t be filed
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="max-w-[260px] text-[11px]">
+            {parentSkipped
+              ? "This bug's parent case is skipped, so the bug will be skipped at publish too. Link it to a kept case."
+              : "Bugs are filed as a child of a test case. Link this bug to a kept case or it won't be filed."}
+          </TooltipContent>
+        </Tooltip>
       ) : null}
       <BugCaseLinkPicker
         cases={cases}
         selectedCaseUid={parent?.uid ?? null}
         onPick={(caseUid) => setBugParent(bug.uid, caseUid)}
-        triggerLabel={
-          parent ? "re-link parent" : "pick a parent case"
-        }
+        triggerLabel={parent ? "re-link parent" : "pick a parent case"}
       />
+    </div>
+  );
+}
+
+/** Inline amber note shown when a reviewer marks a case Passed while it still
+ *  has kept bugs attached. Lists the bugs (severity + title) inline so the
+ *  reviewer can sanity-check without opening each one. */
+function PassedWithBugWarning({
+  bugs,
+}: {
+  bugs: import("./lib/draftBatchSchema").ReviewedBug[];
+}) {
+  return (
+    <div className="ml-6 flex flex-col gap-1 rounded-md border border-amber-500/30 bg-amber-500/[0.06] px-2.5 py-1.5">
+      <div className="flex items-center gap-1.5 text-[10.5px] font-medium text-amber-700 dark:text-amber-300">
+        <HugeiconsIcon icon={AlertCircleIcon} size={11} strokeWidth={1.9} />
+        Passed with {bugs.length} open bug{bugs.length === 1 ? "" : "s"} attached
+        — is that intended?
+      </div>
+      <ul className="flex flex-col gap-1 pl-0.5">
+        {bugs.map((b) => (
+          <li key={b.uid} className="flex items-center gap-1.5 text-[10.5px]">
+            <SeverityBadge severity={b.severity} />
+            <span className="min-w-0 flex-1 break-words text-foreground/80">
+              {b.title}
+            </span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
