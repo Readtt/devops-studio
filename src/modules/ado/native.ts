@@ -23,6 +23,7 @@ import {
   PullRequestRefSchema,
   RepoRefSchema,
   SuiteRefSchema,
+  TeamMemberSchema,
   TestCaseRefSchema,
   TestCaseSchema,
   TestConnectionResultSchema,
@@ -47,6 +48,7 @@ import {
   type ProjectRef,
   type RepoRef,
   type SuiteRef,
+  type TeamMember,
   type TestCase,
   type TestCaseRef,
   type TestConnectionResult,
@@ -275,6 +277,14 @@ export async function createBugAndLink(
 export async function createBug(draft: DraftBug): Promise<CreatedWorkItem> {
   const raw = await invoke("ado_create_bug", { draft });
   return CreatedWorkItemSchema.parse(raw);
+}
+
+/** List the project's default-team members for the review-phase developer
+ *  picker. Returns deduped, name-sorted people; empty when the project has no
+ *  default team or the PAT can't read membership. */
+export async function listTeamMembers(): Promise<TeamMember[]> {
+  const raw = await invoke("ado_list_team_members");
+  return TeamMemberSchema.array().parse(raw);
 }
 
 /** Link an existing bug to a case as its Parent in the work-item tree. */

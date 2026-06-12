@@ -41,7 +41,7 @@ pub async fn create_bug(state: &AdoState, draft: &DraftBug) -> AdoResult<Created
 
     let repro_html = build_repro_steps_html(&draft.repro_steps, &draft.code_links);
 
-    let ops = vec![
+    let mut ops = vec![
         JsonPatchOp {
             op: "add",
             path: "/fields/System.Title".into(),
@@ -58,6 +58,20 @@ pub async fn create_bug(state: &AdoState, draft: &DraftBug) -> AdoResult<Created
             value: Value::String(draft.severity.clone()),
         },
     ];
+    // Assign the bug to a developer when the reviewer picked one. ADO resolves
+    // the identity from the unique name (email) or display name we pass.
+    if let Some(assignee) = draft
+        .assigned_to
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        ops.push(JsonPatchOp {
+            op: "add",
+            path: "/fields/System.AssignedTo".into(),
+            value: Value::String(assignee.to_string()),
+        });
+    }
     let raw: Value = patch_json_patch(state, &url, &ops, "create bug").await?;
     let id = raw
         .get("id")

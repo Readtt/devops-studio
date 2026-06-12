@@ -523,6 +523,7 @@ pub fn run() {
             ado::ado_delete_test_case,
             ado::ado_create_bug_and_link,
             ado::ado_create_bug,
+            ado::ado_list_team_members,
             ado::ado_get_bug,
             ado::ado_list_bugs,
             ado::ado_list_work_items,

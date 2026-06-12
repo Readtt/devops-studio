@@ -294,6 +294,19 @@ pub struct DraftBug {
     /// generation is driven by a specific case; leave None for standalone bugs.
     #[serde(default)]
     pub parent_case_id: Option<i64>,
+    /// ADO identity (unique name / email, or display name) to set as the bug's
+    /// Assigned To on creation. None leaves it unassigned.
+    #[serde(default)]
+    pub assigned_to: Option<String>,
+}
+
+/// A person who can be assigned a bug — the project's default-team members,
+/// surfaced in the generator review phase's developer picker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamMember {
+    pub display_name: String,
+    pub unique_name: String,
 }
 
 /// Source-code anchor on a bug or test case. Paths are stored relative to the

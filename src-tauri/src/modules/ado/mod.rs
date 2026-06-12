@@ -29,7 +29,8 @@ use errors::AdoError;
 use types::{
     BranchRef, Bug, BugRef, CaseSuiteMembership, CommitInfo, Connection, ConnectionStatus,
     CreatedWorkItem, DraftBug, DraftCase, FileContent, ProjectRef, PullRequestRef, RepoRef,
-    SuiteRef, TestCase, TestCaseRef, TestConnectionResult, TestPlanRef, TestPointInfo, WorkItemRef,
+    SuiteRef, TeamMember, TestCase, TestCaseRef, TestConnectionResult, TestPlanRef, TestPointInfo,
+    WorkItemRef,
 };
 
 const STORE_PATH: &str = "devops-studio-settings.json";
@@ -403,6 +404,15 @@ pub async fn ado_create_bug(
     draft: DraftBug,
 ) -> Result<CreatedWorkItem, AdoError> {
     bugs::create_bug(&state, &draft).await
+}
+
+/// List the project's default-team members for the "assign a developer" picker
+/// in the generator's review phase.
+#[tauri::command]
+pub async fn ado_list_team_members(
+    state: State<'_, AdoState>,
+) -> Result<Vec<TeamMember>, AdoError> {
+    projects::list_team_members(&state).await
 }
 
 #[derive(Deserialize)]

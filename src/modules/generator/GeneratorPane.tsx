@@ -50,8 +50,10 @@ import { useTestPlans } from "@/modules/test-plans";
 import {
   adoErrorMessage,
   getWorkItemTitles,
+  listTeamMembers,
   OUTCOMES,
   type ExecutionOutcome,
+  type TeamMember,
 } from "@/modules/ado";
 import { useSourceDirGitInfo } from "@/modules/git";
 import {
@@ -82,6 +84,7 @@ import { RefineComposer } from "./components/RefineComposer";
 import { ReviewChat } from "./components/ReviewChat";
 import { TargetContextChip } from "./components/TargetContextChip";
 import { BugCaseLinkPicker } from "./components/BugCaseLinkPicker";
+import { DeveloperPicker } from "./components/DeveloperPicker";
 import { CopyableSectionHeader } from "@/components/CopyableSectionHeader";
 import { SeverityChip } from "@/components/chat/ApplyEditCard";
 import { RefineChangesPanel } from "./RefineChangesPanel";
@@ -1528,6 +1531,8 @@ function ReviewPhase({
   const removeCaseStep = useGenerationSession((s) => s.removeCaseStep);
   const setBugTitle = useGenerationSession((s) => s.setBugTitle);
   const setBugReproSteps = useGenerationSession((s) => s.setBugReproSteps);
+  const setBugAssignee = useGenerationSession((s) => s.setBugAssignee);
+  const setAllBugsAssignee = useGenerationSession((s) => s.setAllBugsAssignee);
   const publish = useGenerationSession((s) => s.publish);
   const startNew = useGenerationSession((s) => s.startNew);
   const durationMs = useGenerationSession((s) => s.durationMs);
@@ -1609,6 +1614,41 @@ function ReviewPhase({
       }).length,
     [bugs, cases],
   );
+
+  // Team members for the "assign a developer" pickers. Fetched once when there
+  // are bugs to assign; stays empty (picker still usable) if ADO can't list
+  // them. We key the effect on whether bugs exist, not their contents — the
+  // member list rarely changes mid-review and isn't worth refetching per edit.
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
+  const [teamMembersLoading, setTeamMembersLoading] = useState(false);
+  const hasBugs = bugs.length > 0;
+  useEffect(() => {
+    if (!hasBugs) return;
+    let cancelled = false;
+    setTeamMembersLoading(true);
+    void listTeamMembers()
+      .then((m) => {
+        if (!cancelled) setTeamMembers(m);
+      })
+      .catch(() => {
+        if (!cancelled) setTeamMembers([]);
+      })
+      .finally(() => {
+        if (!cancelled) setTeamMembersLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [hasBugs]);
+
+  // The shared assignee when every kept bug points at the same developer, so
+  // the "assign all" picker reflects current state instead of the placeholder.
+  const commonAssignee = useMemo(() => {
+    const kept = bugs.filter((bug) => bug.decision === "keep");
+    if (kept.length === 0) return null;
+    const first = kept[0].assignedTo ?? null;
+    return kept.every((bug) => (bug.assignedTo ?? null) === first) ? first : null;
+  }, [bugs]);
 
   // Evaluate cases a few at a time. `force` re-analyzes every case (the
   // "Reanalyze all" action once everything has a verdict); otherwise it skips
@@ -2286,6 +2326,18 @@ function ReviewPhase({
               </span>
             </div>
           ) : null}
+          {bugs.some((bug) => bug.decision === "keep") ? (
+            <div className="flex flex-wrap items-center gap-1.5 text-[10.5px] text-muted-foreground">
+              <span>Assign all bugs to</span>
+              <DeveloperPicker
+                value={commonAssignee}
+                members={teamMembers}
+                loading={teamMembersLoading}
+                onChange={(a) => setAllBugsAssignee(a)}
+                placeholder="a developer…"
+              />
+            </div>
+          ) : null}
           <ul className="flex flex-col gap-1.5">
             {bugs.map((b, i) => (
               <li key={b.uid}>
@@ -2345,6 +2397,19 @@ function ReviewPhase({
                         <SeverityBadge severity={b.severity} />
                       </div>
                       <BugParentRow bug={b} />
+
+                      <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10.5px] text-muted-foreground">
+                        <span className="font-mono text-muted-foreground/70">
+                          assignee:
+                        </span>
+                        <DeveloperPicker
+                          value={b.assignedTo ?? null}
+                          members={teamMembers}
+                          loading={teamMembersLoading}
+                          onChange={(a) => setBugAssignee(b.uid, a)}
+                          placeholder="unassigned"
+                        />
+                      </div>
 
                       <div className="mt-1">
                         <EditableText

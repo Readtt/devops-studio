@@ -215,7 +215,7 @@ pub fn org_api(conn: &Connection, path: &str) -> String {
 /// contain spaces, which `form_urlencoded` would (wrongly) turn into `+`.
 /// We RFC-3986-encode anything that isn't an unreserved character or a path
 /// sub-delim that's safe inside a segment.
-fn urlencoded(s: &str) -> String {
+pub(crate) fn urlencoded(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.as_bytes() {
         let c = *b;

@@ -163,8 +163,17 @@ export const DraftBugSchema = z.object({
   codeLinks: z.array(CodeLinkSchema).default([]),
   /** If set, the bug is linked as a Child of this test case on creation. */
   parentCaseId: z.number().int().nullable().optional(),
+  /** ADO identity (unique name / email, or display name) to set as Assigned To. */
+  assignedTo: z.string().nullable().optional(),
 });
 export type DraftBug = z.infer<typeof DraftBugSchema>;
+
+/** A person who can be assigned a bug — the project's default-team members. */
+export const TeamMemberSchema = z.object({
+  displayName: z.string(),
+  uniqueName: z.string(),
+});
+export type TeamMember = z.infer<typeof TeamMemberSchema>;
 
 export const BugSchema = z.object({
   id: z.number().int(),

@@ -216,6 +216,12 @@ export type SessionState = {
   setBugTitle: (uid: string, title: string) => void;
   /** Edit a bug's repro steps blob in place. */
   setBugReproSteps: (uid: string, reproSteps: string) => void;
+  /** Set the developer a single bug is assigned to on publish (or clear with
+   *  null). */
+  setBugAssignee: (uid: string, assignedTo: string | null) => void;
+  /** Assign every KEPT bug to a developer in one go (the review-phase "assign
+   *  all bugs to…" picker). Pass null to clear them all. */
+  setAllBugsAssignee: (assignedTo: string | null) => void;
   /** Re-link a bug to a different draft case (by case uid). The picker on
    *  the bug card uses this when the user explicitly chooses a new parent
    *  after the original case was skipped. */
@@ -362,6 +368,8 @@ const initialState: Omit<
   | "removeCaseStep"
   | "setBugTitle"
   | "setBugReproSteps"
+  | "setBugAssignee"
+  | "setAllBugsAssignee"
   | "publish"
   | "setPublishLogTitle"
   | "sendChatMessage"
@@ -1046,6 +1054,22 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     }));
     schedulePersistDraft();
   },
+  setBugAssignee: (uid, assignedTo) => {
+    set((s) => ({
+      bugs: s.bugs.map((b) =>
+        b.uid === uid ? { ...b, assignedTo: assignedTo ?? null } : b,
+      ),
+    }));
+    schedulePersistDraft();
+  },
+  setAllBugsAssignee: (assignedTo) => {
+    set((s) => ({
+      bugs: s.bugs.map((b) =>
+        b.decision === "keep" ? { ...b, assignedTo: assignedTo ?? null } : b,
+      ),
+    }));
+    schedulePersistDraft();
+  },
 
   publish: async () => {
     const { cases, bugs, planId, suiteId, tagSourceBranch } = get();
@@ -1218,6 +1242,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           title: b.title,
           reproSteps: b.reproSteps,
           severity: b.severity,
+          assignedTo: b.assignedTo ?? null,
           codeLinks: (b.codeRefs ?? []).map((r) => ({
             file: r.file,
             startLine: r.startLine,
