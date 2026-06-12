@@ -352,22 +352,49 @@ pub async fn update_work_item_title(
     Ok(())
 }
 
+/// Remove a Test Case from a suite (unlink only — the work item itself is
+/// untouched). Mirrors `link_case_to_suite`. ADO endpoint:
+/// `DELETE testplan/Plans/{plan}/Suites/{suite}/TestCase?testCaseIds={id}`.
+pub async fn remove_case_from_suite(
+    state: &AdoState,
+    plan_id: i64,
+    suite_id: i64,
+    case_id: i64,
+) -> AdoResult<()> {
+    let (conn, _) = state.snapshot();
+    let conn = conn.ok_or(AdoError::NotConfigured)?;
+    // project_api sees the `?` and appends `&api-version=…` after it, so the
+    // final URL is `…/TestCase?testCaseIds={id}&api-version=7.1`.
+    let url = project_api(
+        &conn,
+        &format!("testplan/Plans/{plan_id}/Suites/{suite_id}/TestCase?testCaseIds={case_id}"),
+    );
+    delete_request(state, &url, "remove case from suite").await
+}
+
 /// Delete a Test Case work item. Defaults to "soft" delete — ADO moves the
 /// item to the project's Recycle Bin where it's recoverable for 30 days.
 /// Passing `destroy=true` skips the bin and removes it permanently; we
 /// expose that as a separate parameter and default to false because the
 /// chat-driven path should never destroy by accident.
 ///
-/// Note: a work item linked to a suite stays linked even after a soft-
-/// delete — the suite-cases query just stops returning it. If the user
-/// wants a clean unlink + delete, they can hit the suite remove path from
-/// the test plan UI; the chat path doesn't need both, since "delete the
-/// case" reads as a single user-level operation.
+/// IMPORTANT: Azure DevOps rejects a `wit/workitems/{id}` delete with a 400
+/// while the Test Case is still referenced by ANY suite ("remove it from the
+/// suite first"). The chat is always scoped to one suite, so when the caller
+/// passes `plan_id`/`suite_id` we unlink the case from that suite first, then
+/// recycle-bin the work item. This matches the ADO web "delete" flow and keeps
+/// the case recoverable. Without a suite the work-item delete still runs as
+/// before (correct for a case that isn't suite-linked).
 pub async fn delete_test_case(
     state: &AdoState,
     work_item_id: i64,
     destroy: bool,
+    plan_id: Option<i64>,
+    suite_id: Option<i64>,
 ) -> AdoResult<()> {
+    if let (Some(plan_id), Some(suite_id)) = (plan_id, suite_id) {
+        remove_case_from_suite(state, plan_id, suite_id, work_item_id).await?;
+    }
     let (conn, _) = state.snapshot();
     let conn = conn.ok_or(AdoError::NotConfigured)?;
     let path = if destroy {

@@ -267,16 +267,25 @@ export async function createCaseInSuite(
   return CreatedWorkItemSchema.parse(raw);
 }
 
-/** Soft-delete a test case (moves it to ADO's Recycle Bin — recoverable
- *  for 30 days). Pass `destroy: true` only when permanent deletion is
- *  intentional; the chat-driven path defaults to soft so accidents are
- *  reversible. */
+/** Delete a test case. Pass `planId`/`suiteId` (the suite it's being deleted
+ *  from) so the backend can unlink it from that suite first — ADO returns 400
+ *  if you try to delete a Test Case work item while a suite still references
+ *  it. The case then lands in ADO's Recycle Bin (recoverable for 30 days).
+ *  Pass `destroy: true` only when permanent deletion is intentional; the
+ *  chat-driven path defaults to soft so accidents are reversible. */
 export async function deleteTestCase(input: {
   caseId: number;
+  planId?: number | null;
+  suiteId?: number | null;
   destroy?: boolean;
 }): Promise<void> {
   await invoke("ado_delete_test_case", {
-    input: { caseId: input.caseId, destroy: input.destroy ?? false },
+    input: {
+      caseId: input.caseId,
+      destroy: input.destroy ?? false,
+      planId: input.planId ?? null,
+      suiteId: input.suiteId ?? null,
+    },
   });
 }
 

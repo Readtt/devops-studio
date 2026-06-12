@@ -368,6 +368,13 @@ pub struct DeleteCaseInput {
     /// permanently nuke a case can use the ADO web UI's Destroy action.
     #[serde(default)]
     pub destroy: bool,
+    /// Suite the case is being deleted from. ADO refuses to delete a Test
+    /// Case work item while it's still referenced by a suite (400), so when
+    /// these are present the backend unlinks the case from this suite first.
+    #[serde(default)]
+    pub plan_id: Option<i64>,
+    #[serde(default)]
+    pub suite_id: Option<i64>,
 }
 
 #[tauri::command]
@@ -375,7 +382,14 @@ pub async fn ado_delete_test_case(
     state: State<'_, AdoState>,
     input: DeleteCaseInput,
 ) -> Result<(), AdoError> {
-    test_cases::delete_test_case(&state, input.case_id, input.destroy).await
+    test_cases::delete_test_case(
+        &state,
+        input.case_id,
+        input.destroy,
+        input.plan_id,
+        input.suite_id,
+    )
+    .await
 }
 
 #[derive(Deserialize)]

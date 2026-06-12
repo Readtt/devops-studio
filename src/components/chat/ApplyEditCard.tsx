@@ -267,7 +267,7 @@ export function ApplyEditCard({
         // synchronous gate; the user has to actively say yes.
         const confirmed = window.confirm(
           parsed.caseId
-            ? `Delete case #${parsed.caseId}? It moves to the ADO Recycle Bin and is recoverable for 30 days.`
+            ? `Delete case #${parsed.caseId}? It's removed from this suite and moved to the ADO Recycle Bin (recoverable for 30 days).`
             : "Delete this case?",
         );
         if (!confirmed) {
@@ -1579,9 +1579,9 @@ export function buildSubtitle(
   if (parsed.kind === "delete-case") {
     if (parsed.caseId == null) return "Missing caseId — cannot delete.";
     if (parsed.reason) {
-      return `Move to Recycle Bin · ${truncate(parsed.reason, 50)}`;
+      return `Remove from suite + Recycle Bin · ${truncate(parsed.reason, 44)}`;
     }
-    return `Move #${parsed.caseId} to the ADO Recycle Bin (recoverable for 30 days)`;
+    return `Remove #${parsed.caseId} from this suite and move it to the Recycle Bin (recoverable for 30 days)`;
   }
   if (parsed.kind === "set-outcome") {
     if (parsed.caseId == null) return "Missing caseId — cannot record.";

@@ -473,11 +473,13 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
       }
       if (kind === "delete-case") {
         try {
-          await deleteTestCase({ caseId });
+          // Pass the suite so the backend unlinks the case first — ADO 400s a
+          // work-item delete while a suite still references the case.
+          await deleteTestCase({ caseId, planId, suiteId });
           void loadCases(planId, suiteId, true);
           return {
             ok: true,
-            message: `Moved #${caseId} to the Recycle Bin (recoverable in ADO for 30 days).`,
+            message: `Removed #${caseId} from this suite and moved it to the Recycle Bin (recoverable in ADO for 30 days).`,
           };
         } catch (e) {
           console.error("[suite-chat] delete-case failed:", e);
