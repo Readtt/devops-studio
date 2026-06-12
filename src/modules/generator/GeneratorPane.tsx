@@ -1526,6 +1526,7 @@ function ReviewPhase({
   const setCaseRationale = useGenerationSession((s) => s.setCaseRationale);
   const setCaseOutcome = useGenerationSession((s) => s.setCaseOutcome);
   const setCaseVerdict = useGenerationSession((s) => s.setCaseVerdict);
+  const setCaseUpdateTarget = useGenerationSession((s) => s.setCaseUpdateTarget);
   const setCaseStep = useGenerationSession((s) => s.setCaseStep);
   const addCaseStep = useGenerationSession((s) => s.addCaseStep);
   const removeCaseStep = useGenerationSession((s) => s.removeCaseStep);
@@ -2137,7 +2138,7 @@ function ReviewPhase({
                           means the existing case already covers it.
                         </TooltipContent>
                       </Tooltip>
-                      <span className="truncate">
+                      <span className="min-w-0 truncate">
                         Similar to{" "}
                         <button
                           type="button"
@@ -2153,6 +2154,39 @@ function ReviewPhase({
                         </button>{" "}
                         · {m.title}
                       </span>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setCaseUpdateTarget(
+                                c.uid,
+                                c.updateTargetCaseId === m.caseId
+                                  ? null
+                                  : m.caseId,
+                              )
+                            }
+                            className={cn(
+                              "ml-auto inline-flex h-5 shrink-0 items-center rounded-sm border px-1.5 text-[9.5px] font-medium uppercase tracking-wide transition-colors",
+                              c.updateTargetCaseId === m.caseId
+                                ? "border-transparent bg-amber-500/25 text-amber-800 dark:text-amber-200"
+                                : "border-amber-500/40 text-amber-700 hover:bg-amber-500/10 dark:text-amber-300",
+                            )}
+                          >
+                            {c.updateTargetCaseId === m.caseId
+                              ? "Updating ✓"
+                              : "Update"}
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent
+                          side="top"
+                          className="max-w-[260px] text-[11px]"
+                        >
+                          {c.updateTargetCaseId === m.caseId
+                            ? `On publish, this draft UPDATES #${m.caseId} in place (title, steps, description) instead of creating a new case. Click to cancel.`
+                            : `Update the existing #${m.caseId} with this draft instead of creating a duplicate.`}
+                        </TooltipContent>
+                      </Tooltip>
                     </div>
                   ))}
                 </div>

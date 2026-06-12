@@ -12,6 +12,9 @@ import {
   listSuites,
   listTestPoints,
   setTestPointOutcome,
+  updateCaseDescription,
+  updateCaseSteps,
+  updateWorkItemTitle,
   toAdoError,
   type AdoError,
   type CreatedWorkItem,
@@ -200,6 +203,9 @@ export type SessionState = {
   ) => void;
   /** Attach an AI confidence verdict to a draft case (persisted in the draft). */
   setCaseVerdict: (uid: string, verdict: ConfidenceVerdict) => void;
+  /** Point a draft case at an existing ADO case so publish UPDATES it in place
+   *  instead of creating a new one (null = go back to creating). */
+  setCaseUpdateTarget: (uid: string, caseId: number | null) => void;
   /** Edit a single test step's action OR expected result. Pass the case
    *  uid + step index; either field can be undefined to leave unchanged. */
   setCaseStep: (
@@ -334,6 +340,14 @@ export type SessionState = {
 let uidCounter = 0;
 const uid = () => `u${Date.now().toString(36)}-${(uidCounter++).toString(36)}`;
 
+/** Build the ADO work-item web URL for a case id — used to link an UPDATED
+ *  case from the publish log (the create path gets this from the Rust result;
+ *  the update path has no such response, so we construct it). */
+function caseWebUrl(orgUrl: string, project: string, id: number): string {
+  if (!orgUrl || !project) return "";
+  return `${orgUrl.replace(/\/$/, "")}/${encodeURIComponent(project)}/_workitems/edit/${id}`;
+}
+
 const initialState: Omit<
   SessionState,
   | "setRequirements"
@@ -363,6 +377,7 @@ const initialState: Omit<
   | "setCaseRationale"
   | "setCaseOutcome"
   | "setCaseVerdict"
+  | "setCaseUpdateTarget"
   | "setCaseStep"
   | "addCaseStep"
   | "removeCaseStep"
@@ -995,6 +1010,14 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     }));
     schedulePersistDraft();
   },
+  setCaseUpdateTarget: (uid, caseId) => {
+    set((s) => ({
+      cases: s.cases.map((c) =>
+        c.uid === uid ? { ...c, updateTargetCaseId: caseId } : c,
+      ),
+    }));
+    schedulePersistDraft();
+  },
   // Editing steps invalidates a prior confidence verdict — it was graded
   // against the old steps, and showing a stale "92% pass-ready" after an edit
   // could trick a reviewer into auto-passing a case that no longer matches.
@@ -1123,8 +1146,12 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     // stamped with the same commit.
     let trackingBranch = "main";
     let sourceDirSha: string | null = null;
+    let orgUrl = "";
+    let project = "";
     try {
       const conn = await getConnection();
+      orgUrl = conn.orgUrl ?? "";
+      project = conn.project ?? "";
       const saved = conn.defaultTrackingBranch ?? "";
       let sourceDirBranch: string | null = null;
       const sourceRoot = usePreferencesStore.getState().sourceRoot;
@@ -1157,46 +1184,72 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           c.sourceLinks,
           tagSourceBranch ? trackingBranch : "",
         );
-        const draft: AdoDraftCase = {
-          title: c.title,
-          description: c.description,
-          steps: c.steps.map((s, i) => ({
-            index: i + 1,
-            action: s.action,
-            expected: s.expected,
-          })),
-          tags: c.tags,
-          areaPath: c.areaPath ?? undefined,
-          iterationPath: c.iterationPath ?? undefined,
-          sourceLinksBlock,
-        };
-        const created = await createCaseInSuite(planId, suiteId, draft);
-        caseIdByDraftUid.set(c.uid, created.id);
-        updateLog(set, c.uid, { status: "ok", result: created });
+        const steps = c.steps.map((s, i) => ({
+          index: i + 1,
+          action: s.action,
+          expected: s.expected,
+        }));
 
-        // Carry the generation-time confidence verdict onto the published
-        // case. The confidence store is keyed by the real ADO case id, which
-        // only exists now — without this, opening a just-published case shows
-        // no readiness score even though we evaluated it during review. The
-        // local SQLite write is best-effort and never fails the publish.
+        // Either UPDATE an existing case the reviewer matched this draft to, or
+        // CREATE a new one. Both paths converge on `caseId` for the shared
+        // confidence + run-outcome writes below.
+        let caseId: number;
+        if (c.updateTargetCaseId != null) {
+          caseId = c.updateTargetCaseId;
+          await updateWorkItemTitle(caseId, c.title);
+          await updateCaseDescription(
+            caseId,
+            sourceLinksBlock
+              ? `${c.description}\n${sourceLinksBlock}`
+              : c.description,
+          );
+          await updateCaseSteps(caseId, steps);
+          updateLog(set, c.uid, {
+            status: "ok",
+            result: {
+              id: caseId,
+              url: "",
+              webUrl: caseWebUrl(orgUrl, project, caseId),
+            },
+          });
+        } else {
+          const draft: AdoDraftCase = {
+            title: c.title,
+            description: c.description,
+            steps,
+            tags: c.tags,
+            areaPath: c.areaPath ?? undefined,
+            iterationPath: c.iterationPath ?? undefined,
+            sourceLinksBlock,
+          };
+          const created = await createCaseInSuite(planId, suiteId, draft);
+          caseId = created.id;
+          updateLog(set, c.uid, { status: "ok", result: created });
+        }
+        caseIdByDraftUid.set(c.uid, caseId);
+
+        // Carry the generation-time confidence verdict onto the published /
+        // updated case. The confidence store is keyed by the real ADO case id —
+        // without this, opening the case shows no readiness score even though we
+        // evaluated it during review. Best-effort; never fails the publish.
         if (c.verdict) {
           try {
-            await saveConfidence(created.id, c.verdict);
+            await saveConfidence(caseId, c.verdict);
           } catch {
             // non-essential
           }
         }
 
-        // Record the reviewer's chosen run outcome against the new case's
-        // test point. ADO can briefly lag creating the point for a just-added
-        // case, so retry once; on failure surface a non-fatal warning rather
-        // than failing the whole publish.
+        // Record the reviewer's chosen run outcome against the case's test
+        // point. ADO can briefly lag creating the point for a just-added case,
+        // so retry once; on failure surface a non-fatal warning rather than
+        // failing the whole publish.
         if (c.desiredOutcome) {
           try {
-            let points = await listTestPoints(planId, suiteId, created.id);
+            let points = await listTestPoints(planId, suiteId, caseId);
             if (points.length === 0) {
               await new Promise((r) => setTimeout(r, 600));
-              points = await listTestPoints(planId, suiteId, created.id);
+              points = await listTestPoints(planId, suiteId, caseId);
             }
             const point = points[0];
             if (!point) throw new Error("no test point in this suite yet");
@@ -1204,7 +1257,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
               planId,
               suiteId,
               pointId: point.id,
-              caseId: created.id,
+              caseId,
               outcome: c.desiredOutcome,
             });
           } catch (e) {

@@ -95,6 +95,10 @@ export type ReviewedCase = DraftCaseLLM & {
    *  verdict rather than chosen by the reviewer. A manual pick clears it so a
    *  later re-evaluation can't stomp the reviewer's choice. */
   outcomeAuto?: boolean;
+  /** When set, publish UPDATES this existing ADO case (title + steps +
+   *  description) in place instead of creating a new one — chosen by the
+   *  reviewer from a strong similarity match. */
+  updateTargetCaseId?: number | null;
 };
 
 export type ReviewedBug = DraftBugLLM & {
