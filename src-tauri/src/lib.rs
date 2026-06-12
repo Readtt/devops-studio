@@ -471,14 +471,12 @@ pub fn run() {
         })
         .manage(LaunchDir(Mutex::new(parse_launch_dir())))
         .invoke_handler(tauri::generate_handler![
-            fs::tree::list_subdirs,
             fs::tree::fs_read_dir,
             fs::file::fs_read_file,
             fs::file::fs_read_file_b64,
             fs::file::fs_write_file,
             fs::file::fs_stat,
             fs::file::fs_canonicalize,
-            fs::search::fs_search,
             fs::search::fs_list_files,
             fs::search::fs_resolve_source_path,
             fs::grep::fs_grep,
@@ -492,7 +490,6 @@ pub fn run() {
             secrets::secrets_delete,
             secrets::secrets_get_all,
             net::lm_ping,
-            net::ai_http_request,
             net::ai_http_stream,
             net::ai_http_stream_cancel,
             // --- Azure DevOps ---

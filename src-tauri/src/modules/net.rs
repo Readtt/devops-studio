@@ -220,13 +220,6 @@ pub async fn lm_ping(base_url: String) -> Result<u16, String> {
 // AI HTTP proxy — bypasses webview CORS / Mixed-Content / PNA so local-network
 // model servers (LM Studio, Ollama, vLLM) work in the production bundle.
 
-#[derive(Debug, Serialize)]
-pub struct HttpResponse {
-    pub status: u16,
-    pub headers: HashMap<String, String>,
-    pub body: Vec<u8>,
-}
-
 fn build_request(
     client: &reqwest::Client,
     method: &str,
@@ -311,36 +304,9 @@ fn header_map_to_strings(headers: &HeaderMap) -> HashMap<String, String> {
     out
 }
 
-#[tauri::command]
-pub async fn ai_http_request(
-    url: String,
-    method: String,
-    headers: Option<HashMap<String, String>>,
-    body: Option<Vec<u8>>,
-    allow_private_network: Option<bool>,
-) -> Result<HttpResponse, String> {
-    let allow_private = allow_private_network.unwrap_or(false);
-    let parsed = validate_url(&url, allow_private)?;
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| "missing host".to_string())?
-        .to_string();
-    let safe_ips = classify_and_collect_safe_ips(&host, allow_private).await?;
-
-    let client = build_safe_client(allow_private, &[(host, safe_ips)])?;
-
-    let req = build_request(&client, &method, parsed, headers, body)?;
-    let resp = req.send().await.map_err(|e| e.to_string())?;
-
-    let status = resp.status().as_u16();
-    let headers = header_map_to_strings(resp.headers());
-    let body = resp.bytes().await.map_err(|e| e.to_string())?.to_vec();
-    Ok(HttpResponse {
-        status,
-        headers,
-        body,
-    })
-}
+// ai_http_request (the buffered, non-streaming variant) was removed — the
+// AI proxy path went streaming-only (ai_http_stream) and the command had no
+// remaining frontend callers.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]

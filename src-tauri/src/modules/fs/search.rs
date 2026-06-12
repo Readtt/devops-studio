@@ -4,24 +4,6 @@ use serde::Serialize;
 use super::to_canon;
 use crate::modules::workspace::{resolve_path, WorkspaceEnv};
 
-#[derive(Serialize)]
-pub struct SearchHit {
-    /// Absolute path of the matched file.
-    pub path: String,
-    /// Path relative to the search root, for display.
-    pub rel: String,
-    /// File name only.
-    pub name: String,
-    pub is_dir: bool,
-}
-
-#[derive(Serialize)]
-pub struct SearchResult {
-    pub hits: Vec<SearchHit>,
-    /// True if the scan stopped early (entry budget or hit cap reached).
-    pub truncated: bool,
-}
-
 /// Hard cap on entries the walker is allowed to visit before bailing. Protects
 /// against pathological roots like $HOME where there's no .gitignore and the
 /// tree is effectively unbounded.
@@ -41,105 +23,6 @@ const PRUNE_DIRS: &[&str] = &[
     ".venv",
     "__pycache__",
 ];
-
-#[tauri::command]
-pub fn fs_search(
-    root: String,
-    query: String,
-    limit: Option<usize>,
-    workspace: Option<WorkspaceEnv>,
-    show_hidden: Option<bool>,
-    max_depth: Option<usize>,
-) -> Result<SearchResult, String> {
-    let q = query.trim().to_lowercase();
-    if q.is_empty() {
-        return Ok(SearchResult {
-            hits: Vec::new(),
-            truncated: false,
-        });
-    }
-    let cap = limit.unwrap_or(200).min(1000);
-    let show_hidden = show_hidden.unwrap_or(false);
-    let workspace = WorkspaceEnv::from_option(workspace);
-    let root_path = resolve_path(&root, &workspace);
-    if !root_path.is_dir() {
-        return Err(format!("not a directory: {root}"));
-    }
-
-    let mut out: Vec<SearchHit> = Vec::with_capacity(cap.min(64));
-    let mut scanned: usize = 0;
-    let mut truncated = false;
-
-    let walker = WalkBuilder::new(&root_path)
-        .hidden(!show_hidden)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        .ignore(true)
-        .parents(true)
-        .follow_links(false)
-        // Optional depth bound. Omitted by callers => unlimited (the
-        // MAX_SCANNED budget + PRUNE_DIRS still cap pathological roots).
-        .max_depth(max_depth.map(|d| d.clamp(1, 16)))
-        .filter_entry(|dent| {
-            // Prune known-heavy dirs even when no .gitignore is present (e.g.
-            // searching from $HOME).
-            if dent.depth() == 0 {
-                return true;
-            }
-            match dent.file_name().to_str() {
-                Some(name) => !PRUNE_DIRS.contains(&name),
-                None => true,
-            }
-        })
-        .build();
-
-    for dent in walker.flatten() {
-        scanned += 1;
-        if scanned > MAX_SCANNED {
-            truncated = true;
-            break;
-        }
-        if out.len() >= cap {
-            truncated = true;
-            break;
-        }
-        let path = dent.path();
-        if path == root_path {
-            continue;
-        }
-        let rel = match path.strip_prefix(&root_path) {
-            Ok(r) => to_canon(r),
-            Err(_) => continue,
-        };
-        if !rel.to_lowercase().contains(&q) {
-            continue;
-        }
-        let name = path
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let is_dir = dent.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        out.push(SearchHit {
-            path: to_canon(path),
-            rel,
-            name,
-            is_dir,
-        });
-    }
-
-    // Rank: filename matches first, then shorter relative paths.
-    out.sort_by(|a, b| {
-        let an = a.name.to_lowercase().contains(&q);
-        let bn = b.name.to_lowercase().contains(&q);
-        bn.cmp(&an).then(a.rel.len().cmp(&b.rel.len()))
-    });
-
-    Ok(SearchResult {
-        hits: out,
-        truncated,
-    })
-}
 
 #[derive(Serialize)]
 pub struct ListFilesResult {
