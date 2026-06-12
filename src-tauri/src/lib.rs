@@ -1,7 +1,7 @@
 mod modules;
 
 use modules::{
-    ado, chat_threads, command, confidence_store, fs, git, history, net, pty, secrets, workspace,
+    ado, chat_threads, command, confidence_store, fs, git, history, net, pty, secrets,
 };
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -409,8 +409,6 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    workspace::init_launch_cwd();
-
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         // Skip restoring VISIBLE — frontend calls window.show() after first
@@ -471,11 +469,6 @@ pub fn run() {
             }
             Ok(())
         })
-        .manage({
-            let registry = workspace::WorkspaceRegistry::default();
-            workspace::bootstrap_registry(&registry);
-            registry
-        })
         .manage(LaunchDir(Mutex::new(parse_launch_dir())))
         .invoke_handler(tauri::generate_handler![
             fs::tree::list_subdirs,
@@ -490,8 +483,6 @@ pub fn run() {
             fs::search::fs_resolve_source_path,
             fs::grep::fs_grep,
             fs::grep::fs_glob,
-            workspace::workspace_authorize,
-            workspace::workspace_current_dir,
             get_launch_dir,
             open_settings_window,
             open_external_editor,
