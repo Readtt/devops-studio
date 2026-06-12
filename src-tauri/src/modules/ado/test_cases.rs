@@ -371,7 +371,10 @@ pub async fn delete_test_case(
     let (conn, _) = state.snapshot();
     let conn = conn.ok_or(AdoError::NotConfigured)?;
     let path = if destroy {
-        format!("wit/workitems/{work_item_id}&destroy=true")
+        // `?destroy=true` (not `&…`): project_api appends `&api-version` after
+        // it. A bare `&destroy=true` lands BEFORE the `?api-version`, corrupting
+        // the URL (the id becomes "{id}&destroy=true") → a guaranteed 400.
+        format!("wit/workitems/{work_item_id}?destroy=true")
     } else {
         format!("wit/workitems/{work_item_id}")
     };

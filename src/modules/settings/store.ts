@@ -7,6 +7,7 @@ import {
   type ModelId,
 } from "@/modules/ai/config";
 import type { KeyBinding, ShortcutId } from "@/modules/shortcuts/shortcuts";
+import { consumeLaunchDir } from "@/lib/launchDir";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { LazyStore } from "@tauri-apps/plugin-store";
 
@@ -341,7 +342,12 @@ export async function loadPreferences(): Promise<Preferences> {
       get<Record<ShortcutId, KeyBinding[]>>(KEY_SHORTCUTS) ??
       DEFAULT_PREFERENCES.shortcuts,
     sourceRoot:
-      get<string | null>(KEY_SOURCE_ROOT) ?? DEFAULT_PREFERENCES.sourceRoot,
+      // A folder launched via the "Open in DevOps Studio" shell verb becomes
+      // the active source for the session (consumed once so a re-read can't
+      // replay it over a source the user changes later).
+      consumeLaunchDir() ??
+      get<string | null>(KEY_SOURCE_ROOT) ??
+      DEFAULT_PREFERENCES.sourceRoot,
     codeSearchEnabled:
       get<boolean>(KEY_CODE_SEARCH_ENABLED) ??
       DEFAULT_PREFERENCES.codeSearchEnabled,

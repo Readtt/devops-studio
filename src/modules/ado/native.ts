@@ -82,11 +82,32 @@ export function adoErrorMessage(err: AdoError | null | undefined): string {
       return `Rate limited — retry in ${err.retryAfterS}s.`;
     case "network":
       return `Network error: ${err.message}`;
-    case "server":
-      return `Server returned ${err.status}.`;
+    case "server": {
+      const detail = extractAdoErrorDetail(err.bodyExcerpt);
+      return detail
+        ? `Azure DevOps error ${err.status}: ${detail}`
+        : `Server returned ${err.status}.`;
+    }
     case "local":
       return err.message;
   }
+}
+
+/** ADO error bodies are usually JSON ({"message":"TF...: …"}). Pull the human
+ *  message out so the UI shows WHY a request failed instead of a bare status
+ *  code; fall back to the raw (whitespace-collapsed) excerpt. */
+function extractAdoErrorDetail(bodyExcerpt: string): string {
+  const body = (bodyExcerpt ?? "").trim();
+  if (!body) return "";
+  try {
+    const parsed = JSON.parse(body) as { message?: unknown };
+    if (typeof parsed.message === "string" && parsed.message.trim()) {
+      return parsed.message.trim().slice(0, 300);
+    }
+  } catch {
+    // not JSON — fall through to the raw excerpt
+  }
+  return body.replace(/\s+/g, " ").slice(0, 300);
 }
 
 // --- Connection ---
