@@ -536,9 +536,14 @@ export async function setDefaultShell(
 ): Promise<void> {
   // Always set both atomically — the id is meaningless without a path, and
   // a stale path-only state would have pty_spawn falling back to the
-  // platform default while the UI shows a phantom selection.
-  await writePref(KEY_DEFAULT_SHELL_ID, id);
-  await writePref(KEY_DEFAULT_SHELL_PATH, path);
+  // platform default while the UI shows a phantom selection. Both keys land
+  // in ONE save (two writePref calls = two saves, and a failure between them
+  // produces exactly that phantom state).
+  await store.set(KEY_DEFAULT_SHELL_ID, id);
+  await store.set(KEY_DEFAULT_SHELL_PATH, path);
+  await store.save();
+  await emit(PREFS_CHANGED_EVENT, { key: KEY_DEFAULT_SHELL_ID, value: id });
+  await emit(PREFS_CHANGED_EVENT, { key: KEY_DEFAULT_SHELL_PATH, value: path });
 }
 
 export async function setPreferredAiCli(value: string): Promise<void> {

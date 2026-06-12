@@ -622,10 +622,10 @@ function LocalProviderCard({
               size="sm"
               variant="outline"
               onClick={() => void test()}
-              disabled={!urlDraft.trim()}
+              disabled={!urlDraft.trim() || testStatus === "testing"}
               className="h-8 px-3 text-[11px]"
             >
-              Test
+              {testStatus === "testing" ? "Testing…" : "Test"}
             </Button>
           </div>
         </FieldRow>
