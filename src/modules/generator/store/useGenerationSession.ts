@@ -45,6 +45,7 @@ import {
   type RelatedCase,
 } from "../lib/relatedCases";
 import { renderBlock } from "@/modules/test-plans/lib/sourceLinksParser";
+import { saveConfidence } from "@/modules/test-plans/lib/confidenceApi";
 import type { SourceLink } from "@/modules/ado";
 import {
   newRunId,
@@ -1083,6 +1084,19 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         const created = await createCaseInSuite(planId, suiteId, draft);
         caseIdByDraftUid.set(c.uid, created.id);
         updateLog(set, c.uid, { status: "ok", result: created });
+
+        // Carry the generation-time confidence verdict onto the published
+        // case. The confidence store is keyed by the real ADO case id, which
+        // only exists now — without this, opening a just-published case shows
+        // no readiness score even though we evaluated it during review. The
+        // local SQLite write is best-effort and never fails the publish.
+        if (c.verdict) {
+          try {
+            await saveConfidence(created.id, c.verdict);
+          } catch {
+            // non-essential
+          }
+        }
 
         // Record the reviewer's chosen run outcome against the new case's
         // test point. ADO can briefly lag creating the point for a just-added

@@ -2938,6 +2938,12 @@ function PublishLogList({
 }: {
   log: SessionState["publishLog"];
 }) {
+  // The Done/Publishing screens open published items in-app. Carry the
+  // session's plan + suite into the open event so the test-case pane can load
+  // the recorded run outcome — without these the pane has no suite context and
+  // the pass/fail status silently never resolves.
+  const planId = useGenerationSession((s) => s.planId);
+  const suiteId = useGenerationSession((s) => s.suiteId);
   const cases = log.filter((e) => e.kind === "case");
   const bugs = log.filter((e) => e.kind === "bug");
   return (
@@ -2950,7 +2956,7 @@ function PublishLogList({
           openInApp={(id, title) =>
             window.dispatchEvent(
               new CustomEvent("devops-studio:open-test-case", {
-                detail: { caseId: id, title: `#${id} · ${title}` },
+                detail: { caseId: id, title: `#${id} · ${title}`, planId, suiteId },
               }),
             )
           }

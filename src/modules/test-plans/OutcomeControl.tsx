@@ -93,6 +93,13 @@ export function OutcomeControl({ caseId, planId, suiteId, refreshKey }: Props) {
     [points, selectedPointId],
   );
   const current = outcomeMeta(selectedPoint?.outcome);
+  // Who recorded the run, surfaced beside the outcome so reviewers can see at a
+  // glance who tested it. ADO holds this on the test point — we just never
+  // showed it before.
+  const testerName = selectedPoint?.tester ? testerLabel(selectedPoint.tester) : null;
+  const testedWhen = selectedPoint?.lastUpdated
+    ? fmtTestedWhen(selectedPoint.lastUpdated)
+    : "";
 
   const record = useCallback(
     async (outcome: ExecutionOutcome) => {
@@ -154,6 +161,7 @@ export function OutcomeControl({ caseId, planId, suiteId, refreshKey }: Props) {
         : current.label;
 
   return (
+    <>
     <DropdownMenu
       onOpenChange={(open) => {
         if (open && !target && memberships === null) void loadMemberships();
@@ -294,7 +302,42 @@ export function OutcomeControl({ caseId, planId, suiteId, refreshKey }: Props) {
         )}
       </DropdownMenuContent>
     </DropdownMenu>
+
+    {/* "Tested by" badge — only when there's a recorded outcome with a known
+        tester. Shows the actual person, not just the relationship. */}
+    {testerName && current.key !== "Unspecified" ? (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex h-7 max-w-[160px] items-center gap-1 rounded-md border border-border/50 bg-foreground/[0.02] px-2 text-[10.5px] text-muted-foreground">
+            <span className="shrink-0 text-muted-foreground/60">Tested by</span>
+            <span className="truncate font-medium text-foreground/80">
+              {testerName}
+            </span>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-[260px] text-[11px]">
+          {current.label} · tested by {testerName}
+          {testedWhen ? ` on ${testedWhen}` : ""}
+        </TooltipContent>
+      </Tooltip>
+    ) : null}
+    </>
   );
+}
+
+/** ADO returns a tester as a display name, sometimes "Name <email>". Show just
+ *  the human-readable name in the compact badge. */
+function testerLabel(tester: string): string {
+  const lt = tester.indexOf("<");
+  const name = (lt > 0 ? tester.slice(0, lt) : tester).trim();
+  return name || tester;
+}
+
+/** Short, locale-aware date for the "tested by … on <date>" tooltip. Returns
+ *  "" for an unparseable timestamp so the caller can omit the clause. */
+function fmtTestedWhen(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString();
 }
 
 type OutcomeKey = "Passed" | "Failed" | "Blocked" | "NotApplicable" | "Unspecified";

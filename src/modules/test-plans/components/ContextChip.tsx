@@ -37,7 +37,15 @@ export type SuiteChatScope = {
  * was handed instead of guessing. Click to open a scrollable popover — capped
  * height so a 50-case suite can't blow past the viewport.
  */
-export function ContextChip({ scope }: { scope: SuiteChatScope }) {
+export function ContextChip({
+  scope,
+  suite,
+}: {
+  scope: SuiteChatScope;
+  /** Suite the chat is scoped to — forwarded when opening a case so the pane
+   *  resolves its run outcome instead of showing the suite picker. */
+  suite: { planId: number; suiteId: number } | null;
+}) {
   // Controlled so a row click (which navigates to another tab) can close the
   // popover — otherwise the portaled content floats over the tab you just
   // jumped to. Radix already closes on outside-click, so switching tabs via
@@ -50,7 +58,12 @@ export function ContextChip({ scope }: { scope: SuiteChatScope }) {
     setOpen(false);
     window.dispatchEvent(
       new CustomEvent("devops-studio:open-test-case", {
-        detail: { caseId: id, title: `#${id}` },
+        detail: {
+          caseId: id,
+          title: `#${id}`,
+          planId: suite?.planId ?? null,
+          suiteId: suite?.suiteId ?? null,
+        },
       }),
     );
   };

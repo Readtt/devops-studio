@@ -698,6 +698,7 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
         totalCases={totalCases}
         truncated={truncated}
         contextScope={contextScope}
+        suite={{ planId, suiteId }}
         filter={filter}
         onFilterChange={(v) => setFilter(planId, suiteId, v)}
         modelId={modelId}
@@ -753,6 +754,7 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
         hasSource={!!sourceRoot}
         onPick={setDraft}
         assistantProvider={activeModel?.provider ?? null}
+        suite={{ planId, suiteId }}
       />
 
       {error ? (
@@ -814,6 +816,7 @@ function ChatHeader({
   totalCases,
   truncated,
   contextScope,
+  suite,
   filter,
   onFilterChange,
   modelId,
@@ -838,6 +841,7 @@ function ChatHeader({
   totalCases: number;
   truncated: boolean;
   contextScope: SuiteChatScope;
+  suite: { planId: number; suiteId: number };
   filter: string;
   onFilterChange: (v: string) => void;
   modelId: ModelId | null;
@@ -998,7 +1002,7 @@ function ChatHeader({
         {casesLoading ? (
           <span className="inline-flex items-center gap-1">Loading cases…</span>
         ) : cases ? (
-          <ContextChip scope={contextScope} />
+          <ContextChip scope={contextScope} suite={suite} />
         ) : (
           <span className="inline-flex items-center gap-1">—</span>
         )}
@@ -1109,7 +1113,9 @@ function ChatThread({
   hasSource,
   onPick,
   assistantProvider,
+  suite,
 }: {
+  suite: { planId: number; suiteId: number };
   casesLoading: boolean;
   cases: { id: number }[] | null;
   suiteName: string | null;
@@ -1232,6 +1238,7 @@ function ChatThread({
             onUndoEdit={onUndoEdit}
             onEditUndone={(blockHash) => onEditUndone(m.id, blockHash)}
             assistantProvider={assistantProvider}
+            suite={suite}
           />
         ))}
       </div>
@@ -1267,8 +1274,12 @@ function ChatThread({
  *  case pane) so the reference is live, not a silent prompt-only attachment. */
 function MentionedWorkItemChip({
   item,
+  suite,
 }: {
   item: { id: number; title: string; workItemType?: string | null };
+  /** Suite the chat is scoped to, so opening a case lands on its recorded run
+   *  outcome instead of falling back to the suite picker. */
+  suite: { planId: number; suiteId: number } | null;
 }) {
   const isBug = (item.workItemType ?? "").toLowerCase().includes("bug");
   const open = () => {
@@ -1278,7 +1289,12 @@ function MentionedWorkItemChip({
         {
           detail: isBug
             ? { bugId: item.id, title: `Bug #${item.id} · ${item.title}` }
-            : { caseId: item.id, title: `#${item.id} ${item.title}` },
+            : {
+                caseId: item.id,
+                title: `#${item.id} ${item.title}`,
+                planId: suite?.planId ?? null,
+                suiteId: suite?.suiteId ?? null,
+              },
         },
       ),
     );
@@ -1319,7 +1335,9 @@ function MessageBubble({
   onEditUndone,
   assistantProvider,
   toolEvents,
+  suite,
 }: {
+  suite: { planId: number; suiteId: number } | null;
   role: "user" | "assistant";
   content: string;
   attachments?: Attachment[];
@@ -1361,7 +1379,7 @@ function MessageBubble({
         {contextWorkItems && contextWorkItems.length > 0 ? (
           <div className="flex max-w-[80%] flex-wrap justify-end gap-1.5">
             {contextWorkItems.map((wi) => (
-              <MentionedWorkItemChip key={wi.id} item={wi} />
+              <MentionedWorkItemChip key={wi.id} item={wi} suite={suite} />
             ))}
           </div>
         ) : null}
