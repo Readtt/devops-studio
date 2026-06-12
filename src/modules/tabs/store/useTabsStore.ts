@@ -576,6 +576,12 @@ export const useTabsStore = create<TabsState>()(
         const insertIndex = owner ? owner.tabIds.indexOf(id) + 1 : undefined;
         const newId = get().nextId;
         const clone = { ...t, id: newId, pinned: false } as AppTab;
+        // A duplicated code-review tab must NOT inherit the saved-thread
+        // binding: useCodeReview seeds slice.threadId from it, so two tabs
+        // sharing one rehydrateThreadId would interleave writes into the
+        // same persisted thread. Duplicate means "parallel review on the
+        // same diff" — same cwd/base/source, fresh conversation.
+        if (clone.kind === "code-review") clone.rehydrateThreadId = null;
         set((s) => ({
           tabs: { ...s.tabs, [newId]: clone },
           nextId: newId + 1,
