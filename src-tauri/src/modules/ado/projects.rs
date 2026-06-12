@@ -114,6 +114,13 @@ pub async fn list_team_members(state: &AdoState) -> AdoResult<Vec<TeamMember>> {
     let mut out: Vec<TeamMember> = Vec::new();
     for rows in per_team {
         for row in rows {
+            // ADO nests groups/sub-teams inside a team's membership (flagged
+            // `isContainer`). They aren't assignable people — a work item's
+            // Assigned To wants a user identity, not a `vstfs:///Classification`
+            // group descriptor — so keep them out of the developer picker.
+            if row.identity.is_container.unwrap_or(false) {
+                continue;
+            }
             let unique = row.identity.unique_name.unwrap_or_default();
             let display = row
                 .identity
@@ -231,4 +238,8 @@ struct RawIdentity {
     display_name: Option<String>,
     #[serde(default)]
     unique_name: Option<String>,
+    /// `true` for ADO groups/teams that appear as nested team members. We drop
+    /// these — only real users are assignable.
+    #[serde(default)]
+    is_container: Option<bool>,
 }

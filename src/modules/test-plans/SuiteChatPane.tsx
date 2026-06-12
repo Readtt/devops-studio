@@ -1209,50 +1209,58 @@ function ChatThread({
   }, []);
 
   return (
-    <div
-      ref={containerRef}
-      onScroll={onScroll}
-      className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain"
-      tabIndex={-1}
-    >
+    // Non-scrolling positioned wrapper. The jump pill is a sibling of the
+    // scroller (NOT a child of it) so `absolute bottom-3` resolves against this
+    // fixed-height box and the pill floats just above the composer — the same
+    // structure Code Review uses. When the pill lived inside the scroll
+    // container its `bottom` anchored to the scrolled content instead, so it
+    // rode away with the messages: the "stuck jump-to-latest" bug.
+    <div className="relative min-h-0 flex-1">
       <div
-        ref={contentRef}
-        className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-5 py-5"
+        ref={containerRef}
+        onScroll={onScroll}
+        className="h-full overflow-y-auto overscroll-contain"
+        tabIndex={-1}
       >
-        {casesLoading && !cases ? (
-          <CaseLoadingShimmer />
-        ) : cases && cases.length === 0 ? (
-          <EmptySuiteHint suiteName={suiteName} />
-        ) : messages.length === 0 ? (
-          <Onboarding
-            hasCases={cases !== null && cases.length > 0}
-            hasSource={hasSource}
-            onPick={onPick}
-          />
-        ) : null}
+        <div
+          ref={contentRef}
+          className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-5 py-5"
+        >
+          {casesLoading && !cases ? (
+            <CaseLoadingShimmer />
+          ) : cases && cases.length === 0 ? (
+            <EmptySuiteHint suiteName={suiteName} />
+          ) : messages.length === 0 ? (
+            <Onboarding
+              hasCases={cases !== null && cases.length > 0}
+              hasSource={hasSource}
+              onPick={onPick}
+            />
+          ) : null}
 
-        {messages.map((m, idx) => (
-          <MessageBubble
-            key={m.id}
-            role={m.role}
-            content={m.content}
-            attachments={m.attachments}
-            contextWorkItems={m.contextWorkItems}
-            toolEvents={m.toolEvents}
-            streaming={busy && m.role === "assistant" && idx === messages.length - 1}
-            lookupCase={lookupCase}
-            fetchBug={fetchBug}
-            onApplyEdit={onApplyEdit}
-            appliedEdits={m.appliedEdits}
-            onEditApplied={(blockHash, record) =>
-              onEditApplied(m.id, blockHash, record)
-            }
-            onUndoEdit={onUndoEdit}
-            onEditUndone={(blockHash) => onEditUndone(m.id, blockHash)}
-            assistantProvider={assistantProvider}
-            suite={suite}
-          />
-        ))}
+          {messages.map((m, idx) => (
+            <MessageBubble
+              key={m.id}
+              role={m.role}
+              content={m.content}
+              attachments={m.attachments}
+              contextWorkItems={m.contextWorkItems}
+              toolEvents={m.toolEvents}
+              streaming={busy && m.role === "assistant" && idx === messages.length - 1}
+              lookupCase={lookupCase}
+              fetchBug={fetchBug}
+              onApplyEdit={onApplyEdit}
+              appliedEdits={m.appliedEdits}
+              onEditApplied={(blockHash, record) =>
+                onEditApplied(m.id, blockHash, record)
+              }
+              onUndoEdit={onUndoEdit}
+              onEditUndone={(blockHash) => onEditUndone(m.id, blockHash)}
+              assistantProvider={assistantProvider}
+              suite={suite}
+            />
+          ))}
+        </div>
       </div>
 
       {!atBottom && messages.length > 0 ? (
