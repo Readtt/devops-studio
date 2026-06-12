@@ -1364,7 +1364,7 @@ function DiffSide({
     // wraps instead of shoving the other side out of the card; the scroll cap
     // keeps a very large "current" value from ballooning the whole card.
     <div className="flex min-w-0 flex-col gap-1 bg-foreground/[0.015] p-2.5">
-      <span className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground/70">
+      <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
         {label}
       </span>
       <div className="min-w-0 max-h-[24rem] overflow-y-auto">{children}</div>

@@ -358,7 +358,7 @@ export function WorkItemChips({
           >
             <div className="flex flex-col gap-0.5">
               <div className="flex items-baseline gap-1.5">
-                <span className={cn("font-mono text-[9px] font-semibold uppercase tracking-wider", typeTint(b.workItemType))}>
+                <span className={cn("font-mono text-[9.5px] font-semibold uppercase tracking-wider", typeTint(b.workItemType))}>
                   {b.workItemType || "Work item"}
                 </span>
                 <span className="font-mono text-muted-foreground">#{b.id}</span>

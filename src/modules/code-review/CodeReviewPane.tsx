@@ -299,7 +299,7 @@ export function CodeReviewPane({
                 <ProviderIcon provider={provider} className="size-3" />
                 <span className="truncate">{label}</span>
                 {pinnedModelId ? (
-                  <span className="ml-0.5 rounded-sm bg-primary/15 px-1 py-px text-[9px] font-medium text-primary">
+                  <span className="ml-0.5 rounded-sm bg-primary/15 px-1 py-px text-[9.5px] font-medium text-primary">
                     pin
                   </span>
                 ) : null}

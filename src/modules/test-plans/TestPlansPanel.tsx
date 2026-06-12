@@ -1473,7 +1473,7 @@ function StateBadge({ state }: { state: string }) {
   return (
     <span
       className={cn(
-        "ml-auto shrink-0 rounded-sm px-1 py-px font-mono text-[9px] uppercase tracking-wider",
+        "ml-auto shrink-0 rounded-sm px-1 py-px font-mono text-[9.5px] uppercase tracking-wider",
         cls,
       )}
     >

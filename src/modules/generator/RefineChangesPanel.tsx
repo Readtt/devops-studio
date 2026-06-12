@@ -440,7 +440,7 @@ function CardAction({
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="border-t border-border/25">
-      <div className="bg-foreground/[0.02] px-3 py-1 font-mono text-[9px] uppercase tracking-wider text-muted-foreground/85">
+      <div className="bg-foreground/[0.02] px-3 py-1 font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/85">
         {label}
       </div>
       {children}
@@ -454,7 +454,7 @@ function SeverityLine({ before, after }: { before?: string; after: string }) {
   const short = (s: string) => s.split(" - ")[1] ?? s;
   return (
     <div className="flex items-center gap-1.5 border-t border-border/25 px-3 py-1.5 text-[10.5px]">
-      <span className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground/85">
+      <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/85">
         Severity
       </span>
       {before && before !== after ? (

@@ -1234,7 +1234,7 @@ function InputPhase() {
               overrideModelId ? (
                 <span className="inline-flex flex-col items-end gap-0.5">
                   <span className="inline-flex items-center gap-1.5">
-                    <span className="rounded-sm bg-primary/15 px-1 py-px font-mono text-[9px] text-primary">
+                    <span className="rounded-sm bg-primary/15 px-1 py-px font-mono text-[9.5px] text-primary">
                       run
                     </span>
                     <ProviderIcon provider={activeModel.provider} size={10} />
@@ -1243,7 +1243,7 @@ function InputPhase() {
                     </span>
                   </span>
                   <span className="inline-flex items-center gap-1.5 text-muted-foreground/70">
-                    <span className="rounded-sm bg-foreground/[0.06] px-1 py-px font-mono text-[9px]">
+                    <span className="rounded-sm bg-foreground/[0.06] px-1 py-px font-mono text-[9.5px]">
                       default
                     </span>
                     <span className="max-w-[140px] truncate font-mono text-[10px] line-through decoration-muted-foreground/30">
@@ -1253,7 +1253,7 @@ function InputPhase() {
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-1.5">
-                  <span className="rounded-sm bg-foreground/[0.06] px-1 py-px font-mono text-[9px] text-muted-foreground">
+                  <span className="rounded-sm bg-foreground/[0.06] px-1 py-px font-mono text-[9.5px] text-muted-foreground">
                     default
                   </span>
                   <ProviderIcon provider={activeModel.provider} size={10} />
@@ -1462,7 +1462,7 @@ function ReviewOutcomePicker({
             >
               {current ? OUTCOME_SHORT[current.value] : "status"}
               {auto && current ? (
-                <span className="ml-1 text-[8px] font-normal normal-case tracking-normal opacity-70">
+                <span className="ml-1 text-[9.5px] font-normal normal-case tracking-normal opacity-70">
                   auto
                 </span>
               ) : null}

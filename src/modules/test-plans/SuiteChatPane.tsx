@@ -925,7 +925,7 @@ function ChatHeader({
                 <ProviderIcon provider={provider} className="size-3" />
                 <span className="truncate">{label}</span>
                 {modelId ? (
-                  <span className="ml-0.5 rounded-sm bg-primary/15 px-1 py-px text-[9px] font-medium text-primary">
+                  <span className="ml-0.5 rounded-sm bg-primary/15 px-1 py-px text-[9.5px] font-medium text-primary">
                     pin
                   </span>
                 ) : null}
@@ -1769,7 +1769,7 @@ function ThreadSwitcher({
               />
               <span className="truncate">{label}</span>
               {fullList.length > 1 ? (
-                <span className="ml-0.5 rounded-sm bg-foreground/[0.08] px-1 py-px text-[9px] font-medium text-muted-foreground">
+                <span className="ml-0.5 rounded-sm bg-foreground/[0.08] px-1 py-px text-[9.5px] font-medium text-muted-foreground">
                   {fullList.length}
                 </span>
               ) : null}
@@ -1931,7 +1931,7 @@ function ThreadRow({
               {thread.title || (thread.messageCount === 0 ? "New chat" : "Untitled chat")}
             </span>
             {active ? (
-              <span className="rounded-sm bg-primary/15 px-1 py-px text-[9px] font-medium text-primary">
+              <span className="rounded-sm bg-primary/15 px-1 py-px text-[9.5px] font-medium text-primary">
                 active
               </span>
             ) : null}

@@ -347,7 +347,7 @@ export function RefineComposer({ isRefining }: Props) {
                   className="text-muted-foreground/70 transition-colors group-hover:text-primary"
                 />
                 <span className="uppercase tracking-wider">thinking</span>
-                <span className="rounded-sm bg-foreground/[0.08] px-1 text-[9px] tabular-nums text-foreground/85 transition-colors group-hover:bg-primary/15 group-hover:text-primary">
+                <span className="rounded-sm bg-foreground/[0.08] px-1 text-[9.5px] tabular-nums text-foreground/85 transition-colors group-hover:bg-primary/15 group-hover:text-primary">
                   {refineRounds.length}
                 </span>
               </button>
@@ -378,7 +378,7 @@ export function RefineComposer({ isRefining }: Props) {
                       className="text-muted-foreground/70 transition-colors group-hover:text-primary"
                     />
                     <span className="uppercase tracking-wider">history</span>
-                    <span className="rounded-sm bg-foreground/[0.08] px-1 text-[9px] tabular-nums text-foreground/85 transition-colors group-hover:bg-primary/15 group-hover:text-primary">
+                    <span className="rounded-sm bg-foreground/[0.08] px-1 text-[9.5px] tabular-nums text-foreground/85 transition-colors group-hover:bg-primary/15 group-hover:text-primary">
                       {refineHistory.length}
                     </span>
                   </button>
