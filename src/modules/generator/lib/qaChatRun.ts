@@ -109,6 +109,9 @@ export type ChatTaskInput = ChatRunInput & {
   /** User's freeform "Custom instructions" from Settings — appended to the
    *  system prompt on every surface. Empty/absent ⇒ base prompt unchanged. */
   customInstructions?: string;
+  /** Abort handle threaded into the shared runner — cancelling actually stops
+   *  the provider request (and billing), it doesn't just discard the result. */
+  signal?: AbortSignal;
 };
 
 /** Streaming draft-chat run. Calls `onText` with each delta as the model
@@ -139,6 +142,7 @@ export async function streamChatTask(
     tools: tools ?? null,
     onText: input.onText,
     onToolEvent: input.onToolEvent,
+    signal: input.signal,
   });
   return { text: r.text, durationMs: r.durationMs };
 }

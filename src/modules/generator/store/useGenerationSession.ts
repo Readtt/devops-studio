@@ -182,9 +182,9 @@ export type SessionState = {
   removeWorkItem: (id: number) => void;
   clearWorkItems: () => void;
   analyze: () => Promise<void>;
-  /** Cancel an in-flight analyze and return to the input phase. The model
-   *  request itself is not aborted (provider SDKs don't all support it) —
-   *  this just dumps the result instead of moving to review. */
+  /** Cancel an in-flight analyze and return to the input phase. Aborts the
+   *  model request itself (via the shared runner's abort signal) so the
+   *  provider stops generating — not just a discard of the result. */
   cancel: () => void;
   /** Return to the input phase from an error WITHOUT wiping form state.
    *  Distinct from `startNew()`, which clears everything for a fresh run. */
@@ -339,6 +339,24 @@ export type SessionState = {
 
 let uidCounter = 0;
 const uid = () => `u${Date.now().toString(36)}-${(uidCounter++).toString(36)}`;
+
+// Abort handles for the in-flight model runs. Module-scoped imperative
+// process state, not renderable store state. Each run mints a fresh
+// controller; the matching cancel action aborts it, which stops the
+// provider request (and billing) instead of just discarding the result.
+let analyzeAbort: AbortController | null = null;
+let refineAbort: AbortController | null = null;
+let chatAbort: AbortController | null = null;
+
+/** True for the rejection a cancelled run throws — the shared runner
+ *  surfaces DOM AbortError; the legacy CLI path used kind: "cancelled". */
+function isCancelledError(e: unknown): boolean {
+  if (typeof e !== "object" || e === null) return false;
+  return (
+    (e as { name?: string }).name === "AbortError" ||
+    (e as { kind?: string }).kind === "cancelled"
+  );
+}
 
 /** Build the ADO work-item web URL for a case id — used to link an UPDATED
  *  case from the publish log (the create path gets this from the Rust result;
@@ -728,6 +746,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         : [];
     const contextBlocks = [...bpBlocks, ...bugBlocks];
 
+    const analyzeAc = new AbortController();
+    analyzeAbort = analyzeAc;
     try {
       set({ stepLabel: "Calling model…" });
       const result: RunResult = await runQaAnalyst({
@@ -746,6 +766,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         contextBlocks,
         customInstructions: prefs.customInstructions || undefined,
         onActivity,
+        signal: analyzeAc.signal,
       });
       const cases: ReviewedCase[] = result.batch.cases.map((c) => ({
         ...c,
@@ -831,7 +852,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         // Persistence is best-effort.
       }
     } catch (e) {
+      // A cancelled run rejects with AbortError after cancel() already moved
+      // us back to input — the phase guard swallows it like any late result.
       if (get().phase !== "analyzing") return;
+      if (isCancelledError(e)) return;
       // Log the raw value too — `[object Object]` in the UI is a dead-end
       // for debugging; keeping the original here lets devtools surface the
       // full shape even when our stringifier had to fall back.
@@ -842,6 +866,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         errorPhase: "analyze",
         stepLabel: "",
       });
+    } finally {
+      // Only clear our own handle — a cancelled run's finally can land after
+      // the user already started a fresh run with a new controller.
+      if (analyzeAbort === analyzeAc) analyzeAbort = null;
     }
   },
 
@@ -849,6 +877,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     const phase = get().phase;
     if (phase === "analyzing") {
       set({ phase: "input", stepLabel: "", error: null, errorPhase: null });
+      // Abort AFTER the phase flip so the rejection lands on the guard above.
+      analyzeAbort?.abort();
     }
   },
 
@@ -1487,6 +1517,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         : [];
     const contextBlocks = [...bpBlocks, ...bugBlocks];
 
+    const refineAc = new AbortController();
+    refineAbort = refineAc;
     try {
       const result: RunResult = await runQaAnalyst({
         requirements: s.requirements,
@@ -1502,6 +1534,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         contextBlocks,
         onActivity,
         userPromptOverride: userPrompt,
+        signal: refineAc.signal,
       });
 
       // Bail out gracefully when the model returned nothing structured —
@@ -1606,10 +1639,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       // the input screen would lose their draft, which is exactly what they
       // were trying to refine. Surface the error inline; the user can read
       // it, fix the underlying issue, and try again.
-      const cancelled =
-        typeof e === "object" &&
-        e !== null &&
-        (e as { kind?: string }).kind === "cancelled";
+      const cancelled = isCancelledError(e);
       if (!cancelled) {
         console.error("[generator] refine failed:", e);
       }
@@ -1636,16 +1666,18 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         ],
       }));
       schedulePersistDraft();
+    } finally {
+      if (refineAbort === refineAc) refineAbort = null;
     }
   },
 
   cancelRefine: () => {
     const { isRefining } = get();
     if (!isRefining) return;
-    // The in-flight model run isn't abortable mid-flight; un-stick the UI.
-    // The promise still resolves but its result handler is guarded by
-    // isRefining checks downstream.
+    // Un-stick the UI immediately, then abort the model run — the rejection
+    // lands in refine()'s catch as a cancelled round (no error banner).
     set({ isRefining: false, stepLabel: "" });
+    refineAbort?.abort();
   },
 
   dismissRefineError: () => set({ refineError: null }),
@@ -1717,6 +1749,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       bugIds && bugIds.length > 0 ? await bugsToContextBlocks(bugIds) : [];
     const chatContextBlocks = [...bpBlocks, ...bugBlocks];
 
+    const chatAc = new AbortController();
+    chatAbort = chatAc;
     try {
       await streamChatTask({
         requirements: s.requirements,
@@ -1735,6 +1769,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         customInstructions: prefs.customInstructions || undefined,
         onText: appendDelta,
         onToolEvent: mergeToolEvent,
+        signal: chatAc.signal,
       });
       // Backfill a placeholder for a genuinely empty response so the bubble
       // doesn't render blank.
@@ -1748,10 +1783,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         ),
       }));
     } catch (e) {
-      const cancelled =
-        typeof e === "object" &&
-        e !== null &&
-        (e as { kind?: string }).kind === "cancelled";
+      const cancelled = isCancelledError(e);
       if (!cancelled) console.error("[generator] chat failed:", e);
       // Drop the placeholder if nothing streamed (keep a partial answer on
       // cancel — that text is still useful to the user).
@@ -1763,16 +1795,19 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         ),
         chatError: cancelled ? null : errToString(e),
       }));
+    } finally {
+      if (chatAbort === chatAc) chatAbort = null;
     }
   },
 
   cancelChat: () => {
     const { chatBusy } = get();
     if (!chatBusy) return;
-    // The streaming run isn't abortable mid-flight; un-stick the UI. The
-    // promise still resolves but its result handler is a no-op once
-    // chatBusy is false.
+    // Un-stick the UI immediately, then abort the streaming run — the
+    // rejection lands in sendChatMessage's catch, which keeps any partial
+    // answer and suppresses the error banner for cancels.
     set({ chatBusy: false });
+    chatAbort?.abort();
   },
 
   clearChat: () => set({ chatMessages: [], chatError: null }),

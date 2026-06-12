@@ -104,6 +104,9 @@ export type RunInput = {
   /** User's freeform "Custom instructions" from Settings — appended to the
    *  system prompt on every surface. Empty/absent ⇒ base prompt unchanged. */
   customInstructions?: string;
+  /** Abort handle threaded into the shared runner — cancelling actually stops
+   *  the provider request (and billing), it doesn't just discard the result. */
+  signal?: AbortSignal;
 };
 
 export type RunResult = {
@@ -146,6 +149,7 @@ export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
     maxSteps: SURFACE_STEP_CAPS.generator,
     schema: DraftBatchLLMSchema,
     onToolEvent: input.onActivity,
+    signal: input.signal,
   });
 
   // Prefer the strictly-validated object; if the model produced a batch that
