@@ -207,17 +207,37 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
 
   // Manual refresh wrapper used by the toolbar button (and anyone else who
   // wants to force a re-sync of the Explorer tree). We hit `listPlans` for
-  // plan renames, then force-reload suites for every plan that's currently
-  // expanded so suite renames also flow in. Auto-refreshing this on every
-  // window-focus event was too aggressive — it fired N HTTP requests every
-  // alt+tab and surfaced as visible lag while typing in another window.
+  // plan renames, force-reload suites for every expanded plan (suite renames),
+  // AND force-reload the cases of every expanded suite — otherwise a case
+  // deleted (or added) directly in ADO never drops in/out, because the suite
+  // list alone never reflects case-level changes and the case cache is sticky
+  // until force-refreshed. Auto-refreshing on every window-focus was too
+  // aggressive (N requests per alt+tab, visible lag), so this stays manual.
   const refreshExplorer = useCallback(() => {
     if (!configured) return;
     void refreshPlans();
+    const st = useTestPlans.getState();
     for (const planId of expandedPlans) {
       void loadSuites(planId, { force: true });
+      // Force-refresh cases for any expanded suite in this plan. The suite
+      // list is the one loaded right now; its ids are stable across the
+      // refresh, so pairing them with the plan is correct even before the
+      // suites re-fetch resolves.
+      const suites = st.bySuite.get(planId)?.suites ?? [];
+      for (const suite of suites) {
+        if (expandedSuites.has(suite.id)) {
+          void loadSuiteCases(planId, suite.id, { force: true });
+        }
+      }
     }
-  }, [configured, expandedPlans, refreshPlans, loadSuites]);
+  }, [
+    configured,
+    expandedPlans,
+    expandedSuites,
+    refreshPlans,
+    loadSuites,
+    loadSuiteCases,
+  ]);
 
   // Inline tree filtering was removed in favour of the Ctrl/Cmd+K command
   // palette (which searches every plan/suite/case + all ADO work items, not
