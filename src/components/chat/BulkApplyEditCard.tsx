@@ -391,7 +391,7 @@ function BulkRow({
               {kindLabel(parsed.kind)}
             </span>
             {parsed.kind === "create-case" || parsed.kind === "create-bug" ? (
-              <span className="rounded-sm bg-emerald-500/15 px-1 py-px font-mono text-[9px] uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+              <span className="rounded-sm bg-emerald-500/15 px-1 py-px font-mono text-[9.5px] uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
                 {parsed.kind === "create-bug" ? "new bug" : "new"}
               </span>
             ) : null}

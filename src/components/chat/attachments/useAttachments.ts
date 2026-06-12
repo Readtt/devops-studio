@@ -17,7 +17,21 @@ export function useAttachments() {
   const ingest = useCallback(async (files: File[]) => {
     if (files.length === 0) return;
     for (const f of files) {
-      const result = await ingestFile(f);
+      // A FileReader rejection (file locked/deleted between pick and read)
+      // must not kill the rest of the batch as an unhandled rejection — it
+      // surfaces as an error chip like any other ingest failure.
+      let result: Awaited<ReturnType<typeof ingestFile>>;
+      try {
+        result = await ingestFile(f);
+      } catch (err) {
+        result = {
+          ok: false,
+          error: {
+            reason: "unsupported",
+            message: `${f.name}: ${err instanceof Error ? err.message : "could not be read"}`,
+          },
+        };
+      }
       if (result.ok) {
         const att = result.attachment;
         setAttachments((prev) => {

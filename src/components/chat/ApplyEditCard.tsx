@@ -533,7 +533,7 @@ export function ApplyEditCard({
                 suite={current?.suite ?? null}
               />
             ) : CASE_TARGET_KINDS.has(parsed.kind) ? (
-              <span className="font-mono text-[10px] text-destructive">
+              <span className="font-mono text-[10.5px] text-destructive">
                 no caseId
               </span>
             ) : null}
@@ -1422,7 +1422,7 @@ export function CaseRefBadge({
               void openUrl(webUrl);
             }
           }}
-          className="inline-flex max-w-[14rem] items-center gap-1 truncate rounded-sm border border-border/55 bg-foreground/[0.04] px-1 py-px font-mono text-[10px] text-foreground/85 transition-colors hover:bg-foreground/[0.08]"
+          className="inline-flex max-w-[14rem] items-center gap-1 truncate rounded-sm border border-border/55 bg-foreground/[0.04] px-1 py-px font-mono text-[10.5px] text-foreground/85 transition-colors hover:bg-foreground/[0.08]"
         >
           <span>#{caseId}</span>
           {title ? (
@@ -1497,7 +1497,7 @@ export function BugRefBadge({
               void openUrl(webUrl);
             }
           }}
-          className="inline-flex max-w-[14rem] items-center gap-1 truncate rounded-sm border border-border/55 bg-foreground/[0.04] px-1 py-px font-mono text-[10px] text-foreground/85 transition-colors hover:bg-foreground/[0.08]"
+          className="inline-flex max-w-[14rem] items-center gap-1 truncate rounded-sm border border-border/55 bg-foreground/[0.04] px-1 py-px font-mono text-[10.5px] text-foreground/85 transition-colors hover:bg-foreground/[0.08]"
         >
           <span>bug #{bugId}</span>
           {title ? (

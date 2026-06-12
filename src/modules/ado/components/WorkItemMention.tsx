@@ -70,7 +70,7 @@ export function TypeTag({
     <span
       title={type || "Work item"}
       className={cn(
-        "shrink-0 font-mono text-[8.5px] font-semibold uppercase tracking-wider tabular-nums",
+        "shrink-0 font-mono text-[9.5px] font-semibold uppercase tracking-wider tabular-nums",
         compact ? "" : "w-9",
         typeTint(type),
       )}

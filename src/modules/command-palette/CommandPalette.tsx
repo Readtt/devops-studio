@@ -543,7 +543,7 @@ function WorkItemRow({
     wi.workItemType !== "Bug" && wi.workItemType !== "Test Case";
   return (
     <CommandItem value={`wi-${wi.id}-${wi.title}`} onSelect={onSelect}>
-      <span className="w-10 shrink-0 font-mono text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+      <span className="w-10 shrink-0 font-mono text-[9.5px] font-semibold uppercase tracking-wider text-muted-foreground">
         {abbr}
       </span>
       <div className="flex min-w-0 flex-col">
