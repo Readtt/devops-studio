@@ -160,7 +160,7 @@ export function SettingsApp() {
               <TabsTrigger
                 key={t.id}
                 value={t.id}
-                className="h-6 shrink-0 gap-1.5 px-2.5 text-[11.5px]"
+                className="h-6 shrink-0 gap-1.5 px-2.5"
               >
                 {t.glyph}
                 <span>{t.label}</span>
