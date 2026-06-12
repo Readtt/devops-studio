@@ -333,17 +333,19 @@ export function WorkItemChips({
       {items.map((b) => (
         <Tooltip key={b.id}>
           <TooltipTrigger asChild>
-            <span className="inline-flex h-6 items-center gap-1.5 rounded-md border border-border/50 bg-card px-1.5 text-[10.5px]">
+            <span className="inline-flex h-6 min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border/50 bg-card px-1.5 text-[10.5px]">
               <TypeTag type={b.workItemType} compact />
-              <span className="font-mono text-muted-foreground">#{b.id}</span>
-              <span className="max-w-[10rem] truncate text-foreground/80">
+              <span className="shrink-0 font-mono text-muted-foreground">
+                #{b.id}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-foreground/80">
                 {b.title}
               </span>
               <button
                 type="button"
                 onClick={() => onRemove(b.id)}
                 aria-label={`Remove #${b.id}`}
-                className="text-muted-foreground transition-colors hover:text-destructive"
+                className="shrink-0 text-muted-foreground transition-colors hover:text-destructive"
               >
                 <HugeiconsIcon icon={Cancel01Icon} size={11} strokeWidth={2} />
               </button>

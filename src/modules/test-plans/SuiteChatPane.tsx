@@ -1136,6 +1136,7 @@ function ChatThread({
   assistantProvider: import("@/modules/ai/config").ProviderId | null;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
   // Persistent "stick to bottom" intent. Starts true; flips to false the
   // moment the user scrolls UP past the threshold, flips back to true when
   // they reach the bottom again (or click the jump pill). We read scroll
@@ -1186,8 +1187,13 @@ function ChatThread({
     };
   }, [lastContent, messages.length, busy]);
 
-  // Resize observer — the thread also has to follow when its own height
-  // shrinks (composer grows, an error banner appears) while sticking.
+  // Resize observer. Critically we observe the CONTENT element, not just the
+  // scroll container: the container's box is fixed by flex, so it never
+  // resizes when messages stream in or markdown / code blocks / tool strips
+  // expand asynchronously. Watching the content means a late height change
+  // still re-pins us to the bottom — this is why jump-to-latest used to get
+  // stuck above the newest message. We still observe the container too, to
+  // follow when its own height shrinks (composer grows, a banner appears).
   useEffect(() => {
     const el = containerRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
@@ -1196,6 +1202,7 @@ function ChatThread({
       el.scrollTop = el.scrollHeight;
     });
     ro.observe(el);
+    if (contentRef.current) ro.observe(contentRef.current);
     return () => ro.disconnect();
   }, []);
 
@@ -1206,7 +1213,10 @@ function ChatThread({
       className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain"
       tabIndex={-1}
     >
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-5 py-5">
+      <div
+        ref={contentRef}
+        className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-5 py-5"
+      >
         {casesLoading && !cases ? (
           <CaseLoadingShimmer />
         ) : cases && cases.length === 0 ? (
@@ -1307,10 +1317,12 @@ function MentionedWorkItemChip({
           onClick={open}
           className="inline-flex h-6 max-w-[16rem] items-center gap-1.5 rounded-md border border-border/55 bg-card/70 px-1.5 text-[10.5px] text-foreground/85 transition-colors hover:bg-foreground/[0.06]"
         >
-          <span className="font-mono text-muted-foreground/85">
+          <span className="shrink-0 font-mono text-muted-foreground/85">
             {isBug ? `bug #${item.id}` : `#${item.id}`}
           </span>
-          <span className="truncate text-foreground/70">{item.title}</span>
+          <span className="min-w-0 flex-1 truncate text-foreground/70">
+            {item.title}
+          </span>
         </button>
       </TooltipTrigger>
       <TooltipContent side="top" className="max-w-[280px] text-[11px]">
