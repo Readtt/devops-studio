@@ -45,7 +45,20 @@ export function ConfidenceDetailPanel({
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      // Don't steal Esc from an active text edit (EditableText cancels on
+      // Esc) — closing the panel at the same time would be two actions for
+      // one keypress.
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.isContentEditable)
+      ) {
+        return;
+      }
+      onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
