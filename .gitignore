@@ -32,6 +32,12 @@ src-tauri/gen/schemas
 # OS junk
 Thumbs.db
 
+# Local AI-assistant working dirs — design specs / plans / scratch. These are
+# never project documentation and must not be committed (release notes belong
+# in CHANGELOG.md, not here).
+docs/superpowers/
+.superpowers/
+
 # Upstream-inherited docs that don't apply to DevOps Studio yet — keep
 # ignored until rewritten for this project. (CHANGELOG.md and docs/ are
 # now intentionally tracked — see CLAUDE.md → Release process.)
