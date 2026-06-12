@@ -40,7 +40,7 @@ export function RefineChangesPanel() {
     if (!snapshot) return null;
     return {
       cases: pairCases(snapshot.cases, cases),
-      bugs: pairBugs(snapshot.bugs, bugs),
+      bugs: pairBugs(snapshot.bugs, bugs, snapshot.cases, cases),
     };
   }, [snapshot, cases, bugs]);
 
@@ -148,6 +148,27 @@ export function RefineChangesPanel() {
                     <TextDiff before={before.rationale} after={after.rationale} />
                   </Field>
                 ) : null}
+                {ch.tags ? (
+                  <Field label="Tags">
+                    <ValueDiff
+                      before={(before.tags ?? []).join(", ")}
+                      after={(after.tags ?? []).join(", ")}
+                    />
+                  </Field>
+                ) : null}
+                {ch.areaPath ? (
+                  <Field label="Area path">
+                    <ValueDiff before={before.areaPath} after={after.areaPath} />
+                  </Field>
+                ) : null}
+                {ch.iterationPath ? (
+                  <Field label="Iteration">
+                    <ValueDiff
+                      before={before.iterationPath}
+                      after={after.iterationPath}
+                    />
+                  </Field>
+                ) : null}
               </ChangeCard>
             );
           })}
@@ -173,18 +194,51 @@ export function RefineChangesPanel() {
               </Field>
             </ChangeCard>
           ))}
-          {b.modified.map(({ before, after }) => (
-            <ChangeCard key={`bm-${after.uid}`} tone="modified" title={after.title}>
-              {before.severity !== after.severity ? (
-                <SeverityLine before={before.severity} after={after.severity} />
-              ) : null}
-              {before.reproSteps !== after.reproSteps ? (
-                <Field label="Repro steps">
-                  <TextDiff before={before.reproSteps} after={after.reproSteps} />
-                </Field>
-              ) : null}
-            </ChangeCard>
-          ))}
+          {b.modified.map(
+            ({ before, after, beforeParentTitle, afterParentTitle }) => {
+              const relinked =
+                norm(beforeParentTitle ?? "") !== norm(afterParentTitle ?? "");
+              const codeRefsChanged =
+                JSON.stringify(before.codeRefs ?? []) !==
+                JSON.stringify(after.codeRefs ?? []);
+              return (
+                <ChangeCard
+                  key={`bm-${after.uid}`}
+                  tone="modified"
+                  title={after.title}
+                >
+                  {before.severity !== after.severity ? (
+                    <SeverityLine before={before.severity} after={after.severity} />
+                  ) : null}
+                  {relinked ? (
+                    <Field label="Parent case">
+                      <ValueDiff
+                        before={beforeParentTitle ?? ""}
+                        after={afterParentTitle ?? ""}
+                        emptyLabel="(unlinked)"
+                      />
+                    </Field>
+                  ) : null}
+                  {before.reproSteps !== after.reproSteps ? (
+                    <Field label="Repro steps">
+                      <TextDiff
+                        before={before.reproSteps}
+                        after={after.reproSteps}
+                      />
+                    </Field>
+                  ) : null}
+                  {codeRefsChanged ? (
+                    <Field label="Code refs">
+                      <ValueDiff
+                        before={`${before.codeRefs?.length ?? 0} ref(s)`}
+                        after={`${after.codeRefs?.length ?? 0} ref(s)`}
+                      />
+                    </Field>
+                  ) : null}
+                </ChangeCard>
+              );
+            },
+          )}
           {b.removed.map((bug) => (
             <ChangeCard key={`br-${bug.uid}`} tone="removed" title={bug.title}>
               <Field label="Repro steps">
@@ -275,6 +329,35 @@ function SeverityLine({ before, after }: { before?: string; after: string }) {
   );
 }
 
+/** Compact before → after for a short scalar field (tags, area path, parent
+ *  case, ref counts). Shows just the new value when it was empty before. */
+function ValueDiff({
+  before,
+  after,
+  emptyLabel = "(none)",
+}: {
+  before?: string | null;
+  after?: string | null;
+  emptyLabel?: string;
+}) {
+  const b = (before ?? "").trim();
+  const a = (after ?? "").trim();
+  const changed = b !== a;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 px-3 py-1.5 text-[10.5px]">
+      {changed && b ? (
+        <>
+          <span className="break-words text-muted-foreground line-through">
+            {b}
+          </span>
+          <span className="text-muted-foreground/60">→</span>
+        </>
+      ) : null}
+      <span className="break-words text-foreground/80">{a || emptyLabel}</span>
+    </div>
+  );
+}
+
 // --- Pairing ----------------------------------------------------------------
 
 function toStepLines(c: ReviewedCase): StepLine[] {
@@ -293,16 +376,27 @@ function stepsChanged(a: ReviewedCase, b: ReviewedCase): boolean {
 }
 
 function caseFieldChanges(a: ReviewedCase, b: ReviewedCase) {
+  const tagsKey = (c: ReviewedCase) => [...(c.tags ?? [])].sort().join(" ");
   return {
     description: a.description !== b.description,
     steps: stepsChanged(a, b),
     rationale: (a.rationale ?? "") !== (b.rationale ?? ""),
+    tags: tagsKey(a) !== tagsKey(b),
+    areaPath: (a.areaPath ?? "") !== (b.areaPath ?? ""),
+    iterationPath: (a.iterationPath ?? "") !== (b.iterationPath ?? ""),
   };
 }
 
 function caseChanged(a: ReviewedCase, b: ReviewedCase): boolean {
   const ch = caseFieldChanges(a, b);
-  return ch.description || ch.steps || ch.rationale;
+  return (
+    ch.description ||
+    ch.steps ||
+    ch.rationale ||
+    ch.tags ||
+    ch.areaPath ||
+    ch.iterationPath
+  );
 }
 
 function pairCases(before: ReviewedCase[], after: ReviewedCase[]) {
@@ -325,7 +419,27 @@ function pairCases(before: ReviewedCase[], after: ReviewedCase[]) {
   return { added, removed, modified };
 }
 
-function pairBugs(before: ReviewedBug[], after: ReviewedBug[]) {
+/** The bug's parent case title, resolved through the cases array it indexes.
+ *  We compare parents by TITLE (not raw index) because a refine rebuilds the
+ *  cases array — the same index can point at a different case before/after. */
+function parentTitleOf(bug: ReviewedBug, cs: ReviewedCase[]): string | null {
+  const i = bug.linkedDraftCaseIndex;
+  return i != null && i >= 0 && i < cs.length ? cs[i].title : null;
+}
+
+type BugMod = {
+  before: ReviewedBug;
+  after: ReviewedBug;
+  beforeParentTitle: string | null;
+  afterParentTitle: string | null;
+};
+
+function pairBugs(
+  before: ReviewedBug[],
+  after: ReviewedBug[],
+  beforeCases: ReviewedCase[],
+  afterCases: ReviewedCase[],
+) {
   const pool = new Map<string, ReviewedBug[]>();
   for (const item of before) {
     const k = norm(item.title);
@@ -334,12 +448,34 @@ function pairBugs(before: ReviewedBug[], after: ReviewedBug[]) {
     else pool.set(k, [item]);
   }
   const added: ReviewedBug[] = [];
-  const modified: { before: ReviewedBug; after: ReviewedBug }[] = [];
+  const modified: BugMod[] = [];
   for (const a of after) {
     const prev = pool.get(norm(a.title))?.shift();
-    if (!prev) added.push(a);
-    else if (prev.reproSteps !== a.reproSteps || prev.severity !== a.severity) {
-      modified.push({ before: prev, after: a });
+    if (!prev) {
+      added.push(a);
+      continue;
+    }
+    const beforeParentTitle = parentTitleOf(prev, beforeCases);
+    const afterParentTitle = parentTitleOf(a, afterCases);
+    // Catch the small-but-real changes a refine can make: a re-link to a
+    // different parent case, or a change to the grounded code refs — not just
+    // the repro text and severity.
+    const relinked =
+      norm(beforeParentTitle ?? "") !== norm(afterParentTitle ?? "");
+    const codeRefsChanged =
+      JSON.stringify(prev.codeRefs ?? []) !== JSON.stringify(a.codeRefs ?? []);
+    if (
+      prev.reproSteps !== a.reproSteps ||
+      prev.severity !== a.severity ||
+      relinked ||
+      codeRefsChanged
+    ) {
+      modified.push({
+        before: prev,
+        after: a,
+        beforeParentTitle,
+        afterParentTitle,
+      });
     }
   }
   const removed: ReviewedBug[] = [];
