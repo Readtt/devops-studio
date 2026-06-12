@@ -7,39 +7,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
-## [Unreleased]
-
-Single-BYOK-engine cycle (to be tagged 0.7.0). The generator-review,
-confidence, suite-chat, ADO-hardening, and read-only-command work from this
-cycle lives in the commit history and gets folded in when the release is cut.
-
-### Added
-
-- One shared task runner (`runTask`/`streamTask`) every AI surface flows through.
-- Deep, code-grounded test-case generation: the analyzer reads your source
-  (read-only Read/Glob/Grep) to ground cases and bug suggestions in real code.
-- A read-only command tool (`run_command`) on every AI surface — git history,
-  blame, diff, and file inspection, allowlisted so it can never mutate.
-- Schema-validated, temperature-0 output on Generator and Confidence, with
-  partial-batch salvage so one malformed item never zeroes a generation.
-- Global **"Allow AI to read source code"** setting gating every surface.
-
-### Changed
-
-- **Single BYOK engine.** Every model runs through the Vercel AI SDK;
-  per-surface agentic step caps centralized in `SURFACE_STEP_CAPS`.
-- Read window raised to 1500 lines / 24 KB so the model pulls whole modules.
-
-### Removed
-
-- The Claude Code CLI engine (Rust `claude` driver, frontend clients,
-  per-engine settings, and the `aiEngine`/`claudeAuthMode` prefs — older
-  settings files migrate silently).
-- A large dead general-coding-agent stack and all write/edit/bash/delegation
-  tools — the app is read-only against your source: it suggests artifacts you
-  apply, never autonomously edits or runs shell.
-- The per-run "allow code search" toggle (replaced by the global setting).
-
 ## [0.6.0] - 2026-05-29
 
 ### Added
