@@ -315,19 +315,19 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
   useEffect(() => {
     if (!revealTarget) return;
     const { planId, suiteId } = revealTarget;
-    let cancelled = false;
-    void (async () => {
-      setExpandedPlans((s) => (s.has(planId) ? s : new Set(s).add(planId)));
-      await loadSuites(planId);
-      if (cancelled) return;
-      setExpandedSuites((s) => (s.has(suiteId) ? s : new Set(s).add(suiteId)));
-      await loadSuiteCases(planId, suiteId);
-      if (cancelled) return;
-      consumeRevealTarget();
-    })();
-    return () => {
-      cancelled = true;
-    };
+    // Expand the path and KICK OFF the loads — deliberately not awaited.
+    // loadSuites / loadSuiteCases return immediately when a load for the same
+    // key is already in-flight, so awaiting wouldn't guarantee the data has
+    // landed; relying on it would let us consume the target before the row
+    // mounts. Instead the store updates re-render the tree, and the case row
+    // (once mounted) scrolls itself into view + highlights via the existing
+    // activeCaseId path. So consume right away — the reveal is driven by
+    // reactive state, not this closure.
+    setExpandedPlans((s) => (s.has(planId) ? s : new Set(s).add(planId)));
+    setExpandedSuites((s) => (s.has(suiteId) ? s : new Set(s).add(suiteId)));
+    void loadSuites(planId);
+    void loadSuiteCases(planId, suiteId);
+    consumeRevealTarget();
   }, [revealTarget, loadSuites, loadSuiteCases, consumeRevealTarget]);
 
   const anythingExpanded =
