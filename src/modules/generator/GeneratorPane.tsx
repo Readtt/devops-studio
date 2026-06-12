@@ -2362,7 +2362,7 @@ function ReviewPhase({
             </div>
           ) : null}
           {bugs.some((bug) => bug.decision === "keep") ? (
-            <div className="flex flex-wrap items-center gap-1.5 text-[10.5px] text-muted-foreground">
+            <div className="mb-2 mt-1 flex flex-wrap items-center gap-1.5 text-[10.5px] text-muted-foreground">
               <span>Assign all bugs to</span>
               <DeveloperPicker
                 value={commonAssignee}
