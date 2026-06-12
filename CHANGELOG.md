@@ -7,6 +7,73 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.7.0] - 2026-06-12
+
+The single-BYOK-engine release, plus a ~90-commit full review of the app.
+Every AI surface now flows through one shared task runner on the Vercel AI
+SDK, the generator grounds test cases in your real source code, and a
+day-zero audit hardened ADO calls, cancellation, chat UX, and the UI type
+scale.
+
+### Added
+
+- One shared task runner (`runTask`/`streamTask`) every AI surface flows through.
+- Deep, code-grounded test-case generation: the analyzer reads your source
+  (read-only Read/Glob/Grep) to ground cases and bug suggestions in real code.
+- A read-only command tool (`run_command`) on every AI surface — git history,
+  blame, diff, and file inspection, allowlisted so it can never mutate.
+- Schema-validated, temperature-0 output on Generator and Confidence, with
+  partial-batch salvage so one malformed item never zeroes a generation.
+- Global **"Allow AI to read source code"** setting gating every surface.
+- Generator review upgrades: accept/reject individual refine changes, assign
+  bugs to a developer, warnings for unlinked bugs and for passing a case with
+  open bugs, confidence verdicts auto-set the run status, and a similarity
+  match can update the existing case instead of duplicating it.
+- Suite Chat: bulk outcome skips already-marked cases, #-mentioned work items
+  render inline, cases reconcile against ADO before each send, and confidence
+  surfaces alongside outcomes.
+- Plans explorer: reveal a case in the tree from anywhere it's opened; toolbar
+  Refresh force-reloads the cases of expanded suites.
+- The assign picker lists members across all project teams.
+- AI tool calls render as readable observations with live activity, not raw JSON.
+
+### Fixed
+
+- Cancelling analyze/refine/Ask/generation now aborts the upstream model
+  request — per-tab abort handles, no more orphaned streams.
+- ADO hardening: project names percent-encoded in every URL, correct
+  permanent bug-delete endpoint, suite-referenced cases unlink before delete,
+  real error reasons surfaced, graceful fallback to the default team.
+- Repro-steps HTML from ADO is sanitized before rendering.
+- Custom instructions from Settings now apply on every AI surface.
+- Source citations resolve to the real file, not a root+filename guess.
+- Duplicated code-review tabs no longer share the saved thread.
+- Chat polish: no "malformed block" flash while JSON streams, clickable bug
+  refs, diffs no longer overflow, unreadable files survive attachment batches.
+- A full type-scale and consistency sweep across the UI kit, and the
+  confidence panel no longer steals Esc from active text edits.
+
+### Changed
+
+- **Single BYOK engine.** Every model runs through the Vercel AI SDK;
+  per-surface agentic step caps centralized in `SURFACE_STEP_CAPS`.
+- Read window raised to 1500 lines / 24 KB so the model pulls whole modules.
+- The update notification is now a compact capsule linking to the release
+  notes on GitHub instead of inlining the whole changelog.
+- Refreshed app icons and logos at every resolution.
+
+### Removed
+
+- The Claude Code CLI engine (Rust `claude` driver, frontend clients,
+  per-engine settings, and the `aiEngine`/`claudeAuthMode` prefs — older
+  settings files migrate silently).
+- A large dead general-coding-agent stack and all write/edit/bash/delegation
+  tools — the app is read-only against your source: it suggests artifacts you
+  apply, never autonomously edits or runs shell.
+- The per-run "allow code search" toggle (replaced by the global setting).
+- Dead weight found by the audit: 14 unused UI components, three callerless
+  Tauri commands, the workspace-authorization machinery, and `@thesvg/react`.
+
 ## [0.6.0] - 2026-05-29
 
 ### Added
