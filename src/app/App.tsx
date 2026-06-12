@@ -26,6 +26,7 @@ import {
   ChatHistoryPanel,
   TestPlansPanel,
 } from "@/modules/test-plans";
+import { useTestPlans } from "@/modules/test-plans/hooks/useTestPlans";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   GeneratorStoresProvider,
@@ -323,6 +324,13 @@ function AppShell() {
       });
       // Refresh the title on re-open (ADO title may have changed).
       useTabsStore.getState().renameTab(id, input.title);
+      // Reveal the case in the Plans explorer no matter where it was opened
+      // from (Done tab, History, a chat link). Resolves its plan/suite when the
+      // caller didn't supply them, so clicking the Plans rail shows where the
+      // case lives without hunting for the suite. Fire-and-forget.
+      void useTestPlans
+        .getState()
+        .requestRevealCase(input.caseId, input.planId, input.suiteId);
       return id;
     },
     [],

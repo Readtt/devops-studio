@@ -174,6 +174,8 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
     loadSuiteCases,
     loadCaseDetails,
     cancelPlanLoads,
+    revealTarget,
+    consumeRevealTarget,
   } = useTestPlans();
   const [expandedPlans, setExpandedPlans] = useState<Set<number>>(new Set());
   const [expandedSuites, setExpandedSuites] = useState<Set<number>>(new Set());
@@ -304,6 +306,29 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
     setExpandedSuites(new Set());
     setExpandedCases(new Set());
   }, [expandedPlans, cancelPlanLoads]);
+
+  // Reveal a case opened from elsewhere (Generator Done, History, a chat link):
+  // expand its plan→suite path so the row mounts. The row then scrolls itself
+  // into view + highlights via its own `active` effect (the opened case is
+  // already the active tab). Runs on mount too, so opening a case while on the
+  // History rail and then switching to Plans still lands you on it.
+  useEffect(() => {
+    if (!revealTarget) return;
+    const { planId, suiteId } = revealTarget;
+    let cancelled = false;
+    void (async () => {
+      setExpandedPlans((s) => (s.has(planId) ? s : new Set(s).add(planId)));
+      await loadSuites(planId);
+      if (cancelled) return;
+      setExpandedSuites((s) => (s.has(suiteId) ? s : new Set(s).add(suiteId)));
+      await loadSuiteCases(planId, suiteId);
+      if (cancelled) return;
+      consumeRevealTarget();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [revealTarget, loadSuites, loadSuiteCases, consumeRevealTarget]);
 
   const anythingExpanded =
     expandedPlans.size > 0 || expandedSuites.size > 0 || expandedCases.size > 0;

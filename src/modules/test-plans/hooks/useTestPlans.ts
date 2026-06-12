@@ -5,6 +5,7 @@ import {
   listPlans,
   listSuiteCases,
   listSuites,
+  listSuitesForCase,
   toAdoError,
   updatePlanName,
   updateSuiteName,
@@ -14,6 +15,10 @@ import {
   type TestCaseRef,
   type TestPlanRef,
 } from "@/modules/ado";
+
+/** A case the explorer should reveal: expand its plan→suite path and scroll
+ *  its row into view. */
+export type RevealTarget = { caseId: number; planId: number; suiteId: number };
 
 /** Per-suite load state. Errors are tracked on each suite key so a single
  *  failing suite doesn't blank an entire plan's subtree. */
@@ -54,6 +59,13 @@ type State = {
   plansError: AdoError | null;
   bySuite: Map<number, SuiteLoad>;
   caseDetails: Map<number, CaseDetailsState>;
+  /** A case the explorer should reveal. Set when a case is opened from anywhere
+   *  (Generator Done, History, a chat link); the mounted TestPlansPanel expands
+   *  its plan→suite path and scrolls to it, then clears this. Lives in the store
+   *  (not panel-local state) so it survives the panel being unmounted while the
+   *  user is on another sidebar rail — that's the whole point: open a case on
+   *  the History rail, switch to Plans, and it's already revealed. */
+  revealTarget: RevealTarget | null;
 
   refreshConnection: () => Promise<void>;
   refreshPlans: () => Promise<void>;
@@ -81,8 +93,34 @@ type State = {
   /** Cancel any in-flight suite or case loads for this plan and forget the
    *  fact that we were loading. Called when the user collapses a plan. */
   cancelPlanLoads: (planId: number) => void;
+  /** Ask the explorer to reveal a case. Resolves the plan/suite from the loaded
+   *  tree, then ADO (listSuitesForCase), when the caller doesn't supply them.
+   *  No-op if the location can't be determined. */
+  requestRevealCase: (
+    caseId: number,
+    planId?: number | null,
+    suiteId?: number | null,
+  ) => Promise<void>;
+  /** Clear the reveal target once the panel has expanded + scrolled to it. */
+  consumeRevealTarget: () => void;
   reset: () => void;
 };
+
+/** Find which loaded (plan, suite) currently contains a case — used to reveal
+ *  a case the caller opened without suite context, before falling back to ADO. */
+function findLoadedCaseLocation(
+  bySuite: Map<number, SuiteLoad>,
+  caseId: number,
+): { planId: number; suiteId: number } | null {
+  for (const [planId, load] of bySuite) {
+    for (const [suiteId, sc] of load.suiteCases) {
+      if (sc.cases && sc.cases.some((c) => c.id === caseId)) {
+        return { planId, suiteId };
+      }
+    }
+  }
+  return null;
+}
 
 const initialSuiteLoad = (): SuiteLoad => ({
   loading: false,
@@ -126,6 +164,7 @@ export const useTestPlans = create<State>((set, get) => ({
   plansError: null,
   bySuite: new Map(),
   caseDetails: new Map(),
+  revealTarget: null,
 
   refreshConnection: async () => {
     try {
@@ -372,6 +411,37 @@ export const useTestPlans = create<State>((set, get) => ({
     }
   },
 
+  requestRevealCase: async (caseId, planId, suiteId) => {
+    let pid = planId ?? null;
+    let sid = suiteId ?? null;
+    if (pid == null || sid == null) {
+      // Already loaded somewhere in the tree? Use that — no network call.
+      const hit = findLoadedCaseLocation(get().bySuite, caseId);
+      if (hit) {
+        pid = hit.planId;
+        sid = hit.suiteId;
+      } else {
+        // Ask ADO which (plan, suite) contain the case; take the first.
+        // Best-effort — a failed lookup just means no reveal (the tab still
+        // opens; the user can find it manually as before).
+        try {
+          const memberships = await listSuitesForCase(caseId);
+          if (memberships.length > 0) {
+            pid = memberships[0].planId;
+            sid = memberships[0].suiteId;
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+    if (pid != null && sid != null) {
+      set({ revealTarget: { caseId, planId: pid, suiteId: sid } });
+    }
+  },
+
+  consumeRevealTarget: () => set({ revealTarget: null }),
+
   reset: () => {
     for (const ctrl of suiteAborts.values()) ctrl.abort();
     for (const ctrl of caseAborts.values()) ctrl.abort();
@@ -388,6 +458,7 @@ export const useTestPlans = create<State>((set, get) => ({
       plansError: null,
       bySuite: new Map(),
       caseDetails: new Map(),
+      revealTarget: null,
     });
   },
 }));
