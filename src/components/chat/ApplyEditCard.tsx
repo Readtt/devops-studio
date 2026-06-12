@@ -809,7 +809,7 @@ function ApplyButton({
         </button>
       </TooltipTrigger>
       <TooltipContent side="top" className="text-[11px]">
-        Push this change to Azure DevOps. The case is updated in place.
+        Apply this change in Azure DevOps.
       </TooltipContent>
     </Tooltip>
   );

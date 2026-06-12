@@ -445,7 +445,7 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
             <Button
               size="icon-xs"
               variant="ghost"
-              aria-label="Refresh plans and expanded suites"
+              aria-label="Refresh plans, suites, and cases"
               onClick={refreshExplorer}
             >
               <HugeiconsIcon
@@ -457,7 +457,8 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
             </Button>
           </TooltipTrigger>
           <TooltipContent side="bottom">
-            Refetch plans + every expanded suite from Azure DevOps
+            Refetch plans, suites, and cases from Azure DevOps — picks up items
+            added or deleted in ADO since you last loaded them
           </TooltipContent>
         </Tooltip>
         <Tooltip>
