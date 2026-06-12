@@ -143,6 +143,11 @@ type Store = {
   ) => void;
 
   loadCases: (planId: number, suiteId: number, force?: boolean) => Promise<void>;
+  /** Cheap freshness pass before a send: re-list the suite's cases (one call)
+   *  and reconcile the cached snapshot — drop cases deleted in ADO, pull
+   *  details only for newly-added ones. Stops the chat answering about cases
+   *  that no longer exist after an external delete + explorer refresh. */
+  reconcileCases: (planId: number, suiteId: number) => Promise<void>;
   setFilter: (planId: number, suiteId: number, filter: string) => void;
 
   sendMessage: (
@@ -598,6 +603,47 @@ export const useSuiteChat = create<Store>((set, get) => ({
     }
   },
 
+  reconcileCases: async (planId, suiteId) => {
+    const sk = suiteKey(planId, suiteId);
+    const curr = get().bySuite.get(sk);
+    // Only meaningful once an initial load populated the snapshot; otherwise
+    // the send path's own guard / loadCases handles it.
+    if (!curr?.cases || curr.casesLoading) return;
+    try {
+      const refs = await listSuiteCases(planId, suiteId);
+      const cachedById = new Map(curr.cases.map((c) => [c.id, c]));
+      const trimmed = refs.slice(0, PROMPT_CASE_CAP);
+      // Fetch details only for cases we don't already have cached.
+      const missingIds = trimmed
+        .map((r) => r.id)
+        .filter((id) => !cachedById.has(id));
+      const fetched = new Map<number, TestCase>();
+      if (missingIds.length > 0) {
+        const results = await Promise.allSettled(
+          missingIds.map((id) => getCase(id)),
+        );
+        for (const r of results) {
+          if (r.status === "fulfilled") fetched.set(r.value.id, r.value);
+        }
+      }
+      // Rebuild in ADO order: keep cached detail for present cases, splice in
+      // freshly-fetched new ones, and naturally drop any deleted case (it's no
+      // longer in `refs`).
+      const next: TestCase[] = [];
+      for (const r of trimmed) {
+        const existing = cachedById.get(r.id) ?? fetched.get(r.id);
+        if (existing) next.push(existing);
+      }
+      patchSuite(set, planId, suiteId, {
+        cases: next,
+        totalCases: refs.length,
+        truncated: refs.length > PROMPT_CASE_CAP,
+      });
+    } catch {
+      // Non-fatal — fall back to the cached snapshot rather than block the send.
+    }
+  },
+
   setFilter: (planId, suiteId, filter) => {
     patchSuite(set, planId, suiteId, { filter });
   },
@@ -609,7 +655,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
     const atts = attachments && attachments.length > 0 ? attachments : undefined;
     if (!text && !atts) return;
     const sk = suiteKey(planId, suiteId);
-    const suite = get().bySuite.get(sk);
+    let suite = get().bySuite.get(sk);
     if (!suite) return;
     if (!suite.cases) return;
 
@@ -622,6 +668,14 @@ export const useSuiteChat = create<Store>((set, get) => ({
     // Apply the client-side filter to the prompt context. Bug-shaped
     // filters ("auth", "#123", "totp") narrow what the model sees so
     // suites with hundreds of cases stay tractable.
+    // Reconcile the cached cases against ADO so a case deleted or added
+    // externally (then an explorer refresh) is reflected in THIS turn's
+    // context — the stale snapshot was a reported bug. One list call; details
+    // are fetched only for genuinely new cases.
+    await get().reconcileCases(planId, suiteId);
+    suite = get().bySuite.get(sk) ?? suite;
+    if (!suite.cases) return;
+
     const promptCases = applyCaseFilter(suite.cases, suite.filter);
 
     const userMsg: SuiteChatMessage = {
