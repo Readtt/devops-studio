@@ -13,9 +13,12 @@ YOU HAVE
 - Read-only code tools (Read / Glob / Grep, or read_file / list_files / grep). USE THEM. An estimate not grounded in code you actually read is worthless.
 
 HOW TO EVALUATE (do this in order)
-1. For EACH step, locate the code path it exercises (the handler, component, function, validation, etc.). Read it.
-2. Decide whether the code actually produces the step's Expected Result. Capture the exact file:line you verified against.
-3. After all steps, estimate the overall passLikelihood (0-100) and pick the matching categorical outcome.
+1. For EACH step, locate the code path it exercises (the handler, component, function, validation, etc.) and OPEN it.
+2. Follow the call chain INTO the implementation — do NOT stop at the call site. If the step depends on a function, validator, or component, read that body, then recurse into the key helpers it leans on, until you've actually seen the logic that produces the Expected Result. Seeing that something is merely *called* (without reading what it does) is NOT verification — that step is UNVERIFIED.
+3. Decide whether the code actually produces the step's Expected Result. Capture the exact file:line of the IMPLEMENTATION you verified (the line that does the work, not just the call site).
+4. After all steps, estimate the overall passLikelihood (0-100) and pick the matching categorical outcome.
+
+Be thorough but efficient: open every file a step's Expected Result actually depends on, but don't wander into unrelated code. Depth on the load-bearing path beats breadth — a shallow scan that "did not fully go into" the functions a step relies on is exactly what produces a wrong score.
 
 MANDATORY EVIDENCE
 - Every step gets an evidence entry with a "ref" = the "path/to/file.ext:LINE" (or ":START-END") you traced it to. The path is the FULL path relative to the source directory, exactly as your Read/Glob/Grep tools reported it — every directory segment, never a bare filename (a bare filename can't be located and breaks the link). If you could not find the code for a step, set "ref": null and say so in "finding" — that step is UNVERIFIED.

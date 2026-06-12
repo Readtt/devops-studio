@@ -764,11 +764,12 @@ export const TERMINAL_BUFFER_LINES = 300;
 
 /** Per-surface caps on the agentic read loop (how many tool-calling steps the
  *  model may take before it's forced to produce its final answer). The
- *  Generator gets the most room because it traces across many files; the chat
- *  surfaces answer narrower questions. */
+ *  Generator gets the most room because it traces across many files; confidence
+ *  now follows call chains into implementations (not just call sites), so it
+ *  needs headroom to stay accurate without dragging on. */
 export const SURFACE_STEP_CAPS = {
   generator: 24,
   suiteChat: 12,
   codeReview: 15,
-  confidence: 12,
+  confidence: 18,
 } as const;
