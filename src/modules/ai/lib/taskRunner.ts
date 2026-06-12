@@ -38,9 +38,9 @@ import { buildUserTurn } from "./visionMessage";
 import {
   clampOutputFull,
   clampOutputSummary,
+  formatToolResult,
   newActivityId,
   stepToActivity,
-  stringifyResult,
   summarizeToolInput,
   type ActivityEntry,
 } from "@/modules/generator/lib/activityLog";
@@ -160,15 +160,17 @@ function liveToolOnChunk(
     } else if (c.type === "tool-result") {
       const id = c.toolCallId ?? newActivityId();
       const startedAt = toolStart.get(id);
-      const raw = stringifyResult(c.output ?? c.result);
+      const toolName = c.toolName ?? "tool";
+      const fmt = formatToolResult(toolName, c.output ?? c.result);
       onToolEvent({
         id,
         ts: Date.now() - start,
         kind: "tool",
-        toolName: c.toolName ?? "tool",
+        toolName,
         durationMs: startedAt != null ? Date.now() - startedAt : 0,
-        outputSummary: raw ? clampOutputSummary(raw) : undefined,
-        outputFull: raw ? clampOutputFull(raw) : undefined,
+        outputSummary: fmt.summary ? clampOutputSummary(fmt.summary) : undefined,
+        outputFull: fmt.text ? clampOutputFull(fmt.text) : undefined,
+        outputLang: fmt.lang,
       });
     }
   };

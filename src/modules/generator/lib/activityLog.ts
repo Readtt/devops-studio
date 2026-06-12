@@ -15,11 +15,17 @@ export type ActivityEntry = {
   toolName?: string;
   /** One-line description of what the tool was invoked with. */
   inputSummary?: string;
-  /** Short excerpt of the tool result, truncated for display. */
+  /** One-line meta about the result ("45 lines · 2.3 KB", "12 matches",
+   *  "exit 0") — shown as a caption above the expanded body. */
   outputSummary?: string;
-  /** Full result text — populated when the entry has a long output the user
-   *  can expand. We cap this at ~4KB so the log can't balloon on huge reads. */
+  /** Full, human-readable result body the user can expand: a file's content,
+   *  grep hits as `path:line: text`, a command's stdout. Capped at ~8KB so the
+   *  log can't balloon on huge reads. */
   outputFull?: string;
+  /** Language token (ts/py/rs/json/…) when `outputFull` is source code, so the
+   *  strip can syntax-highlight it instead of dumping a flat monospace block.
+   *  Only set for file reads; absent ⇒ render as plain pre. */
+  outputLang?: string;
   /** Wall-clock duration of the tool call, if known. */
   durationMs?: number;
   /** Error string when kind === "error". */
@@ -27,7 +33,7 @@ export type ActivityEntry = {
 };
 
 const OUTPUT_SUMMARY_MAX = 200;
-const OUTPUT_FULL_MAX = 4_096;
+const OUTPUT_FULL_MAX = 8_192;
 
 let counter = 0;
 
@@ -105,8 +111,8 @@ export function stepToActivity(
   }
   return calls.map((call) => {
     const match = results.find((r) => r.toolCallId === call.toolCallId);
-    const raw = match ? stringifyResult(match.output) : undefined;
     const toolName = call.toolName ?? "tool";
+    const fmt = match ? formatToolResult(toolName, match.output) : null;
     return {
       // Key by toolCallId so a live "tool-call" event (emitted from the
       // streaming onChunk handler) and this step-finish event upsert into the
@@ -120,8 +126,9 @@ export function stepToActivity(
         toolName,
         (call.input ?? {}) as Record<string, unknown>,
       ),
-      outputSummary: raw ? clampOutputSummary(raw) : undefined,
-      outputFull: raw ? clampOutputFull(raw) : undefined,
+      outputSummary: fmt?.summary ? clampOutputSummary(fmt.summary) : undefined,
+      outputFull: fmt?.text ? clampOutputFull(fmt.text) : undefined,
+      outputLang: fmt?.lang,
     };
   });
 }
@@ -134,6 +141,161 @@ export function stringifyResult(output: unknown): string {
   } catch {
     return String(output);
   }
+}
+
+/** Turn a tool's raw result object into a readable observation for the activity
+ *  strip — the heart of "a file read should show formatted code, not garbled
+ *  JSON". Per tool we pull out the payload that matters: a file's content (as
+ *  syntax-highlightable code), grep hits as `path:line: text`, a command's
+ *  stdout verbatim. Anything unrecognized falls back to indented JSON. Minimal
+ *  by design (mini-swe-agent style): a clean observation, not a data viewer.
+ *
+ *  Returns `summary` (a one-line caption), `text` (the full body), and an
+ *  optional `lang` token when the body is source code. Shared by the streaming
+ *  (onChunk) and batch (onStepFinish) paths so tool output looks identical
+ *  whether it streamed live or was rehydrated from history. */
+export function formatToolResult(
+  toolName: string | undefined,
+  output: unknown,
+): { summary: string; text: string; lang?: string } {
+  if (output == null) return { summary: "", text: "" };
+  if (typeof output === "string") return { summary: oneLine(output), text: output };
+  if (typeof output !== "object") {
+    const s = String(output);
+    return { summary: oneLine(s), text: s };
+  }
+  const o = output as Record<string, unknown>;
+  const str = (k: string): string | undefined =>
+    typeof o[k] === "string" ? (o[k] as string) : undefined;
+  const num = (k: string): number | undefined =>
+    typeof o[k] === "number" ? (o[k] as number) : undefined;
+
+  // A tool can succeed at the SDK level yet return `{ error }` (refused path,
+  // bad command). Surface that as the body so the user sees why.
+  const errText = str("error");
+  if (errText) return { summary: `error · ${oneLine(errText)}`, text: errText };
+
+  const name = (toolName ?? "").toLowerCase();
+
+  if (name === "read_file" || name === "read") {
+    if (o.unchanged === true) {
+      return {
+        summary: "unchanged since last read",
+        text: "(unchanged since the previous read of this file — the earlier result still applies)",
+      };
+    }
+    const content = str("content") ?? "";
+    const totalLines = num("total_lines");
+    const size = num("size");
+    const parts: string[] = [];
+    if (totalLines != null) parts.push(`${totalLines} line${totalLines === 1 ? "" : "s"}`);
+    if (size != null) parts.push(formatBytes(size));
+    if (o.truncated === true) parts.push("truncated");
+    return {
+      summary: parts.join(" · ") || "read",
+      text: content,
+      lang: langFromPath(str("path") ?? ""),
+    };
+  }
+
+  if (name === "grep") {
+    const hits = Array.isArray(o.hits) ? (o.hits as Array<Record<string, unknown>>) : [];
+    const files = num("files_scanned");
+    const truncated = o.truncated === true;
+    const lines = hits.map((h) => {
+      const rel =
+        typeof h.rel === "string"
+          ? h.rel
+          : typeof h.path === "string"
+            ? (h.path as string)
+            : "";
+      const line = typeof h.line === "number" ? h.line : "";
+      const text = typeof h.text === "string" ? h.text : "";
+      return `${rel}:${line}: ${text}`;
+    });
+    const sum =
+      `${hits.length}${truncated ? "+" : ""} match${hits.length === 1 ? "" : "es"}` +
+      (files != null ? ` · ${files} file${files === 1 ? "" : "s"} scanned` : "");
+    return { summary: sum, text: lines.join("\n") || "(no matches)" };
+  }
+
+  if (name === "glob") {
+    const hits = Array.isArray(o.hits)
+      ? (o.hits as unknown[]).filter((x): x is string => typeof x === "string")
+      : [];
+    const truncated = o.truncated === true;
+    return {
+      summary: `${hits.length}${truncated ? "+" : ""} file${hits.length === 1 ? "" : "s"}`,
+      text: hits.join("\n") || "(no files matched)",
+    };
+  }
+
+  if (name === "list_directory" || name === "list_files") {
+    const entries = Array.isArray(o.entries)
+      ? (o.entries as Array<Record<string, unknown>>)
+      : [];
+    const lines = entries.map((e) => {
+      const n = typeof e.name === "string" ? e.name : "";
+      const kind = typeof e.kind === "string" ? e.kind : "";
+      return kind === "dir" || kind === "directory" ? `${n}/` : n;
+    });
+    return {
+      summary: `${entries.length} entr${entries.length === 1 ? "y" : "ies"}`,
+      text: lines.join("\n") || "(empty)",
+    };
+  }
+
+  if (name === "run_command") {
+    const out = str("output") ?? "";
+    const code = num("returncode");
+    const truncated = o.truncated === true;
+    return {
+      summary: `${code != null ? `exit ${code}` : "done"}${truncated ? " · truncated" : ""}`,
+      text: out || "(no output)",
+    };
+  }
+
+  // Unknown tool — indented JSON still beats a minified one-liner.
+  let text: string;
+  try {
+    text = JSON.stringify(output, null, 2);
+  } catch {
+    text = String(output);
+  }
+  return { summary: oneLine(text), text, lang: "json" };
+}
+
+/** Collapse whitespace to a single line for caption text. */
+function oneLine(s: string): string {
+  return clampOutputSummary(s.replace(/\s+/g, " ").trim());
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Map a file path's extension to a ChatCodeMirror fence token. Unknown
+ *  extensions return undefined ⇒ the body renders as plain (still readable). */
+function langFromPath(path: string): string | undefined {
+  const m = /\.([a-z0-9]+)$/i.exec(path.trim());
+  if (!m) return undefined;
+  const ext = m[1].toLowerCase();
+  const map: Record<string, string> = {
+    ts: "ts", mts: "ts", cts: "ts", tsx: "tsx",
+    js: "js", mjs: "js", cjs: "js", jsx: "jsx", node: "js",
+    py: "py", pyi: "py",
+    rs: "rs", go: "go",
+    json: "json", jsonc: "json",
+    md: "md", mdx: "md", markdown: "md",
+    html: "html", htm: "html", xml: "xml", vue: "vue", svelte: "svelte",
+    razor: "razor", cshtml: "cshtml", aspx: "aspx",
+    css: "css", scss: "scss", less: "less", sass: "sass",
+    cs: "cs", c: "c", h: "c", cpp: "cpp", "cc": "cpp", hpp: "hpp", java: "java",
+    sh: "sh", bash: "bash", zsh: "zsh", ps1: "ps1",
+  };
+  return map[ext];
 }
 
 /** Compact label for the spinner caption — most recent thing the agent did. */

@@ -1,12 +1,15 @@
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import type { ActivityEntry } from "@/modules/generator/lib/activityLog";
+import { ChatCodeMirror } from "@/modules/code-viewer/ChatCodeMirror";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   AlertCircleIcon,
   ArrowRight01Icon,
   CodeIcon,
+  CommandLineIcon,
   FileEditIcon,
+  FolderOpenIcon,
   Loading03Icon,
   Search01Icon,
   Tick02Icon,
@@ -171,27 +174,54 @@ export function ToolCallStrip({
               )}
             </button>
             {open && hasDetail ? (
-              <div className="border-t border-border/30 bg-foreground/[0.015] px-2.5 py-1.5">
+              <div className="border-t border-border/30 bg-foreground/[0.015]">
                 {e.error ? (
-                  <pre className="whitespace-pre-wrap break-words font-mono text-[10px] leading-snug text-rose-600/90 dark:text-rose-400/90">
+                  <pre className="whitespace-pre-wrap break-words px-2.5 py-1.5 font-mono text-[10px] leading-snug text-rose-600/90 dark:text-rose-400/90">
                     {e.error}
                   </pre>
-                ) : null}
-                {e.outputSummary ? (
-                  <pre className="mt-0.5 max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[10px] leading-snug text-muted-foreground/85">
-                    {e.outputFull || e.outputSummary}
-                  </pre>
-                ) : !e.error ? (
-                  <p className="font-mono text-[10px] italic text-muted-foreground/55">
-                    (no output captured)
-                  </p>
-                ) : null}
+                ) : (
+                  <ToolOutput entry={e} />
+                )}
               </div>
             ) : null}
           </div>
         );
       })}
       </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** The expanded body of a finished tool call. A file read renders as themed,
+ *  syntax-highlighted code (matching chat code blocks); everything else — grep
+ *  hits, a directory listing, a command's stdout — renders as a clean monospace
+ *  block. The one-line `outputSummary` rides above as a quiet caption. */
+function ToolOutput({ entry: e }: { entry: ActivityEntry }) {
+  const hasBody = !!e.outputFull;
+  return (
+    <div>
+      {e.outputSummary ? (
+        <div className="px-2.5 pt-1.5 pb-1 font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/65">
+          {e.outputSummary}
+        </div>
+      ) : null}
+      {hasBody ? (
+        e.outputLang ? (
+          <div className="px-2.5 pb-2">
+            <div className="overflow-hidden rounded-md border border-border/45">
+              <ChatCodeMirror lang={e.outputLang} body={e.outputFull as string} />
+            </div>
+          </div>
+        ) : (
+          <pre className="mx-2.5 mb-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-foreground/[0.03] px-2 py-1.5 font-mono text-[10px] leading-snug text-muted-foreground/90">
+            {e.outputFull}
+          </pre>
+        )
+      ) : !e.outputSummary ? (
+        <p className="px-2.5 py-1.5 font-mono text-[10px] italic text-muted-foreground/55">
+          (no output captured)
+        </p>
       ) : null}
     </div>
   );
@@ -214,12 +244,16 @@ function ToolGlyph({ name, error }: { name?: string; error?: boolean }) {
 function iconForTool(name?: string) {
   switch ((name ?? "").toLowerCase()) {
     case "grep":
+    case "glob":
       return Search01Icon;
     case "read":
     case "read_file":
-    case "glob":
-    case "list_files":
       return FileEditIcon;
+    case "list_directory":
+    case "list_files":
+      return FolderOpenIcon;
+    case "run_command":
+      return CommandLineIcon;
     default:
       return CodeIcon;
   }
