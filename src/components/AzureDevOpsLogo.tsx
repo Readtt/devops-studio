@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { useId } from "react";
 
 /**
  * Hand-traced Azure DevOps infinity-loop mark. Kept around for the
@@ -9,8 +10,8 @@ import { cn } from "@/lib/utils";
  *
  * For the section header, status bar, and Settings tab glyph (places
  * where the brand should read as "Azure DevOps the platform"), use
- * `AzureDevOpsBrand` instead — it pulls the official mark from
- * @thesvg/react.
+ * `AzureDevOpsBrand` instead — the official mark, inlined from
+ * thesvg.org.
  *
  * Pass `mono` when the icon sits inside a high-density text run and
  * should inherit currentColor for legibility rather than render the
@@ -27,7 +28,9 @@ export function AzureDevOpsLogo({
   mono?: boolean;
   title?: string;
 }) {
-  const gradientId = "ado-logo-grad";
+  // Per-instance id so multiple copies (or a mono copy unmounting before a
+  // gradient copy) can't collide on a shared SVG def.
+  const gradientId = useId();
   return (
     <svg
       role="img"
