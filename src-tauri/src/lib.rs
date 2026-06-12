@@ -503,6 +503,7 @@ pub fn run() {
             net::lm_ping,
             net::ai_http_request,
             net::ai_http_stream,
+            net::ai_http_stream_cancel,
             // --- Azure DevOps ---
             ado::ado_set_connection,
             ado::ado_get_connection,

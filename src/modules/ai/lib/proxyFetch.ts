@@ -59,6 +59,9 @@ export function createProxyFetch(
 export const proxyFetch: typeof fetch = (input, init) =>
   proxyFetchImpl(input, init, false);
 
+// Monotonic id linking each streaming request to its Rust-side cancel handle.
+let nextStreamRequestId = 1;
+
 async function proxyFetchImpl(
   input: RequestInfo | URL,
   init: RequestInit | undefined,
@@ -74,14 +77,26 @@ async function proxyFetchImpl(
     throw makeAbortError();
   }
 
+  const requestId = nextStreamRequestId++;
+
   return new Promise<Response>((resolve, reject) => {
     let resolved = false;
     let streamController: ReadableStreamDefaultController<Uint8Array> | null =
       null;
     let cancelled = false;
 
+    // Tell Rust to bail out of its chunk loop and drop the HTTP connection.
+    // Without this, an aborted generation keeps streaming (and the provider
+    // keeps generating tokens) until the model finishes on its own.
+    const cancelUpstream = () => {
+      void invoke("ai_http_stream_cancel", { requestId }).catch(() => {
+        /* stream already ended — registry entry is gone */
+      });
+    };
+
     const onAbort = () => {
       cancelled = true;
+      cancelUpstream();
       if (!resolved) {
         reject(makeAbortError());
       } else if (streamController) {
@@ -104,7 +119,10 @@ async function proxyFetchImpl(
               streamController = controller;
             },
             cancel() {
+              // Consumer stopped reading (e.g. SDK closed the body early) —
+              // stop the upstream request too.
               cancelled = true;
+              cancelUpstream();
             },
           });
           resolved = true;
@@ -141,6 +159,7 @@ async function proxyFetchImpl(
       headers,
       body,
       allowPrivateNetwork,
+      requestId,
       onEvent: channel,
     }).catch((e) => {
       if (resolved) return; // headers already arrived; chunk-side error wins

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -8,6 +9,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
+use tokio::sync::Notify;
 
 const HEADER_BLOCKLIST: &[&str] = &[
     "host",
@@ -356,6 +358,41 @@ pub enum AiStreamEvent {
     },
 }
 
+/// Live stream cancellation. Aborting on the JS side can't reach a stream
+/// that's mid-`bytes_stream()` — the channel keeps accepting sends — so the
+/// frontend registers a request id and pokes `ai_http_stream_cancel` to make
+/// the loop below bail out and drop the HTTP connection. Without this, a
+/// cancelled AI generation keeps draining (and the provider keeps billing)
+/// until the model finishes on its own.
+fn cancel_registry() -> &'static Mutex<HashMap<u64, Arc<Notify>>> {
+    static REG: OnceLock<Mutex<HashMap<u64, Arc<Notify>>>> = OnceLock::new();
+    REG.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Removes the registry entry when the stream ends by any path (natural end,
+/// error, cancel) so ids never accumulate.
+struct CancelGuard(Option<u64>);
+impl Drop for CancelGuard {
+    fn drop(&mut self) {
+        if let Some(id) = self.0 {
+            if let Ok(mut reg) = cancel_registry().lock() {
+                reg.remove(&id);
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub fn ai_http_stream_cancel(request_id: u64) {
+    if let Ok(reg) = cancel_registry().lock() {
+        if let Some(n) = reg.get(&request_id) {
+            // notify_one stores a permit if the stream loop isn't awaiting yet,
+            // so a cancel that races ahead of the first select! still lands.
+            n.notify_one();
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn ai_http_stream(
     url: String,
@@ -363,8 +400,17 @@ pub async fn ai_http_stream(
     headers: Option<HashMap<String, String>>,
     body: Option<Vec<u8>>,
     allow_private_network: Option<bool>,
+    request_id: Option<u64>,
     on_event: Channel<AiStreamEvent>,
 ) -> Result<(), String> {
+    let cancel = request_id.map(|id| {
+        let notify = Arc::new(Notify::new());
+        if let Ok(mut reg) = cancel_registry().lock() {
+            reg.insert(id, notify.clone());
+        }
+        notify
+    });
+    let _guard = CancelGuard(request_id);
     let allow_private = allow_private_network.unwrap_or(false);
     let parsed = match validate_url(&url, allow_private) {
         Ok(p) => p,
@@ -407,9 +453,23 @@ pub async fn ai_http_stream(
     let _ = on_event.send(AiStreamEvent::Headers { status, headers });
 
     let mut stream = resp.bytes_stream();
-    while let Some(item) = stream.next().await {
+    loop {
+        let item = match &cancel {
+            Some(notify) => {
+                tokio::select! {
+                    _ = notify.notified() => {
+                        // Frontend aborted — dropping `stream`/`resp` closes the
+                        // connection so the provider stops generating.
+                        return Ok(());
+                    }
+                    item = stream.next() => item,
+                }
+            }
+            None => stream.next().await,
+        };
         match item {
-            Ok(chunk) => {
+            None => break,
+            Some(Ok(chunk)) => {
                 let bytes: Bytes = chunk;
                 if on_event
                     .send(AiStreamEvent::Chunk {
@@ -421,7 +481,7 @@ pub async fn ai_http_stream(
                     return Ok(());
                 }
             }
-            Err(e) => {
+            Some(Err(e)) => {
                 let _ = on_event.send(AiStreamEvent::Error {
                     message: e.to_string(),
                 });
