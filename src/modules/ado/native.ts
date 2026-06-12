@@ -309,9 +309,9 @@ export async function createBug(draft: DraftBug): Promise<CreatedWorkItem> {
   return CreatedWorkItemSchema.parse(raw);
 }
 
-/** List the project's default-team members for the review-phase developer
- *  picker. Returns deduped, name-sorted people; empty when the project has no
- *  default team or the PAT can't read membership. */
+/** List everyone assignable across the project's teams for the review-phase
+ *  developer picker. Returns deduped, name-sorted people; empty when the PAT
+ *  can't read any team's membership. */
 export async function listTeamMembers(): Promise<TeamMember[]> {
   const raw = await invoke("ado_list_team_members");
   return TeamMemberSchema.array().parse(raw);

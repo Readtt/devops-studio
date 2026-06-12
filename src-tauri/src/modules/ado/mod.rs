@@ -420,8 +420,8 @@ pub async fn ado_create_bug(
     bugs::create_bug(&state, &draft).await
 }
 
-/// List the project's default-team members for the "assign a developer" picker
-/// in the generator's review phase.
+/// List everyone assignable across the project's teams for the "assign a
+/// developer" picker in the generator's review phase.
 #[tauri::command]
 pub async fn ado_list_team_members(
     state: State<'_, AdoState>,

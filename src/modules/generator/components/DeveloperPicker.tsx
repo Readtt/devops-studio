@@ -65,7 +65,10 @@ export function DeveloperPicker({
           type="button"
           aria-label="Assigned developer"
           className={cn(
-            "inline-flex h-6 w-fit max-w-[200px] items-center gap-1.5 rounded-md border border-border/60 bg-card/60 px-2 text-[11px] transition-colors hover:bg-foreground/[0.05]",
+            // Compact inline chip — reads as an editable metadata value next to
+            // the row's 10.5px labels, not a chunky standalone button. Matches
+            // the case/bug ref-chip vocabulary used elsewhere on this page.
+            "inline-flex max-w-[200px] items-center gap-1 rounded-sm border border-border/55 bg-foreground/[0.04] px-1.5 py-0.5 text-[10.5px] leading-none transition-colors hover:bg-foreground/[0.08]",
             !value && "text-muted-foreground",
             className,
           )}
@@ -73,7 +76,7 @@ export function DeveloperPicker({
           <span className="min-w-0 truncate">{label}</span>
           <HugeiconsIcon
             icon={ArrowDown01Icon}
-            size={10}
+            size={9}
             strokeWidth={2}
             className="shrink-0 text-muted-foreground/70"
           />
@@ -90,8 +93,8 @@ export function DeveloperPicker({
           <CommandList className="max-h-[280px]">
             <CommandEmpty>
               {loading
-                ? "Loading teammates…"
-                : "No teammates found — check your ADO connection."}
+                ? "Loading people…"
+                : "No people found — check your ADO connection."}
             </CommandEmpty>
             <CommandGroup>
               <CommandItem
@@ -107,7 +110,7 @@ export function DeveloperPicker({
               </CommandItem>
             </CommandGroup>
             {members.length > 0 ? (
-              <CommandGroup heading="Team">
+              <CommandGroup heading="People">
                 {members.map((m) => {
                   const id = m.uniqueName || m.displayName;
                   return (
