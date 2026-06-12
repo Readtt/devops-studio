@@ -420,7 +420,7 @@ fn build_web_url_for_workitem(org_url: &str, project: &str, id: i64) -> String {
     format!(
         "{}/{}/_workitems/edit/{}",
         org_url.trim_end_matches('/'),
-        project,
+        super::client::urlencoded(project),
         id
     )
 }

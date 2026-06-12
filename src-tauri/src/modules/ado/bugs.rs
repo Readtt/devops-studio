@@ -85,7 +85,7 @@ pub async fn create_bug(state: &AdoState, draft: &DraftBug) -> AdoResult<Created
     let web_url = format!(
         "{}/{}/_workitems/edit/{}",
         conn.org_url.trim_end_matches('/'),
-        conn.project,
+        super::client::urlencoded(&conn.project),
         id
     );
 
@@ -141,7 +141,7 @@ pub async fn link_bug_to_case_as_child(
     let case_api_url = format!(
         "{}/{}/_apis/wit/workItems/{}",
         conn.org_url.trim_end_matches('/'),
-        conn.project,
+        super::client::urlencoded(&conn.project),
         case_id
     );
 
