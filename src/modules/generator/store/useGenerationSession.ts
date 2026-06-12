@@ -220,6 +220,17 @@ export type SessionState = {
    *  the bug card uses this when the user explicitly chooses a new parent
    *  after the original case was skipped. */
   setBugParent: (bugUid: string, caseUid: string | null) => void;
+  /** Per-change revert for the refine diff panel. All three are index-safe so
+   *  bug→case links (which are index-based) never shift out from under a bug:
+   *  - restoreCaseContent / restoreBugContent replace an item IN PLACE (same
+   *    uid + array position) with its pre-refine snapshot version.
+   *  - restoreRemovedCase / restoreRemovedBug re-APPEND an item the refine
+   *    dropped (appending never shifts existing indices). The caller resolves
+   *    a restored bug's parent link against the live cases before passing it. */
+  restoreCaseContent: (uid: string, from: ReviewedCase) => void;
+  restoreBugContent: (uid: string, from: ReviewedBug) => void;
+  restoreRemovedCase: (from: ReviewedCase) => void;
+  restoreRemovedBug: (from: ReviewedBug) => void;
   publish: () => Promise<void>;
   /** Replace the display title for a single publish-log entry. Used by the
    *  done-phase focus refresh to pick up renames made in the ADO web UI
@@ -338,6 +349,10 @@ const initialState: Omit<
   | "setCaseDecision"
   | "setBugDecision"
   | "setBugParent"
+  | "restoreCaseContent"
+  | "restoreBugContent"
+  | "restoreRemovedCase"
+  | "restoreRemovedBug"
   | "setCaseTitle"
   | "setCaseRationale"
   | "setCaseOutcome"
@@ -894,6 +909,38 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         ),
       };
     });
+    schedulePersistDraft();
+  },
+
+  restoreCaseContent: (uid, from) => {
+    set((s) => ({
+      cases: s.cases.map((c) =>
+        // Keep the live uid, position, and keep/skip choice; restore everything
+        // else (title, steps, description, verdict, outcome…) to the snapshot.
+        c.uid === uid ? { ...from, uid: c.uid, decision: c.decision } : c,
+      ),
+    }));
+    schedulePersistDraft();
+  },
+  restoreBugContent: (uid, from) => {
+    set((s) => ({
+      bugs: s.bugs.map((b) =>
+        b.uid === uid ? { ...from, uid: b.uid, decision: b.decision } : b,
+      ),
+    }));
+    schedulePersistDraft();
+  },
+  restoreRemovedCase: (from) => {
+    // Idempotent: re-adding is a no-op if it's already back (double-click safe).
+    set((s) =>
+      s.cases.some((c) => c.uid === from.uid) ? {} : { cases: [...s.cases, from] },
+    );
+    schedulePersistDraft();
+  },
+  restoreRemovedBug: (from) => {
+    set((s) =>
+      s.bugs.some((b) => b.uid === from.uid) ? {} : { bugs: [...s.bugs, from] },
+    );
     schedulePersistDraft();
   },
 

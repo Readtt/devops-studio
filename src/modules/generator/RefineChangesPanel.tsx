@@ -32,6 +32,12 @@ export function RefineChangesPanel() {
   const cases = useGenerationSession((s) => s.cases);
   const bugs = useGenerationSession((s) => s.bugs);
   const undoRefine = useGenerationSession((s) => s.undoRefine);
+  const restoreCaseContent = useGenerationSession((s) => s.restoreCaseContent);
+  const restoreBugContent = useGenerationSession((s) => s.restoreBugContent);
+  const restoreRemovedCase = useGenerationSession((s) => s.restoreRemovedCase);
+  const restoreRemovedBug = useGenerationSession((s) => s.restoreRemovedBug);
+  const setCaseDecision = useGenerationSession((s) => s.setCaseDecision);
+  const setBugDecision = useGenerationSession((s) => s.setBugDecision);
   // Default collapsed: the last-refine summary is reference material the user
   // expands on demand, not something that should dominate the review pane.
   const [expanded, setExpanded] = useState(false);
@@ -116,9 +122,33 @@ export function RefineChangesPanel() {
 
       {expanded && totalChanges > 0 ? (
         <div className="flex flex-col gap-2 border-t border-border/30 px-3 py-2.5">
+          <p className="text-[10px] leading-snug text-muted-foreground/80">
+            Revert any single change to drop just that edit — the rest of the
+            refine stays. Or use “Undo refine” above to roll back everything.
+          </p>
           {/* Cases */}
           {c.added.map((cs) => (
-            <ChangeCard key={`ca-${cs.uid}`} tone="added" title={cs.title}>
+            <ChangeCard
+              key={`ca-${cs.uid}`}
+              tone="added"
+              title={cs.title}
+              dimmed={cs.decision === "skip"}
+              action={
+                cs.decision === "skip" ? (
+                  <CardAction
+                    label="Restore"
+                    onClick={() => setCaseDecision(cs.uid, "keep")}
+                    tooltip="Keep this newly-added case after all."
+                  />
+                ) : (
+                  <CardAction
+                    label="Reject"
+                    onClick={() => setCaseDecision(cs.uid, "skip")}
+                    tooltip="Drop this newly-added case — it won't be published."
+                  />
+                )
+              }
+            >
               {cs.description.trim() ? (
                 <Field label="Description">
                   <TextDiff before="" after={cs.description} />
@@ -132,7 +162,18 @@ export function RefineChangesPanel() {
           {c.modified.map(({ before, after }) => {
             const ch = caseFieldChanges(before, after);
             return (
-              <ChangeCard key={`cm-${after.uid}`} tone="modified" title={after.title}>
+              <ChangeCard
+                key={`cm-${after.uid}`}
+                tone="modified"
+                title={after.title}
+                action={
+                  <CardAction
+                    label="Revert"
+                    onClick={() => restoreCaseContent(after.uid, before)}
+                    tooltip="Undo just this case's refine edits — restore it to the pre-refine version."
+                  />
+                }
+              >
                 {ch.description ? (
                   <Field label="Description">
                     <TextDiff before={before.description} after={after.description} />
@@ -173,7 +214,18 @@ export function RefineChangesPanel() {
             );
           })}
           {c.removed.map((cs) => (
-            <ChangeCard key={`cr-${cs.uid}`} tone="removed" title={cs.title}>
+            <ChangeCard
+              key={`cr-${cs.uid}`}
+              tone="removed"
+              title={cs.title}
+              action={
+                <CardAction
+                  label="Restore"
+                  onClick={() => restoreRemovedCase(cs)}
+                  tooltip="Bring this case back — the refine had dropped it."
+                />
+              }
+            >
               <Field label="Steps">
                 <StepsDiff rows={diffSteps(toStepLines(cs), [])} />
               </Field>
@@ -187,7 +239,27 @@ export function RefineChangesPanel() {
             </span>
           ) : null}
           {b.added.map((bug) => (
-            <ChangeCard key={`ba-${bug.uid}`} tone="added" title={bug.title}>
+            <ChangeCard
+              key={`ba-${bug.uid}`}
+              tone="added"
+              title={bug.title}
+              dimmed={bug.decision === "skip"}
+              action={
+                bug.decision === "skip" ? (
+                  <CardAction
+                    label="Restore"
+                    onClick={() => setBugDecision(bug.uid, "keep")}
+                    tooltip="Keep this newly-added bug after all."
+                  />
+                ) : (
+                  <CardAction
+                    label="Reject"
+                    onClick={() => setBugDecision(bug.uid, "skip")}
+                    tooltip="Drop this newly-added bug — it won't be filed."
+                  />
+                )
+              }
+            >
               <SeverityLine after={bug.severity} />
               <Field label="Repro steps">
                 <TextDiff before="" after={bug.reproSteps} />
@@ -206,6 +278,18 @@ export function RefineChangesPanel() {
                   key={`bm-${after.uid}`}
                   tone="modified"
                   title={after.title}
+                  action={
+                    <CardAction
+                      label="Revert"
+                      onClick={() =>
+                        restoreBugContent(
+                          after.uid,
+                          relinkForCurrent(before, snapshot.cases, cases),
+                        )
+                      }
+                      tooltip="Undo just this bug's refine edits — restore it to the pre-refine version."
+                    />
+                  }
                 >
                   {before.severity !== after.severity ? (
                     <SeverityLine before={before.severity} after={after.severity} />
@@ -240,7 +324,20 @@ export function RefineChangesPanel() {
             },
           )}
           {b.removed.map((bug) => (
-            <ChangeCard key={`br-${bug.uid}`} tone="removed" title={bug.title}>
+            <ChangeCard
+              key={`br-${bug.uid}`}
+              tone="removed"
+              title={bug.title}
+              action={
+                <CardAction
+                  label="Restore"
+                  onClick={() =>
+                    restoreRemovedBug(relinkForCurrent(bug, snapshot.cases, cases))
+                  }
+                  tooltip="Bring this bug back — the refine had dropped it."
+                />
+              }
+            >
               <Field label="Repro steps">
                 <TextDiff before={bug.reproSteps} after="" />
               </Field>
@@ -265,14 +362,24 @@ const TONE: Record<Tone, { label: string; pill: string }> = {
 function ChangeCard({
   tone,
   title,
+  action,
+  dimmed,
   children,
 }: {
   tone: Tone;
   title: string;
+  action?: React.ReactNode;
+  /** A rejected added item — kept visible but greyed so it can be restored. */
+  dimmed?: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <div className="overflow-hidden rounded-md border border-border/45 bg-card/30">
+    <div
+      className={cn(
+        "overflow-hidden rounded-md border border-border/45 bg-card/30",
+        dimmed && "opacity-55",
+      )}
+    >
       <div className="flex items-center gap-2 px-2.5 py-1.5">
         <span
           className={cn(
@@ -280,20 +387,52 @@ function ChangeCard({
             TONE[tone].pill,
           )}
         >
-          {TONE[tone].label}
+          {dimmed ? "rejected" : TONE[tone].label}
         </span>
         <span
           className={cn(
             "min-w-0 flex-1 truncate text-[11.5px] font-medium",
-            tone === "removed" ? "text-foreground/60 line-through" : "text-foreground",
+            tone === "removed" || dimmed
+              ? "text-foreground/60 line-through"
+              : "text-foreground",
           )}
           title={title}
         >
           {title}
         </span>
+        {action ? <div className="shrink-0">{action}</div> : null}
       </div>
       <div className="flex flex-col">{children}</div>
     </div>
+  );
+}
+
+/** Small revert / restore button shown on a refine change card. */
+function CardAction({
+  label,
+  onClick,
+  tooltip,
+}: {
+  label: string;
+  onClick: () => void;
+  tooltip: string;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          className="inline-flex h-6 shrink-0 items-center gap-1 rounded-sm border border-border/50 bg-card/60 px-1.5 text-[10px] text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
+        >
+          <HugeiconsIcon icon={RefreshIcon} size={9} strokeWidth={1.75} />
+          {label}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="left" className="max-w-[240px] text-[11px]">
+        {tooltip}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -425,6 +564,21 @@ function pairCases(before: ReviewedCase[], after: ReviewedCase[]) {
 function parentTitleOf(bug: ReviewedBug, cs: ReviewedCase[]): string | null {
   const i = bug.linkedDraftCaseIndex;
   return i != null && i >= 0 && i < cs.length ? cs[i].title : null;
+}
+
+/** Re-point a snapshot bug's parent link at the LIVE cases array before
+ *  restoring it — the index it carried referenced the snapshot's array, which
+ *  the refine has since rebuilt. Matches the parent by title; nulls the link
+ *  when that case no longer exists in the current draft. */
+function relinkForCurrent(
+  bug: ReviewedBug,
+  snapshotCases: ReviewedCase[],
+  currentCases: ReviewedCase[],
+): ReviewedBug {
+  const parentTitle = parentTitleOf(bug, snapshotCases);
+  if (parentTitle == null) return { ...bug, linkedDraftCaseIndex: null };
+  const i = currentCases.findIndex((c) => norm(c.title) === norm(parentTitle));
+  return { ...bug, linkedDraftCaseIndex: i >= 0 ? i : null };
 }
 
 type BugMod = {
