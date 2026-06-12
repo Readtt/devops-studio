@@ -62,7 +62,7 @@ export function AboutSection() {
       <div className="flex items-center gap-4 rounded-xl border border-border/60 bg-card/60 p-5">
         <img src="/logo.png" alt="" className="size-12" draggable={false} />
         <div className="flex min-w-0 flex-col">
-          <span className="text-[15px] font-semibold tracking-tight">
+          <span className="text-[16px] font-semibold tracking-tight">
             {name}
           </span>
           <span className="text-[11px] text-muted-foreground">

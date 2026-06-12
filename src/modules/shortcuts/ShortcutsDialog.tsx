@@ -72,7 +72,7 @@ export function ShortcutsDialog({ open, onOpenChange }: Props) {
                           key={s.id}
                           className="flex items-center justify-between py-2"
                         >
-                          <span className="text-sm text-foreground/90">
+                          <span className="text-[12px] text-foreground/90">
                             {s.label}
                           </span>
                           {tokens.length > 0 ? (

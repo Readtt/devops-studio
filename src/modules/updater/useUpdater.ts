@@ -67,6 +67,9 @@ export function useUpdater({ autoCheck = true }: HookOptions = {}) {
         setStatus({ kind: "uptodate" });
       }
     } catch (err) {
+      // Stamp the check time on failure too — otherwise every focus/interval
+      // cycle retries immediately instead of waiting out CHECK_INTERVAL_MS.
+      localStorage.setItem(LAST_CHECK_KEY, String(Date.now()));
       setStatus({ kind: "error", message: String(err) });
     }
   }, []);

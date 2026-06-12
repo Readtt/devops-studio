@@ -192,7 +192,7 @@ export function UpdaterToast({ status, onInstall, onDismiss }: Props) {
                       <div className="flex items-center gap-1.5">
                         <span
                           className={cn(
-                            "inline-flex h-4 items-center rounded-full border px-1.5 font-mono text-[9px] uppercase tracking-wider",
+                            "inline-flex h-4 items-center rounded-full border px-1.5 font-mono text-[9.5px] uppercase tracking-wider",
                             tone.chip,
                           )}
                         >

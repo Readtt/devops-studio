@@ -10,7 +10,7 @@ type Props = {
 export function SectionHeader({ title, description, icon }: Props) {
   return (
     <div className="flex flex-col gap-1">
-      <h1 className="flex items-center gap-2 text-[18px] font-semibold tracking-tight">
+      <h1 className="flex items-center gap-2 text-[16px] font-semibold tracking-tight">
         {icon ? <span className="inline-flex shrink-0 items-center">{icon}</span> : null}
         {title}
       </h1>
