@@ -94,7 +94,9 @@ pub async fn list_team_members(state: &AdoState) -> AdoResult<Vec<TeamMember>> {
 
     // Fetch each team's members concurrently (bounded) — a project can have
     // dozens of teams and serial fetches would make the picker slow to fill.
-    let per_team: Vec<Vec<RawTeamMember>> = stream::iter(team_ids.iter())
+    // Iterate OWNED team ids (not `.iter()`): a borrowed `&String` flowing into
+    // the async closure trips a higher-ranked-lifetime error in buffer_unordered.
+    let per_team: Vec<Vec<RawTeamMember>> = stream::iter(team_ids)
         .map(|team_id| members_or_empty(state, &conn, &project_id, team_id))
         .buffer_unordered(TEAM_FETCH_CONCURRENCY)
         .collect()
@@ -161,7 +163,7 @@ async fn members_or_empty(
     state: &AdoState,
     conn: &Connection,
     project_id: &str,
-    team_id: &str,
+    team_id: String,
 ) -> Vec<RawTeamMember> {
     let mut out: Vec<RawTeamMember> = Vec::new();
     let mut skip = 0usize;
