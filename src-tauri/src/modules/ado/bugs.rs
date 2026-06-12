@@ -469,7 +469,10 @@ pub async fn delete_bug(state: &AdoState, bug_id: i64, destroy: bool) -> AdoResu
     let (conn, _) = state.snapshot();
     let conn = conn.ok_or(AdoError::NotConfigured)?;
     let path = if destroy {
-        format!("wit/workitems/{bug_id}&destroy=true")
+        // `?destroy=true` (not `&…`): project_api appends `&api-version` after
+        // it. A bare `&destroy=true` lands BEFORE the `?api-version`, corrupting
+        // the URL (the id becomes "{id}&destroy=true") → a guaranteed 400.
+        format!("wit/workitems/{bug_id}?destroy=true")
     } else {
         format!("wit/workitems/{bug_id}")
     };
