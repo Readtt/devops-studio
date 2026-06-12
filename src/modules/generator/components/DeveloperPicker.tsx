@@ -104,7 +104,7 @@ export function DeveloperPicker({
                   onChange(null);
                   setOpen(false);
                 }}
-                className="py-1.5 text-muted-foreground"
+                className="text-muted-foreground"
               >
                 Unassigned
               </CommandItem>
@@ -122,7 +122,7 @@ export function DeveloperPicker({
                         onChange(id);
                         setOpen(false);
                       }}
-                      className="flex-col items-start gap-0 py-1.5"
+                      className="flex-col items-start gap-0"
                     >
                       <span className="truncate text-[12px]">{m.displayName}</span>
                       {m.uniqueName && m.uniqueName !== m.displayName ? (

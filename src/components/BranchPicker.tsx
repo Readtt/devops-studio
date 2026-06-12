@@ -187,7 +187,6 @@ export function BranchPicker({
                     onChange(b);
                     setOpen(false);
                   }}
-                  className="py-1.5"
                 >
                   <span className="truncate font-mono text-[12px]">{b}</span>
                 </CommandItem>

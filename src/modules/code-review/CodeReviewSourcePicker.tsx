@@ -368,7 +368,6 @@ export function CodeReviewSourcePicker({
                           setMode("commits");
                           setPickingBranch(false);
                         }}
-                        className="gap-2 py-1.5"
                       >
                         <HugeiconsIcon
                           icon={FolderLibraryIcon}
@@ -403,7 +402,6 @@ export function CodeReviewSourcePicker({
                           setBranch(b);
                           setPickingBranch(false);
                         }}
-                        className="gap-2 py-1.5"
                       >
                         <HugeiconsIcon
                           icon={GitBranchIcon}
