@@ -249,7 +249,7 @@ export function CodeReviewSourcePicker({
         side="bottom"
         align="start"
         sideOffset={4}
-        className="w-80 gap-0 rounded-lg p-0"
+        className="w-80 p-0"
       >
         {/* Sub-header: back nav + repo name + commits/PR segmented toggle. */}
         {repo ? (

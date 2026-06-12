@@ -164,9 +164,8 @@ export function QuickPromptsStrip({ sessionId }: Props) {
             side="bottom"
             align="end"
             sideOffset={4}
-            className="w-72 gap-0 rounded-lg p-1"
           >
-            <span className="px-2 pt-1 pb-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
+            <span className="block px-2 pt-1 pb-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
               More prompts
             </span>
             {OVERFLOW_PROMPTS.map((p) => (

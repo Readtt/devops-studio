@@ -194,7 +194,6 @@ function NewTabInlineLauncher() {
         side="bottom"
         align="start"
         sideOffset={6}
-        className="w-72 gap-0 rounded-lg p-1"
       >
         <LaunchMenuItems actions={actions} onClose={() => setOpen(false)} />
       </PopoverContent>

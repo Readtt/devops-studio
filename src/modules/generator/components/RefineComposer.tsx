@@ -392,7 +392,7 @@ export function RefineComposer({ isRefining }: Props) {
               align="end"
               side="bottom"
               sideOffset={6}
-              className="w-[360px] p-1"
+              className="w-[360px]"
             >
               <p className="px-2 pb-1 pt-1 font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
                 Recent follow-ups

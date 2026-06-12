@@ -148,10 +148,10 @@ export function BranchPicker({
         side="bottom"
         align="start"
         sideOffset={4}
-        // Override popover's default rounded-3xl + p-4 — too lush for a
-        // picker. Cap height so even monorepos with 200 branches don't
-        // swallow the viewport.
-        className="w-72 gap-0 rounded-lg p-0"
+        // p-0: the Command list supplies its own padding. CommandList caps
+        // height so even monorepos with 200 branches don't swallow the
+        // viewport.
+        className="p-0"
       >
         <Command>
           <CommandInput

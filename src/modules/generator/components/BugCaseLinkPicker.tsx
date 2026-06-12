@@ -62,7 +62,7 @@ export function BugCaseLinkPicker({
         align="start"
         side="bottom"
         sideOffset={6}
-        className="w-[320px] p-1"
+        className="w-[320px]"
       >
         <ul className="flex max-h-[240px] flex-col gap-px overflow-y-auto">
           <li>

@@ -132,7 +132,7 @@ export function ModelPicker({
         // trigger so it never overruns the settings window's visible area —
         // the inner CommandList scrolls instead of getting clipped by the
         // webview's bottom edge.
-        className="z-50 w-[340px] rounded-lg p-0 shadow-lg ring-1 ring-foreground/5"
+        className="w-[340px] p-0"
         style={{
           maxHeight: "min(440px, var(--radix-popover-content-available-height, 440px))",
         }}

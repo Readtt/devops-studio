@@ -86,7 +86,7 @@ export function DeveloperPicker({
         side="bottom"
         align="start"
         sideOffset={4}
-        className="w-64 gap-0 rounded-lg p-0"
+        className="w-64 p-0"
       >
         <Command>
           <CommandInput placeholder="Search people…" className="h-8 text-[12px]" />
