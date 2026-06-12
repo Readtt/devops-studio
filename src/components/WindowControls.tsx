@@ -21,16 +21,27 @@ export function WindowControls({ closeOnly = false }: Props) {
   useEffect(() => {
     if (!USE_CUSTOM_WINDOW_CONTROLS || closeOnly) return;
     const w = getCurrentWindow();
+    let cancelled = false;
     let unlisten: (() => void) | undefined;
-    void w.isMaximized().then(setMaximized);
+    void w.isMaximized().then((m) => {
+      if (!cancelled) setMaximized(m);
+    });
     void w
       .onResized(() => {
-        void w.isMaximized().then(setMaximized);
+        void w.isMaximized().then((m) => {
+          if (!cancelled) setMaximized(m);
+        });
       })
       .then((un) => {
-        unlisten = un;
+        // The subscription can resolve after cleanup ran — unlisten right
+        // away in that case instead of leaking the listener.
+        if (cancelled) un();
+        else unlisten = un;
       });
-    return () => unlisten?.();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, [closeOnly]);
 
   if (!USE_CUSTOM_WINDOW_CONTROLS) return null;
