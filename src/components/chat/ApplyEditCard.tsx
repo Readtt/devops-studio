@@ -598,7 +598,7 @@ export function ApplyEditCard({
       </div>
 
       {expanded ? (
-        <div className="border-t border-border/30">
+        <div className="min-w-0 overflow-hidden border-t border-border/30">
           {parsed.kind === "rename" ? (
             <RenameDiff
               beforeTitle={current?.title ?? null}
@@ -866,7 +866,7 @@ export function CreateCasePreview({
         <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/85">
           Title
         </span>
-        <p className="mt-0.5 text-[11.5px] font-medium leading-snug text-foreground">
+        <p className="mt-0.5 whitespace-pre-wrap break-words text-[11.5px] font-medium leading-snug text-foreground">
           {title}
         </p>
       </div>
@@ -884,15 +884,15 @@ export function CreateCasePreview({
           steps.map((s, i) => (
             <div
               key={i}
-              className="grid grid-cols-[24px_1fr_1fr] gap-2 px-3 py-1.5"
+              className="grid grid-cols-[24px_1fr_1fr] gap-2 px-3 py-1.5 [&>*]:min-w-0"
             >
               <span className="font-mono text-[10px] text-emerald-700 dark:text-emerald-300">
                 +{i + 1}
               </span>
-              <p className="whitespace-pre-wrap text-[11.5px] leading-snug text-foreground/90">
+              <p className="whitespace-pre-wrap break-words text-[11.5px] leading-snug text-foreground/90">
                 {s.action || <Placeholder />}
               </p>
-              <p className="whitespace-pre-wrap text-[11.5px] leading-snug text-foreground/90">
+              <p className="whitespace-pre-wrap break-words text-[11.5px] leading-snug text-foreground/90">
                 {s.expected || <Placeholder />}
               </p>
             </div>
@@ -1186,14 +1186,14 @@ function StepDiffRow({ row }: { row: DiffRow }) {
   // as informative rather than alarming.
   if (row.kind === "added") {
     return (
-      <div className="grid grid-cols-[24px_1fr_1fr] gap-2 px-3 py-1.5">
+      <div className="grid grid-cols-[24px_1fr_1fr] gap-2 px-3 py-1.5 [&>*]:min-w-0">
         <span className="font-mono text-[10px] text-emerald-700 dark:text-emerald-300">
           +{row.after.index}
         </span>
-        <p className="whitespace-pre-wrap text-[11.5px] leading-snug text-foreground/90">
+        <p className="whitespace-pre-wrap break-words text-[11.5px] leading-snug text-foreground/90">
           {row.after.action || <Placeholder />}
         </p>
-        <p className="whitespace-pre-wrap text-[11.5px] leading-snug text-foreground/90">
+        <p className="whitespace-pre-wrap break-words text-[11.5px] leading-snug text-foreground/90">
           {row.after.expected || <Placeholder />}
         </p>
       </div>
@@ -1201,14 +1201,14 @@ function StepDiffRow({ row }: { row: DiffRow }) {
   }
   if (row.kind === "removed") {
     return (
-      <div className="grid grid-cols-[24px_1fr_1fr] gap-2 px-3 py-1.5">
+      <div className="grid grid-cols-[24px_1fr_1fr] gap-2 px-3 py-1.5 [&>*]:min-w-0">
         <span className="font-mono text-[10px] text-muted-foreground line-through">
           −{row.before.index}
         </span>
-        <p className="whitespace-pre-wrap text-[11.5px] leading-snug text-foreground/55 line-through">
+        <p className="whitespace-pre-wrap break-words text-[11.5px] leading-snug text-foreground/55 line-through">
           {row.before.action || <Placeholder />}
         </p>
-        <p className="whitespace-pre-wrap text-[11.5px] leading-snug text-foreground/55 line-through">
+        <p className="whitespace-pre-wrap break-words text-[11.5px] leading-snug text-foreground/55 line-through">
           {row.before.expected || <Placeholder />}
         </p>
       </div>
@@ -1216,14 +1216,14 @@ function StepDiffRow({ row }: { row: DiffRow }) {
   }
   if (row.kind === "unchanged") {
     return (
-      <div className="grid grid-cols-[24px_1fr_1fr] gap-2 px-3 py-1.5">
+      <div className="grid grid-cols-[24px_1fr_1fr] gap-2 px-3 py-1.5 [&>*]:min-w-0">
         <span className="font-mono text-[10px] text-muted-foreground/70">
           {row.after.index}
         </span>
-        <p className="whitespace-pre-wrap text-[11.5px] leading-snug text-foreground/65">
+        <p className="whitespace-pre-wrap break-words text-[11.5px] leading-snug text-foreground/65">
           {row.after.action}
         </p>
-        <p className="whitespace-pre-wrap text-[11.5px] leading-snug text-foreground/65">
+        <p className="whitespace-pre-wrap break-words text-[11.5px] leading-snug text-foreground/65">
           {row.after.expected}
         </p>
       </div>
@@ -1238,7 +1238,7 @@ function StepDiffRow({ row }: { row: DiffRow }) {
   const actionChanged = row.before.action !== row.after.action;
   const expectedChanged = row.before.expected !== row.after.expected;
   return (
-    <div className="grid grid-cols-[24px_1fr_1fr] gap-2 px-3 py-1.5">
+    <div className="grid grid-cols-[24px_1fr_1fr] gap-2 px-3 py-1.5 [&>*]:min-w-0">
       <span className="font-mono text-[10px] text-foreground/65">
         {row.after.index}
       </span>
@@ -1269,17 +1269,17 @@ function ColumnDiff({
 }) {
   if (!changed) {
     return (
-      <p className="whitespace-pre-wrap text-[11.5px] leading-snug text-foreground/75">
+      <p className="whitespace-pre-wrap break-words text-[11.5px] leading-snug text-foreground/75">
         {after || <Placeholder />}
       </p>
     );
   }
   return (
     <div className="min-w-0">
-      <p className="whitespace-pre-wrap text-[11.5px] leading-snug text-muted-foreground line-through">
+      <p className="whitespace-pre-wrap break-words text-[11.5px] leading-snug text-muted-foreground line-through">
         {before || <Placeholder />}
       </p>
-      <p className="mt-0.5 whitespace-pre-wrap text-[11.5px] font-medium leading-snug text-foreground">
+      <p className="mt-0.5 whitespace-pre-wrap break-words text-[11.5px] font-medium leading-snug text-foreground">
         {after || <Placeholder />}
       </p>
     </div>
@@ -1360,11 +1360,14 @@ function DiffSide({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-1 bg-foreground/[0.015] p-2.5">
+    // min-w-0 lets this side shrink inside its 1fr grid track so long content
+    // wraps instead of shoving the other side out of the card; the scroll cap
+    // keeps a very large "current" value from ballooning the whole card.
+    <div className="flex min-w-0 flex-col gap-1 bg-foreground/[0.015] p-2.5">
       <span className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground/70">
         {label}
       </span>
-      {children}
+      <div className="min-w-0 max-h-[24rem] overflow-y-auto">{children}</div>
     </div>
   );
 }
