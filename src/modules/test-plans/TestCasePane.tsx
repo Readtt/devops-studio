@@ -36,6 +36,7 @@ import { fromTestCase } from "./lib/runConfidenceEval";
 import { evaluateCaseConfidence } from "./lib/evaluateCaseConfidence";
 import { clearConfidence, getConfidence, saveConfidence } from "./lib/confidenceApi";
 import type { ConfidenceVerdict } from "./lib/confidence";
+import { useSuiteConfidence } from "./hooks/useSuiteConfidence";
 
 type Props = {
   caseId: number;
@@ -65,13 +66,30 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
   // Inline confidence detail side panel (opens beside the case, not a new tab).
   const [confidenceOpen, setConfidenceOpen] = useState(false);
 
-  // Load any persisted verdict for this case on open. Recomputable, so a stale
-  // verdict just sits until the user re-evaluates.
+  // Live verdict from an in-progress bulk "score all cases" run. When this case
+  // is scored mid-run, the store entry appears and the chip updates instantly —
+  // no reopen, no SQLite round-trip.
+  const liveVerdict = useSuiteConfidence((s) => s.scored.get(caseId));
+  useEffect(() => {
+    if (liveVerdict) setVerdict(liveVerdict);
+  }, [liveVerdict]);
+
+  // True while ANY evaluation owns this case — our own manual re-analyze OR the
+  // bulk run currently scoring it. Drives the chip's spinner and blocks a
+  // duplicate manual eval.
+  const caseInFlight = useSuiteConfidence((s) => s.inFlight.has(caseId));
+
+  // Load any persisted verdict for this case on open (covers tabs opened after
+  // a case was scored). Recomputable, so a stale verdict just sits until the
+  // user re-evaluates.
   useEffect(() => {
     let alive = true;
     void getConfidence(caseId)
       .then((v) => {
-        if (alive) setVerdict(v);
+        if (!alive) return;
+        // A live verdict that landed during the fetch is fresher — keep it.
+        const live = useSuiteConfidence.getState().scored.get(caseId);
+        setVerdict(live ?? v);
       })
       .catch(() => {
         if (alive) setVerdict(null);
@@ -84,6 +102,9 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
   const evalAbortRef = useRef<AbortController | null>(null);
   const handleEvaluate = useCallback(async () => {
     if (!tc || evaluating) return;
+    // Claim the case so a bulk run won't also score it (and vice-versa). If the
+    // bulk run already owns it, do nothing — its result will land here live.
+    if (!useSuiteConfidence.getState().beginCaseEval(tc.id)) return;
     const ac = new AbortController();
     evalAbortRef.current = ac;
     setEvaluating(true);
@@ -100,6 +121,7 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
     } finally {
       setEvaluating(false);
       evalAbortRef.current = null;
+      useSuiteConfidence.getState().endCaseEval(tc.id);
     }
   }, [tc, evaluating]);
   const cancelEvaluate = useCallback(() => evalAbortRef.current?.abort(), []);
@@ -273,12 +295,14 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
                 separates them from the utility actions. */}
             <ConfidenceChip
               verdict={verdict}
-              loading={evaluating}
+              loading={evaluating || caseInFlight}
               size="md"
               actionsSide="left"
               onEvaluate={() => void handleEvaluate()}
               onReevaluate={() => void handleEvaluate()}
-              onCancel={cancelEvaluate}
+              // Only show the inline cancel for our own manual eval — when the
+              // bulk run owns the case, its capsule carries the cancel.
+              onCancel={evaluating ? cancelEvaluate : undefined}
               onOpenDetail={verdict ? () => setConfidenceOpen(true) : undefined}
             />
             <OutcomeControl
@@ -450,7 +474,7 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
         <ConfidenceDetailPanel
           title={tc.title}
           verdict={verdict}
-          evaluating={evaluating}
+          evaluating={evaluating || caseInFlight}
           onReevaluate={() => void handleEvaluate()}
           onClose={() => setConfidenceOpen(false)}
         />

@@ -41,25 +41,20 @@ export function UpdaterToast({ status, onInstall, onDismiss }: Props) {
       : null;
 
   return (
+    // Bare capsule — the shared bottom-left container in App.tsx owns
+    // positioning and stacking (with the confidence scoring capsule).
     <div
-      // Anchored to the bottom-left of the workspace panel (App.tsx renders
-      // us inside that relative wrapper). pointer-events-none on the gutter
-      // so the empty space around the capsule never absorbs clicks meant for
-      // the panes behind it.
-      className="pointer-events-none absolute bottom-3 left-3 z-40"
+      className={cn(
+        "pointer-events-auto relative flex h-9 items-center gap-2 overflow-hidden rounded-full border border-border/60 bg-card/85 pl-3 pr-1 backdrop-blur-2xl",
+        "shadow-[0_16px_40px_-16px_rgba(0,0,0,0.55),0_1px_2px_rgba(0,0,0,0.2)]",
+        // Hairline top highlight sells the glass without a second border.
+        "after:pointer-events-none after:absolute after:inset-0 after:rounded-full after:shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]",
+        "animate-in fade-in slide-in-from-bottom-2 duration-300",
+      )}
       role="status"
       aria-live="polite"
     >
-      <div
-        className={cn(
-          "pointer-events-auto relative flex h-9 items-center gap-2 overflow-hidden rounded-full border border-border/60 bg-card/85 pl-3 pr-1 backdrop-blur-2xl",
-          "shadow-[0_16px_40px_-16px_rgba(0,0,0,0.55),0_1px_2px_rgba(0,0,0,0.2)]",
-          // Hairline top highlight sells the glass without a second border.
-          "after:pointer-events-none after:absolute after:inset-0 after:rounded-full after:shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]",
-          "animate-in fade-in slide-in-from-bottom-2 duration-300",
-        )}
-      >
-        {status.kind === "available" && (
+      {status.kind === "available" && (
           <>
             <span className="relative flex size-1.5 shrink-0">
               <span className="absolute inset-0 animate-ping rounded-full bg-primary/50" />
@@ -141,7 +136,6 @@ export function UpdaterToast({ status, onInstall, onDismiss }: Props) {
             <DismissButton onDismiss={onDismiss} />
           </>
         )}
-      </div>
     </div>
   );
 }

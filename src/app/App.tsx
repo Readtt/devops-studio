@@ -24,6 +24,8 @@ import {
 } from "@/modules/settings/store";
 import {
   ChatHistoryPanel,
+  ConfidenceConfirmDialog,
+  ConfidenceProgressCapsule,
   TestPlansPanel,
 } from "@/modules/test-plans";
 import { useTestPlans } from "@/modules/test-plans/hooks/useTestPlans";
@@ -1417,13 +1419,20 @@ function AppShell() {
               <ResizableHandle withHandle />
               <ResizablePanel id="workspace" defaultSize="78%" minSize="30%">
                 <div className="relative h-full min-h-0">
-                  {showUpdaterToast && (
-                    <UpdaterToast
-                      status={updater.status}
-                      onInstall={() => void updater.install()}
-                      onDismiss={dismissToast}
-                    />
-                  )}
+                  {/* Bottom-left capsule stack: collapses to the bottom slot
+                      when only one is visible, stacks upward (active scoring
+                      capsule at the bottom) when both appear. */}
+                  <div className="pointer-events-none absolute bottom-3 left-3 z-40 flex flex-col-reverse items-start gap-2">
+                    <ConfidenceProgressCapsule />
+                    {showUpdaterToast && (
+                      <UpdaterToast
+                        status={updater.status}
+                        onInstall={() => void updater.install()}
+                        onDismiss={dismissToast}
+                      />
+                    )}
+                  </div>
+                  <ConfidenceConfirmDialog />
                   <GeneratorCallbacksProvider value={generatorCallbacks}>
                     <TabsDndProvider>
                       <PaneTreeRenderer

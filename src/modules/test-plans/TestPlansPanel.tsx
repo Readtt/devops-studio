@@ -23,6 +23,7 @@ import {
 } from "@/modules/ado";
 import { useWorkItemTitles } from "@/modules/ado/hooks/useWorkItemTitles";
 import { useTestPlans, type CaseDetailsState, type SuiteLoad } from "./hooks/useTestPlans";
+import { useSuiteConfidence } from "./hooks/useSuiteConfidence";
 import { NewSuiteDialog } from "./NewSuiteDialog";
 import {
   ArrowDown01Icon,
@@ -930,6 +931,11 @@ function SuiteRow({
 }: SuiteRowProps) {
   const { suite, children } = node;
   const expanded = forceExpand || expandedSuites.has(suite.id);
+  // Only one bulk confidence run at a time — disable the menu item everywhere
+  // while a run is discovering, scoring, or awaiting its large-suite confirm.
+  const bulkBusy = useSuiteConfidence(
+    (s) => s.phase === "discovering" || s.phase === "scoring" || s.pendingConfirm !== null,
+  );
   const sc = suiteLoad.suiteCases.get(suite.id);
   const loading = sc?.loading ?? false;
   const cases = sc?.cases ?? null;
@@ -1046,6 +1052,22 @@ function SuiteRow({
             onSelect={() => onStartGenerator({ planId, suiteId: suite.id })}
           >
             Generate cases for suite
+          </ContextMenuItem>
+          <ContextMenuItem
+            icon={<HugeiconsIcon icon={TaskDone01Icon} size={12} strokeWidth={1.75} />}
+            disabled={bulkBusy}
+            description={
+              bulkBusy
+                ? "A scoring run is already in progress."
+                : "Score every unscored case in this suite."
+            }
+            onSelect={() =>
+              void useSuiteConfidence
+                .getState()
+                .start(planId, suite.id, suite.name)
+            }
+          >
+            Run confidence on all cases
           </ContextMenuItem>
           {onChatWithSuite ? (
             <ContextMenuItem

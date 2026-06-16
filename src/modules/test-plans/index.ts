@@ -4,6 +4,8 @@ export { TestCasePane } from "./TestCasePane";
 export { BugPane } from "./BugPane";
 export { SuiteChatPane } from "./SuiteChatPane";
 export { ChatHistoryPanel } from "./ChatHistoryPanel";
+export { ConfidenceProgressCapsule } from "./ConfidenceProgressCapsule";
+export { ConfidenceConfirmDialog } from "./ConfidenceConfirmDialog";
 export { useTestPlans } from "./hooks/useTestPlans";
 export * from "./lib/sourceLinksParser";
 export { parseCodeLinks, stripCodeLinksBlock } from "./lib/codeLinksParser";
