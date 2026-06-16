@@ -23,10 +23,11 @@ import {
   generateText,
   stepCountIs,
   streamText,
+  type ModelMessage,
   type ToolSet,
 } from "ai";
 import type { z } from "zod";
-import { MAX_AGENT_STEPS, type ModelId } from "../config";
+import { getModel, MAX_AGENT_STEPS, type ModelId } from "../config";
 import {
   buildConfiguredLanguageModel,
   buildStableSystem,
@@ -108,6 +109,54 @@ function assembleSystem(input: TaskInput<z.ZodTypeAny | undefined>): string {
     input.customInstructions,
     input.projectMemory ?? null,
   );
+}
+
+/** Anthropic is the only provider that needs an EXPLICIT prompt-cache breakpoint
+ *  — OpenAI and Google cache the static request prefix automatically. Unknown /
+ *  local model ids conservatively return false (no caching, never an error),
+ *  mirroring supportsVision. */
+function isAnthropicCacheable(modelId: ModelId): boolean {
+  try {
+    return getModel(modelId).provider === "anthropic";
+  } catch {
+    return false;
+  }
+}
+
+/** Shape the prompt fields spread into generateText/streamText so Anthropic runs
+ *  carry a prompt-cache breakpoint. Anthropic's `system` STRING param is not
+ *  cacheable, so we move it into a leading system MESSAGE tagged with
+ *  cacheControl (the SDK lands the breakpoint on that message's only content
+ *  block) and drop the top-level `system`. Because Anthropic orders the request
+ *  tools → system → messages, that one breakpoint also caches the large, static
+ *  tool definitions in front of it — the win that repeats across every agentic
+ *  step (maxSteps ≥ 2) and every reused run (multi-run confidence, bulk suite
+ *  scoring, multi-turn chat). For every other provider we return
+ *  `{ system, ...userTurn }` — byte-for-byte identical to before, so their
+ *  automatic caching is untouched. Vision parts in `userTurn.messages` survive.
+ *  The prompt CONTENT is unchanged either way: caching only alters billing and
+ *  latency, never the model's output. (The tool-less generateObject path is left
+ *  on the plain form — generateObject + Anthropic cache_control is unreliable in
+ *  the SDK, and skipping it is a zero-regression choice.) */
+function buildRequestPrompt(
+  modelId: ModelId,
+  system: string,
+  userTurn: { prompt: string } | { messages: ModelMessage[] },
+):
+  | { system: string; prompt: string }
+  | { system: string; messages: ModelMessage[] }
+  | { messages: ModelMessage[] } {
+  if (!isAnthropicCacheable(modelId)) return { system, ...userTurn };
+  const systemMessage: ModelMessage = {
+    role: "system",
+    content: system,
+    providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+  };
+  const userMessages: ModelMessage[] =
+    "messages" in userTurn
+      ? userTurn.messages
+      : [{ role: "user", content: userTurn.prompt }];
+  return { messages: [systemMessage, ...userMessages] };
 }
 
 function onStepFinishFor(
@@ -236,8 +285,7 @@ export async function runTask<
   // --- Structured + tools, or prose: generateText --------------------------
   const r = await generateText({
     model,
-    system,
-    ...userTurn,
+    ...buildRequestPrompt(input.modelId, system, userTurn),
     ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
     ...(input.temperature !== undefined
       ? { temperature: input.temperature }
@@ -300,8 +348,7 @@ export async function streamTask<
   const toolStart = new Map<string, number>();
   const result = streamText({
     model,
-    system,
-    ...userTurn,
+    ...buildRequestPrompt(input.modelId, system, userTurn),
     ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
     ...(input.temperature !== undefined
       ? { temperature: input.temperature }

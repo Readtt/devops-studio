@@ -107,4 +107,30 @@ describe("taskRunner integration (real AI SDK + Zod v4, mock model)", () => {
       expect(r.object).toBeUndefined();
     }
   });
+
+  it("Anthropic cache path: the system message + breakpoint reaches the model via the real SDK", async () => {
+    // For Anthropic the runner moves the system string into a cached system
+    // MESSAGE (no top-level system). This proves the real SDK accepts that shape
+    // end-to-end (the prompt conversion runs against the mock model) — the
+    // plan's key risk to verify.
+    let captured: { prompt?: Array<{ role: string }> } = {};
+    mockModel = new MockLanguageModelV3({
+      doGenerate: async (opts: { prompt?: Array<{ role: string }> }) => {
+        captured = opts;
+        return {
+          content: [{ type: "text", text: "ok" }],
+          finishReason: "stop",
+          usage: { inputTokens: 5, outputTokens: 5, totalTokens: 10 },
+          warnings: [],
+        };
+      },
+    } as never);
+    const r = await runTask({
+      ...base,
+      modelId: "claude-opus-4-8" as never,
+      tools: { read_file: { description: "r", inputSchema: z.object({}) } } as never,
+    });
+    expect(r.ok).toBe(true);
+    expect(captured.prompt?.some((m) => m.role === "system")).toBe(true);
+  });
 });

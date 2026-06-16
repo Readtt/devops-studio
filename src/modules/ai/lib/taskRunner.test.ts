@@ -141,3 +141,83 @@ describe("streamTask", () => {
     if (r.ok) expect(r.object).toEqual({ a: 9 });
   });
 });
+
+describe("prompt caching (Anthropic breakpoint)", () => {
+  // "claude-opus-4-8" resolves to provider "anthropic" via the real config
+  // registry (config is not mocked here); "gpt-5.4-mini" resolves to "openai".
+  const anthropic = { ...baseInput, modelId: "claude-opus-4-8" as never };
+
+  it("generateText: Anthropic gets a cached system message and NO top-level system", async () => {
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({ ...anthropic, tools: { read_file: {} } as never });
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.system).toBeUndefined();
+    const messages = arg.messages as Array<Record<string, unknown>>;
+    expect(messages[0]).toMatchObject({
+      role: "system",
+      content: "SYS",
+      providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+    });
+    expect(messages[1]).toMatchObject({ role: "user", content: "hello" });
+  });
+
+  it("streamText: Anthropic gets a cached system message", async () => {
+    streamText.mockReturnValue({
+      textStream: (async function* () {
+        yield "x";
+      })(),
+    });
+    await streamTask({
+      ...anthropic,
+      tools: { grep: {} } as never,
+      onText: () => {},
+    });
+    const arg = streamText.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.system).toBeUndefined();
+    const messages = arg.messages as Array<Record<string, unknown>>;
+    expect(messages[0]).toMatchObject({
+      role: "system",
+      providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+    });
+  });
+
+  it("non-Anthropic stays byte-identical: top-level system + prompt, no messages", async () => {
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({ ...baseInput }); // gpt-5.4-mini → openai (auto-caches)
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.system).toBe("SYS");
+    expect(arg.prompt).toBe("hello");
+    expect(arg.messages).toBeUndefined();
+  });
+
+  it("Anthropic preserves image/vision parts in the user message", async () => {
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({
+      ...anthropic,
+      attachments: [
+        { kind: "image", content: "data:image/png;base64,AAA", mime: "image/png" },
+      ] as never,
+    });
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    const messages = arg.messages as Array<Record<string, unknown>>;
+    expect(messages[0]).toMatchObject({ role: "system" });
+    const userMsg = messages[1] as {
+      role: string;
+      content: Array<Record<string, unknown>>;
+    };
+    expect(userMsg.role).toBe("user");
+    expect(userMsg.content.some((p) => p.type === "image")).toBe(true);
+    expect(
+      userMsg.content.some((p) => p.type === "text" && p.text === "hello"),
+    ).toBe(true);
+  });
+
+  it("tool-less generateObject is left uncached even for Anthropic (deliberate)", async () => {
+    const schema = z.object({ a: z.number() });
+    generateObject.mockResolvedValue({ object: { a: 1 } });
+    await runTask({ ...anthropic, schema });
+    const arg = generateObject.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.system).toBe("SYS");
+    expect(arg.messages).toBeUndefined();
+  });
+});
