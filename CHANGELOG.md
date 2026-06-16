@@ -7,6 +7,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.8.0] - 2026-06-16
+
+### Added
+
+- **Run confidence on all cases in a suite.** Right-click a suite to score every unscored case for pass-readiness in one pass. A bottom-left progress capsule shows live progress and can be cancelled; already-scored cases are skipped, suites with more than 20 cases ask for confirmation first, and open case tabs update the moment their case is scored.
+
+### Changed
+
+- **Prompt caching across every AI surface.** Generator, Suite Chat, Code Review, and Confidence now reuse a cached system prompt and tool definitions instead of re-sending them on every agentic step — an Anthropic cache breakpoint plus automatic caching on OpenAI and Google. Prompts stay byte-identical, so results are unchanged; only token cost and latency drop, most noticeably on multi-step, multi-run, and bulk scoring.
+
+### Fixed
+
+- The Test Case Generator's running-refine step label no longer overflows its container when a tool call references a long file path.
+
 ## [0.7.0] - 2026-06-12
 
 The single-BYOK-engine release, plus a ~90-commit full review of the app.
