@@ -292,12 +292,15 @@ export function RefineComposer({ isRefining }: Props) {
       <section className="relative">
         <DockHeader running />
         <div className="rounded-md border border-primary/40 bg-primary/[0.04] p-2.5">
-          <div className="mb-2 flex items-center gap-2">
-            <Spinner className="size-3.5 text-primary" />
-            <span className="font-mono text-[11px] text-primary/90">
+          <div className="mb-2 flex min-w-0 items-center gap-2">
+            <Spinner className="size-3.5 shrink-0 text-primary" />
+            {/* The live step label is a tool call (e.g. read_file: <long
+                path>) — clamp it to one line so a long path can't push the
+                row past the bordered container, mirroring AnalyzingPhase. */}
+            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-primary/90">
               {stepLabel || "Reading current draft…"}
             </span>
-            <div className="ml-auto flex items-center gap-1.5">
+            <div className="flex shrink-0 items-center gap-1.5">
               <Kbd>Esc</Kbd>
               <Button
                 size="xs"
