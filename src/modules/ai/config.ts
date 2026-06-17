@@ -770,6 +770,9 @@ export const TERMINAL_BUFFER_LINES = 300;
 export const SURFACE_STEP_CAPS = {
   generator: 24,
   suiteChat: 12,
-  codeReview: 15,
+  // Commit Review runs two stages: a generous agentic investigation pass that
+  // traces blast radius across the tree, then a lean skeptical verify pass.
+  commitReviewInvestigate: 28,
+  commitReviewVerify: 12,
   confidence: 18,
 } as const;

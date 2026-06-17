@@ -40,7 +40,7 @@ export type LaunchMenuActions = {
   onGenerator: () => void;
   onTerminal: () => void;
   /** Disabled when there's no source root. */
-  onCodeReview: () => void;
+  onCommitReview: () => void;
   /** Used in the per-entry descriptions and to gate the Review entry. */
   sourceRoot?: string | null;
 };
@@ -112,16 +112,16 @@ export function LaunchMenuItems({
       />
       <LaunchMenuItem
         icon={Search01Icon}
-        label="Code Review"
+        label="Commit review"
         description={
           actions.sourceRoot
-            ? "AI review of your local branch diff vs main — clickable file:line citations"
+            ? "AI bug review of a single commit's changes — severity-ranked findings with one-click fixes"
             : "Set a source directory in Settings first"
         }
         disabled={!actions.sourceRoot}
         onSelect={() => {
           onClose();
-          actions.onCodeReview();
+          actions.onCommitReview();
         }}
       />
     </>

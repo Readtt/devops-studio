@@ -17,7 +17,8 @@ const FORBIDDEN_TOOL_TOKENS = [
 const ALL = {
   qaAnalyst: prompts.qaAnalyst,
   suiteChat: prompts.suiteChat,
-  codeReview: prompts.codeReview,
+  commitReview: prompts.commitReview,
+  commitReviewVerify: prompts.commitReviewVerify,
   confidenceEval: prompts.confidenceEval,
   draftChat: prompts.draftChat,
 };

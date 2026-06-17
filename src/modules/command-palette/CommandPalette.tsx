@@ -51,10 +51,10 @@ type Props = {
   /** Open a new terminal tab. When the caller doesn't pass a cwd the new
    *  tab inherits the user's source root (resolved on the App.tsx side). */
   onOpenTerminal?: (input?: { cwd?: string | null }) => void;
-  /** Open a structured Code Review pane against the user's source root.
-   *  No-op when no source dir is set — the callback handles routing the
-   *  user to settings in that case. */
-  onOpenCodeReview?: () => void;
+  /** Open a Commit Review pane against the user's source root. No-op when no
+   *  source dir is set — the callback handles routing the user to settings in
+   *  that case. */
+  onOpenCommitReview?: () => void;
   /** Open any ADO work item (not just cases/bugs) found by the text search.
    *  Bugs/test cases open their pane; other types open in Azure DevOps. */
   onOpenWorkItem?: (wi: WorkItemRef) => void;
@@ -80,7 +80,7 @@ export function CommandPalette({
   onOpenHistory,
   onOpenBug,
   onOpenTerminal,
-  onOpenCodeReview,
+  onOpenCommitReview,
   onOpenWorkItem,
   sourceRoot,
 }: Props) {
@@ -278,19 +278,19 @@ export function CommandPalette({
           </CommandItem>
         </CommandGroup>
 
-        {onOpenTerminal || onOpenCodeReview ? (
+        {onOpenTerminal || onOpenCommitReview ? (
           <CommandGroup heading="Developer">
-            {onOpenCodeReview ? (
+            {onOpenCommitReview ? (
               <CommandItem
-                value="open-code-review"
-                onSelect={() => run(() => onOpenCodeReview())}
+                value="open-commit-review"
+                onSelect={() => run(() => onOpenCommitReview())}
               >
                 <HugeiconsIcon icon={Search01Icon} size={12} strokeWidth={1.75} />
                 <div className="flex min-w-0 flex-col">
-                  <span>Review my changes</span>
+                  <span>Review a commit</span>
                   {sourceRoot ? (
                     <span className="truncate text-[10.5px] text-muted-foreground">
-                      Streaming review of your branch diff · {sourceRoot}
+                      Bug-scan a single commit's changes · {sourceRoot}
                     </span>
                   ) : (
                     <span className="text-[10.5px] text-muted-foreground/70">

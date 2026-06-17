@@ -6,6 +6,7 @@
 
 export { QA_ANALYST_PROMPT as qaAnalyst } from "@/modules/generator/lib/qaAnalystPrompt";
 export { SUITE_CHAT_SYSTEM_PROMPT as suiteChat } from "@/modules/test-plans/lib/runSuiteChat";
-export { CODE_REVIEW_SYSTEM_PROMPT as codeReview } from "@/modules/code-review/runCodeReview";
+export { INVESTIGATE_SYSTEM_PROMPT as commitReview } from "@/modules/commit-review/commitReviewPrompts";
+export { VERIFY_SYSTEM_PROMPT as commitReviewVerify } from "@/modules/commit-review/commitReviewPrompts";
 export { CONFIDENCE_EVAL_SYSTEM_PROMPT as confidenceEval } from "@/modules/test-plans/lib/confidenceEvalPrompt";
 export { CHAT_SYSTEM_PROMPT as draftChat } from "@/modules/generator/lib/qaChatRun";

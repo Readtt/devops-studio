@@ -13,7 +13,7 @@ import { leafCenterDropId } from "./dnd/dndIds";
 import { DropEdges } from "./dnd/DropEdges";
 import { LaunchMenuItems } from "./LaunchMenu";
 import {
-  launchCodeReview,
+  launchCommitReview,
   launchGenerator,
   launchTerminal,
 } from "./launchActions";
@@ -164,7 +164,7 @@ function NewTabInlineLauncher() {
   const actions = {
     onGenerator: launchGenerator,
     onTerminal: launchTerminal,
-    onCodeReview: launchCodeReview,
+    onCommitReview: launchCommitReview,
     sourceRoot,
   };
   return (

@@ -48,7 +48,7 @@ export type ShortcutId =
   | "terminal.clear"
   | "terminal.fontSizeUp"
   | "terminal.fontSizeDown"
-  | "codeReview.new"
+  | "commitReview.new"
   | "view.zoomIn"
   | "view.zoomOut"
   | "view.zoomReset";
@@ -133,8 +133,8 @@ export const SHORTCUTS: Shortcut[] = [
     defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "`" }],
   },
   {
-    id: "codeReview.new",
-    label: "New code review",
+    id: "commitReview.new",
+    label: "New commit review",
     group: "Tabs",
     // Ctrl/Cmd+Shift+R — R for Review. Plain Ctrl+R is browser refresh in
     // most webviews, so we take the shift slot.

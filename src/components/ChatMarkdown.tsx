@@ -13,8 +13,6 @@ import {
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ApplyEditCard, parseEdit } from "@/components/chat/ApplyEditCard";
 import { BulkApplyEditCard } from "@/components/chat/BulkApplyEditCard";
-import { ApplyPatchCard } from "@/modules/code-review/ApplyPatchCard";
-import { parsePatch } from "@/modules/code-review/patchSchema";
 import { ChatCodeMirror } from "@/modules/code-viewer/ChatCodeMirror";
 
 /**
@@ -110,21 +108,6 @@ export type AppliedEditRecord = {
  *  decide whether to show the "Apply" button or the quiet "Applied" state. */
 export type AppliedEditsMap = Record<string, AppliedEditRecord>;
 
-/** Persisted record of an applied code-review-patch, keyed (like edits) by a
- *  content hash of the block. `beforeText` snapshots the file lines as they
- *  were before the patch so the before/after diff still renders after a
- *  reload — by then the file on disk already contains the replacement, so a
- *  live re-read would show an empty diff. */
-export type AppliedPatchRecord = {
-  appliedAt: string;
-  path: string;
-  startLine: number;
-  endLine: number;
-  beforeText: string;
-};
-
-export type AppliedPatchesMap = Record<string, AppliedPatchRecord>;
-
 /** Handler the parent provides to undo an applied edit. Receives the
  *  persisted applied record (which carries the caseId + before snapshot)
  *  and performs the inverse ADO write. */
@@ -157,13 +140,6 @@ export type ChatMarkdownProps = {
   /** Called after a successful undo so the parent can drop the persisted
    *  applied-edit record. */
   onEditUndone?: (blockHash: string) => void;
-  /** Already-applied code-review patches for this message, keyed by block
-   *  hash. When set for a block, its ApplyPatchCard renders the persisted
-   *  "Applied" state + before/after diff instead of a live "Apply" button. */
-  appliedPatches?: AppliedPatchesMap;
-  /** Called after a patch is applied so the parent can persist it onto the
-   *  message (survives reload). */
-  onPatchApplied?: (blockHash: string, record: AppliedPatchRecord) => void;
 };
 
 export function ChatMarkdown({
@@ -177,8 +153,6 @@ export function ChatMarkdown({
   onEditApplied,
   onUndoEdit,
   onEditUndone,
-  appliedPatches,
-  onPatchApplied,
 }: ChatMarkdownProps) {
   const blocks = useMemo(() => parseBlocks(source), [source]);
   return (
@@ -202,8 +176,6 @@ export function ChatMarkdown({
           onEditApplied={onEditApplied}
           onUndoEdit={onUndoEdit}
           onEditUndone={onEditUndone}
-          appliedPatches={appliedPatches}
-          onPatchApplied={onPatchApplied}
         />
       ))}
     </div>
@@ -340,8 +312,6 @@ type BlockRendererProps = {
   onEditApplied?: (blockHash: string, result: AppliedEditRecord) => void;
   onUndoEdit?: UndoEditHandler;
   onEditUndone?: (blockHash: string) => void;
-  appliedPatches?: AppliedPatchesMap;
-  onPatchApplied?: (blockHash: string, record: AppliedPatchRecord) => void;
 };
 
 const blockRendererEqual = (a: BlockRendererProps, b: BlockRendererProps) =>
@@ -360,9 +330,7 @@ const blockRendererEqual = (a: BlockRendererProps, b: BlockRendererProps) =>
   a.appliedEdits === b.appliedEdits &&
   a.onEditApplied === b.onEditApplied &&
   a.onUndoEdit === b.onUndoEdit &&
-  a.onEditUndone === b.onEditUndone &&
-  a.appliedPatches === b.appliedPatches &&
-  a.onPatchApplied === b.onPatchApplied;
+  a.onEditUndone === b.onEditUndone;
 
 const BlockRenderer = memo(function BlockRenderer({
   block,
@@ -374,8 +342,6 @@ const BlockRenderer = memo(function BlockRenderer({
   onEditApplied,
   onUndoEdit,
   onEditUndone,
-  appliedPatches,
-  onPatchApplied,
 }: BlockRendererProps) {
   switch (block.kind) {
     case "heading": {
@@ -441,9 +407,7 @@ const BlockRenderer = memo(function BlockRenderer({
       // validate once the block is complete (no longer the tail).
       if (
         streamingTail &&
-        (block.lang === "devops-edit" ||
-          block.lang === "devops-bulk-edit" ||
-          block.lang === "code-review-patch")
+        (block.lang === "devops-edit" || block.lang === "devops-bulk-edit")
       ) {
         return <PendingActionBlock lang={block.lang} />;
       }
@@ -488,22 +452,6 @@ const BlockRenderer = memo(function BlockRenderer({
           />
         );
       }
-      if (block.lang === "code-review-patch") {
-        // Validate the patch shape BEFORE mounting the apply card so a
-        // malformed block reads as a plain warning, not a broken card.
-        const patch = parsePatch(block.body);
-        if (!patch.ok) {
-          return <PatchWarning error={patch.error} />;
-        }
-        const blockHash = hashEditBody(block.body);
-        return (
-          <ApplyPatchCard
-            body={block.body}
-            applied={appliedPatches?.[blockHash] ?? null}
-            onApplied={(record) => onPatchApplied?.(blockHash, record)}
-          />
-        );
-      }
       return (
         <CodeBlock
           lang={block.lang}
@@ -519,11 +467,7 @@ const BlockRenderer = memo(function BlockRenderer({
  *  "malformed" warning. Mirrors the three-dot streaming idiom used elsewhere. */
 function PendingActionBlock({ lang }: { lang: string }) {
   const label =
-    lang === "code-review-patch"
-      ? "Preparing a patch"
-      : lang === "devops-bulk-edit"
-        ? "Preparing bulk edits"
-        : "Preparing an edit";
+    lang === "devops-bulk-edit" ? "Preparing bulk edits" : "Preparing an edit";
   return (
     <div className="my-1 flex items-center gap-2 rounded-md border border-border/55 bg-card/55 px-2.5 py-1.5 text-[11px] text-muted-foreground">
       <span className="flex items-center gap-0.5" aria-hidden>
@@ -536,17 +480,7 @@ function PendingActionBlock({ lang }: { lang: string }) {
   );
 }
 
-/** Rendered in place of an apply card when a `code-review-patch` block fails
- *  schema validation — better than a half-broken card the user can't act on. */
-function PatchWarning({ error }: { error: string }) {
-  return (
-    <div className="my-1 rounded-md border border-amber-500/40 bg-amber-500/[0.08] px-2.5 py-1.5 text-[11px] text-amber-700 dark:text-amber-300">
-      Skipped a malformed patch block ({error}). Ask the reviewer to re-emit it.
-    </div>
-  );
-}
-
-/** Same idea for a malformed `devops-edit` block — show the validation reason
+/** Shown for a malformed `devops-edit` block — show the validation reason
  *  instead of mounting an apply card the user can't action. */
 function EditWarning({ error }: { error: string }) {
   return (

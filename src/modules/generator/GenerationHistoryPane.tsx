@@ -45,6 +45,9 @@ type Props = {
    *  Lets the user navigate Done ↔ Review ↔ Input via the same breadcrumbs
    *  the live publish flow uses. */
   onOpenPublished?: (run: GenerationRun) => void;
+  /** When embedded under a parent tab switcher (the History segmented control),
+   *  hide this pane's own title bar — the switcher is the title. */
+  embedded?: boolean;
 };
 
 /**
@@ -57,6 +60,7 @@ export function GenerationHistoryPane({
   onOpenBug,
   onOpenDraft,
   onOpenPublished,
+  embedded,
 }: Props) {
   const [runs, setRuns] = useState<GenerationRun[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -151,25 +155,27 @@ export function GenerationHistoryPane({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between gap-1.5 border-b border-border/60 px-2 py-1.5">
-        <span className="text-[11.5px] font-medium">Generation history</span>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              size="icon"
-              variant="ghost"
-              className="h-6 w-6"
-              aria-label="Refresh history"
-              onClick={() => void refresh()}
-            >
-              <HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="text-[11px]">
-            Reload from disk
-          </TooltipContent>
-        </Tooltip>
-      </div>
+      {!embedded ? (
+        <div className="flex items-center justify-between gap-1.5 border-b border-border/60 px-2 py-1.5">
+          <span className="text-[11.5px] font-medium">History</span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-6 w-6"
+                aria-label="Refresh history"
+                onClick={() => void refresh()}
+              >
+                <HugeiconsIcon icon={RefreshIcon} size={12} strokeWidth={1.75} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-[11px]">
+              Reload from disk
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      ) : null}
 
       <div className="border-b border-border/60 px-2 pt-1.5">
         <input

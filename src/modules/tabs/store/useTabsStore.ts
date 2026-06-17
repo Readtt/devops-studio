@@ -82,18 +82,15 @@ export type OpenTabInput =
       pinned?: boolean;
     }
   | {
-      kind: "code-review";
+      kind: "commit-review";
       cwd: string;
-      base?: string | null;
-      /** Which Azure DevOps unit to review (commit/PR/branch). Absent ⇒ the
-       *  local working-copy diff. Persisted on the tab so it survives reload
-       *  and is carried by Duplicate. */
-      source?: import("@/modules/code-review/source").CodeReviewSource | null;
+      /** Pre-select commits (full SHAs). Absent ⇒ defaults to HEAD. */
+      selectedShas?: string[] | null;
       /** Per-tab pinned model (persisted). Absent ⇒ inherit global default. */
       modelId?: import("@/modules/ai/config").ModelId | null;
-      /** Pre-existing code-review thread to rehydrate. Used by the
-       *  Chats sidebar to reopen past reviews. */
-      rehydrateThreadId?: string | null;
+      /** Pre-existing saved run to rehydrate. Used by the History tab to
+       *  reopen a past review. */
+      rehydrateRunId?: string | null;
       title?: string;
       pinned?: boolean;
     };
@@ -129,14 +126,14 @@ export type TabsState = {
 
   renameTab: (id: number, title: string) => void;
   updateGeneratorRunId: (id: number, runId: string | null) => void;
-  /** Persist a code-review tab's live source/base so it survives reload and
-   *  Duplicate. The runtime store (useCodeReview) owns the in-memory slice;
-   *  this mirrors the user's choice onto the persisted tab. */
-  patchCodeReviewTab: (
+  /** Persist a commit-review tab's live selection/context/model so it survives
+   *  reload and Duplicate. The runtime store (useCommitReview) owns the
+   *  in-memory slice; this mirrors the user's choice onto the persisted tab. */
+  patchCommitReviewTab: (
     id: number,
     patch: {
-      source?: import("@/modules/code-review/source").CodeReviewSource | null;
-      base?: string | null;
+      selectedShas?: string[] | null;
+      context?: string | null;
       modelId?: import("@/modules/ai/config").ModelId | null;
     },
   ) => void;
@@ -271,20 +268,20 @@ export const useTabsStore = create<TabsState>()(
               // reopening "Open Terminal" should give you a fresh shell, not
               // surface the existing one. Multi-terminal is a feature.
               return false;
-            case "code-review":
-              // Reopening a specific saved thread focuses its tab; the plain
-              // "Code Review" launcher / palette focuses the existing fresh
+            case "commit-review":
+              // Reopening a specific saved run focuses its tab; the plain
+              // "Commit Review" launcher / palette focuses the existing fresh
               // review for this source dir instead of stacking duplicates.
               // (Duplicate explicitly clones via duplicateTab, bypassing this.)
-              if (input.rehydrateThreadId) {
+              if (input.rehydrateRunId) {
                 return (
-                  t.kind === "code-review" &&
-                  t.rehydrateThreadId === input.rehydrateThreadId
+                  t.kind === "commit-review" &&
+                  t.rehydrateRunId === input.rehydrateRunId
                 );
               }
               return (
-                t.kind === "code-review" &&
-                !t.rehydrateThreadId &&
+                t.kind === "commit-review" &&
+                !t.rehydrateRunId &&
                 t.cwd === input.cwd
               );
           }
@@ -387,16 +384,16 @@ export const useTabsStore = create<TabsState>()(
               pinned: input.pinned ?? false,
             };
             break;
-          case "code-review":
+          case "commit-review":
             tab = {
               id,
-              kind: "code-review",
-              title: input.title ?? "Code review",
+              kind: "commit-review",
+              title: input.title ?? "Commit review",
               cwd: input.cwd,
-              base: input.base ?? null,
-              source: input.source ?? null,
+              selectedShas: input.selectedShas ?? null,
+              context: null,
               modelId: input.modelId ?? null,
-              rehydrateThreadId: input.rehydrateThreadId ?? null,
+              rehydrateRunId: input.rehydrateRunId ?? null,
               pinned: input.pinned ?? false,
             };
             break;
@@ -542,7 +539,7 @@ export const useTabsStore = create<TabsState>()(
         //  - generator: a cloned session store + fresh runId (store-aware,
         //    handled at the App level; the context menu routes there. This is
         //    just the ctrl-drag fallback — a fresh seeded generator).
-        //  - code-review: a fresh review thread.
+        //  - commit-review: a fresh parallel review on the same source dir.
         if (t.kind === "terminal") {
           return get().openTab({
             kind: "terminal",
@@ -559,10 +556,10 @@ export const useTabsStore = create<TabsState>()(
             initialSuiteId: t.initialSuiteId,
           });
         }
-        // code-review now dedups by cwd in openTab, so a Duplicate must clone
+        // commit-review now dedups by cwd in openTab, so a Duplicate must clone
         // the tab object directly (below) rather than route through openTab —
         // otherwise it would just reactivate the original. The direct clone
-        // copies cwd/base/source/modelId so the copy reviews the same thing.
+        // copies cwd/selectedShas/context/modelId so the copy reviews the same thing.
 
         // test-case / bug / code-viewer / suite-chat DEDUP in openTab, so
         // re-opening the same identity would just reactivate the original —
@@ -576,12 +573,10 @@ export const useTabsStore = create<TabsState>()(
         const insertIndex = owner ? owner.tabIds.indexOf(id) + 1 : undefined;
         const newId = get().nextId;
         const clone = { ...t, id: newId, pinned: false } as AppTab;
-        // A duplicated code-review tab must NOT inherit the saved-thread
-        // binding: useCodeReview seeds slice.threadId from it, so two tabs
-        // sharing one rehydrateThreadId would interleave writes into the
-        // same persisted thread. Duplicate means "parallel review on the
-        // same diff" — same cwd/base/source, fresh conversation.
-        if (clone.kind === "code-review") clone.rehydrateThreadId = null;
+        // A duplicated commit-review tab must NOT inherit the saved-run
+        // binding — a Duplicate is a fresh parallel review on the same source
+        // dir, with its own run id minted on the next Review.
+        if (clone.kind === "commit-review") clone.rehydrateRunId = null;
         set((s) => ({
           tabs: { ...s.tabs, [newId]: clone },
           nextId: newId + 1,
@@ -605,13 +600,13 @@ export const useTabsStore = create<TabsState>()(
           return { tabs: { ...s.tabs, [id]: { ...t, runId } } };
         }),
 
-      patchCodeReviewTab: (id, patch) =>
+      patchCommitReviewTab: (id, patch) =>
         set((s) => {
           const t = s.tabs[id];
-          if (!t || t.kind !== "code-review") return s;
+          if (!t || t.kind !== "commit-review") return s;
           const next = { ...t };
-          if ("source" in patch) next.source = patch.source ?? null;
-          if ("base" in patch) next.base = patch.base ?? null;
+          if ("selectedShas" in patch) next.selectedShas = patch.selectedShas ?? null;
+          if ("context" in patch) next.context = patch.context ?? null;
           if ("modelId" in patch) next.modelId = patch.modelId ?? null;
           return { tabs: { ...s.tabs, [id]: next } };
         }),
@@ -773,6 +768,8 @@ export const useTabsStore = create<TabsState>()(
       // Drop tabs that can't be restored from a cold start:
       //   * generator tabs with no runId — no draft to load
       //   * terminal tabs — the PTY died with the previous process
+      //   * legacy "code-review" tabs — that chat surface was replaced by
+      //     Commit Review; its persisted shape no longer maps onto a tab kind
       merge: (persisted, current) => {
         const merged = { ...current, ...(persisted as Partial<TabsState>) };
         if (!merged.tabs || !merged.paneTree) return current;
@@ -780,6 +777,8 @@ export const useTabsStore = create<TabsState>()(
         for (const t of Object.values(merged.tabs) as AppTab[]) {
           if (t.kind === "generator" && !t.runId) ghostIds.add(t.id);
           else if (t.kind === "terminal") ghostIds.add(t.id);
+          else if ((t as { kind: string }).kind === "code-review")
+            ghostIds.add(t.id);
         }
         if (ghostIds.size > 0) {
           let tree = merged.paneTree;

@@ -10,7 +10,7 @@ import { useTabsStore } from "./store/useTabsStore";
  * call them with the same semantics.
  *
  * They wrap `useTabsStore.getState().openTab` plus the small "no source
- * root → bounce to Settings" routing that the Code Review surface needs.
+ * root → bounce to Settings" routing that the Commit Review surface needs.
  */
 
 export function launchGenerator(): void {
@@ -29,17 +29,16 @@ export function launchTerminal(): void {
   });
 }
 
-export function launchCodeReview(): void {
+export function launchCommitReview(): void {
   const liveSourceRoot = usePreferencesStore.getState().sourceRoot;
   if (!liveSourceRoot) {
-    // No diff is possible without a source dir — send the user to set
+    // No commits are reviewable without a source dir — send the user to set
     // one up rather than opening a useless empty pane.
     void openSettingsWindow("general");
     return;
   }
   useTabsStore.getState().openTab({
-    kind: "code-review",
+    kind: "commit-review",
     cwd: liveSourceRoot,
-    base: null,
   });
 }

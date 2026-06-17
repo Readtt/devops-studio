@@ -9,7 +9,7 @@ import { useGeneratorStoresApi } from "@/modules/generator/storesContext";
 import { useGeneratorCallbacks } from "@/modules/generator/callbacksContext";
 import { getRun } from "@/modules/generator/lib/history";
 import { TerminalPane } from "@/modules/terminal/TerminalPane";
-import { CodeReviewPane } from "@/modules/code-review/CodeReviewPane";
+import { CommitReviewPane } from "@/modules/commit-review/CommitReviewPane";
 import type { AppTab, GeneratorTab } from "./store/types";
 
 type Props = {
@@ -61,15 +61,13 @@ export const TabContent = memo(function TabContent({ tab, sourceRoot }: Props) {
           shellId={tab.shellId}
         />
       );
-    case "code-review":
+    case "commit-review":
       return (
-        <CodeReviewPane
+        <CommitReviewPane
           tabId={tab.id}
           cwd={tab.cwd}
-          base={tab.base}
-          source={tab.source ?? null}
           modelId={tab.modelId ?? null}
-          rehydrateThreadId={tab.rehydrateThreadId ?? null}
+          rehydrateRunId={tab.rehydrateRunId ?? null}
         />
       );
   }

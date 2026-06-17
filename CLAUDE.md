@@ -9,7 +9,7 @@ DevOps Studio is a Tauri 2 desktop app for QA testers working in Azure DevOps Te
 - **UI:** shadcn (radix-luma variant) + Tailwind CSS v4 + oklch color tokens + Geist Variable / JetBrains Mono
 - **Icons:** `@hugeicons/react` for app glyphs, `simple-icons` for brand marks (ADO, Anthropic, OpenAI, etc.) via `src/components/BrandIcon.tsx`
 - **State:** Zustand stores under `src/modules/*/store/`
-- **AI:** Vercel AI SDK — one BYOK engine, every provider via API key. All four AI surfaces (Generator, Suite Chat, Code Review, Confidence) route through **one shared task runner** (`ai/lib/taskRunner.ts`: `runTask`/`streamTask`). **Read-only against the user's source** — the AI *suggests* artifacts the user applies (test cases via `ado_*`; code-review patches via `fs_write_file` behind `ApplyPatchCard`); it never autonomously writes files, and the only shell access is a strictly read-only, allowlisted `run_command` tool (git/file inspection — `src-tauri/src/modules/command.rs`; no writes, deletes, network, or shell chaining). Read access (files + `run_command`) is gated by the global `codeSearchEnabled` preference; per-surface agentic-loop step caps live in `config.ts` `SURFACE_STEP_CAPS`.
+- **AI:** Vercel AI SDK — one BYOK engine, every provider via API key. All four AI surfaces (Generator, Suite Chat, Commit Review, Confidence) route through **one shared task runner** (`ai/lib/taskRunner.ts`: `runTask`/`streamTask`). **Read-only against the user's source** — the AI *suggests* artifacts the user applies (test cases via `ado_*`; commit-review patches via `fs_write_file` behind `ApplyPatchCard`); it never autonomously writes files, and the only shell access is a strictly read-only, allowlisted `run_command` tool (git/file inspection — `src-tauri/src/modules/command.rs`; no writes, deletes, network, or shell chaining). Read access (files + `run_command`) is gated by the global `codeSearchEnabled` preference; per-surface agentic-loop step caps live in `config.ts` `SURFACE_STEP_CAPS`.
 - **ADO client:** Native Rust HTTP via `reqwest`, PAT stored in OS keychain
 - **Code viewer:** CodeMirror 6
 - **Secrets:** Tauri `secrets` plugin → Windows Credential Manager / macOS Keychain / libsecret
@@ -24,7 +24,7 @@ src/                                      Frontend
 ├── modules/
 │   ├── ado/                              Tauri-invoke wrappers + types for ADO commands
 │   ├── ai/                               AI provider config, keyring, shared task runner + system prompts
-│   ├── code-review/                      BYOK-grounded review pane for the current branch diff
+│   ├── commit-review/                    BYOK-grounded review pane for selected git commits (investigate→verify, suggests applyable patches)
 │   ├── code-viewer/                      CodeMirror panes
 │   ├── command-palette/                  Ctrl/Cmd+K palette
 │   ├── generator/                        Test case generator: store, prompt, Claude+Vercel runs, panes
@@ -45,7 +45,8 @@ src-tauri/src/                            Rust backend
 ├── lib.rs                                Tauri builder + command handler registry
 └── modules/
     ├── ado/                              Typed ADO HTTP client (plans, suites, cases, bugs, repos)
-    ├── chat_threads.rs                   SQLite-backed persistence for suite-chat + code-review threads
+    ├── chat_threads.rs                   SQLite-backed persistence for suite-chat threads
+    ├── commit_review.rs                  SQLite-backed persistence for saved commit reviews
     ├── fs/                               Filesystem reads (read/write/grep/glob/tree)
     ├── git.rs                            git rev-parse helpers (P2 addition)
     ├── history.rs                        Generation run history (SQLite)
@@ -231,7 +232,7 @@ Tabs are a discriminated union (`AppTab` in `src/modules/tabs/store/types.ts`). 
 | `suite-chat`  | `planId + suiteId`              | Per-suite chat. Threads live inside the tab via the switcher.    |
 | `generator`   | `runId` (only when set)         | Fresh generator drafts deliberately stack; bound drafts dedup.   |
 | `terminal`    | **never**                       | Each `pty_spawn` is a real OS process — N tabs = N shells.       |
-| `code-review` | `cwd` (fresh) / `rehydrateThreadId` | Re-opening "Code Review" focuses the existing fresh review for that source dir; a saved thread reopens its own tab. **Duplicate** clones for a parallel review on the same diff. |
+| `commit-review` | `cwd` (fresh) / `rehydrateRunId` | Re-opening "Commit Review" focuses the existing fresh review for that source dir; a saved run reopens its own tab. **Duplicate** clones for a parallel review on the same commits. |
 
 When you add a new kind, set the rule explicitly. The dedup rule is also where the user's "why can't I open two of these?" frustration lives — if a kind doesn't dedup naturally, it should NOT dedup in the openTab switch.
 
@@ -263,7 +264,7 @@ The fastest way to make a new pane feel native: copy `SuiteChatPane` (or `CodeRe
 
 - **Chat surfaces all use the same bubble pattern.** User messages right-aligned in `bg-primary/12` with `rounded-2xl rounded-br-sm`; assistant messages left-aligned with a 24×24 avatar tile and `border border-border/45 bg-card/55`. Copy-on-hover button absolute-positioned top-right of the assistant bubble. Streaming placeholder is three pulsing dots, 1.5px × 1.5px, staggered animation delays of 0 / 120 / 240ms.
 - **Every interactive control gets a tooltip.** Header buttons, base pickers, send/stop, the file-count chip — all wrapped in `<Tooltip><TooltipTrigger asChild>…</TooltipTrigger><TooltipContent side="bottom" className="max-w-[280px] text-[11px]">…</TooltipContent></Tooltip>`. The tooltip explains what the action does AND what'll happen if the user clicks it (e.g. "Changing wipes the conversation"). The user has explicitly asked for this — UI features without tooltips read as "WTF is this".
-- **Branch pickers use `BranchPicker`** (`src/components/BranchPicker.tsx`), not a raw `<Select>`. It's a cmdk Combobox in a Popover with fuzzy search and `max-h-[280px]` so long branch lists don't take the viewport. Both Code Review and Azure DevOps settings consume it; new branch-picker surfaces should too.
+- **Branch pickers use `BranchPicker`** (`src/components/BranchPicker.tsx`), not a raw `<Select>`. It's a cmdk Combobox in a Popover with fuzzy search and `max-h-[280px]` so long branch lists don't take the viewport. Azure DevOps settings (tracking-branch picker) and the generator's developer picker consume it; new branch-picker surfaces should too.
 - **Empty states explain what's about to happen.** Don't just show a centered icon — write a sentence describing what this pane does and what triggering its primary action will do. Example: `CodeReviewPane`'s `EmptyState`. Confused users disable features.
 - **One look for AI provider marks.** Use `ProviderIcon` — never embed a hugeicons stroke for a provider that has a brand mark in `BrandIcon`. The mixed look (real Anthropic next to stroke OpenAI) is fine because each provider's icon is the best available representation for that brand.
-- **Don't reinvent the wheel for kinds that have an established pattern.** If you're adding a chat pane, it should look like the existing chat panes. If you're adding a developer-mode surface, it should match the terminal/code-review aesthetic. The codebase has converged on a few visual templates; honour them.
+- **Don't reinvent the wheel for kinds that have an established pattern.** If you're adding a chat pane, it should look like the existing chat panes. If you're adding a developer-mode surface, it should match the terminal/commit-review aesthetic. The codebase has converged on a few visual templates; honour them.

@@ -35,6 +35,7 @@ import {
   GenerationHistoryPane,
   useGeneratorStoresApi,
 } from "@/modules/generator";
+import { CommitReviewHistoryPane } from "@/modules/commit-review/CommitReviewHistoryPane";
 import { GeneratorCallbacksProvider } from "@/modules/generator/callbacksContext";
 import { PaneTreeRenderer } from "@/modules/tabs/PaneTreeRenderer";
 import { DndProvider as TabsDndProvider } from "@/modules/tabs/dnd/DndProvider";
@@ -101,10 +102,11 @@ function withFocusedTerminal(
 }
 import { LaunchMenu } from "@/modules/tabs/LaunchMenu";
 import {
-  launchCodeReview,
+  launchCommitReview,
   launchGenerator,
   launchTerminal,
 } from "@/modules/tabs/launchActions";
+import { sweepStaleCommitReviews } from "@/modules/commit-review/commitReviewApi";
 import {
   FolderOpenIcon,
   GitBranchIcon,
@@ -290,6 +292,13 @@ function AppShell() {
   // Clear the local phase mirror whenever a tab disappears from the store.
   // The store itself does the actual close; this just keeps the auxiliary
   // status-bar phase map from leaking entries for closed tabs.
+  // One-time on app mount: reconcile any Commit Review runs left "running" by a
+  // crash/refresh into "interrupted" so the History tab shows them honestly
+  // instead of as a perpetual spinner.
+  useEffect(() => {
+    void sweepStaleCommitReviews(new Date().toISOString()).catch(() => {});
+  }, []);
+
   useEffect(() => {
     const unsub = useTabsStore.subscribe((state, prev) => {
       if (state.tabs === prev.tabs) return;
@@ -455,13 +464,11 @@ function AppShell() {
     [],
   );
 
-  const openCodeReviewTab = useCallback(
+  const openCommitReviewTab = useCallback(
     (input?: {
       cwd?: string;
-      base?: string | null;
-      rehydrateThreadId?: string;
+      rehydrateRunId?: string;
       title?: string;
-      source?: import("@/modules/code-review/source").CodeReviewSource | null;
     }) => {
       const liveSourceRoot = usePreferencesStore.getState().sourceRoot;
       const cwd = input?.cwd ?? liveSourceRoot;
@@ -470,11 +477,9 @@ function AppShell() {
         return null;
       }
       return useTabsStore.getState().openTab({
-        kind: "code-review",
+        kind: "commit-review",
         cwd,
-        base: input?.base ?? null,
-        source: input?.source ?? null,
-        rehydrateThreadId: input?.rehydrateThreadId ?? null,
+        rehydrateRunId: input?.rehydrateRunId ?? null,
         title: input?.title,
       });
     },
@@ -589,6 +594,9 @@ function AppShell() {
   );
 
   const [sidebarView, setSidebarView] = useState<SidebarViewId>(readSidebarView);
+  const [historyTab, setHistoryTab] = useState<"generations" | "reviews">(
+    "generations",
+  );
   const persistSidebarView = useCallback((view: SidebarViewId) => {
     setSidebarView(view);
     try {
@@ -911,8 +919,8 @@ function AppShell() {
       },
       "generator.new": () => openGeneratorTab(),
       "terminal.new": () => openTerminalTab(),
-      "codeReview.new": () => {
-        openCodeReviewTab();
+      "commitReview.new": () => {
+        openCommitReviewTab();
       },
       "terminal.copy": () => withFocusedTerminal((session) => {
         if (!session.term.hasSelection()) return;
@@ -1205,7 +1213,7 @@ function AppShell() {
           actions={{
             onGenerator: launchGenerator,
             onTerminal: launchTerminal,
-            onCodeReview: launchCodeReview,
+            onCommitReview: launchCommitReview,
             sourceRoot,
           }}
           align="center"
@@ -1331,7 +1339,37 @@ function AppShell() {
                       className="absolute inset-0 flex flex-col"
                       style={{ display: sidebarView === "history" ? "flex" : "none" }}
                     >
+                      <div className="flex shrink-0 items-center gap-1 border-b border-border/60 px-2 py-1.5">
+                        {(
+                          [
+                            ["generations", "Generations"],
+                            ["reviews", "Commit reviews"],
+                          ] as const
+                        ).map(([id, label]) => (
+                          <button
+                            key={id}
+                            type="button"
+                            onClick={() => setHistoryTab(id)}
+                            className={cn(
+                              "rounded-md px-2 py-1 text-[11px] font-medium transition-colors",
+                              historyTab === id
+                                ? "bg-primary/12 text-primary"
+                                : "text-muted-foreground hover:bg-foreground/[0.05] hover:text-foreground",
+                            )}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      <div
+                        className="min-h-0 flex-1"
+                        style={{
+                          display:
+                            historyTab === "generations" ? "block" : "none",
+                        }}
+                      >
                       <GenerationHistoryPane
+                        embedded
                         onOpenCase={openTestCaseTab}
                         onOpenBug={openBugTab}
                         onOpenDraft={(run) => {
@@ -1386,6 +1424,19 @@ function AppShell() {
                           });
                         }}
                       />
+                      </div>
+                      <div
+                        className="min-h-0 flex-1"
+                        style={{
+                          display: historyTab === "reviews" ? "block" : "none",
+                        }}
+                      >
+                        <CommitReviewHistoryPane
+                          onOpen={(runId) =>
+                            openCommitReviewTab({ rehydrateRunId: runId })
+                          }
+                        />
+                      </div>
                     </div>
                     <div
                       className="absolute inset-0 flex flex-col"
@@ -1398,15 +1449,6 @@ function AppShell() {
                         onOpenChat={(input) =>
                           openSuiteChatTab(input)
                         }
-                        onOpenCodeReview={(input) => {
-                          openCodeReviewTab({
-                            cwd: input.cwd,
-                            base: input.base,
-                            source: input.source ?? null,
-                            rehydrateThreadId: input.threadId,
-                            title: input.title,
-                          });
-                        }}
                       />
                     </div>
                   </div>
@@ -1502,8 +1544,8 @@ function AppShell() {
             onOpenTestPlansSidebar={() => persistSidebarView("test-plans")}
             onOpenHistory={() => persistSidebarView("history")}
             onOpenTerminal={(input) => openTerminalTab(input)}
-            onOpenCodeReview={() => {
-              openCodeReviewTab();
+            onOpenCommitReview={() => {
+              openCommitReviewTab();
             }}
             onOpenWorkItem={openWorkItem}
             sourceRoot={sourceRoot}

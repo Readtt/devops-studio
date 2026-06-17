@@ -128,20 +128,32 @@ export function severityChip(severity: string | null): {
   className: string;
 } {
   const s = (severity ?? "").trim();
-  if (s.startsWith("1"))
-    return { label: "Critical", className: "bg-destructive/15 text-destructive" };
-  if (s.startsWith("2"))
-    return {
-      label: "High",
-      className: "bg-rose-500/15 text-rose-600 dark:text-rose-300",
-    };
-  if (s.startsWith("3"))
-    return {
-      label: "Medium",
-      className: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
-    };
-  if (s.startsWith("4"))
-    return { label: "Low", className: "bg-foreground/[0.08] text-muted-foreground" };
+  const CRITICAL = { label: "Critical", className: "bg-destructive/15 text-destructive" };
+  const HIGH = {
+    label: "High",
+    className: "bg-rose-500/15 text-rose-600 dark:text-rose-300",
+  };
+  const MEDIUM = {
+    label: "Medium",
+    className: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+  };
+  const LOW = { label: "Low", className: "bg-foreground/[0.08] text-muted-foreground" };
+  // ADO numeric form ("1 - Critical" … "4 - Low").
+  if (s.startsWith("1")) return CRITICAL;
+  if (s.startsWith("2")) return HIGH;
+  if (s.startsWith("3")) return MEDIUM;
+  if (s.startsWith("4")) return LOW;
+  // Plain word form ("critical"/"high"/"medium"/"low") — Commit Review findings.
+  switch (s.toLowerCase()) {
+    case "critical":
+      return CRITICAL;
+    case "high":
+      return HIGH;
+    case "medium":
+      return MEDIUM;
+    case "low":
+      return LOW;
+  }
   return { label: s || "Severity", className: "bg-foreground/[0.08] text-muted-foreground" };
 }
 

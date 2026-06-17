@@ -1,7 +1,8 @@
 mod modules;
 
 use modules::{
-    ado, chat_threads, command, confidence_store, fs, git, history, net, pty, secrets,
+    ado, chat_threads, command, commit_review, confidence_store, fs, git, history, net, pty,
+    secrets,
 };
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -434,6 +435,7 @@ pub fn run() {
         .manage(pty::PtyState::default())
         .manage(ado::client::AdoState::default())
         .manage(chat_threads::ChatThreadsState::default())
+        .manage(commit_review::CommitReviewState::default())
         .manage(confidence_store::ConfidenceStoreState::default())
         .setup(|app| {
             // Hydrate the in-memory ADO connection state from disk + keychain.
@@ -542,6 +544,12 @@ pub fn run() {
             chat_threads::chat_threads_delete_suite,
             chat_threads::chat_threads_list,
             chat_threads::chat_threads_list_for_suite,
+            // --- Commit Review runs (single-commit bug-scan persistence) ---
+            commit_review::commit_review_save,
+            commit_review::commit_review_get,
+            commit_review::commit_review_list,
+            commit_review::commit_review_delete,
+            commit_review::commit_review_sweep_stale,
             confidence_store::confidence_save,
             confidence_store::confidence_delete,
             confidence_store::confidence_get,
@@ -555,6 +563,8 @@ pub fn run() {
             git::git_repo_info,
             git::git_diff,
             git::git_branch_list,
+            git::git_list_commits,
+            git::git_commit_diff,
             command::run_readonly_command_cmd,
             // --- PTY / embedded terminal ---
             pty::pty_spawn,

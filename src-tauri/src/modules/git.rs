@@ -118,9 +118,13 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 // ───────────────────────────────────────────────────────────────────────
-// git diff — used by the Code Review pane.
+// git diff — the cumulative base...HEAD delta of a whole branch.
 //
-// The pane needs three things to brief a model intelligently:
+// (The Commit Review pane reviews ONE commit at a time and consumes the
+// single-commit helpers further down instead; this whole-branch diff is the
+// older review mechanism, kept for any caller that wants the full delta.)
+//
+// A diff consumer needs three things to brief a model intelligently:
 //   1. The base branch we're diffing against (so we can say "vs main"
 //      in the prompt and tell the user which baseline to expect).
 //   2. The per-file stat list (path, +adds, -deletes, status). This is
@@ -135,6 +139,31 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
 /// for the per-file stats + a system prompt while staying inside the
 /// context windows of the cheaper BYOK models the user might pick.
 const PATCH_MAX_BYTES: usize = 30 * 1024;
+
+/// Git's well-known empty-tree object. Diffing a root commit against it
+/// yields the commit's full content as additions (a root commit has no
+/// parent, so `<sha>^` doesn't resolve).
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// Cap raw patch text at PATCH_MAX_BYTES on a char boundary, appending a
+/// truncation marker. Returns (text, truncated). Shared by the branch diff
+/// and the single-commit diff so both surface the same "[... truncated]"
+/// sentinel the model keys off.
+fn cap_patch(raw: String) -> (String, bool) {
+    if raw.len() > PATCH_MAX_BYTES {
+        // Slice on a char boundary so we don't split a multibyte UTF-8
+        // character at the cap.
+        let mut end = PATCH_MAX_BYTES;
+        while end > 0 && !raw.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut truncated = raw[..end].to_string();
+        truncated.push_str("\n[... truncated for size; full diff available via the Diff tool ...]");
+        (truncated, true)
+    } else {
+        (raw, false)
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -230,19 +259,7 @@ fn compute_diff(path: &Path, requested_base: Option<&str>) -> Result<GitDiff, St
     let files = collect_diff_files(path, &triple_dot)?;
 
     let raw = run_git(path, &["diff", "--no-color", &triple_dot]).unwrap_or_default();
-    let (raw_patch, truncated) = if raw.len() > PATCH_MAX_BYTES {
-        // Slice on a char boundary so we don't split a multibyte UTF-8
-        // character at the cap.
-        let mut end = PATCH_MAX_BYTES;
-        while end > 0 && !raw.is_char_boundary(end) {
-            end -= 1;
-        }
-        let mut truncated = raw[..end].to_string();
-        truncated.push_str("\n[... truncated for size; full diff available via the Diff tool ...]");
-        (truncated, true)
-    } else {
-        (raw, false)
-    };
+    let (raw_patch, truncated) = cap_patch(raw);
 
     Ok(GitDiff {
         base,
@@ -305,10 +322,202 @@ fn collect_diff_files(path: &Path, range: &str) -> Result<Vec<DiffFile>, String>
     Ok(files)
 }
 
-/// Local branches + a small set of common remote refs, for the base-branch
-/// picker in the Code Review pane. Filters out HEAD / refs/stash / refs we
-/// don't care about. Trimmed to ~50 entries — picker UIs become useless
-/// past that anyway.
+// ───────────────────────────────────────────────────────────────────────
+// Single-commit review — used by the Commit Review pane.
+//
+// Unlike git_diff (which shows the cumulative base...HEAD delta of a whole
+// branch), these expose ONE commit at a time: a pickable list of recent
+// commits, and the diff of a single commit's OWN change (<sha>^..<sha>).
+// Reviewing one commit keeps the model's context small even on huge repos.
+// ───────────────────────────────────────────────────────────────────────
+
+/// One row in the commit picker. `is_root` marks the initial commit (no
+/// parent), which the diff path handles specially.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitMeta {
+    /// Full 40-char SHA — the stable id we persist and re-resolve.
+    pub sha: String,
+    /// Abbreviated SHA for display.
+    pub short_sha: String,
+    /// First line of the commit message.
+    pub subject: String,
+    /// Author name.
+    pub author: String,
+    /// Committer date, ISO-8601 strict (machine-sortable).
+    pub date: String,
+    /// Human relative date ("3 days ago") for the picker.
+    pub relative_date: String,
+    /// True when the commit has no parent (the repo's first commit).
+    pub is_root: bool,
+}
+
+/// Recent commits on the current HEAD, newest first, for the Commit Review
+/// picker. `count` is clamped to 1..=200.
+#[tauri::command]
+pub async fn git_list_commits(cwd: String, count: Option<u32>) -> Result<Vec<CommitMeta>, String> {
+    let path = PathBuf::from(&cwd);
+    if !path.exists() {
+        return Err(format!("path not found: {cwd}"));
+    }
+    let count = count.unwrap_or(50).clamp(1, 200);
+    tauri::async_runtime::spawn_blocking(move || list_commits(&path, count))
+        .await
+        .map_err(|e| format!("git_list_commits join: {e}"))?
+}
+
+fn list_commits(path: &Path, count: u32) -> Result<Vec<CommitMeta>, String> {
+    if !is_repo(path) {
+        return Err(format!("not a git repository: {}", path.display()));
+    }
+    // \x1f (unit separator) delimits fields; subjects are single-line (%s),
+    // so a plain newline safely separates records. %P is space-separated
+    // parents — empty for the root commit.
+    let count_arg = format!("-n{count}");
+    let raw = run_git(
+        path,
+        &[
+            "log",
+            &count_arg,
+            "--no-color",
+            "--date=iso-strict",
+            "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%cr%x1f%P",
+        ],
+    )?;
+    let mut out: Vec<CommitMeta> = Vec::new();
+    for line in raw.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut f = line.split('\u{1f}');
+        let sha = f.next().unwrap_or("").to_string();
+        if sha.is_empty() {
+            continue;
+        }
+        let short_sha = f.next().unwrap_or("").to_string();
+        let subject = f.next().unwrap_or("").to_string();
+        let author = f.next().unwrap_or("").to_string();
+        let date = f.next().unwrap_or("").to_string();
+        let relative_date = f.next().unwrap_or("").to_string();
+        let parents = f.next().unwrap_or("").trim();
+        out.push(CommitMeta {
+            sha,
+            short_sha,
+            subject,
+            author,
+            date,
+            relative_date,
+            is_root: parents.is_empty(),
+        });
+    }
+    Ok(out)
+}
+
+/// The diff of a single commit plus its metadata. Mirrors `GitDiff`'s
+/// per-file + raw-patch shape, with commit identity and a `head_sha` so the
+/// UI can warn when the reviewed commit isn't HEAD (tools read the *current*
+/// working tree, which may have moved on).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitDiff {
+    pub sha: String,
+    pub short_sha: String,
+    pub subject: String,
+    pub author: String,
+    pub date: String,
+    /// True for the repo's first commit (diffed against the empty tree).
+    pub is_root: bool,
+    /// True for a merge commit (diffed against its first parent).
+    pub is_merge: bool,
+    pub files: Vec<DiffFile>,
+    pub raw_patch: String,
+    pub truncated: bool,
+    /// Short SHA of the working-tree HEAD at read time. When this differs
+    /// from `short_sha`, the pane shows a "tree has moved on" banner.
+    pub head_sha: String,
+}
+
+/// Compute the diff introduced by a single commit (`<sha>^..<sha>`). Handles
+/// the root commit (no parent → diff vs the empty tree) and merge commits
+/// (diff vs the first parent). Returns a friendly error when `sha` no longer
+/// resolves (rebased / amended / garbage-collected).
+#[tauri::command]
+pub async fn git_commit_diff(cwd: String, sha: String) -> Result<CommitDiff, String> {
+    let path = PathBuf::from(&cwd);
+    if !path.exists() {
+        return Err(format!("path not found: {cwd}"));
+    }
+    tauri::async_runtime::spawn_blocking(move || compute_commit_diff(&path, &sha))
+        .await
+        .map_err(|e| format!("git_commit_diff join: {e}"))?
+}
+
+fn compute_commit_diff(path: &Path, sha: &str) -> Result<CommitDiff, String> {
+    if !is_repo(path) {
+        return Err(format!("not a git repository: {}", path.display()));
+    }
+    // Resolve + verify the commit exists. `^{commit}` peels tags/annotated
+    // objects to a commit and fails on unknown SHAs, so this doubles as the
+    // "commit no longer in the repo" guard.
+    let full_sha = run_git(path, &["rev-parse", "--verify", &format!("{sha}^{{commit}}")])
+        .map_err(|_| format!("commit '{sha}' not found in this repo"))?
+        .trim()
+        .to_string();
+
+    // Metadata for this commit (single record, same field layout as the list).
+    let meta_raw = run_git(
+        path,
+        &[
+            "show",
+            "-s",
+            "--no-color",
+            "--date=iso-strict",
+            "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%cI%x1f%P",
+            &full_sha,
+        ],
+    )?;
+    let mut mf = meta_raw.split('\u{1f}');
+    let sha_out = mf.next().unwrap_or("").to_string();
+    let short_sha = mf.next().unwrap_or("").to_string();
+    let subject = mf.next().unwrap_or("").to_string();
+    let author = mf.next().unwrap_or("").to_string();
+    let date = mf.next().unwrap_or("").to_string();
+    let parents: Vec<&str> = mf.next().unwrap_or("").split_whitespace().collect();
+    let is_root = parents.is_empty();
+    let is_merge = parents.len() > 1;
+
+    // The commit's own change. Root → empty tree (full content as additions);
+    // normal/merge → first parent (`<sha>^` is parent #1).
+    let range = if is_root {
+        format!("{EMPTY_TREE}..{full_sha}")
+    } else {
+        format!("{full_sha}^..{full_sha}")
+    };
+
+    let files = collect_diff_files(path, &range)?;
+    let raw = run_git(path, &["diff", "--no-color", &range]).unwrap_or_default();
+    let (raw_patch, truncated) = cap_patch(raw);
+    let head_sha = current_commit(path).unwrap_or_default();
+
+    Ok(CommitDiff {
+        sha: if sha_out.is_empty() { full_sha } else { sha_out },
+        short_sha,
+        subject,
+        author,
+        date,
+        is_root,
+        is_merge,
+        files,
+        raw_patch,
+        truncated,
+        head_sha,
+    })
+}
+
+/// Local branches + a small set of common remote refs, for the tracking-branch
+/// picker in Azure DevOps settings (and the terminal Quick Prompts strip).
+/// Filters out HEAD / refs/stash / refs we don't care about. Trimmed to ~50
+/// entries — picker UIs become useless past that anyway.
 #[tauri::command]
 pub async fn git_branch_list(cwd: String) -> Result<Vec<String>, String> {
     let path = PathBuf::from(&cwd);
@@ -356,4 +565,102 @@ fn list_branches(path: &Path) -> Result<Vec<String>, String> {
     });
     out.truncate(50);
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::process::Command;
+
+    /// Run a git command in `dir` with a deterministic identity so commits
+    /// don't depend on the machine's global git config.
+    fn git(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("spawn git");
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    /// Init a throwaway repo with two commits:
+    ///   1. root: add a.txt
+    ///   2. modify a.txt + add b.txt
+    fn two_commit_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        git(p, &["init", "-q", "-b", "main"]);
+        // Avoid signing in CI / on machines with commit.gpgsign=true globally.
+        git(p, &["config", "commit.gpgsign", "false"]);
+        fs::write(p.join("a.txt"), "one\ntwo\n").unwrap();
+        git(p, &["add", "a.txt"]);
+        git(p, &["commit", "-q", "-m", "add a"]);
+        fs::write(p.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        fs::write(p.join("b.txt"), "hello\n").unwrap();
+        git(p, &["add", "a.txt", "b.txt"]);
+        git(p, &["commit", "-q", "-m", "tweak a, add b"]);
+        dir
+    }
+
+    #[test]
+    fn lists_commits_newest_first_with_root_flag() {
+        let repo = two_commit_repo();
+        let commits = list_commits(repo.path(), 50).unwrap();
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].subject, "tweak a, add b");
+        assert!(!commits[0].is_root);
+        assert_eq!(commits[1].subject, "add a");
+        assert!(commits[1].is_root, "first commit should be root");
+        assert!(!commits[0].sha.is_empty() && !commits[0].short_sha.is_empty());
+    }
+
+    #[test]
+    fn commit_diff_shows_only_that_commits_change() {
+        let repo = two_commit_repo();
+        let commits = list_commits(repo.path(), 50).unwrap();
+        let head = &commits[0]; // "tweak a, add b"
+        let diff = compute_commit_diff(repo.path(), &head.sha).unwrap();
+        assert!(!diff.is_root);
+        assert!(!diff.is_merge);
+        let paths: Vec<&str> = diff.files.iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"a.txt"));
+        assert!(paths.contains(&"b.txt"));
+        // b.txt is brand new in this commit.
+        let b = diff.files.iter().find(|f| f.path == "b.txt").unwrap();
+        assert_eq!(b.status, "added");
+        // The raw patch is this commit's own delta (adds "three", adds b.txt),
+        // NOT the cumulative history — "two" was added by the root commit and
+        // must not appear as an addition here.
+        assert!(diff.raw_patch.contains("+three"));
+        assert!(diff.raw_patch.contains("+hello"));
+        assert!(!diff.head_sha.is_empty());
+    }
+
+    #[test]
+    fn root_commit_diff_shows_full_content() {
+        let repo = two_commit_repo();
+        let commits = list_commits(repo.path(), 50).unwrap();
+        let root = commits.iter().find(|c| c.is_root).unwrap();
+        let diff = compute_commit_diff(repo.path(), &root.sha).unwrap();
+        assert!(diff.is_root);
+        let a = diff.files.iter().find(|f| f.path == "a.txt").unwrap();
+        assert_eq!(a.status, "added");
+        assert!(diff.raw_patch.contains("+one"));
+        assert!(diff.raw_patch.contains("+two"));
+    }
+
+    #[test]
+    fn missing_commit_is_a_friendly_error() {
+        let repo = two_commit_repo();
+        let err = compute_commit_diff(repo.path(), "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+            .unwrap_err();
+        assert!(err.contains("not found"), "got: {err}");
+    }
 }

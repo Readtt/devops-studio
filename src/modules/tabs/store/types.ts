@@ -51,23 +51,22 @@ export type SuiteChatTab = TabBase & {
   threadId?: string | null;
 };
 
-export type CodeReviewTab = TabBase & {
-  kind: "code-review";
-  /** Source directory the diff is computed against. */
+export type CommitReviewTab = TabBase & {
+  kind: "commit-review";
+  /** Source directory whose git history is reviewed. */
   cwd: string;
-  /** Base branch; null defers to backend fallback (main → master → origin/HEAD). */
-  base: string | null;
-  /** When set, review an Azure DevOps commit/PR/branch instead of the local
-   *  working-copy diff. Absent ⇒ local. */
-  source?: import("@/modules/code-review/source").CodeReviewSource | null;
-  /** Per-tab pinned model. Null/absent ⇒ inherit the global default. Persisted
-   *  so the chosen model survives a reload. */
+  /** Full SHAs of the commits currently selected in the picker (multi-select).
+   *  Autosaved so Duplicate carries the selection. Empty/absent ⇒ defaults to
+   *  HEAD on mount. */
+  selectedShas?: string[] | null;
+  /** Freeform "Add context" draft (the ticket / requirements). Autosaved so a
+   *  reload during input doesn't lose it. */
+  context?: string | null;
+  /** Per-tab pinned model. Null/absent ⇒ inherit the global default. */
   modelId?: import("@/modules/ai/config").ModelId | null;
-  /** When set, hydrate this tab's conversation from useCodeReviewHistory
-   *  on mount. Surfaces when the user reopens a past review from the
-   *  Chats sidebar. The current diff still loads from disk (the prior
-   *  diff is not stored), but messages are restored verbatim. */
-  rehydrateThreadId?: string | null;
+  /** When set, hydrate a saved run (its findings + input) from SQLite on mount.
+   *  Surfaces when the user reopens a past review from the History tab. */
+  rehydrateRunId?: string | null;
 };
 
 export type TerminalTab = TabBase & {
@@ -93,7 +92,7 @@ export type AppTab =
   | BugTab
   | SuiteChatTab
   | TerminalTab
-  | CodeReviewTab;
+  | CommitReviewTab;
 
 export type TabKind = AppTab["kind"];
 

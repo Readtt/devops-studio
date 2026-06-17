@@ -6,7 +6,6 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { TextDiff } from "@/components/diff/textDiff";
-import type { AppliedPatchRecord } from "@/components/ChatMarkdown";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   Cancel01Icon,
@@ -17,11 +16,11 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
-import { parsePatch } from "./patchSchema";
+import { parsePatch, type AppliedPatchRecord } from "./patchSchema";
+import { spliceLines, sliceLinesText } from "./lineSplice";
 
 /**
- * Inline "Apply this patch" card rendered by ChatMarkdown when the
- * reviewer emits a `code-review-patch` fenced JSON block.
+ * Inline "Apply this fix" card rendered for a finding's suggested fix.
  *
  * UX:
  *   - Header: path + line range badge.
@@ -36,7 +35,7 @@ import { parsePatch } from "./patchSchema";
  *     user can sanity-check before pressing Apply.
  *
  * Failure modes surface as a single line under the button — usually
- * "file not found" or "range out of bounds" when the diff has moved
+ * "file not found" or "range out of bounds" when the file has moved
  * since the review was generated.
  */
 
@@ -56,9 +55,9 @@ export function ApplyPatchCard({
   onApplied,
 }: {
   body: string;
-  /** Persisted applied-state for this block (from the message). When set, the
-   *  card shows the "Applied" state + a diff against the snapshotted original
-   *  even after a reload. */
+  /** Persisted applied-state for this block. When set, the card shows the
+   *  "Applied" state + a diff against the snapshotted original even after a
+   *  reload. */
   applied?: AppliedPatchRecord | null;
   /** Called after a successful apply so the parent persists the record. */
   onApplied?: (record: AppliedPatchRecord) => void;
@@ -116,7 +115,7 @@ export function ApplyPatchCard({
   if (!parsed.ok) {
     return (
       <div className="my-2 rounded-md border border-amber-500/30 bg-amber-500/[0.06] px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
-        Couldn't parse this patch block: {parsed.error}
+        Couldn't parse this fix: {parsed.error}
       </div>
     );
   }
@@ -165,7 +164,7 @@ export function ApplyPatchCard({
       await invoke("fs_write_file", {
         path: absPath,
         content: next,
-        source: "code-review-apply",
+        source: "commit-review-apply",
       });
       const record: AppliedPatchRecord = {
         appliedAt: new Date().toISOString(),
@@ -219,14 +218,20 @@ export function ApplyPatchCard({
               : "text-muted-foreground"
           }
         />
-        <button
-          type="button"
-          onClick={openInViewer}
-          className="min-w-0 truncate text-left font-mono text-[11px] text-foreground/85 hover:text-foreground hover:underline"
-          title="Open in code viewer"
-        >
-          {patch.path}
-        </button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={openInViewer}
+              className="min-w-0 truncate text-left font-mono text-[11px] text-foreground/85 hover:text-foreground hover:underline"
+            >
+              {patch.path}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
+            Open this file in the code viewer.
+          </TooltipContent>
+        </Tooltip>
         <span className="rounded-sm bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
           {replacedRangeText}
         </span>
@@ -310,8 +315,8 @@ export function ApplyPatchCard({
               className="max-w-[280px] text-[11px] leading-relaxed"
             >
               {isApplied
-                ? "Already applied. Click again to overwrite with the same patch (no-op if the file hasn't changed since)."
-                : "Read the file, splice in this patch, write it back. No undo — review the diff first."}
+                ? "Already applied. Click again to overwrite with the same fix (no-op if the file hasn't changed since)."
+                : "Read the file, splice in this fix, write it back. No undo — review the diff first."}
             </TooltipContent>
           </Tooltip>
         </div>
@@ -351,43 +356,6 @@ function ReplacementPreview({
       ) : null}
     </pre>
   );
-}
-
-
-/** Splice lines [startLine, endLine] (1-indexed, inclusive) with the
- *  replacement text. For pure-insert patches, the caller passes
- *  endLine < startLine so the slice is empty. Newlines are preserved. */
-function spliceLines(
-  source: string,
-  startLine: number,
-  endLine: number,
-  replacement: string,
-): string {
-  const lines = source.split("\n");
-  const startIdx = Math.max(0, startLine - 1);
-  const endIdx = endLine < startLine ? startIdx : Math.min(lines.length, endLine);
-  const before = lines.slice(0, startIdx).join("\n");
-  const after = lines.slice(endIdx).join("\n");
-  const middle = replacement;
-  const parts: string[] = [];
-  if (before) parts.push(before);
-  parts.push(middle);
-  if (after) parts.push(after);
-  return parts.join("\n");
-}
-
-/** The file's lines [startLine, endLine] (1-indexed, inclusive) as text — the
- *  "before" side of the diff. For an insert (endLine < startLine) the slice is
- *  empty, so the diff renders as all-added. */
-function sliceLinesText(
-  source: string,
-  startLine: number,
-  endLine: number,
-): string {
-  const lines = source.split("\n");
-  const startIdx = Math.max(0, startLine - 1);
-  const endIdx = endLine < startLine ? startIdx : Math.min(lines.length, endLine);
-  return lines.slice(startIdx, endIdx).join("\n");
 }
 
 /** Same resolution rule the suite-chat fs tools use: absolute paths

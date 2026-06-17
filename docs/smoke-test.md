@@ -86,7 +86,7 @@ are documented follow-ups, not regressions:
   structured-object / structured-with-tools modes; repair + circuit breaker).
 - `ai/lib/systemPrompts.ts` — central prompt barrel.
 - `ai/lib/extractJson.ts` — shared JSON-block slicer.
-- `code-review/patchSchema.ts` — Zod `PatchSchema` + `parsePatch`.
+- `commit-review/patchSchema.ts` — Zod `PatchSchema` + `parsePatch`.
 - `config.ts` `SURFACE_STEP_CAPS`; `settings` `codeSearchEnabled` pref + toggle.
 - Tests: `taskRunner`, `systemPrompts`, `qaAnalystRun`, `patchSchema`,
   `parseEdit`, `codeSearchPref`; extended `draftBatchSchema` + `confidenceAggregate`.
