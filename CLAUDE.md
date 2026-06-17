@@ -46,7 +46,9 @@ src-tauri/src/                            Rust backend
 └── modules/
     ├── ado/                              Typed ADO HTTP client (plans, suites, cases, bugs, repos)
     ├── chat_threads.rs                   SQLite-backed persistence for suite-chat threads
+    ├── command.rs                        Read-only allowlisted `run_command` runner (git/file inspection; no writes, no shell)
     ├── commit_review.rs                  SQLite-backed persistence for saved commit reviews
+    ├── confidence_store.rs               SQLite-backed persistence for per-case confidence verdicts
     ├── fs/                               Filesystem reads (read/write/grep/glob/tree)
     ├── git.rs                            git rev-parse helpers (P2 addition)
     ├── history.rs                        Generation run history (SQLite)
