@@ -7,6 +7,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.9.0] - 2026-06-17
+
+### Added
+
+- **Commit Review** — a new AI code-review surface. Select one or more commits and get a two-stage review (investigate → verify) that returns severity-ranked bug findings with evidence and one-click applyable patch cards. Reviews persist to SQLite and reopen from History exactly as you left them.
+
+### Changed
+
+- Rewrote the README to be shorter and feature-focused, grounded in the current app (Generator, Confidence scoring, Suite Chat, Commit Review). Refreshed the macOS install guide and updated CLAUDE.md's backend module map (the read-only `command` runner and the `confidence_store` persistence module).
+
+### Removed
+
+- Replaced the whole-branch "Code Review" pane with the new Commit Review surface.
+- Dropped the `docs/smoke-test.md` and `docs/manual-test-checklist.md` manual QA checklists.
+
 ## [0.8.0] - 2026-06-16
 
 ### Added
