@@ -7,6 +7,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.10.0] - 2026-06-18
+
+### Added
+
+- Switch your source-directory git branch right from the status bar: pick any local or remote branch to check out and fast-forward-pull the latest, fetch to refresh the remote branch list, or pull the current branch when it's behind. Pull is fast-forward-only — it never auto-merges or rebases, and reports cleanly when branches have diverged.
+- When you switch branches with uncommitted work, the app asks what to do with it — bring your changes to the new branch, or leave them parked on the one you came from so the target opens clean. Branches with parked changes show an indicator and a Restore action, and a conflicting restore keeps your stash intact so nothing is ever lost.
+- The status bar now shows whether your working tree is dirty and how far ahead or behind the upstream you are.
+- Commit Review can now review your uncommitted changes: a **Local changes** target (staged, unstaged, and new files vs HEAD) lets you review work before you commit, on its own or alongside selected commits. It's re-read live right before each run, so it always reflects the current state of your files.
+- Confidence scores now record the branch and commit they were graded against. The case confidence panel flags a score as stale once you switch branches or pull — showing the graded-vs-current branch and commit and prompting a re-evaluate — and confirms when a score still reflects your current source.
+- Running confidence across a whole suite now re-scores cases whose code has changed since they were last graded, instead of only skipping cases that were never scored.
+
+### Fixed
+
+- Commit Review now stays in sync with the status-bar source directory: switching branches, pulling, or stashing refreshes an open Commit Review tab's commit list and local changes instead of showing the previous branch.
+- The Suite Chat onboarding hint no longer promises code grounding when the global code-search toggle is off — it now requires both a source directory and code search enabled, matching what the assistant actually receives.
+- Aligned the severity badge with the category tag in Commit Review finding cards (it no longer drops below the row).
+
+### Changed
+
+- Code links on published test cases now always track the branch you generated from, resolved from your source directory at publish time — switch branches in the status bar and the next publish follows the new one.
+- The Azure DevOps settings panel replaces the tracking-branch picker and toggle with a read-only **Code-link branch** explainer showing the branch (and commit) links will use right now.
+- The source directory is now picked and shown only in the bottom-left status bar; the duplicate title-bar button has been removed.
+
+### Removed
+
+- Removed the fixed/manual tracking-branch option — code links can no longer be pinned to a branch other than the one you're working on.
+
 ## [0.9.0] - 2026-06-17
 
 ### Added
