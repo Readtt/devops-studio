@@ -27,6 +27,7 @@ import {
   CheckmarkCircle02Icon,
   GitBranchIcon,
   Loading03Icon,
+  PencilEdit01Icon,
   SparklesIcon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
@@ -37,6 +38,7 @@ import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { setCodeSearchEnabled } from "@/modules/settings/store";
+import { SOURCE_GIT_CHANGED_EVENT } from "@/modules/git";
 import { AnalyzeActivityLog } from "@/modules/generator/components/AnalyzeActivityLog";
 import {
   AttachmentList,
@@ -58,7 +60,7 @@ import {
 import { combinedPatchBytes, COMBINED_DIFF_WARN_BYTES } from "./runCommitReview";
 import { CommitDiffPanel } from "./CommitDiffView";
 import { FindingCard } from "./FindingCard";
-import type { CommitMeta } from "./gitCommitApi";
+import { LOCAL_CHANGES_SHA, type CommitMeta } from "./gitCommitApi";
 import type { Finding } from "./schema";
 import type { AppliedPatchRecord, AppliedPatchesMap } from "./patchSchema";
 import type { WorkItemRef } from "@/modules/ado";
@@ -75,6 +77,8 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
   const slice = useCommitReview((s) => s.byTab.get(tabId));
   const ensure = useCommitReview((s) => s.ensure);
   const toggleCommit = useCommitReview((s) => s.toggleCommit);
+  const toggleLocalChanges = useCommitReview((s) => s.toggleLocalChanges);
+  const refreshSource = useCommitReview((s) => s.refreshSource);
   const clearCommits = useCommitReview((s) => s.clearCommits);
   const setContext = useCommitReview((s) => s.setContext);
   const addAttachment = useCommitReview((s) => s.addAttachment);
@@ -98,6 +102,16 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
   useEffect(() => {
     void ensure(tabId, cwd, rehydrateRunId ?? null, modelId ?? null);
   }, [tabId, cwd, rehydrateRunId, modelId, ensure]);
+
+  // Keep an open tab in sync with the source dir's git state: when a branch
+  // switch / pull / stash op fires `source-git-changed` (the same event the
+  // status-bar readers listen to), re-read this tab's commit list, dirty-state,
+  // and any cached "Local changes" diff so it never shows the previous branch.
+  useEffect(() => {
+    const onChanged = () => void refreshSource(tabId);
+    window.addEventListener(SOURCE_GIT_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(SOURCE_GIT_CHANGED_EVENT, onChanged);
+  }, [tabId, refreshSource]);
 
   // The toggle lives in the fixed header but the diff renders at the top of the
   // scroll body — bring it into view when revealed so a scrolled-down reader
@@ -130,8 +144,8 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
             Can't read commits here
           </p>
           <p className="mt-1 text-[11.5px] leading-snug text-muted-foreground">
-            {slice.commitsError}. Set your source directory to a git repository
-            in Settings → General, then reopen Commit Review.
+            {slice.commitsError}. Point your source directory (bottom-left
+            status bar) at a git repository, then reopen Commit Review.
           </p>
         </div>
       </div>
@@ -140,7 +154,7 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
 
   const effectiveModelId = slice.modelId ?? defaultModelId;
   const diffs = selectedDiffs(slice);
-  const commitCount = diffs.length;
+  const selectionCount = diffs.length;
   const totalAdds = diffs.reduce(
     (sum, d) => sum + d.files.reduce((a, f) => a + f.additions, 0),
     0,
@@ -151,18 +165,34 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
   );
   const distinctFiles = new Set(diffs.flatMap((d) => d.files.map((f) => f.path)))
     .size;
+  const localSelected = slice.selectedShas.includes(LOCAL_CHANGES_SHA);
+  const commitSelectedCount = slice.selectedShas.filter(
+    (s) => s !== LOCAL_CHANGES_SHA,
+  ).length;
   const headSha = diffs[0]?.headSha ?? "";
   const headMoved = diffs.some(
     (d) =>
+      // The live working-tree diff is always against the current HEAD, so it
+      // never "moved on" — only committed diffs can.
+      !d.isLocal &&
       !!d.headSha &&
       !!d.shortSha &&
       d.shortSha.slice(0, 7) !== d.headSha.slice(0, 7),
   );
   const combinedDiffBytes = combinedPatchBytes(diffs);
   const combinedDiffTooLarge =
-    commitCount > 1 && combinedDiffBytes > COMBINED_DIFF_WARN_BYTES;
+    selectionCount > 1 && combinedDiffBytes > COMBINED_DIFF_WARN_BYTES;
 
-  const canRun = allDiffsLoaded(slice) && !slice.diffLoading;
+  // "Local changes" picked on its own, but its diff came back empty (clean tree,
+  // or everything got committed since) — nothing to review. Only blocks the run
+  // when local is the ONLY thing selected; alongside commits it's harmless.
+  const localDiff = diffs.find((d) => d.isLocal);
+  const localOnlyEmpty =
+    localSelected &&
+    commitSelectedCount === 0 &&
+    !!localDiff &&
+    localDiff.files.length === 0;
+  const canRun = allDiffsLoaded(slice) && !slice.diffLoading && !localOnlyEmpty;
   const hasRun = slice.status !== "idle" && slice.status !== "running";
 
   return (
@@ -174,10 +204,13 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
           selected={slice.selectedShas}
           loading={slice.commitsLoading}
           disabled={slice.busy}
+          hasLocalChanges={slice.hasLocalChanges}
+          localSelected={localSelected}
+          onToggleLocal={() => void toggleLocalChanges(tabId)}
           onToggle={(sha) => void toggleCommit(tabId, sha)}
           onClear={() => clearCommits(tabId)}
         />
-        {commitCount > 0 ? (
+        {selectionCount > 0 ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -198,7 +231,7 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
                   strokeWidth={2}
                   className={cn("transition-transform", showDiff && "rotate-90")}
                 />
-                {commitCount > 1 ? `${commitCount} commits · ` : ""}
+                {selectionCount > 1 ? `${selectionCount} changes · ` : ""}
                 {distinctFiles} file{distinctFiles === 1 ? "" : "s"}
                 <span className="text-emerald-600 dark:text-emerald-400">
                   +{totalAdds}
@@ -210,9 +243,9 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
             </TooltipTrigger>
             <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
               {showDiff ? "Hide the diff." : "Show the diff."}{" "}
-              {commitCount > 1
-                ? `These ${commitCount} commits are reviewed together as one combined change.`
-                : "Only this commit's own change is reviewed."}{" "}
+              {selectionCount > 1
+                ? `These ${selectionCount} changes are reviewed together as one combined diff.`
+                : "Only the selected change is reviewed."}{" "}
               The model investigates its blast radius across your code with
               read-only tools.
             </TooltipContent>
@@ -308,19 +341,27 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
                   <HugeiconsIcon icon={SparklesIcon} size={12} strokeWidth={2} />
                   {hasRun
                     ? "Re-run"
-                    : commitCount > 1
-                      ? "Review commits"
-                      : "Review commit"}
+                    : localSelected && commitSelectedCount === 0
+                      ? "Review local changes"
+                      : !localSelected && commitSelectedCount === 1
+                        ? "Review commit"
+                        : "Review changes"}
                 </button>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="max-w-[260px] text-[11px]">
                 {!canRun
-                  ? "Select at least one commit and wait for its diff to load."
+                  ? localOnlyEmpty
+                    ? "Your working tree is clean — nothing uncommitted to review."
+                    : "Select something to review and wait for its diff to load."
                   : hasRun
                     ? "Re-analyze from scratch."
-                    : commitCount > 1
-                      ? `Analyze these ${commitCount} commits together for bugs and regressions.`
-                      : "Analyze this commit's change for bugs and regressions."}
+                    : localSelected && commitSelectedCount === 0
+                      ? "Analyze your uncommitted changes for bugs and regressions before you commit."
+                      : localSelected && commitSelectedCount > 0
+                        ? `Analyze your local changes and ${commitSelectedCount} commit${commitSelectedCount === 1 ? "" : "s"} together.`
+                        : commitSelectedCount > 1
+                          ? `Analyze these ${commitSelectedCount} commits together for bugs and regressions.`
+                          : "Analyze this commit's change for bugs and regressions."}
               </TooltipContent>
             </Tooltip>
           )}
@@ -345,7 +386,7 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
       ) : null}
       {headMoved ? (
         <Banner tone="info">
-          {commitCount > 1 ? "Some selected commits aren't" : "This commit isn't"}{" "}
+          {selectionCount > 1 ? "Some selected commits aren't" : "This commit isn't"}{" "}
           your latest
           {headSha ? (
             <>
@@ -354,19 +395,30 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
             </>
           ) : null}
           . Surrounding code is read from the current tree, which may differ from{" "}
-          {commitCount > 1 ? "those commits'" : "this commit's"} state.
+          {selectionCount > 1 ? "those commits'" : "this commit's"} state.
         </Banner>
       ) : null}
       {slice.diffError ? (
         <Banner tone="warn">{slice.diffError}</Banner>
       ) : null}
+      {localOnlyEmpty ? (
+        <Banner tone="info">
+          No uncommitted changes to review — your working tree is clean. Make
+          some edits, or pick a commit instead.
+        </Banner>
+      ) : null}
+      {localSelected && slice.findings.length > 0 ? (
+        <Banner tone="info">
+          These findings cover your local changes as they were when the review
+          ran. Edit or switch branches since? Re-run to check the current tree.
+        </Banner>
+      ) : null}
       {combinedDiffTooLarge ? (
         <Banner tone="warn">
-          These {commitCount} commits add up to a large combined diff (~
+          These {selectionCount} changes add up to a large combined diff (~
           {Math.round(combinedDiffBytes / 1024)} KB). They're reviewed as one
           change, so a selection this big can exhaust the model's context or step
-          budget and yield thinner findings — consider reviewing fewer commits at
-          a time.
+          budget and yield thinner findings — consider reviewing fewer at a time.
         </Banner>
       ) : null}
       {!slice.busy && (slice.status === "interrupted" || slice.status === "cancelled") ? (
@@ -524,6 +576,7 @@ function BodyContent({
 
   if (slice.status === "done") {
     const doneDiffs = selectedDiffs(slice);
+    const doneLocal = doneDiffs.length === 1 && doneDiffs[0].isLocal;
     return (
       <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/[0.04] p-8 text-center">
         <HugeiconsIcon
@@ -533,12 +586,16 @@ function BodyContent({
           className="text-emerald-600 dark:text-emerald-400"
         />
         <p className="text-[12.5px] font-medium text-foreground">
-          {doneDiffs.length > 1
-            ? `No issues found across these ${doneDiffs.length} commits.`
-            : "No issues found in this commit's changes."}
+          {doneLocal
+            ? "No issues found in your local changes."
+            : doneDiffs.length > 1
+              ? `No issues found across these ${doneDiffs.length} commits.`
+              : "No issues found in this commit's changes."}
         </p>
         <p className="max-w-sm text-[11.5px] leading-snug text-muted-foreground">
-          {doneDiffs.length === 1 ? (
+          {doneLocal ? (
+            "Your uncommitted changes look clean. "
+          ) : doneDiffs.length === 1 ? (
             <>
               <span className="font-mono">{doneDiffs[0].shortSha}</span> —{" "}
               {doneDiffs[0].subject}.{" "}
@@ -553,25 +610,61 @@ function BodyContent({
 
   // Idle — no run yet.
   return (
-    <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-border/55 bg-card/30 p-8 text-center">
+    <div className="mx-auto flex max-w-sm flex-col items-center gap-3 rounded-md border border-border/55 bg-card/30 px-6 py-8 text-center">
       <HugeiconsIcon
         icon={SparklesIcon}
         size={20}
         strokeWidth={1.75}
         className="text-muted-foreground"
       />
-      <p className="text-[12.5px] font-medium text-foreground">
-        Review one or more commits for bugs
-      </p>
-      <p className="max-w-md text-[11.5px] leading-snug text-muted-foreground">
-        Pick one or more commits and press{" "}
-        <span className="font-medium text-foreground">Review</span>. The reviewer
-        reads only the selected commits' changes, then investigates their blast
-        radius across your code — surfacing bugs by severity with one-click fixes.
-        Select several commits (e.g. a feature split across commits) to review
-        them together. Add context (the ticket you're fixing) to also check the
-        change does what was asked.
-      </p>
+      <div className="flex flex-col gap-1">
+        <p className="text-[12.5px] font-medium text-foreground">
+          Review your changes for bugs
+        </p>
+        <p className="text-[11.5px] leading-relaxed text-muted-foreground">
+          Pick what to review, then press{" "}
+          <span className="font-medium text-foreground">Review</span>. It reads
+          the diff, traces its blast radius across your code, and flags bugs by
+          severity with one-click fixes.
+        </p>
+      </div>
+      <div className="flex w-full flex-col gap-1.5 text-left">
+        <SourceHint
+          icon={PencilEdit01Icon}
+          title="Local changes"
+          desc="Everything uncommitted — review it before you commit."
+        />
+        <SourceHint
+          icon={GitBranchIcon}
+          title="Commits"
+          desc="One, or several together — and your local changes alongside them."
+        />
+      </div>
+    </div>
+  );
+}
+
+/** Compact source-option row for the idle empty state. */
+function SourceHint({
+  icon,
+  title,
+  desc,
+}: {
+  icon: typeof SparklesIcon;
+  title: string;
+  desc: string;
+}) {
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-border/45 bg-background/40 px-2.5 py-2">
+      <span className="mt-px grid size-5 shrink-0 place-items-center rounded-md bg-foreground/[0.06] text-muted-foreground">
+        <HugeiconsIcon icon={icon} size={11} strokeWidth={1.75} />
+      </span>
+      <div className="flex min-w-0 flex-col">
+        <span className="text-[11.5px] font-medium text-foreground">{title}</span>
+        <span className="text-[10.5px] leading-snug text-muted-foreground">
+          {desc}
+        </span>
+      </div>
     </div>
   );
 }
@@ -651,6 +744,9 @@ function CommitPicker({
   selected,
   loading,
   disabled,
+  hasLocalChanges,
+  localSelected,
+  onToggleLocal,
   onToggle,
   onClear,
 }: {
@@ -659,6 +755,11 @@ function CommitPicker({
   loading: boolean;
   /** Locked while a review is running so the reviewed set can't change mid-run. */
   disabled?: boolean;
+  /** Whether the working tree has uncommitted changes (gates the local row). */
+  hasLocalChanges: boolean;
+  /** Whether the "Local changes" target is part of the selection. */
+  localSelected: boolean;
+  onToggleLocal: () => void;
   onToggle: (sha: string) => void;
   onClear: () => void;
 }) {
@@ -666,9 +767,12 @@ function CommitPicker({
   const [query, setQuery] = useState("");
   const selectedSet = new Set(selected);
   const headSha = commits[0]?.sha;
-  // When exactly one is selected, show it inline; otherwise show a count.
+  const commitSelectedCount = selected.filter(
+    (s) => s !== LOCAL_CHANGES_SHA,
+  ).length;
+  // When exactly one commit (and nothing else) is selected, show it inline.
   const onlyCommit =
-    selected.length === 1
+    !localSelected && selected.length === 1
       ? commits.find((c) => c.sha === selected[0]) ?? null
       : null;
 
@@ -684,6 +788,10 @@ function CommitPicker({
           c.sha.toLowerCase().includes(q),
       )
     : commits;
+  // The "Local changes" row matches an empty box or any of its keywords.
+  const localRowVisible =
+    hasLocalChanges &&
+    (!q || "local changes uncommitted working tree".includes(q));
 
   return (
     <Popover
@@ -704,12 +812,25 @@ function CommitPicker({
           )}
         >
           <HugeiconsIcon
-            icon={loading ? Loading03Icon : GitBranchIcon}
+            icon={
+              loading
+                ? Loading03Icon
+                : localSelected
+                  ? PencilEdit01Icon
+                  : GitBranchIcon
+            }
             size={12}
             strokeWidth={1.75}
             className={cn("shrink-0 text-muted-foreground", loading && "animate-spin")}
           />
-          {onlyCommit ? (
+          {localSelected ? (
+            <span className="min-w-0 truncate font-medium text-foreground/85">
+              Local changes
+              {commitSelectedCount > 0
+                ? ` + ${commitSelectedCount} commit${commitSelectedCount === 1 ? "" : "s"}`
+                : ""}
+            </span>
+          ) : onlyCommit ? (
             <>
               <span className="shrink-0 font-mono text-foreground/85">
                 {onlyCommit.shortSha}
@@ -745,10 +866,48 @@ function CommitPicker({
             placeholder="Search commits by message or sha…"
           />
           <CommandList className="max-h-[340px]">
+            {localRowVisible ? (
+              <CommandGroup heading="Working tree">
+                <CommandItem
+                  value="__local_changes__"
+                  data-checked={localSelected}
+                  // Toggles in place — can be reviewed alone or with commits.
+                  onSelect={onToggleLocal}
+                  className="items-center gap-2"
+                >
+                  <span
+                    className={cn(
+                      "flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border transition-colors",
+                      localSelected
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border/70",
+                    )}
+                  >
+                    {localSelected ? (
+                      <HugeiconsIcon icon={Tick02Icon} size={9} strokeWidth={3} />
+                    ) : null}
+                  </span>
+                  <HugeiconsIcon
+                    icon={PencilEdit01Icon}
+                    size={12}
+                    strokeWidth={1.75}
+                    className="shrink-0 text-muted-foreground"
+                  />
+                  <span className="min-w-0 flex-1 truncate text-[12px]">
+                    Local changes
+                  </span>
+                  <span className="shrink-0 text-[10px] text-muted-foreground/70">
+                    uncommitted
+                  </span>
+                </CommandItem>
+              </CommandGroup>
+            ) : null}
             {filtered.length === 0 ? (
-              <div className="py-6 text-center text-[11.5px] text-muted-foreground">
-                No commits match.
-              </div>
+              localRowVisible ? null : (
+                <div className="py-6 text-center text-[11.5px] text-muted-foreground">
+                  No commits match.
+                </div>
+              )
             ) : (
             <CommandGroup heading="Commits">
               {filtered.map((c) => {
@@ -799,13 +958,21 @@ function CommitPicker({
           </CommandList>
           {selected.length > 0 ? (
             <div className="flex items-center justify-between gap-2 border-t border-border/50 px-2.5 py-1.5 text-[10.5px] text-muted-foreground">
-              <span>
-                {selected.length} commit{selected.length === 1 ? "" : "s"} selected
+              <span className="min-w-0 truncate">
+                {[
+                  localSelected ? "Local changes" : null,
+                  commitSelectedCount > 0
+                    ? `${commitSelectedCount} commit${commitSelectedCount === 1 ? "" : "s"}`
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(" + ")}{" "}
+                selected
               </span>
               <button
                 type="button"
                 onClick={onClear}
-                className="rounded-sm px-1.5 py-px font-medium text-foreground/70 transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
+                className="shrink-0 rounded-sm px-1.5 py-px font-medium text-foreground/70 transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
               >
                 Clear
               </button>

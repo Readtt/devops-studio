@@ -17,7 +17,15 @@ import type { ContextBlock } from "@/modules/ai/lib/contextBlocks";
 import type { Attachment } from "@/components/chat/attachments";
 import type { WorkItemRef } from "@/modules/ado";
 import type { ActivityEntry } from "@/modules/generator/lib/activityLog";
-import { listCommits, commitDiff, type CommitMeta, type CommitDiff } from "./gitCommitApi";
+import {
+  listCommits,
+  commitDiff,
+  workingTreeDiff,
+  LOCAL_CHANGES_SHA,
+  type CommitMeta,
+  type CommitDiff,
+} from "./gitCommitApi";
+import { gitStatusSummary } from "@/modules/git";
 import {
   saveCommitReview,
   getCommitReview,
@@ -38,6 +46,10 @@ export type CommitReviewSlice = {
   commits: CommitMeta[];
   commitsLoading: boolean;
   commitsError: string | null;
+  /** Whether the working tree has uncommitted changes — gates the "Local
+   *  changes" target (and makes it the default when true). Refreshed alongside
+   *  the commit list. */
+  hasLocalChanges: boolean;
   /** Full SHAs of the selected commits, kept in `commits` order (newest first). */
   selectedShas: string[];
   /** Per-commit diff cache keyed by full SHA. Read in selection order via
@@ -81,8 +93,16 @@ type State = {
   /** Add/remove a commit from the selection, then load any missing diffs.
    *  Changing the selection invalidates the current findings. */
   toggleCommit: (tabId: number, sha: string) => Promise<void>;
+  /** Add/remove the synthetic "Local changes" target. It can be reviewed alone
+   *  or alongside commits; adding it re-reads the live working-tree diff. */
+  toggleLocalChanges: (tabId: number) => Promise<void>;
   /** Deselect every commit (the user must pick at least one to review). */
   clearCommits: (tabId: number) => void;
+  /** Re-read the source-dir git state after an in-app branch switch / pull /
+   *  stash op so an open tab doesn't show the previous branch's commit list,
+   *  a stale dirty-state, or a cached "Local changes" diff from another branch.
+   *  No-op while a review is running and for tabs pinned to a different cwd. */
+  refreshSource: (tabId: number) => Promise<void>;
   /** Fetch the diffs for the currently-selected commits that aren't cached. */
   loadDiffs: (tabId: number) => Promise<void>;
   setContext: (tabId: number, text: string) => void;
@@ -121,11 +141,14 @@ export function allDiffsLoaded(slice: CommitReviewSlice): boolean {
 
 /** Re-order a set of selected SHAs to match the commit-list order (newest
  *  first) so diff sections render in a stable, predictable order. */
-function orderShas(shas: string[], commits: CommitMeta[]): string[] {
+export function orderShas(shas: string[], commits: CommitMeta[]): string[] {
+  // "Local changes" (uncommitted, newest of all) sorts ahead of every commit;
+  // commits follow newest-first. Local can be reviewed alone, alongside
+  // commits, or not at all — it's just another item in the set.
   const idx = new Map(commits.map((c, i) => [c.sha, i]));
-  return [...new Set(shas)].sort(
-    (a, b) => (idx.get(a) ?? Number.MAX_SAFE_INTEGER) - (idx.get(b) ?? Number.MAX_SAFE_INTEGER),
-  );
+  const rank = (s: string) =>
+    s === LOCAL_CHANGES_SHA ? -1 : (idx.get(s) ?? Number.MAX_SAFE_INTEGER);
+  return [...new Set(shas)].sort((a, b) => rank(a) - rank(b));
 }
 
 function patch(
@@ -148,6 +171,7 @@ function emptySlice(cwd: string, modelId: ModelId | null): CommitReviewSlice {
     commits: [],
     commitsLoading: false,
     commitsError: null,
+    hasLocalChanges: false,
     selectedShas: [],
     diffBySha: {},
     diffLoading: false,
@@ -236,14 +260,18 @@ export const useCommitReview = create<State>((set, get) => ({
 
     await get().loadCommits(tabId);
 
-    // Select the rehydrated commits, or default to HEAD, then load their diffs.
+    // Select the rehydrated commits, or default to the working-tree changes
+    // when the tree is dirty (the common "review what I'm about to commit"
+    // case), else HEAD. Then load the diffs.
     const slice = get().byTab.get(tabId);
     if (slice) {
       const shas = slice.selectedShas.length
         ? slice.selectedShas
-        : slice.commits[0]
-          ? [slice.commits[0].sha]
-          : [];
+        : slice.hasLocalChanges
+          ? [LOCAL_CHANGES_SHA]
+          : slice.commits[0]
+            ? [slice.commits[0].sha]
+            : [];
       patch(set, tabId, { selectedShas: orderShas(shas, slice.commits) });
       await get().loadDiffs(tabId);
 
@@ -258,11 +286,19 @@ export const useCommitReview = create<State>((set, get) => ({
         const after = get().byTab.get(tabId);
         if (after) {
           const reachable = selectedDiffs(after).map((d) => d.sha);
-          if (reachable.length !== after.selectedShas.length) {
-            patch(set, tabId, { selectedShas: reachable, diffError: null });
+          // "Local changes" isn't a commit that can be rebased away — keep it
+          // even if its live diff failed to load this time, so reopening a saved
+          // local-changes review doesn't silently snap to an empty selection.
+          const nextShas =
+            after.selectedShas.includes(LOCAL_CHANGES_SHA) &&
+            !reachable.includes(LOCAL_CHANGES_SHA)
+              ? [...reachable, LOCAL_CHANGES_SHA]
+              : reachable;
+          if (nextShas.length !== after.selectedShas.length) {
+            patch(set, tabId, { selectedShas: nextShas, diffError: null });
             useTabsStore
               .getState()
-              .patchCommitReviewTab(tabId, { selectedShas: reachable });
+              .patchCommitReviewTab(tabId, { selectedShas: nextShas });
           }
         }
       }
@@ -275,7 +311,17 @@ export const useCommitReview = create<State>((set, get) => ({
     patch(set, tabId, { commitsLoading: true, commitsError: null });
     try {
       const commits = await listCommits(slice.cwd, 80);
-      patch(set, tabId, { commits, commitsLoading: false });
+      // Also probe the working tree so the "Local changes" target can show
+      // (and default on) only when there's something uncommitted. Non-fatal —
+      // a status failure just leaves the option hidden.
+      let hasLocalChanges = false;
+      try {
+        const st = await gitStatusSummary(slice.cwd);
+        hasLocalChanges = st.dirty;
+      } catch {
+        // ignore — leave hasLocalChanges false
+      }
+      patch(set, tabId, { commits, commitsLoading: false, hasLocalChanges });
     } catch (e) {
       patch(set, tabId, {
         commitsLoading: false,
@@ -313,6 +359,35 @@ export const useCommitReview = create<State>((set, get) => ({
     await get().loadDiffs(tabId);
   },
 
+  toggleLocalChanges: async (tabId) => {
+    const slice = get().byTab.get(tabId);
+    if (!slice || slice.busy) return;
+    const has = slice.selectedShas.includes(LOCAL_CHANGES_SHA);
+    // Always drop any cached working-tree diff: removing it cleans up, and
+    // re-adding should re-read the LIVE tree (the user may have edited files
+    // since the last look). Changing the selection invalidates findings.
+    const nextDiffs = { ...slice.diffBySha };
+    delete nextDiffs[LOCAL_CHANGES_SHA];
+    const nextShas = has
+      ? slice.selectedShas.filter((s) => s !== LOCAL_CHANGES_SHA)
+      : orderShas([...slice.selectedShas, LOCAL_CHANGES_SHA], slice.commits);
+    patch(set, tabId, {
+      selectedShas: nextShas,
+      diffBySha: nextDiffs,
+      findings: [],
+      activity: [],
+      status: "idle",
+      error: null,
+      schemaViolationRaw: null,
+      runId: null,
+      durationMs: null,
+    });
+    useTabsStore
+      .getState()
+      .patchCommitReviewTab(tabId, { selectedShas: nextShas });
+    await get().loadDiffs(tabId);
+  },
+
   clearCommits: (tabId) => {
     const slice = get().byTab.get(tabId);
     if (!slice || slice.busy) return;
@@ -331,6 +406,33 @@ export const useCommitReview = create<State>((set, get) => ({
     useTabsStore.getState().patchCommitReviewTab(tabId, { selectedShas: [] });
   },
 
+  refreshSource: async (tabId) => {
+    const slice = get().byTab.get(tabId);
+    if (!slice || slice.busy) return;
+    // Only the live source directory's git state changes via the in-app
+    // switcher; a tab pinned to a different cwd (its repo didn't move) is left
+    // alone. usePreferencesStore is the single source of truth for sourceRoot.
+    if (slice.cwd !== usePreferencesStore.getState().sourceRoot) return;
+
+    // Re-read the commit list + dirty-state for the (possibly new) branch so
+    // the picker offers the right commits and the "Local changes" affordance
+    // matches the current tree.
+    await get().loadCommits(tabId);
+
+    // A branch switch / pull / stash op rewrote the working tree, so any cached
+    // "Local changes" diff is now stale. Drop it (commit diffs are immutable
+    // and stay cached); reload it if it's selected so the diff panel — and the
+    // next run — reflect the live tree, never the previous branch's snapshot.
+    const after = get().byTab.get(tabId);
+    if (!after || !after.diffBySha[LOCAL_CHANGES_SHA]) return;
+    const nextDiffs = { ...after.diffBySha };
+    delete nextDiffs[LOCAL_CHANGES_SHA];
+    patch(set, tabId, { diffBySha: nextDiffs });
+    if (after.selectedShas.includes(LOCAL_CHANGES_SHA)) {
+      await get().loadDiffs(tabId);
+    }
+  },
+
   loadDiffs: async (tabId) => {
     const slice = get().byTab.get(tabId);
     if (!slice) return;
@@ -345,7 +447,11 @@ export const useCommitReview = create<State>((set, get) => ({
     const seq = slice.diffLoadSeq + 1;
     patch(set, tabId, { diffLoading: true, diffError: null, diffLoadSeq: seq });
     const results = await Promise.allSettled(
-      missing.map((s) => commitDiff(slice.cwd, s)),
+      missing.map((s) =>
+        s === LOCAL_CHANGES_SHA
+          ? workingTreeDiff(slice.cwd)
+          : commitDiff(slice.cwd, s),
+      ),
     );
     const fetched: Record<string, CommitDiff> = {};
     const errors: string[] = [];
@@ -357,9 +463,19 @@ export const useCommitReview = create<State>((set, get) => ({
       const next = new Map(s.byTab);
       const curr = next.get(tabId);
       if (!curr) return s;
-      // Fetched diffs always merge in (selection-independent); the loading/error
+      // Commit diffs are immutable, so caching them even after the selection
+      // moved on is intentional (re-selecting is instant). The working-tree diff
+      // is NOT — drop a late-arriving local diff if "local" was deselected
+      // meanwhile, so a stale snapshot can never be reviewed. The loading/error
       // flags are only written by the latest-issued load.
-      const merged = { ...curr, diffBySha: { ...curr.diffBySha, ...fetched } };
+      const fresh = { ...fetched };
+      if (
+        fresh[LOCAL_CHANGES_SHA] &&
+        !curr.selectedShas.includes(LOCAL_CHANGES_SHA)
+      ) {
+        delete fresh[LOCAL_CHANGES_SHA];
+      }
+      const merged = { ...curr, diffBySha: { ...curr.diffBySha, ...fresh } };
       if (curr.diffLoadSeq === seq) {
         merged.diffLoading = false;
         merged.diffError =
@@ -413,8 +529,35 @@ export const useCommitReview = create<State>((set, get) => ({
   },
 
   run: async (tabId) => {
-    const slice = get().byTab.get(tabId);
+    let slice = get().byTab.get(tabId);
     if (!slice || slice.busy) return;
+
+    // "Local changes" is a live target, not an immutable commit: the working
+    // tree may have moved since its diff was last read (edits in an external
+    // editor, an in-app branch switch). Re-read it fresh right before the run
+    // so the model always reviews the CURRENT tree — this is the guarantee that
+    // we never hand it a stale snapshot. (Commit diffs are immutable and stay
+    // cached.) On a transient read failure, fall back to the cached diff rather
+    // than refusing the run.
+    if (slice.selectedShas.includes(LOCAL_CHANGES_SHA)) {
+      try {
+        const fresh = await workingTreeDiff(slice.cwd);
+        const now = get().byTab.get(tabId);
+        // Drop the result if the tab vanished, a run already started, or the
+        // user deselected local while we were reading (mirrors loadDiffs).
+        if (now && !now.busy && now.selectedShas.includes(LOCAL_CHANGES_SHA)) {
+          patch(set, tabId, {
+            diffBySha: { ...now.diffBySha, [LOCAL_CHANGES_SHA]: fresh },
+          });
+        }
+      } catch {
+        // Keep the cached local diff — reviewing the last-known tree beats
+        // refusing the run on a transient read error.
+      }
+      slice = get().byTab.get(tabId);
+      if (!slice || slice.busy) return;
+    }
+
     const diffs = selectedDiffs(slice);
     if (diffs.length === 0 || diffs.length !== slice.selectedShas.length) {
       patch(set, tabId, {

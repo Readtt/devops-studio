@@ -101,10 +101,13 @@ export function FindingCard({
         "border-border/55",
       )}
     >
-      <div className="flex items-start gap-2">
+      <div className="flex items-center gap-2">
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="shrink-0">
+            {/* inline-flex (not a bare span) so this ref wrapper takes the
+                chip's exact height — a plain span inherits the row's taller
+                line-box and visually drops the badge below the category tag. */}
+            <span className="inline-flex shrink-0 items-center">
               <SeverityChip severity={finding.severity} />
             </span>
           </TooltipTrigger>
@@ -133,7 +136,7 @@ export function FindingCard({
         {finding.verified ? (
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className="mt-0.5 inline-flex shrink-0 items-center text-emerald-600 dark:text-emerald-400">
+              <span className="inline-flex shrink-0 items-center text-emerald-600 dark:text-emerald-400">
                 <HugeiconsIcon
                   icon={CheckmarkCircle02Icon}
                   size={13}

@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { combinedPatchBytes, COMBINED_DIFF_WARN_BYTES } from "./runCommitReview";
+import {
+  buildInvestigatePrompt,
+  combinedPatchBytes,
+  isOldCommit,
+  COMBINED_DIFF_WARN_BYTES,
+} from "./runCommitReview";
 import type { CommitDiff } from "./gitCommitApi";
 
-function diff(rawPatch: string): CommitDiff {
+function diff(rawPatch: string, over: Partial<CommitDiff> = {}): CommitDiff {
   return {
     sha: "x",
     shortSha: "x",
@@ -11,11 +16,22 @@ function diff(rawPatch: string): CommitDiff {
     date: "d",
     isRoot: false,
     isMerge: false,
+    isLocal: false,
     files: [],
     rawPatch,
     truncated: false,
     headSha: "h",
+    ...over,
   };
+}
+
+function investigate(diffs: CommitDiff[]): string {
+  // Only diffs / contextBlocks / sourceRoot are read by the prompt builder.
+  return buildInvestigatePrompt({
+    diffs,
+    contextBlocks: [],
+    sourceRoot: "C:/repo",
+  } as unknown as Parameters<typeof buildInvestigatePrompt>[0]);
 }
 
 describe("combinedPatchBytes", () => {
@@ -48,5 +64,53 @@ describe("combinedPatchBytes", () => {
     expect(combinedPatchBytes([diff(multibyte)])).toBeGreaterThan(
       multibyte.length,
     );
+  });
+});
+
+describe("isOldCommit", () => {
+  it("is true when a commit's short sha differs from the current head", () => {
+    expect(isOldCommit(diff("", { shortSha: "1111111", headSha: "2222222" }))).toBe(
+      true,
+    );
+  });
+
+  it("is false for the local-changes diff even when headSha differs", () => {
+    // The working-tree diff is always against the live HEAD, so it must never
+    // be flagged as predating the tree.
+    expect(
+      isOldCommit(
+        diff("", { isLocal: true, shortSha: "local", headSha: "2222222" }),
+      ),
+    ).toBe(false);
+  });
+
+  it("is false when the commit IS the current head (7-char prefix match)", () => {
+    expect(isOldCommit(diff("", { shortSha: "abc1234", headSha: "abc1234f" }))).toBe(
+      false,
+    );
+  });
+});
+
+describe("buildInvestigatePrompt", () => {
+  it("labels a single local-changes diff as the working tree, not a commit", () => {
+    const out = investigate([
+      diff("@@ -0,0 +1 @@\n+x", {
+        isLocal: true,
+        shortSha: "local",
+        headSha: "abc1234",
+      }),
+    ]);
+    expect(out).toContain("uncommitted local changes");
+    expect(out).toContain("RAW PATCH (all uncommitted changes)");
+    // A live diff is never "old", so the head-moved warning must not appear.
+    expect(out).not.toContain("predate the working tree");
+  });
+
+  it("warns when a reviewed commit predates the working tree", () => {
+    const out = investigate([
+      diff("@@ @@", { shortSha: "1111111", headSha: "2222222" }),
+    ]);
+    expect(out).toContain("predate the working tree");
+    expect(out).toContain("**Commit:**");
   });
 });

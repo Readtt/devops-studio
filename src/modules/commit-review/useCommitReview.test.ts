@@ -2,9 +2,18 @@ import { describe, expect, it } from "vitest";
 import {
   selectedDiffs,
   allDiffsLoaded,
+  orderShas,
   type CommitReviewSlice,
 } from "./useCommitReview";
-import type { CommitDiff } from "./gitCommitApi";
+import {
+  LOCAL_CHANGES_SHA,
+  type CommitDiff,
+  type CommitMeta,
+} from "./gitCommitApi";
+
+function commit(sha: string): CommitMeta {
+  return { sha } as unknown as CommitMeta;
+}
 
 // These two selectors are pure (they read only selectedShas + diffBySha), so we
 // exercise them with a minimal partial slice rather than the full store.
@@ -17,6 +26,7 @@ function diff(sha: string): CommitDiff {
     date: "2026-01-01",
     isRoot: false,
     isMerge: false,
+    isLocal: false,
     files: [],
     rawPatch: "",
     truncated: false,
@@ -60,5 +70,32 @@ describe("allDiffsLoaded", () => {
 
   it("is false when nothing is selected (nothing to run)", () => {
     expect(allDiffsLoaded(slice([], { a: diff("a") }))).toBe(false);
+  });
+});
+
+describe("orderShas", () => {
+  // Commit list as the picker holds it: newest first.
+  const commits = [commit("aaa"), commit("bbb"), commit("ccc")];
+
+  it("orders selected commits to match the commit list (newest first)", () => {
+    expect(orderShas(["ccc", "aaa"], commits)).toEqual(["aaa", "ccc"]);
+  });
+
+  it("pins Local changes ahead of every commit", () => {
+    expect(orderShas(["bbb", LOCAL_CHANGES_SHA, "aaa"], commits)).toEqual([
+      LOCAL_CHANGES_SHA,
+      "aaa",
+      "bbb",
+    ]);
+  });
+
+  it("dedupes repeated shas (incl. the local sentinel)", () => {
+    expect(
+      orderShas(["aaa", "aaa", LOCAL_CHANGES_SHA, LOCAL_CHANGES_SHA], commits),
+    ).toEqual([LOCAL_CHANGES_SHA, "aaa"]);
+  });
+
+  it("sorts unknown shas (rebased-away commits) last", () => {
+    expect(orderShas(["zzz", "bbb"], commits)).toEqual(["bbb", "zzz"]);
   });
 });

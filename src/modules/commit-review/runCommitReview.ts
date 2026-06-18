@@ -179,6 +179,12 @@ function diffHeader(diff: CommitDiff): string {
         `- ${f.status.toUpperCase()}: ${f.path}  (+${f.additions} / -${f.deletions})`,
     )
     .join("\n");
+  if (diff.isLocal) {
+    return `**Working tree:** uncommitted local changes (staged + unstaged + new files, vs HEAD)
+**Files changed:** ${diff.files.length}  (+${totalAdds} / -${totalDels})
+
+${fileList || "_(no changes)_"}`;
+  }
   const merge = diff.isMerge
     ? " (merge commit — diff is vs its first parent)"
     : diff.isRoot
@@ -194,8 +200,10 @@ ${fileList || "_(no per-file stats — empty commit?)_"}`;
 /** True when a commit predates the working tree (its tools read a newer HEAD).
  *  Compares on a fixed 7-char prefix so it's robust to differing abbreviation
  *  lengths or Rust returning a full headSha. */
-function isOldCommit(diff: CommitDiff): boolean {
+export function isOldCommit(diff: CommitDiff): boolean {
   return (
+    // The local-changes diff is always against the live HEAD — never "old".
+    !diff.isLocal &&
     !!diff.headSha &&
     !!diff.shortSha &&
     diff.shortSha.slice(0, 7) !== diff.headSha.slice(0, 7)
@@ -206,10 +214,13 @@ function isOldCommit(diff: CommitDiff): boolean {
 function commitSections(diffs: CommitDiff[]): string {
   if (diffs.length === 1) {
     const d = diffs[0];
+    const patchLabel = d.isLocal
+      ? "RAW PATCH (all uncommitted changes):"
+      : "RAW PATCH (this commit's own change):";
     return `${diffHeader(d)}
 
 ---
-RAW PATCH (this commit's own change):
+${patchLabel}
 
 \`\`\`diff
 ${d.rawPatch || "(empty)"}
@@ -229,7 +240,7 @@ ${d.rawPatch || "(empty)"}
     .join("\n\n---\n\n");
 }
 
-function buildInvestigatePrompt(input: RunCommitReviewInput): string {
+export function buildInvestigatePrompt(input: RunCommitReviewInput): string {
   const { diffs } = input;
   const truncationNote = diffs.some((d) => d.truncated)
     ? "\n\nNote: one or more patches were truncated to fit. Use the file lists + your read/grep tools to see anything not shown."

@@ -17,6 +17,12 @@ export type CommitMeta = {
   isRoot: boolean;
 };
 
+/** Sentinel "sha" for the synthetic Local changes target. Matches the `sha`
+ *  field the Rust `git_working_tree_diff` returns, so the selection key, the
+ *  diff cache key, and the persisted row all agree. A real git SHA is 40 hex
+ *  chars, so this never collides with one. */
+export const LOCAL_CHANGES_SHA = "local";
+
 /** The diff of a single commit plus its metadata — echoes Rust `CommitDiff`. */
 export type CommitDiff = {
   sha: string;
@@ -26,6 +32,8 @@ export type CommitDiff = {
   date: string;
   isRoot: boolean;
   isMerge: boolean;
+  /** True for the synthetic "Local changes" diff (uncommitted edits vs HEAD). */
+  isLocal: boolean;
   files: Array<{
     path: string;
     additions: number;
@@ -51,4 +59,11 @@ export async function listCommits(
  *  "commit … not found" when the sha no longer resolves (rebased/amended). */
 export async function commitDiff(cwd: string, sha: string): Promise<CommitDiff> {
   return invoke<CommitDiff>("git_commit_diff", { cwd, sha });
+}
+
+/** The diff of every uncommitted change (staged + unstaged + untracked) vs
+ *  HEAD — the "Local changes" review target. Always reflects the working tree
+ *  at call time. */
+export async function workingTreeDiff(cwd: string): Promise<CommitDiff> {
+  return invoke<CommitDiff>("git_working_tree_diff", { cwd });
 }
