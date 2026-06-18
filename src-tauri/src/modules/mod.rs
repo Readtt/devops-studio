@@ -5,6 +5,7 @@ pub mod commit_review;
 pub mod confidence_store;
 pub mod fs;
 pub mod git;
+pub mod git_ops;
 pub mod history;
 pub mod net;
 pub mod pty;

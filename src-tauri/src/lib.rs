@@ -1,8 +1,8 @@
 mod modules;
 
 use modules::{
-    ado, chat_threads, command, commit_review, confidence_store, fs, git, history, net, pty,
-    secrets,
+    ado, chat_threads, command, commit_review, confidence_store, fs, git, git_ops, history, net,
+    pty, secrets,
 };
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -565,6 +565,14 @@ pub fn run() {
             git::git_branch_list,
             git::git_list_commits,
             git::git_commit_diff,
+            git::git_status_summary,
+            git::git_working_tree_diff,
+            git::git_branches,
+            // --- Source-dir git write ops (branch switch + ff pull + fetch) ---
+            git_ops::git_checkout,
+            git_ops::git_pull,
+            git_ops::git_fetch,
+            git_ops::git_stash_restore,
             command::run_readonly_command_cmd,
             // --- PTY / embedded terminal ---
             pty::pty_spawn,
