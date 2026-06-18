@@ -57,7 +57,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { useSourceDirGitInfo } from "@/modules/git";
+import {
+  StatusBarGit,
+  BranchSwitchToast,
+  BranchSwitchDialog,
+} from "@/modules/git";
 import { getConnection, type WorkItemRef } from "@/modules/ado";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { AzureDevOpsBrand } from "@/components/AzureDevOpsBrand";
@@ -108,8 +112,6 @@ import {
 } from "@/modules/tabs/launchActions";
 import { sweepStaleCommitReviews } from "@/modules/commit-review/commitReviewApi";
 import {
-  FolderOpenIcon,
-  GitBranchIcon,
   PlusSignIcon,
   Settings01Icon,
 } from "@hugeicons/core-free-icons";
@@ -148,14 +150,6 @@ function deriveGeneratorTabTitle(state: SessionState): string {
 function ellipsize(s: string, max: number): string {
   if (s.length <= max) return s;
   return `${s.slice(0, max - 1)}…`;
-}
-
-/** Trim a long absolute path to "…/parent/dir" so it fits in the header. */
-function compactPath(path: string): string {
-  const normalized = path.replace(/\\/g, "/");
-  const parts = normalized.split("/").filter(Boolean);
-  if (parts.length <= 2) return normalized;
-  return `…/${parts.slice(-2).join("/")}`;
 }
 
 function clampSidebarWidth(width: number): number {
@@ -1237,10 +1231,10 @@ function AppShell() {
 
   return (
     <div className="relative flex h-screen flex-col overflow-hidden bg-background text-foreground">
-          {/* Top bar: drag region + source dir + settings + window controls.
-              Tabs moved into the workspace (per-leaf strips) in the
-              tab/pane UX upgrade — gives each pane its own strip and
-              opens the room needed for drag-to-split. */}
+          {/* Top bar: drag region + settings + window controls. The source
+              directory lives solely in the bottom-left status bar now
+              (StatusBarGit) — one place to see and change it. Tabs moved into
+              the workspace (per-leaf strips) in the tab/pane UX upgrade. */}
           <header
             {...windowDragProps}
             className={cn(
@@ -1256,29 +1250,6 @@ function AppShell() {
             >
               DevOps Studio
             </div>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 max-w-[260px] gap-1.5 px-2 text-[11px] font-normal text-muted-foreground hover:text-foreground"
-                  onClick={() => void pickSourceDir()}
-                  aria-label="Source directory"
-                >
-                  <HugeiconsIcon icon={FolderOpenIcon} size={12} strokeWidth={1.75} />
-                  <span className="min-w-0 truncate">
-                    {sourceRoot
-                      ? compactPath(sourceRoot)
-                      : "Pick source directory…"}
-                  </span>
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="max-w-[420px] text-[11px]">
-                {sourceRoot
-                  ? `Source: ${sourceRoot} — click to change`
-                  : "Click to choose a source directory. Code links in bugs open from here."}
-              </TooltipContent>
-            </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -1466,6 +1437,7 @@ function AppShell() {
                       capsule at the bottom) when both appear. */}
                   <div className="pointer-events-none absolute bottom-3 left-3 z-40 flex flex-col-reverse items-start gap-2">
                     <ConfidenceProgressCapsule />
+                    <BranchSwitchToast />
                     {showUpdaterToast && (
                       <UpdaterToast
                         status={updater.status}
@@ -1475,6 +1447,7 @@ function AppShell() {
                     )}
                   </div>
                   <ConfidenceConfirmDialog />
+                  <BranchSwitchDialog />
                   <GeneratorCallbacksProvider value={generatorCallbacks}>
                     <TabsDndProvider>
                       <PaneTreeRenderer
@@ -1492,7 +1465,7 @@ function AppShell() {
           {/* Status bar — git branch & source dir on the left, ADO + stale
               indicators pinned to the right. */}
           <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-border/60 bg-card/60 px-3 text-[11px] text-muted-foreground">
-            <StatusBarBranch sourceRoot={sourceRoot} onPick={() => void pickSourceDir()} />
+            <StatusBarGit sourceRoot={sourceRoot} onPickDir={() => void pickSourceDir()} />
             <div className="ml-auto flex items-center gap-2">
               <StatusBarModelPicker activeSession={activeGenSessionInfo} />
               <UpdaterStatusPill
@@ -1582,112 +1555,6 @@ function AppShell() {
           </AlertDialog>
 
     </div>
-  );
-}
-
-/**
- * Bottom status bar's left segment: source directory + live git branch.
- * Clicking opens the directory picker (matches the title-bar source-dir
- * button). Hidden until the user has picked a source dir.
- */
-function StatusBarBranch({
-  sourceRoot,
-  onPick,
-}: {
-  sourceRoot: string | null;
-  onPick: () => void;
-}) {
-  const git = useSourceDirGitInfo();
-  if (!sourceRoot) return null;
-
-  const last = sourceRoot.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? "";
-  const tooltipPath = sourceRoot;
-  const branchLabel = git.isRepo
-    ? git.branch ?? (git.commit ? `(${git.commit})` : "(detached)")
-    : null;
-
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          onClick={onPick}
-          className="group flex h-5 items-center gap-2 rounded-md border border-border/60 bg-card px-1.5 transition-colors hover:border-border hover:text-foreground"
-          aria-label="Source directory and git branch"
-        >
-          <span className="flex min-w-0 items-center gap-1">
-            <HugeiconsIcon icon={FolderOpenIcon} size={11} strokeWidth={1.75} />
-            <span className="max-w-[180px] truncate text-[10.5px]">
-              {last || sourceRoot}
-            </span>
-          </span>
-          {branchLabel ? (
-            <>
-              <span aria-hidden className="h-3 w-px bg-border/70" />
-              <span className="flex min-w-0 items-center gap-1">
-                <HugeiconsIcon
-                  icon={GitBranchIcon}
-                  size={11}
-                  strokeWidth={1.75}
-                />
-                <span className="max-w-[160px] truncate font-mono text-[10.5px]">
-                  {branchLabel}
-                </span>
-              </span>
-            </>
-          ) : null}
-        </button>
-      </TooltipTrigger>
-      <TooltipContent
-        side="top"
-        align="start"
-        sideOffset={6}
-        variant="panel"
-        className="max-w-[420px] px-3 py-2 text-[11px] leading-relaxed"
-      >
-        <div className="flex flex-col gap-1">
-          <div className="flex items-baseline gap-1.5">
-            <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
-              source
-            </span>
-            <span className="min-w-0 break-all font-mono text-[10.5px] text-foreground/90">
-              {tooltipPath}
-            </span>
-          </div>
-          <div className="flex items-baseline gap-1.5">
-            <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
-              git
-            </span>
-            {git.isRepo && git.branch ? (
-              <span className="font-mono text-[10.5px] text-foreground/85">
-                {git.branch}
-                {git.commit ? (
-                  <span className="ml-1 text-muted-foreground/70">
-                    · {git.commit}
-                  </span>
-                ) : null}
-              </span>
-            ) : git.isRepo ? (
-              <span className="font-mono text-[10.5px] text-muted-foreground">
-                detached HEAD
-                {git.commit ? (
-                  <span className="ml-1 text-muted-foreground/70">
-                    · {git.commit}
-                  </span>
-                ) : null}
-              </span>
-            ) : (
-              <span className="text-[10.5px] italic text-muted-foreground">
-                not a git repository
-              </span>
-            )}
-          </div>
-          <p className="mt-0.5 text-[10px] text-muted-foreground/70">
-            Click to change the source directory.
-          </p>
-        </div>
-      </TooltipContent>
-    </Tooltip>
   );
 }
 

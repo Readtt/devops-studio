@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useState } from "react";
 
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { SOURCE_GIT_CHANGED_EVENT } from "./gitOps";
 
 export type GitRepoInfo = {
   branch: string | null;
@@ -62,10 +64,22 @@ export function useSourceDirGitInfo(): GitRepoInfo {
       })
       .catch(() => {});
 
+    // Refresh the instant an in-app branch switch / pull completes — over the
+    // Tauri bus so it works whether the switch happened in this window or
+    // another (this hook also runs in the separate Settings window).
+    let unlistenGit: (() => void) | null = null;
+    void listen(SOURCE_GIT_CHANGED_EVENT, () => void refresh())
+      .then((un) => {
+        if (cancelled) un();
+        else unlistenGit = un;
+      })
+      .catch(() => {});
+
     return () => {
       cancelled = true;
       window.clearInterval(timer);
       if (unlistenFocus) unlistenFocus();
+      if (unlistenGit) unlistenGit();
     };
   }, [sourceRoot]);
 

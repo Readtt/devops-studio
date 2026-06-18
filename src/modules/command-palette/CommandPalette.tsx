@@ -294,7 +294,7 @@ export function CommandPalette({
                     </span>
                   ) : (
                     <span className="text-[10.5px] text-muted-foreground/70">
-                      Set a source directory in Settings first
+                      Pick a source directory from the status bar first
                     </span>
                   )}
                 </div>
@@ -318,7 +318,7 @@ export function CommandPalette({
                     </span>
                   ) : (
                     <span className="text-[10.5px] text-muted-foreground/70">
-                      Set a source directory in Settings to land here
+                      Pick a source directory from the status bar to land here
                     </span>
                   )}
                 </div>
