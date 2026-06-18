@@ -30,7 +30,7 @@ import {
   type TargetContext,
   runQaAnalyst,
 } from "../lib/qaAnalystRun";
-import { resolveTrackingBranch } from "@/modules/git";
+import { CURRENT_BRANCH_SENTINEL, resolveTrackingBranch } from "@/modules/git";
 import {
   localProviderConfig,
   usePreferencesStore,
@@ -1176,10 +1176,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       if (prior?.result?.id) caseIdByDraftUid.set(c.uid, prior.result.id);
     }
     // Resolve the tracking branch once so published cases' code-link chips
-    // point at the right branch. If the user configured `$current`, resolve to
-    // the live source-dir branch instead of whatever was saved at setup time.
-    // We also capture the source-dir HEAD SHA here so bug code refs can be
-    // stamped with the same commit.
+    // point at the right branch. Code links always track the live source-dir
+    // branch (resolved here, at publish time) — falling back to "main" only
+    // when there's no resolvable branch (detached HEAD / not a git repo). We
+    // also capture the source-dir HEAD SHA here so bug code refs can be stamped
+    // with the same commit.
     let trackingBranch = "main";
     let sourceDirSha: string | null = null;
     let orgUrl = "";
@@ -1188,7 +1189,6 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       const conn = await getConnection();
       orgUrl = conn.orgUrl ?? "";
       project = conn.project ?? "";
-      const saved = conn.defaultTrackingBranch ?? "";
       let sourceDirBranch: string | null = null;
       const sourceRoot = usePreferencesStore.getState().sourceRoot;
       if (sourceRoot) {
@@ -1203,7 +1203,12 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           // If git_repo_info fails we'll fall through to the "main" fallback.
         }
       }
-      trackingBranch = resolveTrackingBranch(saved, sourceDirBranch);
+      // Always resolve live: pass the sentinel so any legacy fixed branch saved
+      // in settings is ignored in favor of the branch the user is on right now.
+      trackingBranch = resolveTrackingBranch(
+        CURRENT_BRANCH_SENTINEL,
+        sourceDirBranch,
+      );
     } catch {
       // Non-fatal — falls back to "main".
     }

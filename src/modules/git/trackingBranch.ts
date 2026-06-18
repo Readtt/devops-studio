@@ -4,10 +4,6 @@
  */
 export const CURRENT_BRANCH_SENTINEL = "$current";
 
-export function isDynamicTrackingBranch(value: string | null | undefined): boolean {
-  return (value ?? "").trim() === CURRENT_BRANCH_SENTINEL;
-}
-
 /**
  * Resolve the effective tracking branch to use right now.
  *

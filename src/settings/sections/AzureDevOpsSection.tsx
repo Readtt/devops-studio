@@ -1,13 +1,16 @@
 import { Badge } from "@/components/ui/badge";
-import { BranchPicker } from "@/components/BranchPicker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { AzureDevOpsBrand } from "@/components/AzureDevOpsBrand";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { setCodeSearchEnabled } from "@/modules/settings/store";
-import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
 import {
   adoErrorMessage,
@@ -24,6 +27,7 @@ import {
 } from "@/modules/git";
 import {
   CheckmarkCircle02Icon,
+  GitBranchIcon,
   Tick02Icon,
   ViewIcon,
   ViewOffSlashIcon,
@@ -47,39 +51,9 @@ export function AzureDevOpsSection() {
   const [pat, setPat] = useState("");
   const [patVisible, setPatVisible] = useState(false);
   const [hasStoredPat, setHasStoredPat] = useState(false);
-  const [trackingBranch, setTrackingBranch] = useState("main");
-  const [useDynamicBranch, setUseDynamicBranch] = useState(false);
   const gitInfo = useSourceDirGitInfo();
   const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
   const codeSearchEnabled = usePreferencesStore((s) => s.codeSearchEnabled);
-  // Branch list comes from the user's source repo — that's where their
-  // working branches actually exist, and ADO mirrors them by name. Pulling
-  // from git locally avoids a network round-trip to ADO for something the
-  // user can already see on their disk. Falls back to common defaults if
-  // no source dir is set.
-  const [repoBranches, setRepoBranches] = useState<string[]>(["main", "master"]);
-  useEffect(() => {
-    if (!sourceRoot) {
-      setRepoBranches(["main", "master"]);
-      return;
-    }
-    let cancelled = false;
-    void invoke<string[]>("git_branch_list", { cwd: sourceRoot })
-      .then((list) => {
-        if (cancelled) return;
-        // Always include "main" / "master" as fallbacks so the user can
-        // still pick those names if the repo doesn't have them yet (e.g.
-        // brand-new repo without an initial commit on the canonical name).
-        const merged = Array.from(new Set([...list, "main", "master"]));
-        setRepoBranches(merged);
-      })
-      .catch(() => {
-        if (!cancelled) setRepoBranches(["main", "master"]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [sourceRoot]);
   const [status, setStatus] = useState<StatusBadge>({ kind: "unverified" });
   const [saving, setSaving] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -109,14 +83,6 @@ export function AzureDevOpsSection() {
     setOrgUrl(s.orgUrl);
     setProject(s.project);
     setHasStoredPat(s.hasPat);
-    const saved = s.defaultTrackingBranch || "main";
-    if (saved === CURRENT_BRANCH_SENTINEL) {
-      setUseDynamicBranch(true);
-      setTrackingBranch("main");
-    } else {
-      setUseDynamicBranch(false);
-      setTrackingBranch(saved);
-    }
   }
 
   async function verify(): Promise<boolean> {
@@ -166,9 +132,10 @@ export function AzureDevOpsSection() {
         // canonical place to switch projects now.
         project,
         pat: pat.length > 0 ? pat : undefined,
-        defaultTrackingBranch: useDynamicBranch
-          ? CURRENT_BRANCH_SENTINEL
-          : trackingBranch || "main",
+        // Code-link branch is always the live source-dir branch, resolved at
+        // publish time (the `$current` sentinel). There's no fixed-branch
+        // option — links should follow the branch you generated from.
+        defaultTrackingBranch: CURRENT_BRANCH_SENTINEL,
       });
       setPat("");
       const ok = await verify();
@@ -276,18 +243,25 @@ export function AzureDevOpsSection() {
                 autoComplete="off"
                 className="h-8 pr-9 font-mono text-[12px]"
               />
-              <button
-                type="button"
-                onClick={() => setPatVisible((v) => !v)}
-                aria-label={patVisible ? "Hide PAT" : "Show PAT"}
-                className="absolute right-1.5 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground hover:bg-foreground/[0.05] hover:text-foreground"
-              >
-                <HugeiconsIcon
-                  icon={patVisible ? ViewOffSlashIcon : ViewIcon}
-                  size={12}
-                  strokeWidth={1.75}
-                />
-              </button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => setPatVisible((v) => !v)}
+                    aria-label={patVisible ? "Hide PAT" : "Show PAT"}
+                    className="absolute right-1.5 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground hover:bg-foreground/[0.05] hover:text-foreground"
+                  >
+                    <HugeiconsIcon
+                      icon={patVisible ? ViewOffSlashIcon : ViewIcon}
+                      size={12}
+                      strokeWidth={1.75}
+                    />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-[11px]">
+                  {patVisible ? "Hide token" : "Show token"}
+                </TooltipContent>
+              </Tooltip>
             </div>
           </div>
           <button
@@ -321,46 +295,60 @@ export function AzureDevOpsSection() {
             />
           </div>
 
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex flex-col">
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center gap-1.5">
+              <HugeiconsIcon
+                icon={GitBranchIcon}
+                size={13}
+                strokeWidth={1.75}
+                aria-hidden
+                className="text-muted-foreground"
+              />
               <Label className="text-[11.5px] text-foreground">
-                Use current source-directory branch
+                Code-link branch
               </Label>
-              <p className="text-[10.5px] text-muted-foreground/80">
-                {gitInfo.isRepo && gitInfo.branch
-                  ? `On branch ${gitInfo.branch}${gitInfo.commit ? ` · ${gitInfo.commit}` : ""}.`
-                  : gitInfo.isRepo
-                    ? "Source directory is in detached HEAD — set a branch below as a fallback."
-                    : "No git repo at the source directory yet — set a fallback below."}
-              </p>
             </div>
-            <Switch
-              checked={useDynamicBranch}
-              onCheckedChange={setUseDynamicBranch}
-            />
-          </div>
-
-          <div className="flex flex-col gap-1">
-            <Label className="text-[11.5px] text-muted-foreground">
-              {useDynamicBranch ? "Fallback branch" : "Tracking branch"}
-            </Label>
-            <BranchPicker
-              value={trackingBranch}
-              branches={repoBranches}
-              onChange={setTrackingBranch}
-              disabled={useDynamicBranch && gitInfo.isRepo && !!gitInfo.branch}
-              size="md"
-              ariaLabel={
-                useDynamicBranch ? "Fallback branch" : "Tracking branch"
-              }
-            />
             <p className="text-[10.5px] text-muted-foreground/80">
-              {useDynamicBranch
-                ? "Used when the source directory has no resolvable branch (detached HEAD or not a git repo). Picker shows branches detected in your source repo."
-                : sourceRoot
-                  ? "Code-link chips on published cases point at this branch. The list is your source repo's actual branches — no typos possible."
-                  : "Code-link chips on published cases point at this branch. Set a source directory to populate the picker from your repo."}
+              Code links on published cases point at the branch you generated
+              from. It's read from your source directory at publish time, so
+              links always follow the branch you're working on — switch branches
+              in the status bar and the next publish tracks the new one.
             </p>
+            <div className="mt-0.5 flex items-center gap-1.5 rounded-md border border-border/55 bg-muted/30 px-2 py-1.5 text-[10.5px]">
+              <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
+                now
+              </span>
+              {gitInfo.isRepo && gitInfo.branch ? (
+                <span className="text-foreground/85">
+                  Links use{" "}
+                  <span className="font-mono text-foreground">
+                    {gitInfo.branch}
+                  </span>
+                  {gitInfo.commit ? (
+                    <span className="text-muted-foreground/70">
+                      {" · "}
+                      {gitInfo.commit}
+                    </span>
+                  ) : null}
+                  .
+                </span>
+              ) : gitInfo.isRepo ? (
+                <span className="text-muted-foreground">
+                  Detached HEAD — links fall back to{" "}
+                  <span className="font-mono text-foreground/80">main</span>{" "}
+                  until you check out a branch.
+                </span>
+              ) : sourceRoot ? (
+                <span className="text-muted-foreground">
+                  Not a git repository — links fall back to{" "}
+                  <span className="font-mono text-foreground/80">main</span>.
+                </span>
+              ) : (
+                <span className="text-muted-foreground">
+                  Set a source directory to enable code links.
+                </span>
+              )}
+            </div>
           </div>
         </div>
       </div>
