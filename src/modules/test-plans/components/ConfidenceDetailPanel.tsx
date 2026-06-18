@@ -6,9 +6,11 @@ import {
   isAutoPassCandidate,
   passReadiness,
   readinessTone,
+  verdictSourceState,
   type ConfidenceVerdict,
   type EvidenceItem,
 } from "../lib/confidence";
+import { useSourceDirGitInfo } from "@/modules/git";
 import {
   AlertCircleIcon,
   Cancel01Icon,
@@ -161,17 +163,7 @@ export function ConfidenceDetailPanel({
                 : null}
           </p>
         ) : null}
-        {verdict ? (
-          <p className="inline-flex w-fit items-center gap-1 rounded-sm bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:text-blue-300">
-            <HugeiconsIcon
-              icon={GitBranchIcon}
-              size={10}
-              strokeWidth={1.75}
-              className="shrink-0"
-            />
-            Make sure you&apos;re on the right branch.
-          </p>
-        ) : null}
+        {verdict ? <VerdictSourceHint verdict={verdict} /> : null}
         {verdict ? (
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground/70">
             <span className="font-mono">{verdict.modelId}</span>
@@ -242,6 +234,69 @@ export function ConfidenceDetailPanel({
         )}
       </div>
     </aside>
+  );
+}
+
+/**
+ * Source-provenance line for a verdict. A confidence score is graded against
+ * whatever source was checked out when it ran, so this compares the verdict's
+ * stamped HEAD sha to the LIVE source-dir HEAD (via useSourceDirGitInfo, which
+ * reacts to branch switches/pulls through SOURCE_GIT_CHANGED_EVENT) and tells
+ * the user precisely whether the score still reflects their code:
+ *   - stale → amber, prompts a re-evaluate (the tree moved since it ran)
+ *   - fresh → graded against exactly what's checked out now
+ *   - unknown → no provenance (legacy verdict, non-repo, or code search off):
+ *     fall back to the honest generic "check your branch" reminder.
+ */
+function VerdictSourceHint({ verdict }: { verdict: ConfidenceVerdict }) {
+  const git = useSourceDirGitInfo();
+  const state = verdictSourceState(verdict, git.isRepo ? git.commit : null);
+
+  if (state.kind === "stale") {
+    return (
+      <p className="inline-flex w-fit items-center gap-1 rounded-sm bg-amber-500/12 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
+        <HugeiconsIcon icon={GitBranchIcon} size={10} strokeWidth={1.75} className="shrink-0" />
+        <span>
+          Your source changed since this ran
+          {verdict.sourceBranch ? (
+            <>
+              {" "}
+              (graded on <span className="font-mono">{verdict.sourceBranch}</span> @{" "}
+              <span className="font-mono">{state.evaluatedSha}</span>, now at{" "}
+              <span className="font-mono">{state.currentSha}</span>)
+            </>
+          ) : null}
+          {" — re-evaluate to refresh."}
+        </span>
+      </p>
+    );
+  }
+
+  if (state.kind === "fresh") {
+    return (
+      <p className="inline-flex w-fit items-center gap-1 rounded-sm bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+        <HugeiconsIcon icon={GitBranchIcon} size={10} strokeWidth={1.75} className="shrink-0" />
+        <span>
+          Evaluated against your current source
+          {verdict.sourceBranch ? (
+            <>
+              {" "}
+              (<span className="font-mono">{verdict.sourceBranch}</span> @{" "}
+              <span className="font-mono">{state.sha}</span>)
+            </>
+          ) : null}
+          .
+        </span>
+      </p>
+    );
+  }
+
+  // No provenance to compare against — keep the honest generic reminder.
+  return (
+    <p className="inline-flex w-fit items-center gap-1 rounded-sm bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:text-blue-300">
+      <HugeiconsIcon icon={GitBranchIcon} size={10} strokeWidth={1.75} className="shrink-0" />
+      Make sure you&apos;re on the right branch.
+    </p>
   );
 }
 

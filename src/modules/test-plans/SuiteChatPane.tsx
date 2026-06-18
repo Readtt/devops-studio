@@ -146,6 +146,12 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
   const deleteThread = useSuiteChat((s) => s.deleteThread);
   const renameThread = useSuiteChat((s) => s.renameThread);
   const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
+  const codeSearchEnabled = usePreferencesStore((s) => s.codeSearchEnabled);
+  // Code grounding requires BOTH a source dir AND the global code-search toggle
+  // — the send path gates on both (useSuiteChat), so the onboarding hint must
+  // too, or it promises grounding the model never actually gets. Both are live
+  // store selectors, so this stays reactive.
+  const hasSource = codeSearchEnabled && !!sourceRoot;
   const globalModelId = useChatStore((s) => s.selectedModelId);
   const availability = useModelAvailability();
 
@@ -762,7 +768,7 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
         onEditUndone={(messageId, blockHash) =>
           clearEditApplied(planId, suiteId, messageId, blockHash)
         }
-        hasSource={!!sourceRoot}
+        hasSource={hasSource}
         onPick={setDraft}
         assistantProvider={activeModel?.provider ?? null}
         suite={{ planId, suiteId }}

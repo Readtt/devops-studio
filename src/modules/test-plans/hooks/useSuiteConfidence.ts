@@ -9,12 +9,29 @@
 // module-level abort maps.
 
 import { create } from "zustand";
+import { invoke } from "@tauri-apps/api/core";
 import { listSuiteCases } from "@/modules/ado";
 import { hasKeyForModel } from "@/modules/ai";
 import { useChatStore } from "@/modules/ai/store/chatStore";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+import type { GitRepoInfo } from "@/modules/git";
 import { getConfidenceMany } from "../lib/confidenceApi";
-import type { ConfidenceVerdict } from "../lib/confidence";
+import { verdictSourceState, type ConfidenceVerdict } from "../lib/confidence";
 import { scoreCases, type ScoreTarget } from "../lib/runSuiteConfidence";
+
+/** Live source-dir HEAD short sha (when code search is on and it's a repo), for
+ *  deciding which stored verdicts are stale before a bulk run. Best-effort. */
+async function currentSourceSha(): Promise<string | null> {
+  const prefs = usePreferencesStore.getState();
+  const root = prefs.codeSearchEnabled ? (prefs.sourceRoot ?? null) : null;
+  if (!root) return null;
+  try {
+    const info = await invoke<GitRepoInfo>("git_repo_info", { path: root });
+    return info.commit ?? null;
+  } catch {
+    return null;
+  }
+}
 
 /** Suites larger than this prompt for confirmation before spending tokens. */
 export const LARGE_SUITE_THRESHOLD = 20;
@@ -212,8 +229,18 @@ export const useSuiteConfidence = create<State>((set, get) => ({
       const refs = await listSuiteCases(planId, suiteId);
       totalCases = refs.length;
       const existing = await getConfidenceMany(refs.map((r) => r.id));
+      // A bulk run should leave the suite scored against the CURRENT source.
+      // Skip a case only when its stored verdict was graded against the code
+      // that's checked out now (fresh), or when we can't tell (a legacy verdict
+      // with no source stamp, or no repo) — never silently keep a verdict we can
+      // prove was graded against a different branch / older commit.
+      const currentSha = await currentSourceSha();
       targets = refs
-        .filter((r) => !existing.has(r.id)) // skip already-scored
+        .filter((r) => {
+          const v = existing.get(r.id);
+          if (!v) return true; // never scored
+          return verdictSourceState(v, currentSha).kind === "stale";
+        })
         .map((r) => ({ id: r.id, title: r.title }));
     } catch {
       finishWithNotice(suiteName, "Couldn't load this suite's cases.");

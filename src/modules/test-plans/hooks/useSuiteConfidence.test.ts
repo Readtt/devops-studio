@@ -4,7 +4,11 @@ const listSuiteCases = vi.fn();
 const hasKeyForModel = vi.fn();
 const getConfidenceMany = vi.fn();
 const scoreCases = vi.fn();
+const invoke = vi.fn();
 
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (...a: unknown[]) => invoke(...a),
+}));
 vi.mock("@/modules/ado", () => ({
   listSuiteCases: (...a: unknown[]) => listSuiteCases(...a),
 }));
@@ -22,6 +26,7 @@ vi.mock("../lib/runSuiteConfidence", () => ({
 }));
 
 import { useSuiteConfidence, LARGE_SUITE_THRESHOLD } from "./useSuiteConfidence";
+import { usePreferencesStore } from "@/modules/settings/preferences";
 
 const ref = (id: number) => ({ id, title: `case ${id}`, state: "Design" });
 
@@ -30,9 +35,14 @@ beforeEach(() => {
   hasKeyForModel.mockReset();
   getConfidenceMany.mockReset();
   scoreCases.mockReset();
+  invoke.mockReset();
   hasKeyForModel.mockReturnValue(true);
   getConfidenceMany.mockResolvedValue(new Map());
   scoreCases.mockResolvedValue(undefined);
+  invoke.mockResolvedValue({ branch: "main", commit: "curr123", isRepo: true });
+  // Default: no source dir, so staleness can't be determined and the discovery
+  // skip behaves exactly as before (already-scored cases are skipped).
+  usePreferencesStore.setState({ sourceRoot: null, codeSearchEnabled: true });
 });
 
 afterEach(() => {
@@ -61,6 +71,37 @@ describe("useSuiteConfidence.start discovery", () => {
     const passed = scoreCases.mock.calls[0][0] as Array<{ id: number }>;
     expect(passed.map((t) => t.id)).toEqual([2, 3]);
     expect(useSuiteConfidence.getState().phase).toBe("done");
+  });
+
+  it("re-scores cases whose verdict was graded against a different source state", async () => {
+    // Source dir set + current HEAD = curr123; verdicts stamped with a
+    // different sha are stale and must be re-scored, fresh ones skipped.
+    usePreferencesStore.setState({ sourceRoot: "C:/repo", codeSearchEnabled: true });
+    invoke.mockResolvedValue({ branch: "main", commit: "curr123", isRepo: true });
+    listSuiteCases.mockResolvedValue([ref(1), ref(2), ref(3)]);
+    getConfidenceMany.mockResolvedValue(
+      new Map<number, unknown>([
+        [1, { sourceSha: "curr123" }], // fresh → skip
+        [2, { sourceSha: "old9999" }], // stale → re-score
+        // case 3 has no verdict → score
+      ]) as never,
+    );
+    await useSuiteConfidence.getState().start(1, 2, "Suite");
+    expect(scoreCases).toHaveBeenCalledTimes(1);
+    const passed = scoreCases.mock.calls[0][0] as Array<{ id: number }>;
+    expect(passed.map((t) => t.id)).toEqual([2, 3]);
+  });
+
+  it("keeps skipping already-scored cases when source staleness can't be determined (no repo)", async () => {
+    // sourceRoot null (beforeEach) → currentSha null → every stamped verdict is
+    // 'unknown', so the legacy skip-already-scored behavior is preserved.
+    listSuiteCases.mockResolvedValue([ref(1), ref(2), ref(3)]);
+    getConfidenceMany.mockResolvedValue(
+      new Map<number, unknown>([[1, { sourceSha: "old9999" }]]) as never,
+    );
+    await useSuiteConfidence.getState().start(1, 2, "Suite");
+    const passed = scoreCases.mock.calls[0][0] as Array<{ id: number }>;
+    expect(passed.map((t) => t.id)).toEqual([2, 3]); // case 1 still skipped
   });
 
   it("shows a notice and runs nothing when every case is already scored", async () => {

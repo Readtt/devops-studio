@@ -36,6 +36,12 @@ export type EvalCase = {
 export type ConfidenceEvalInput = {
   testCase: EvalCase;
   sourceRoot: string | null;
+  /** Short HEAD sha of the source dir at eval time — stamped onto the verdict so
+   *  the UI can flag it stale once the tree moves. Null when not a repo / code
+   *  search off. */
+  sourceSha?: string | null;
+  /** Source-dir branch at eval time (provenance/display only). */
+  sourceBranch?: string | null;
   modelId: ModelId;
   keys: ProviderKeys;
   local?: LocalProviderConfig;
@@ -85,6 +91,10 @@ export async function evaluateConfidence(
     evaluatedAt: new Date().toISOString(),
     modelId: input.modelId,
     runs,
+    // Provenance: the source state this verdict was graded against, so the UI
+    // can flag it stale once the working tree moves past it.
+    sourceSha: input.sourceSha ?? null,
+    sourceBranch: input.sourceBranch ?? null,
   };
 }
 

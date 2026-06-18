@@ -60,11 +60,47 @@ export type ConfidenceVerdict = ConfidenceVerdictLLM & {
   modelId: string;
   /** Number of self-consistency runs that fed this verdict (1 = single pass). */
   runs?: number;
+  /** Short SHA of the source-dir HEAD this verdict was evaluated against (when
+   *  code search was on and the source dir was a repo). Lets the UI flag the
+   *  verdict as stale once the working tree moves past it — a branch switch or
+   *  new commits — instead of showing a guess as if it still reflects the code.
+   *  Absent on verdicts evaluated without source access or saved before this
+   *  stamp existed; the staleness check degrades to "unknown" then. */
+  sourceSha?: string | null;
+  /** Source-dir branch at evaluation time. Provenance/display only — staleness
+   *  is decided by {@link sourceSha} (same branch can move). */
+  sourceBranch?: string | null;
   /** @deprecated Legacy confidence-in-outcome from verdicts produced before the
    *  pass-likelihood reframe. Absent on new verdicts; read only as a fallback by
    *  {@link passReadiness}. */
   confidence?: number;
 };
+
+/** How a stored verdict relates to the CURRENT source-dir HEAD, for the panel's
+ *  staleness hint:
+ *  - `fresh`   — evaluated against the code that's checked out right now.
+ *  - `stale`   — the tree has moved since (branch switch / new commits); the
+ *                verdict may no longer reflect reality, so prompt a re-evaluate.
+ *  - `unknown` — can't compare (verdict has no source stamp, or there's no live
+ *                source-dir commit — non-repo, or code search was off). */
+export type VerdictSourceState =
+  | { kind: "fresh"; sha: string }
+  | { kind: "stale"; evaluatedSha: string; currentSha: string }
+  | { kind: "unknown" };
+
+export function verdictSourceState(
+  verdict: { sourceSha?: string | null },
+  currentSha: string | null | undefined,
+): VerdictSourceState {
+  const evaluatedSha = (verdict.sourceSha ?? "").trim();
+  const cur = (currentSha ?? "").trim();
+  if (!evaluatedSha || !cur) return { kind: "unknown" };
+  // Compare on a 7-char prefix — defensive against differing abbreviation
+  // lengths, mirroring the commit-review head-moved check.
+  return evaluatedSha.slice(0, 7) === cur.slice(0, 7)
+    ? { kind: "fresh", sha: evaluatedSha }
+    : { kind: "stale", evaluatedSha, currentSha: cur };
+}
 
 /** Pass-readiness — the single 0–100 "how safe is it to just mark this case
  *  Passed?" score the chip surfaces, so QA reads one axis: high = green = click
