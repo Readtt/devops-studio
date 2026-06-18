@@ -33,7 +33,9 @@ anything reaches ADO, then refine the batch with plain-English follow-ups
 predicts whether it will pass (0–100%). Score one case or a whole suite in a
 single pass. High-confidence passes can auto-set their run outcome, and any step
 the model can't ground in code raises a *manual test recommended* flag so you
-never rubber-stamp unverified behaviour.
+never rubber-stamp unverified behaviour. Each score remembers the branch and
+commit it was graded against and flags itself stale once your source moves, so a
+green pass never silently reflects old code.
 
 ### Chat with a published suite
 Right-click any suite → **Open chat** and ask questions grounded in the cases
@@ -44,19 +46,28 @@ apply, with one-click undo. Threads are multi-per-suite and persist across
 sessions.
 
 ### Review commits with AI
-Pick one or more commits and the **Commit Review** runs a two-stage pass —
-*investigate* (hunt for issues with read-only code analysis) then *verify*
-(skeptically refute false positives) — and returns severity-ranked findings with
-evidence. Suggested fixes render as click-to-apply patch cards. Every run
-persists and reopens from History exactly as you left it.
+Pick one or more commits — or your uncommitted **Local changes** (staged,
+unstaged, and new files vs HEAD, reviewable before you commit) — and the
+**Commit Review** runs a two-stage pass — *investigate* (hunt for issues with
+read-only code analysis) then *verify* (skeptically refute false positives) — and
+returns severity-ranked findings with evidence. Suggested fixes render as
+click-to-apply patch cards. Every run persists and reopens from History exactly
+as you left it.
 
 ### Source-linked, branch-aware
 Every generated case carries `repo + file + symbol` — clickable in the embedded
 code viewer (scrolls to the line and pulses the range) and on ADO Repos once
-published. Code links pin to your tracking branch, or the live source-dir branch
-when you set it to `$current`, so they always point at the code the case was
-generated from. The status bar shows your source directory and its current git
-branch.
+published. Code links always track the live branch of your source directory,
+resolved at publish time, so they point at exactly the branch the case was
+generated from (falling back to `main` only on a detached HEAD or non-repo).
+
+Switch branches without leaving the app: the status-bar branch button lists your
+local and remote branches, checks one out, and fast-forward-pulls the latest
+(never an auto-merge or rebase). Got uncommitted work? It asks first — bring your
+changes to the new branch, or leave them parked on the one you came from so the
+target opens clean — and offers to restore parked changes when you switch back.
+Because links follow the live branch, switching here decides what your next
+publish points at.
 
 ### An editor, not a form
 Tabbed panes you can split and drag, a `Ctrl/Cmd+K` command palette, fully
