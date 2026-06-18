@@ -79,6 +79,7 @@ fn is_offline_stderr(lower: &str) -> bool {
 ///     `origin/x` + `upstream/x` aren't ambiguous). If a local branch of that
 ///     name was created since the list rendered, fall back to a plain switch.
 ///   - anything else → a plain checkout (git's DWIM may still resolve it).
+///
 /// Returns the local branch name now intended, plus the git result.
 fn perform_checkout(path: &Path, branch: &str) -> Result<(), String> {
     let local_exists = run_git(
