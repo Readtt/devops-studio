@@ -7,6 +7,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.11.0] - 2026-06-24
+
+### Added
+
+- The test-case generator's single mode picker is now two independent choices: a **Coverage** control (Happy path, or Full = happy + edge + negative) and a separate **Suggest bugs** toggle. Folding both into one picker meant "bug-hunt" secretly also meant "full coverage" — now they're separate. Older saved drafts and history still load, mapping onto the new settings automatically.
+- **Test** button on every provider key card in Settings → Models. It fires one tiny request to confirm the key actually works before you rely on it — catching the failures a format check can't: a wrong-provider key (e.g. an OpenAI key pasted under DeepSeek, which share the `sk-` prefix), a revoked key, or a key with no credits.
+- Manual **reload** buttons beside the filter on the Generation history and Commit Review history panes, so you can refresh the list from disk on demand.
+
+### Fixed
+
+- API keys are now reliably found by every AI feature (Generator, Suite Chat, Commit Review, Confidence). Previously a freshly added key could read as a false "missing key" until you restarted the app — keys are now loaded from the OS keychain at launch and kept live as you save or clear them in Settings.
+- Cloud models now connect through the app's own networking, fixing spurious "Failed to fetch" / "fetch failed" errors (including when pasting an image) for Anthropic, OpenAI, and other providers.
+- A stalled model connection no longer hangs forever: if a provider goes silent mid-response for two minutes, the run ends with a clear error instead of spinning indefinitely.
+- Stopping a Suite Chat now actually stops the model — and the billing — by tearing down the request, instead of letting it finish in the background. Stop also works during the brief setup window before streaming begins.
+- The generator no longer drops you into a blank review when a model returns nothing. It shows a specific error explaining why (often an OpenAI-compatible or custom endpoint that needs structured-output / JSON mode), with your spec preserved. New, clearer error screens also cover context-overflow, rate limits, out-of-credits, provider overload, and network problems.
+- Re-running a generation you reopened from history no longer overwrites the published history entry — and its Azure DevOps work-item links — as a draft.
+- Refining a draft no longer turns an "update existing case" choice into a duplicate work item on publish.
+- Code links on published cases are only stamped with a branch actually resolved from your source directory — never a fabricated "main" on a non-git or detached-HEAD source.
+- Better support for OpenAI-compatible, local, and reasoning models: structured output (strict JSON schema) is requested where supported, sampling parameters that reasoning models reject are omitted, and a pasted image degrades to a text reference on models without vision support instead of erroring.
+- A pinned-model badge (generator, Suite Chat, Commit Review) now only appears when the pinned model differs from your current default, so it no longer misleads when they're the same.
+- Key fields now show a single password-reveal control (the app's) instead of stacking a second native one from the system webview.
+
+### Changed
+
+- Pasting a key that doesn't match a provider's usual prefix is now a non-blocking warning rather than a hard save-block — providers rotate their prefixes, and some providers share one, so the Test button (not the prefix) is the real check.
+- Settings labels, model-availability copy, and run-error guidance now refer to **Settings → Models** consistently and reflect the single bring-your-own-key engine.
+- Removing a custom (OpenAI-compatible) provider now also resets its custom context-window limit, so a re-added connector doesn't silently inherit the old value.
+
 ## [0.10.0] - 2026-06-18
 
 ### Added
