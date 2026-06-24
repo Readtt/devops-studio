@@ -25,7 +25,9 @@ import {
 } from "@/modules/ado";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import {
-  type GenerationMode as Mode,
+  describeGeneration,
+  modeToAxes,
+  type Coverage,
   type RunResult,
   type TargetContext,
   runQaAnalyst,
@@ -66,8 +68,6 @@ import {
   newChatMessageId,
   type ChatMessage,
 } from "../lib/qaChatRun";
-
-export type GenerationMode = Mode;
 
 export type Phase =
   | "input"
@@ -126,7 +126,10 @@ export type SessionState = {
    *  ADO fetch. Falls back to "#<id>" when unknown. */
   planName: string | null;
   suiteName: string | null;
-  mode: GenerationMode;
+  /** Coverage depth for generated cases. */
+  coverage: Coverage;
+  /** Whether to also flag concrete bug suggestions. Independent of coverage. */
+  suggestBugs: boolean;
   /** Stamp the local source branch / commit onto published artifacts so their
    *  code links point at the code they were generated from: the branch on each
    *  case's source links, and the source-dir HEAD SHA on bug code refs.
@@ -162,7 +165,8 @@ export type SessionState = {
 
   setRequirements: (s: string) => void;
   setChangesets: (s: string) => void;
-  setMode: (m: GenerationMode) => void;
+  setCoverage: (c: Coverage) => void;
+  setSuggestBugs: (v: boolean) => void;
   setTarget: (planId: number | null, suiteId: number | null) => void;
   /** Backfill plan/suite display names when they were missing from a
    *  loaded draft. Triggers a draft autosave so subsequent reopens use
@@ -362,7 +366,8 @@ const initialState: Omit<
   SessionState,
   | "setRequirements"
   | "setChangesets"
-  | "setMode"
+  | "setCoverage"
+  | "setSuggestBugs"
   | "setTarget"
   | "setPlanSuiteNames"
   | "setTagSourceBranch"
@@ -422,7 +427,8 @@ const initialState: Omit<
   suiteId: null,
   planName: null,
   suiteName: null,
-  mode: "thorough",
+  coverage: "full",
+  suggestBugs: true,
   tagSourceBranch: true,
   overrideModelId: null,
   stepLabel: "",
@@ -486,7 +492,7 @@ function makeSchedulePersistDraft(getter: () => SessionState) {
         planName: s.planName,
         suiteId: s.suiteId,
         suiteName: s.suiteName,
-        mode: s.mode,
+        mode: describeGeneration(s.coverage, s.suggestBugs),
         specExcerpt: specExcerpt(s.requirements ?? ""),
         cases: s.cases.map((c) => ({
           title: c.title,
@@ -504,7 +510,8 @@ function makeSchedulePersistDraft(getter: () => SessionState) {
         draftPayload: {
           requirements: s.requirements,
           changesets: s.changesets,
-          mode: s.mode,
+          coverage: s.coverage,
+          suggestBugs: s.suggestBugs,
           overrideModelId: s.overrideModelId,
           cases: s.cases,
           bugs: s.bugs,
@@ -565,7 +572,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
 
   setRequirements: (s) => set({ requirements: s }),
   setChangesets: (s) => set({ changesets: s }),
-  setMode: (m) => set({ mode: m }),
+  setCoverage: (c) => set({ coverage: c }),
+  setSuggestBugs: (v) => set({ suggestBugs: v }),
   // Setting a target wipes the cached names — they'll be re-resolved at
   // analyze() time (or restored by loadDraft) so the tab title stays in
   // sync with whichever plan/suite is actually selected.
@@ -624,7 +632,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
   clearWorkItems: () => set({ attachedWorkItems: [] }),
 
   analyze: async () => {
-    const { requirements, changesets, attachments, attachedWorkItems, planId, suiteId, mode, overrideModelId } = get();
+    const { requirements, changesets, attachments, attachedWorkItems, planId, suiteId, coverage, suggestBugs, overrideModelId } = get();
     if (!requirements.trim()) {
       set({
         phase: "error",
@@ -633,12 +641,36 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       });
       return;
     }
+    // Decide runId reuse from the PRE-clean-slate state. Once anything was
+    // published, re-analyzing must mint a FRESH id so the saveRun on reaching
+    // review can't overwrite the published history row in place (status:"draft",
+    // empty publishLog) and destroy its ADO ids / web URLs. The clean-slate
+    // set() just below empties publishLog, so this decision can't be deferred
+    // until after it — reading get().publishLog there always sees [].
+    const reuseRunId = (() => {
+      const s = get();
+      return s.runId && !s.publishLog.some((l) => l.status === "ok")
+        ? s.runId
+        : null;
+    })();
     set({
       phase: "analyzing",
       stepLabel: "Reading suite…",
       activityLog: [],
       error: null,
       errorPhase: null,
+      // Clean-slate the prior run's RESULT state (mirrors tryAgain). When
+      // analyze is reached from a reopened published/draft run via the input
+      // breadcrumb, goToInput preserves everything — without this, the new
+      // generation inherits the previous run's publishLog (false "already
+      // published" banner, stale "done" breadcrumb) and refine history.
+      cases: [],
+      bugs: [],
+      rawText: "",
+      publishLog: [],
+      durationMs: null,
+      refineRounds: [],
+      refineHistory: [],
       // A fresh analyze invalidates any prior refine snapshot — there's no
       // previous batch to restore once we kick a brand new run.
       refineUndoSnapshot: null,
@@ -731,7 +763,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     }
 
     const chat = useChatStore.getState();
-    const keys = chat.apiKeys;
+    const keys = await chat.ensureApiKeys();
     // Per-generation override wins over the global default. Resetting on
     // startNew keeps each new run anchored to the latest default unless the
     // user explicitly picks a model again.
@@ -763,7 +795,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         existingCases,
         relatedCases,
         targetContext,
-        mode,
+        coverage,
+        suggestBugs,
         keys,
         modelId,
         local: localProviderConfig(prefs),
@@ -787,7 +820,29 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       // If the user cancelled while the model was running, don't drop them
       // into review — the cancel() action already moved us back to input.
       if (get().phase !== "analyzing") return;
-      const runId = get().runId ?? newRunId();
+      // An empty batch is a dead-end: dropping into a blank review reads as
+      // "nothing happened" and is the silent-failure users hit with custom
+      // connectors. Surface it as a classified error with WHY-specific
+      // guidance instead. tryAgain() keeps the spec, so it's a one-click fix.
+      if (cases.length === 0 && bugs.length === 0) {
+        const why = !result.ok
+          ? result.reason === "empty"
+            ? "The model returned an empty response — no test cases came back. OpenAI-compatible or custom endpoints often need JSON mode (structured output) turned on before they return a usable batch."
+            : "The model's response couldn't be read as the structured format the generator expects, and nothing usable could be salvaged from it. This is common with OpenAI-compatible or custom endpoints that don't fully support structured JSON output."
+          : "The model ran but produced no test cases or bugs for this spec.";
+        set({
+          phase: "error",
+          error: `No test cases generated. ${why}`,
+          errorPhase: "analyze",
+          stepLabel: "",
+        });
+        return;
+      }
+      // Reuse the id only for an as-yet-unpublished draft (decided above, before
+      // the clean-slate set wiped publishLog); once anything was published this
+      // is a new run and gets a fresh id so the saveRun below can't overwrite
+      // the published history row in place.
+      const runId = reuseRunId ?? newRunId();
       set({
         phase: "review",
         cases,
@@ -816,7 +871,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           planName: targetContext?.planName ?? null,
           suiteId: s.suiteId,
           suiteName: targetContext?.suiteName ?? null,
-          mode: s.mode,
+          mode: describeGeneration(s.coverage, s.suggestBugs),
           specExcerpt: specExcerpt(s.requirements ?? ""),
           cases: s.cases.map((c) => ({
             title: c.title,
@@ -834,7 +889,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           draftPayload: {
             requirements: s.requirements,
             changesets: s.changesets,
-            mode: s.mode,
+            coverage: s.coverage,
+            suggestBugs: s.suggestBugs,
             overrideModelId: s.overrideModelId,
             cases: s.cases,
             bugs: s.bugs,
@@ -1183,13 +1239,17 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     // with the same commit.
     let trackingBranch = "main";
     let sourceDirSha: string | null = null;
+    // Whether we actually resolved a branch from the working dir. trackingBranch
+    // falls back to "main" when this stays null (non-git source dir / detached
+    // HEAD) — but we must NOT stamp that fabricated "main" onto code links for a
+    // source the user has no branch for, so the stamp below gates on this.
+    let sourceDirBranch: string | null = null;
     let orgUrl = "";
     let project = "";
     try {
       const conn = await getConnection();
       orgUrl = conn.orgUrl ?? "";
       project = conn.project ?? "";
-      let sourceDirBranch: string | null = null;
       const sourceRoot = usePreferencesStore.getState().sourceRoot;
       if (sourceRoot) {
         try {
@@ -1223,7 +1283,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         // in (default). Passing "" omits the branch from the source-links block.
         const sourceLinksBlock = renderSourceLinksBlock(
           c.sourceLinks,
-          tagSourceBranch ? trackingBranch : "",
+          // Only stamp a branch we actually resolved from the working dir —
+          // never the "main" fallback on a non-git / detached-HEAD source.
+          tagSourceBranch && sourceDirBranch ? trackingBranch : "",
         );
         const steps = c.steps.map((s, i) => ({
           index: i + 1,
@@ -1373,7 +1435,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         planName: null,
         suiteId: s.suiteId,
         suiteName: null,
-        mode: s.mode,
+        mode: describeGeneration(s.coverage, s.suggestBugs),
         specExcerpt: specExcerpt(s.requirements ?? ""),
         cases: keptCases.map((c) => ({
           title: c.title,
@@ -1401,7 +1463,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         draftPayload: {
           requirements: s.requirements,
           changesets: s.changesets,
-          mode: s.mode,
+          coverage: s.coverage,
+          suggestBugs: s.suggestBugs,
           overrideModelId: s.overrideModelId,
           cases: s.cases,
           bugs: s.bugs,
@@ -1504,7 +1567,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       requirements: s.requirements,
       changesets: s.changesets,
       attachments: s.attachments,
-      mode: s.mode,
+      coverage: s.coverage,
+      suggestBugs: s.suggestBugs,
       targetContext,
       relatedCases,
       keptCases,
@@ -1515,7 +1579,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     });
 
     const chat = useChatStore.getState();
-    const keys = chat.apiKeys;
+    const keys = await chat.ensureApiKeys();
     const modelId = s.overrideModelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
     const { blocks: bpBlocks, warnings: bpWarnings } =
@@ -1539,7 +1603,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         existingCaseTitles: [],
         relatedCases,
         targetContext,
-        mode: s.mode,
+        coverage: s.coverage,
+        suggestBugs: s.suggestBugs,
         keys,
         modelId,
         local: localProviderConfig(prefs),
@@ -1602,6 +1667,14 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           uid: uid(),
           decision: "keep" as const,
           similarMatches: prev ? prev.similarMatches : [],
+          // Carry the reviewer's "update existing case #N" binding forward on a
+          // title match — it's an ADO-case identity, NOT tied to the draft body,
+          // so gate on `prev` (title), not `contentUnchanged`. Without this a
+          // refine silently drops the binding and publish CREATES a duplicate
+          // work item instead of updating the case the reviewer chose.
+          ...(prev?.updateTargetCaseId != null
+            ? { updateTargetCaseId: prev.updateTargetCaseId }
+            : {}),
           ...(contentUnchanged && prev?.verdict ? { verdict: prev.verdict } : {}),
           ...(contentUnchanged && prev?.desiredOutcome
             ? {
@@ -1753,7 +1826,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       }));
 
     const chat = useChatStore.getState();
-    const keys = chat.apiKeys;
+    const keys = await chat.ensureApiKeys();
     const modelId = s.overrideModelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
     const { blocks: bpBlocks, warnings: bpWarnings } =
@@ -1891,7 +1964,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       phase: "review",
       requirements: payload.requirements ?? "",
       changesets: payload.changesets ?? "",
-      mode: payload.mode ?? "thorough",
+      // Prefer the two-axis fields; fall back to deriving from a legacy draft's
+      // single `mode` so pre-split drafts still restore correctly.
+      coverage: payload.coverage ?? modeToAxes(payload.mode).coverage,
+      suggestBugs: payload.suggestBugs ?? modeToAxes(payload.mode).suggestBugs,
       overrideModelId: payload.overrideModelId ?? null,
       cases: payload.cases ?? [],
       bugs: payload.bugs ?? [],
@@ -1971,7 +2047,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       suiteName: payload?.suiteName ?? run.suiteName ?? null,
       requirements: payload?.requirements ?? "",
       changesets: payload?.changesets ?? "",
-      mode: payload?.mode ?? "thorough",
+      coverage: payload?.coverage ?? modeToAxes(payload?.mode).coverage,
+      suggestBugs: payload?.suggestBugs ?? modeToAxes(payload?.mode).suggestBugs,
       overrideModelId: payload?.overrideModelId ?? null,
       cases: payload?.cases ?? [],
       bugs: payload?.bugs ?? [],

@@ -17,7 +17,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Label } from "@/components/ui/label";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
@@ -40,12 +39,12 @@ import { ConfidenceChip } from "@/modules/test-plans/components/ConfidenceChip";
 import { ConfidenceDetailPanel } from "@/modules/test-plans/components/ConfidenceDetailPanel";
 import { evaluateCaseConfidence } from "@/modules/test-plans/lib/evaluateCaseConfidence";
 import {
-  type GenerationMode,
   type PublishLogEntry,
   type SessionState,
   useGenerationSession,
   useGenerationSessionStore,
 } from "./store/useGenerationSession";
+import { describeGeneration, type Coverage } from "./lib/qaAnalystRun";
 import { useTestPlans } from "@/modules/test-plans";
 import {
   adoErrorMessage,
@@ -69,7 +68,6 @@ import {
   Key01Icon,
   Loading03Icon,
   PlayIcon,
-  PlugSocketIcon,
   RefreshIcon,
   RemoveCircleIcon,
   Settings01Icon,
@@ -82,6 +80,7 @@ import { AnalyzeActivityLog } from "./components/AnalyzeActivityLog";
 import { EditableText } from "./components/EditableText";
 import { RefineComposer } from "./components/RefineComposer";
 import { ReviewChat } from "./components/ReviewChat";
+import { InlineNotice } from "./components/InlineNotice";
 import { TargetContextChip } from "./components/TargetContextChip";
 import { BugCaseLinkPicker } from "./components/BugCaseLinkPicker";
 import { DeveloperPicker } from "./components/DeveloperPicker";
@@ -211,12 +210,6 @@ function deriveTabLabelFromTarget(input: {
   if (firstLine) return ellipsizeForTab(firstLine);
   return "Generate cases";
 }
-
-const MODE_LABELS: Record<GenerationMode, string> = {
-  happy: "Happy path only",
-  thorough: "Happy + edge + negative",
-  "bug-hunt": "Bug-hunt (suggests bugs)",
-};
 
 const STEPS = [
   { id: "input", label: "input" },
@@ -629,7 +622,8 @@ function ProgressStrip({
 
 function InputPhase() {
   const requirements = useGenerationSession((s) => s.requirements);
-  const mode = useGenerationSession((s) => s.mode);
+  const coverage = useGenerationSession((s) => s.coverage);
+  const suggestBugs = useGenerationSession((s) => s.suggestBugs);
   const planId = useGenerationSession((s) => s.planId);
   const suiteId = useGenerationSession((s) => s.suiteId);
   const tagSourceBranch = useGenerationSession((s) => s.tagSourceBranch);
@@ -637,7 +631,8 @@ function InputPhase() {
   const attachments = useGenerationSession((s) => s.attachments);
   const overrideModelId = useGenerationSession((s) => s.overrideModelId);
   const setRequirements = useGenerationSession((s) => s.setRequirements);
-  const setMode = useGenerationSession((s) => s.setMode);
+  const setCoverage = useGenerationSession((s) => s.setCoverage);
+  const setSuggestBugs = useGenerationSession((s) => s.setSuggestBugs);
   const setTarget = useGenerationSession((s) => s.setTarget);
   const setOverrideModelId = useGenerationSession((s) => s.setOverrideModelId);
   const addRichAttachment = useGenerationSession((s) => s.addRichAttachment);
@@ -665,6 +660,14 @@ function InputPhase() {
   const sessionStore = useGenerationSessionStore();
   const defaultModelId = useChatStore((s) => s.selectedModelId);
   const activeModelId = overrideModelId ?? defaultModelId;
+  // An override only *means* anything while it differs from the current
+  // default. If the user overrides to Opus and then makes Opus the default,
+  // the run already uses Opus either way — so the picker should read "default",
+  // not "run-only". Because this derives from defaultModelId (a live store
+  // subscription), changing the default in Settings reconciles the badge
+  // immediately, without the user having to re-open the picker.
+  const isOverriding =
+    overrideModelId !== null && overrideModelId !== defaultModelId;
   const activeModel = getModel(activeModelId);
   const defaultModel = getModel(defaultModelId);
   const availability = useModelAvailability();
@@ -816,6 +819,7 @@ function InputPhase() {
               <MentionDropdown mention={mention} placement="bottom" />
             ) : null}
             <textarea
+              aria-label="Requirements / feature spec"
               value={requirements}
               onChange={(e) => {
                 setRequirements(e.target.value);
@@ -880,30 +884,26 @@ function InputPhase() {
             />
           </div>
           {ingestErrors.length > 0 ? (
-            <div className="mt-1.5 flex items-start gap-1.5 rounded-md border border-destructive/30 bg-destructive/[0.06] px-2 py-1.5">
-              <ul className="flex min-w-0 flex-1 flex-col gap-0.5 text-[10.5px] text-destructive">
+            <InlineNotice
+              tone="error"
+              label={
+                ingestErrors.length === 1
+                  ? "attachment skipped"
+                  : "attachments skipped"
+              }
+              className="mt-1.5"
+              onDismiss={() => setIngestErrors([])}
+              dismissLabel="Dismiss attachment errors"
+              hint="Supported: text, code, JSON/YAML/Markdown, and images under 2 MB."
+            >
+              <ul className="flex flex-col gap-0.5">
                 {ingestErrors.map((m, i) => (
                   <li key={i} className="font-mono">
                     {m}
                   </li>
                 ))}
               </ul>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    onClick={() => setIngestErrors([])}
-                    aria-label="Dismiss attachment errors"
-                    className="shrink-0 rounded p-0.5 text-destructive/70 hover:bg-destructive/15 hover:text-destructive"
-                  >
-                    <HugeiconsIcon icon={Cancel01Icon} size={10} strokeWidth={2} />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="text-[11px]">
-                  Dismiss
-                </TooltipContent>
-              </Tooltip>
-            </div>
+            </InlineNotice>
           ) : null}
         </Field>
 
@@ -962,33 +962,62 @@ function InputPhase() {
           </Field>
         </div>
 
-        <Field label="Generation mode">
-          <RadioGroup
-            value={mode}
-            onValueChange={(v) => setMode(v as GenerationMode)}
-            className="flex flex-col gap-1"
-          >
-            {(["happy", "thorough", "bug-hunt"] as GenerationMode[]).map((m) => (
-              <label
-                key={m}
+        <Field label="Coverage">
+          <div className="flex gap-1.5">
+            {(
+              [
+                ["full", "Full", "Happy + edge + negative"],
+                ["happy", "Happy path", "Main successful flows only"],
+              ] as [Coverage, string, string][]
+            ).map(([c, label, sub]) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => setCoverage(c)}
+                aria-pressed={coverage === c}
                 className={cn(
-                  "flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 text-[11.5px] transition-colors hover:bg-foreground/[0.03]",
-                  mode === m
+                  "min-w-0 flex-1 rounded-md border px-2.5 py-1.5 text-left transition-colors hover:bg-foreground/[0.03]",
+                  coverage === c
                     ? "border-primary/40 bg-primary/[0.05]"
                     : "border-border/50",
                 )}
               >
-                <RadioGroupItem value={m} className="size-3.5" />
-                <span>{MODE_LABELS[m]}</span>
-                {m === "thorough" ? (
-                  <span className="ml-auto rounded-sm bg-foreground/[0.06] px-1.5 py-px text-[9.5px] uppercase tracking-wide text-muted-foreground">
-                    Recommended
-                  </span>
-                ) : null}
-              </label>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11.5px] font-medium">{label}</span>
+                  {c === "full" ? (
+                    <span className="rounded-sm bg-foreground/[0.06] px-1.5 py-px text-[9.5px] uppercase tracking-wide text-muted-foreground">
+                      Recommended
+                    </span>
+                  ) : null}
+                </div>
+                <div className="mt-0.5 text-[10px] text-muted-foreground">
+                  {sub}
+                </div>
+              </button>
             ))}
-          </RadioGroup>
+          </div>
         </Field>
+
+        {/* Bug suggestions are a separate decision from coverage depth — an
+            independent toggle (default on) reads far clearer than folding it
+            into a "bug-hunt" mode that secretly also meant "full coverage". */}
+        <label
+          className={cn(
+            "flex cursor-pointer items-center justify-between gap-3 rounded-md border px-3 py-2 transition-colors hover:bg-foreground/[0.03]",
+            suggestBugs
+              ? "border-primary/40 bg-primary/[0.04]"
+              : "border-border/50",
+          )}
+        >
+          <div className="min-w-0">
+            <div className="text-[11.5px] font-medium">Suggest bugs</div>
+            <div className="mt-0.5 text-[10px] leading-relaxed text-muted-foreground">
+              Flag concrete defects the spec or source code reveals, alongside
+              the generated test cases.
+            </div>
+          </div>
+          <Switch checked={suggestBugs} onCheckedChange={setSuggestBugs} />
+        </label>
 
         {git.branch ? (
           <label
@@ -1059,7 +1088,7 @@ function InputPhase() {
                       // chip stays understated so the picker reads as a hint,
                       // not a CTA.
                       "inline-flex h-8 min-w-0 max-w-full items-center gap-2 rounded-md border bg-card px-2.5 text-[11.5px] transition-colors hover:border-primary/60",
-                      overrideModelId
+                      isOverriding
                         ? "border-primary/50 bg-primary/[0.06]"
                         : "border-border/60",
                     )}
@@ -1067,12 +1096,12 @@ function InputPhase() {
                     <span
                       className={cn(
                         "shrink-0 rounded-sm px-1 py-px font-mono text-[9.5px] uppercase tracking-wide",
-                        overrideModelId
+                        isOverriding
                           ? "bg-primary/15 text-primary"
                           : "bg-foreground/[0.06] text-muted-foreground",
                       )}
                     >
-                      {overrideModelId ? "run-only" : "default"}
+                      {isOverriding ? "run-only" : "default"}
                     </span>
                     <ProviderIcon provider={provider} size={12} />
                     <span className="min-w-0 max-w-[180px] truncate font-medium">
@@ -1097,7 +1126,7 @@ function InputPhase() {
                   variant="panel"
                   className="max-w-[300px] px-3 py-2 text-[11px] leading-relaxed"
                 >
-                  {overrideModelId ? (
+                  {isOverriding ? (
                     <p>
                       <span className="font-medium">Run-only override.</span>{" "}
                       This generation uses{" "}
@@ -1118,7 +1147,7 @@ function InputPhase() {
               </Tooltip>
             )}
           />
-          {overrideModelId ? (
+          {isOverriding ? (
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -1227,11 +1256,14 @@ function InputPhase() {
         <ul className="flex flex-col gap-2 rounded-md border border-border/60 bg-card/40 p-2.5 text-[11px]">
           <PreviewRow label="Plan" value={planName ?? "—"} />
           <PreviewRow label="Suite" value={suiteName ?? "—"} />
-          <PreviewRow label="Mode" value={MODE_LABELS[mode]} />
+          <PreviewRow
+            label="Generation"
+            value={describeGeneration(coverage, suggestBugs)}
+          />
           <PreviewRow
             label="Model"
             value={
-              overrideModelId ? (
+              isOverriding ? (
                 <span className="inline-flex flex-col items-end gap-0.5">
                   <span className="inline-flex items-center gap-1.5">
                     <span className="rounded-sm bg-primary/15 px-1 py-px font-mono text-[9.5px] text-primary">
@@ -1298,7 +1330,8 @@ function AnalyzingPhase() {
   const stepLabel = useGenerationSession((s) => s.stepLabel);
   const cancel = useGenerationSession((s) => s.cancel);
   const requirements = useGenerationSession((s) => s.requirements);
-  const mode = useGenerationSession((s) => s.mode);
+  const coverage = useGenerationSession((s) => s.coverage);
+  const suggestBugs = useGenerationSession((s) => s.suggestBugs);
   const activityLog = useGenerationSession((s) => s.activityLog);
   const attachments = useGenerationSession((s) => s.attachments);
   // Long specs dominate the analyzing view — collapse anything past ~12
@@ -1362,7 +1395,7 @@ function AnalyzingPhase() {
             size={11}
             strokeWidth={1.75}
           />
-          <span>Requirements ({MODE_LABELS[mode]})</span>
+          <span>Requirements ({describeGeneration(coverage, suggestBugs)})</span>
           <span className="ml-1 font-mono normal-case text-[9.5px] text-muted-foreground/55">
             {requirements.length.toLocaleString()} chars
           </span>
@@ -1819,7 +1852,10 @@ function ReviewPhase({
           }
         }
       } else if (e.key.toLowerCase() === "p") {
-        if (kept > 0) {
+        // Match the Publish button's disable rule (unpublished items only) so
+        // 'p' can't flip the pane into a no-op publish when everything kept has
+        // already been published.
+        if (keptCasesUnpublished + keptBugsUnpublished > 0) {
           e.preventDefault();
           void publish();
         }
@@ -1827,7 +1863,15 @@ function ReviewPhase({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [cases, bugs, kept, setCaseDecision, setBugDecision, publish]);
+  }, [
+    cases,
+    bugs,
+    keptCasesUnpublished,
+    keptBugsUnpublished,
+    setCaseDecision,
+    setBugDecision,
+    publish,
+  ]);
 
   if (cases.length === 0 && bugs.length === 0) {
     return (
@@ -2345,21 +2389,13 @@ function ReviewPhase({
             count={bugs.length}
           />
           {orphanedKeptBugCount > 0 ? (
-            <div className="flex items-start gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/[0.06] px-2.5 py-1.5 text-[10.5px] text-amber-700 dark:text-amber-300">
-              <HugeiconsIcon
-                icon={AlertCircleIcon}
-                size={11}
-                strokeWidth={1.9}
-                className="mt-px shrink-0"
-              />
-              <span>
-                {orphanedKeptBugCount} kept bug
-                {orphanedKeptBugCount === 1 ? "" : "s"}{" "}
-                {orphanedKeptBugCount === 1 ? "isn't" : "aren't"} linked to a
-                kept case — {orphanedKeptBugCount === 1 ? "it" : "they"} won't be
-                filed. Link a parent case below.
-              </span>
-            </div>
+            <InlineNotice tone="warning" role="status" className="mt-1">
+              {orphanedKeptBugCount} kept bug
+              {orphanedKeptBugCount === 1 ? "" : "s"}{" "}
+              {orphanedKeptBugCount === 1 ? "isn't" : "aren't"} linked to a kept
+              case — {orphanedKeptBugCount === 1 ? "it" : "they"} won't be filed.
+              Link a parent case below.
+            </InlineNotice>
           ) : null}
           {bugs.some((bug) => bug.decision === "keep") ? (
             <div className="mb-2 mt-1 flex flex-wrap items-center gap-1.5 text-[10.5px] text-muted-foreground">
@@ -2761,8 +2797,8 @@ function classifyError(
         ? `The model you have selected uses ${providerLabel}, but no ${providerLabel} key is stored in the keychain. You can either add the key, or switch to a model from a provider you've already configured — DevOps Studio works with any of them.`
         : "The active model needs an API key, and the keychain doesn't have one stored for that provider.",
       steps: [
-        "Open Models settings and either paste a key for that provider, or switch the active model to one your current engine can drive.",
-        "If you connected Claude Code, switch the active model to Claude Sonnet/Opus/Haiku so it goes through the CLI instead of the API.",
+        "Open Settings → Models and paste a key for that provider — or switch the active model to a provider you've already set up.",
+        "Already added it? Check you saved it under the right provider: each provider (Anthropic, OpenAI, …) keeps its own separate key.",
       ],
       primary: {
         label: "Open AI / Models",
@@ -2773,20 +2809,21 @@ function classifyError(
   }
 
   if (
-    /claude.*not.*installed/.test(lower) ||
-    /claude.*path/.test(lower) ||
-    /claude.*spawn/.test(lower) ||
-    /not-installed/.test(lower)
+    /context length|context window|prompt is too long|too long.*tokens|tokens.*(maximum|exceed)|maximum context|exceed.*context|input.*too long|context_length_exceeded|reduce the length/.test(
+      lower,
+    )
   ) {
     return {
-      code: "AUTH/02 · CLAUDE-CLI",
-      title: "Claude Code CLI didn't respond",
-      icon: PlugSocketIcon,
-      tone: "auth",
-      why: "We tried to run the Claude CLI to drive the run, but the binary either wasn't found on PATH or it failed before producing any output.",
+      code: "INPUT/02 · CONTEXT-OVERFLOW",
+      title: "Too much input for this model's context window",
+      icon: AiBrain01Icon,
+      tone: "config",
+      why: "The combined spec, attachments, and any files the analyzer read exceed the selected model's context window, so the provider rejected the request before generating anything. Different models have different limits.",
       steps: [
-        "Install Claude Code from claude.ai/code if you haven't.",
-        "In Models settings, re-detect the CLI and run setup-token if the auth status is empty.",
+        "Trim the spec, or split a very large feature into separate runs.",
+        "Remove large attachments — paste only the relevant excerpts.",
+        "Turn off code search for this run (it reads files into the prompt), or point the source dir at a narrower folder.",
+        "Or switch to a larger-context model for this run (e.g. one with a 1M-token window).",
       ],
       primary: {
         label: "Open AI / Models",
@@ -2797,45 +2834,63 @@ function classifyError(
   }
 
   if (
-    /claude exited with code/.test(lower) ||
-    /could not spawn claude/.test(lower) ||
-    /non-zero-exit/.test(lower)
+    /\b429\b|rate.?limit|too many requests|insufficient_quota|over.?loaded|\b529\b|\b503\b|\b502\b|service unavailable|payment required|\b402\b|insufficient.*credit|out of credit/.test(
+      lower,
+    )
   ) {
-    // The CLI ran but exited non-zero — the tail of stderr is appended to
-    // the message by claudeErrorMessage. Surface that as the "why" so the
-    // user sees the actual reason (bad model, missing key, etc.) instead
-    // of a generic "Something went wrong".
+    const isCredits =
+      /payment required|\b402\b|insufficient.*credit|out of credit/.test(lower);
+    const isOverload = /over.?loaded|\b529\b|\b503\b|\b502\b|service unavailable/.test(lower);
     return {
-      code: "CLAUDE/01 · NON-ZERO-EXIT",
-      title: "Claude Code CLI failed mid-run",
-      icon: PlugSocketIcon,
-      tone: "auth",
-      why: message,
-      steps: [
-        "Open Settings → Models and re-detect the CLI — re-run setup-token if Authenticated isn't green.",
-        "If the engine is set to Claude Code, make sure the active model is an Anthropic one (Opus / Sonnet / Haiku).",
-        "If you're on the Anthropic API-key auth mode, verify the key under Providers → Anthropic.",
-      ],
-      primary: {
-        label: "Open AI / Models",
-        icon: AiBrain01Icon,
-        onClick: () => void openSettingsWindow("models"),
-      },
+      code: isCredits
+        ? "PROVIDER/02 · NO-CREDITS"
+        : isOverload
+          ? "PROVIDER/03 · OVERLOADED"
+          : "PROVIDER/01 · RATE-LIMIT",
+      title: isCredits
+        ? "Out of provider credits"
+        : isOverload
+          ? "The provider is temporarily overloaded"
+          : "Rate-limited by the provider",
+      icon: WifiDisconnected01Icon,
+      tone: "network",
+      why: isCredits
+        ? "The provider rejected the request for billing reasons (402 / insufficient credits). This is not a key problem — your key is valid."
+        : isOverload
+          ? "The provider is temporarily overloaded or unavailable (502 / 503 / 529). This is on their side, not your key — and you're usually not billed for it."
+          : "You hit the provider's rate limit (429) — too many requests in a short window. Your key is fine.",
+      steps: isCredits
+        ? [
+            "Top up credits or check billing in the provider's console.",
+            "Or switch to a model from a provider you have credit with.",
+          ]
+        : isOverload
+          ? [
+              "Wait a moment and retry — the run is idempotent until you publish.",
+              "If it keeps happening, try a different model or provider.",
+            ]
+          : [
+              "Wait a little and retry (the provider may send a Retry-After hint).",
+              "Or switch to a less rate-limited model for this run.",
+            ],
     };
   }
 
   if (
-    /network|timeout|econnreset|enotfound|fetch failed|getaddrinfo/.test(lower)
+    /network|timeout|econnreset|enotfound|fetch failed|failed to fetch|load failed|getaddrinfo|dns|connection (refused|reset)|private\/loopback|no safe ips|host not allowed|error sending request/.test(
+      lower,
+    )
   ) {
     return {
       code: "NET/01 · UNREACHABLE",
       title: "Couldn't reach the model provider",
       icon: WifiDisconnected01Icon,
       tone: "network",
-      why: "The HTTP request to the model API failed before a response came back. Most often this is a corporate proxy, an off-VPN session, or transient DNS.",
+      why: "The HTTP request to the model API failed before a response came back. Most often this is no internet connection, a corporate proxy or VPN blocking the provider, transient DNS, or a wrong base URL on a custom provider.",
       steps: [
-        "Check if anything else on your machine can reach the internet right now.",
-        "If you're on a VPN/proxy, confirm the provider's domain isn't blocked.",
+        "Check that this machine can reach the internet right now.",
+        "On a VPN or proxy, confirm the provider's domain isn't blocked.",
+        "Using a custom (OpenAI-compatible) provider? Double-check its base URL is reachable in Settings → Models.",
         "Retry — the run is idempotent until you publish.",
       ],
     };
@@ -2853,6 +2908,28 @@ function classifyError(
       steps: [
         "Regenerate the API key (or PAT) in the provider's console.",
         "Paste the new value into the relevant settings tab and retry.",
+      ],
+      primary: {
+        label: "Open AI / Models",
+        icon: AiBrain01Icon,
+        onClick: () => void openSettingsWindow("models"),
+      },
+    };
+  }
+
+  if (/no test cases generated/.test(lower)) {
+    return {
+      code: "GEN/02 · EMPTY-RESULT",
+      title: "The model returned no test cases",
+      icon: AiBrain01Icon,
+      tone: "config",
+      // Drop the "No test cases generated." prefix — the title already says it;
+      // the why carries the model-specific reason.
+      why: message.replace(/^no test cases generated\.\s*/i, ""),
+      steps: [
+        "Try a more capable model — OpenAI-compatible or custom endpoints sometimes can't return reliable structured JSON.",
+        "Add detail to your requirements, or set Coverage to Full (and turn on Suggest bugs) for wider coverage.",
+        "Open the raw error below to see exactly what the model sent back.",
       ],
       primary: {
         label: "Open AI / Models",
@@ -2900,7 +2977,7 @@ function classifyError(
     icon: AlertCircleIcon,
     tone: "unknown",
     why: "The run failed before we could route it into a specific recovery path. The raw message from the underlying SDK is below — paste it into an issue if it keeps happening.",
-    steps: ["Click Retry to bounce back to the input form with your spec preserved."],
+    steps: ["Use “Back to input” to return to the form — your spec is preserved — then run again."],
   };
 }
 
@@ -2960,6 +3037,16 @@ function ErrorPhase() {
   const errorPhase = useGenerationSession((s) => s.errorPhase);
   const tryAgain = useGenerationSession((s) => s.tryAgain);
   const startNew = useGenerationSession((s) => s.startNew);
+  // Is there anything in the form worth protecting from an accidental wipe?
+  // Drives whether "Start over" confirms first — the user lost their spec to
+  // an unguarded click here once, so a non-empty form gets a confirm step.
+  const hasDraftInput = useGenerationSession(
+    (s) =>
+      s.requirements.trim().length > 0 ||
+      s.changesets.trim().length > 0 ||
+      s.attachments.length > 0,
+  );
+  const [confirmStartOver, setConfirmStartOver] = useState(false);
 
   const message =
     typeof error === "string"
@@ -3099,41 +3186,72 @@ function ErrorPhase() {
         <div className="flex items-center gap-2">
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={tryAgain}
-              >
-                <HugeiconsIcon
-                  icon={RefreshIcon}
-                  size={11}
-                  strokeWidth={1.75}
-                />
-                Retry
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="top" className="text-[11px]">
-              Bounce back to the input form. Your spec, target plan, and
-              attachments are kept intact.
-            </TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button size="sm" variant="ghost" onClick={startNew}>
+              <Button size="sm" variant="outline" onClick={tryAgain}>
                 <HugeiconsIcon
                   icon={ArrowLeft02Icon}
                   size={11}
                   strokeWidth={1.75}
                 />
-                Start over
+                Back to input
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="top" className="text-[11px]">
-              Clear the form and start a fresh session.
+            <TooltipContent side="top" className="max-w-[260px] text-[11px]">
+              Return to the form with your spec, target plan, and attachments
+              intact. Fix the issue, then run again.
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  if (hasDraftInput) setConfirmStartOver(true);
+                  else startNew();
+                }}
+                className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+              >
+                <HugeiconsIcon
+                  icon={RemoveCircleIcon}
+                  size={11}
+                  strokeWidth={1.75}
+                />
+                Clear &amp; start over
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-[260px] text-[11px]">
+              Discard this spec and everything in the form, and begin a fresh
+              session. Use “Back to input” instead if you just want to retry.
             </TooltipContent>
           </Tooltip>
         </div>
       </div>
+
+      {/* Confirm before the destructive wipe — losing a typed-up spec to a
+          mis-click was a real foot-gun. Only fires when the form has content. */}
+      <AlertDialog open={confirmStartOver} onOpenChange={setConfirmStartOver}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard this spec?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Starting over clears your requirements, attachments, and target —
+              this can’t be undone. If you only want to fix the error and run
+              again, use “Back to input”, which keeps everything.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep my spec</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setConfirmStartOver(false);
+                startNew();
+              }}
+            >
+              Discard &amp; start over
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
