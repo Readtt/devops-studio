@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -335,6 +335,17 @@ fn cancel_registry() -> &'static Mutex<HashMap<u64, Arc<Notify>>> {
     REG.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Ids whose cancel arrived BEFORE `ai_http_stream` registered its Notify — the
+/// IPC for the stream and the cancel can interleave so the cancel finds no
+/// entry. The stream consumes this the instant it registers (under the SAME
+/// cancel_registry lock the cancel handler holds while inserting, so there's no
+/// lost-cancel gap), making the cancel land on the first poll instead of
+/// leaking a fully-drained — and billed — upstream request.
+fn precancel_registry() -> &'static Mutex<HashSet<u64>> {
+    static REG: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
+    REG.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
 /// Removes the registry entry when the stream ends by any path (natural end,
 /// error, cancel) so ids never accumulate.
 struct CancelGuard(Option<u64>);
@@ -355,6 +366,16 @@ pub fn ai_http_stream_cancel(request_id: u64) {
             // notify_one stores a permit if the stream loop isn't awaiting yet,
             // so a cancel that races ahead of the first select! still lands.
             n.notify_one();
+        } else if let Ok(mut pre) = precancel_registry().lock() {
+            // Cancel beat the stream's registration. Remember it (still holding
+            // the cancel_registry lock, so the stream can't slip its
+            // registration+check in between) — the stream will honor it the
+            // moment it registers. Bounded so cancels whose stream never
+            // arrives can't grow without limit.
+            if pre.len() > 512 {
+                pre.clear();
+            }
+            pre.insert(request_id);
         }
     }
 }
@@ -373,6 +394,15 @@ pub async fn ai_http_stream(
         let notify = Arc::new(Notify::new());
         if let Ok(mut reg) = cancel_registry().lock() {
             reg.insert(id, notify.clone());
+            // Consume any cancel that arrived before this registration — under
+            // the same cancel_registry lock the cancel handler holds, so a
+            // cancel can't land between our insert and this check. If one did,
+            // notify now so the very first select! below bails immediately.
+            if let Ok(mut pre) = precancel_registry().lock() {
+                if pre.remove(&id) {
+                    notify.notify_one();
+                }
+            }
         }
         notify
     });
@@ -419,6 +449,21 @@ pub async fn ai_http_stream(
     let _ = on_event.send(AiStreamEvent::Headers { status, headers });
 
     let mut stream = resp.bytes_stream();
+    // Idle/read timeout. A connection that succeeds then stalls mid-body (dead
+    // load balancer, provider hang, half-open TCP) would otherwise leave the
+    // stream — and the surface's UI — hanging forever, with manual cancel the
+    // only escape. This resets on every received chunk, so legitimately long
+    // generations (slow first token, reasoning models) are unaffected; only a
+    // genuinely silent connection trips it. A total .timeout() would be wrong
+    // here — it would kill healthy long streams.
+    const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+    let stalled = || {
+        let msg = "AI stream stalled — no data from the provider for 120s".to_string();
+        let _ = on_event.send(AiStreamEvent::Error {
+            message: msg.clone(),
+        });
+        msg
+    };
     loop {
         let item = match &cancel {
             Some(notify) => {
@@ -428,10 +473,16 @@ pub async fn ai_http_stream(
                         // connection so the provider stops generating.
                         return Ok(());
                     }
-                    item = stream.next() => item,
+                    r = tokio::time::timeout(IDLE_TIMEOUT, stream.next()) => match r {
+                        Ok(item) => item,
+                        Err(_) => return Err(stalled()),
+                    },
                 }
             }
-            None => stream.next().await,
+            None => match tokio::time::timeout(IDLE_TIMEOUT, stream.next()).await {
+                Ok(item) => item,
+                Err(_) => return Err(stalled()),
+            },
         };
         match item {
             None => break,
