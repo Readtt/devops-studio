@@ -295,6 +295,10 @@ async function hydrateThread(
  *  fire dozens of IO writes a second. The latest snapshot always wins
  *  within the throttle window. */
 const persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
+// In-flight stream abort handles, keyed by threadKey. cancel() aborts the entry
+// so Stop actually tears down the upstream request (and stops billing) instead
+// of letting the stream run to completion behind a flipped busy flag.
+const streamControllers = new Map<string, AbortController>();
 function schedulePersist(
   planId: number,
   suiteId: number,
@@ -703,6 +707,14 @@ export const useSuiteChat = create<Store>((set, get) => ({
         ? (text || "Image attachment").replace(/\s+/g, " ").trim().slice(0, 60)
         : curr.title;
 
+    // Register the abort handle BEFORE flipping busy (which makes Stop live)
+    // and before the pre-stream prep awaits below (ensureApiKeys, best-practice
+    // load, bug/confidence fetches). If it were created only just before the
+    // stream call, a Stop during that prep window would find no controller and
+    // the run would continue — and bill — to completion. cancel() aborts this
+    // signal; the stream call is passed it and rejects (AbortError) at once.
+    const ac = new AbortController();
+    streamControllers.set(tk, ac);
     patchThread(set, planId, suiteId, threadId, {
       busy: true,
       error: null,
@@ -769,7 +781,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
     });
 
     const chat = useChatStore.getState();
-    const keys = chat.apiKeys;
+    const keys = await chat.ensureApiKeys();
     const modelId = curr.modelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
     // Global code-search toggle gates source access for every surface.
@@ -832,7 +844,28 @@ export const useSuiteChat = create<Store>((set, get) => ({
         customInstructions: prefs.customInstructions || undefined,
         onText: appendDelta,
         onToolEvent: mergeToolEvent,
+        signal: ac.signal,
       });
+      // If Stop fired while the stream was resolving (the same-tick race the
+      // AbortError catch can't catch, or a Stop during pre-stream prep that let
+      // an already-aborted signal slip through), this run was cancelled. Drop
+      // the empty placeholder and bail so a "stopped" answer can't land in a
+      // thread the user believes is idle. A newer send for this thread replacing
+      // the controller is treated the same way.
+      if (ac.signal.aborted || streamControllers.get(tk) !== ac) {
+        set((s) => {
+          const next = new Map(s.byThread);
+          const slice = next.get(tk);
+          if (!slice) return s;
+          next.set(tk, {
+            ...slice,
+            messages: slice.messages.filter((m) => m.id !== assistantId),
+          });
+          return { byThread: next };
+        });
+        flushPersist(planId, suiteId, threadId, get);
+        return;
+      }
       set((s) => {
         const next = new Map(s.byThread);
         const slice = next.get(tk);
@@ -853,10 +886,14 @@ export const useSuiteChat = create<Store>((set, get) => ({
       // Bump this thread to the top of the switcher list.
       void refreshThreadList(planId, suiteId, set);
     } catch (e) {
+      // Treat both our tagged cancel and an aborted-stream AbortError as the
+      // cancelled path (drop the placeholder, no error toast).
+      const name = (e as { name?: string } | null)?.name;
       const cancelled =
-        typeof e === "object" &&
-        e !== null &&
-        (e as { kind?: string }).kind === "cancelled";
+        (typeof e === "object" &&
+          e !== null &&
+          (e as { kind?: string }).kind === "cancelled") ||
+        name === "AbortError";
       if (!cancelled) console.error("[suite-chat] failed:", e);
       set((s) => {
         const next = new Map(s.byThread);
@@ -873,7 +910,11 @@ export const useSuiteChat = create<Store>((set, get) => ({
                 e !== null &&
                 (e as { kind?: string }).kind
               ? adoErrorMessage(toAdoError(e))
-              : String(e),
+              : // Strip the JS "Error: " prefix so a thrown Error (e.g. the
+                // missing-key message) reads as guidance, not a leaked stack.
+                e instanceof Error
+                ? e.message
+                : String(e),
         });
         return { byThread: next };
       });
@@ -884,6 +925,10 @@ export const useSuiteChat = create<Store>((set, get) => ({
       // stale row survives in SQLite and reappears, broken, on the next
       // reload. Flush (not schedule) so a reload a beat later sees the truth.
       flushPersist(planId, suiteId, threadId, get);
+    } finally {
+      // Only clear our own handle — a newer send for this thread may have
+      // already replaced it, and cancel() may have removed it already.
+      if (streamControllers.get(tk) === ac) streamControllers.delete(tk);
     }
   },
 
@@ -957,11 +1002,15 @@ export const useSuiteChat = create<Store>((set, get) => ({
     const threadId =
       get().activeThreadBySuite.get(suiteKey(planId, suiteId)) ??
       DEFAULT_THREAD_ID;
-    const curr = get().byThread.get(threadKey(planId, suiteId, threadId));
+    const tk = threadKey(planId, suiteId, threadId);
+    const curr = get().byThread.get(tk);
     if (!curr?.busy) return;
-    // The streaming run isn't abortable mid-flight; flip busy off so the UI
-    // unsticks. The in-flight promise still resolves but its result handler
-    // is a no-op once busy is false.
+    // Abort the in-flight stream — this tears down the upstream request (the
+    // Rust proxy drops the connection) so the model actually stops generating
+    // (and billing), not just visually. The catch path drops the placeholder
+    // and clears busy; we also flip busy here so the UI unsticks immediately.
+    streamControllers.get(tk)?.abort();
+    streamControllers.delete(tk);
     patchThread(set, planId, suiteId, threadId, { busy: false });
   },
 

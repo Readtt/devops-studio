@@ -359,6 +359,10 @@ export type SuiteChatTaskInput = SuiteChatRunInput & {
   /** User's freeform "Custom instructions" from Settings — appended to the
    *  system prompt on every surface. Empty/absent ⇒ base prompt unchanged. */
   customInstructions?: string;
+  /** Abort handle. When the user hits Stop, aborting this signal tears down the
+   *  upstream request (the Rust proxy drops the connection) so the model
+   *  actually stops generating — and stops billing — rather than streaming on. */
+  signal?: AbortSignal;
 };
 
 /** Streaming suite-chat run. Calls `onText` with each text delta
@@ -386,6 +390,7 @@ export async function streamSuiteChatTask(
     maxSteps: SURFACE_STEP_CAPS.suiteChat,
     onToolEvent: input.onToolEvent,
     onText: input.onText,
+    signal: input.signal,
   });
   return { text: r.text, durationMs: r.durationMs };
 }
