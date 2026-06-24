@@ -179,6 +179,20 @@
     font-family: var(--font-mono);
     font-feature-settings: 'liga' 0, 'calt' 0;
   }
+  /* Password fields here ship their own show/hide toggle. WebView2 / Edge
+   * (Windows) also paints a native reveal eye via ::-ms-reveal, and WKWebView
+   * (macOS) adds credential auto-fill buttons — both stack a SECOND eye next to
+   * ours. Suppress the native controls so there's exactly one reveal affordance. */
+  input::-ms-reveal,
+  input::-ms-clear {
+    display: none;
+  }
+  input::-webkit-credentials-auto-fill-button,
+  input::-webkit-strong-password-auto-fill-button {
+    display: none !important;
+    visibility: hidden;
+    pointer-events: none;
+  }
 }
 
 /* App-wide UI scale used to live here as a CSS `zoom` rule. Replaced

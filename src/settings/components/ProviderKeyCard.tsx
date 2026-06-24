@@ -10,6 +10,7 @@ import {
 import { cn } from "@/lib/utils";
 import type { ProviderInfo } from "@/modules/ai/config";
 import {
+  AlertCircleIcon,
   ArrowUpRight01Icon,
   Cancel01Icon,
   CheckmarkCircle02Icon,
@@ -21,6 +22,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useState } from "react";
 import { ProviderIcon } from "./ProviderIcon";
+import { testProviderKey, type KeyTestResult } from "@/modules/ai/lib/testKey";
 
 type Props = {
   provider: ProviderInfo;
@@ -47,19 +49,30 @@ export function ProviderKeyCard({
   const [reveal, setReveal] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<KeyTestResult | null>(null);
 
   useEffect(() => {
     setEditing(!currentKey);
+    setTestResult(null);
   }, [currentKey]);
+
+  // Soft, NON-blocking nudge when the key doesn't match the provider's known
+  // prefix. Deliberately not a save blocker: a provider can rotate its prefix
+  // (Google did), and a prefix can't tell same-prefix providers apart (OpenAI
+  // and DeepSeek both use "sk-"). The Test button is the real wrong-/revoked-
+  // key catch.
+  const prefixWarn =
+    provider.keyPrefix &&
+    value.trim() &&
+    !value.trim().startsWith(provider.keyPrefix)
+      ? `This doesn't look like a ${provider.label} key (they start with "${provider.keyPrefix}") — you can still save it.`
+      : null;
 
   const submit = async () => {
     const trimmed = value.trim();
     if (!trimmed) {
       setError("Enter your API key.");
-      return;
-    }
-    if (provider.keyPrefix && !trimmed.startsWith(provider.keyPrefix)) {
-      setError(`${provider.label} keys start with "${provider.keyPrefix}".`);
       return;
     }
     setSaving(true);
@@ -68,10 +81,29 @@ export function ProviderKeyCard({
       await onSave(trimmed);
       setValue("");
       setReveal(false);
+      setTestResult(null);
     } catch (e) {
       setError(`Failed to save: ${String(e)}`);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const runTest = async (candidate: string) => {
+    const k = candidate.trim();
+    if (!k) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      setTestResult(await testProviderKey(provider.id, k));
+    } catch (e) {
+      setTestResult({
+        ok: false,
+        kind: "inconclusive",
+        message: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -132,6 +164,7 @@ export function ProviderKeyCard({
                 onChange={(e) => {
                   setValue(e.target.value);
                   if (error) setError(null);
+                  if (testResult) setTestResult(null);
                 }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
@@ -160,6 +193,24 @@ export function ProviderKeyCard({
                 />
               </button>
             </div>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void runTest(value)}
+                  disabled={testing || !value.trim()}
+                  className="h-8 gap-1 px-2.5 text-[11px]"
+                >
+                  {testing ? <Spinner className="size-3" /> : null}
+                  Test
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[240px] text-[11px]">
+                Fire one tiny request to confirm the key works before you rely
+                on it — catches wrong-provider, revoked, and no-credit keys.
+              </TooltipContent>
+            </Tooltip>
             <Button
               size="sm"
               onClick={() => void submit()}
@@ -170,59 +221,132 @@ export function ProviderKeyCard({
               Save
             </Button>
           </div>
-          {error ? (
-            <p className="text-[10.5px] text-destructive">{error}</p>
-          ) : null}
+          <KeyStatusLine
+            error={error}
+            prefixWarn={prefixWarn}
+            testResult={testResult}
+          />
         </div>
       ) : (
-        <div className="flex items-center gap-1.5">
-          <code
-            className={cn(
-              "flex-1 truncate rounded bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground",
-            )}
-          >
-            {maskKey(currentKey ?? "")}
-          </code>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                size="icon"
-                variant="ghost"
-                onClick={() => setEditing(true)}
-                aria-label="Replace key"
-                className="size-7"
-              >
-                <HugeiconsIcon icon={Edit02Icon} size={12} strokeWidth={1.75} />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="text-[11px]">
-              Replace this key
-            </TooltipContent>
-          </Tooltip>
-          {!onRemove ? (
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-1.5">
+            <code
+              className={cn(
+                "flex-1 truncate rounded bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground",
+              )}
+            >
+              {maskKey(currentKey ?? "")}
+            </code>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  onClick={() => currentKey && void runTest(currentKey)}
+                  disabled={testing || !currentKey}
+                  className="gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                >
+                  {testing ? <Spinner className="size-3" /> : null}
+                  Test
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[240px] text-[11px]">
+                Check the saved key still works — revoked, out of credits, or
+                for the wrong provider.
+              </TooltipContent>
+            </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   size="icon"
                   variant="ghost"
-                  onClick={() => void onClear()}
-                  aria-label="Remove key"
-                  className="size-7 text-muted-foreground hover:text-destructive"
+                  onClick={() => setEditing(true)}
+                  aria-label="Replace key"
+                  className="size-7"
                 >
-                  <HugeiconsIcon
-                    icon={Cancel01Icon}
-                    size={12}
-                    strokeWidth={1.75}
-                  />
+                  <HugeiconsIcon icon={Edit02Icon} size={12} strokeWidth={1.75} />
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="text-[11px]">
-                Remove this key
+                Replace this key
               </TooltipContent>
             </Tooltip>
+            {!onRemove ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => void onClear()}
+                    aria-label="Remove key"
+                    className="size-7 text-muted-foreground hover:text-destructive"
+                  >
+                    <HugeiconsIcon
+                      icon={Cancel01Icon}
+                      size={12}
+                      strokeWidth={1.75}
+                    />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-[11px]">
+                  Remove this key
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
+          </div>
+          {testResult ? (
+            <KeyStatusLine error={null} prefixWarn={null} testResult={testResult} />
           ) : null}
         </div>
       )}
     </div>
   );
+}
+
+/** One-line status under the key field: a save error, the live prefix warning,
+ *  or the result of a "Test" probe — each with a matching tone + glyph. */
+function KeyStatusLine({
+  error,
+  prefixWarn,
+  testResult,
+}: {
+  error: string | null;
+  prefixWarn: string | null;
+  testResult: KeyTestResult | null;
+}) {
+  if (error) {
+    return <p className="text-[10.5px] text-destructive">{error}</p>;
+  }
+  if (testResult) {
+    const tone = testResult.ok
+      ? "text-emerald-600 dark:text-emerald-400"
+      : testResult.kind === "inconclusive"
+        ? "text-muted-foreground"
+        : "text-destructive";
+    return (
+      <p className={cn("flex items-start gap-1 text-[10.5px]", tone)}>
+        <HugeiconsIcon
+          icon={testResult.ok ? CheckmarkCircle02Icon : AlertCircleIcon}
+          size={11}
+          strokeWidth={1.9}
+          className="mt-px shrink-0"
+        />
+        <span>{testResult.message}</span>
+      </p>
+    );
+  }
+  if (prefixWarn) {
+    return (
+      <p className="flex items-start gap-1 text-[10.5px] text-amber-700 dark:text-amber-300">
+        <HugeiconsIcon
+          icon={AlertCircleIcon}
+          size={11}
+          strokeWidth={1.75}
+          className="mt-px shrink-0"
+        />
+        <span>{prefixWarn}</span>
+      </p>
+    );
+  }
+  return null;
 }

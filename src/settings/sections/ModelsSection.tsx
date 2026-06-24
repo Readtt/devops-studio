@@ -202,7 +202,13 @@ export function ModelsSection() {
       const cfg = localConfig(id);
       if (cfg) {
         void cfg.setModelId("");
-        if (id === "openai-compatible") void cfg.setBaseURL("");
+        if (id === "openai-compatible") {
+          void cfg.setBaseURL("");
+          // Reset the custom context window too — without this a removed-then-
+          // re-added connector silently inherits the old limit (128_000 is the
+          // DEFAULT_PREFERENCES.openaiCompatibleContextLimit default).
+          void cfg.setContextLimit?.(128_000);
+        }
       }
       if (id === "openai-compatible") void onClearKey(id);
     } else {
@@ -364,15 +370,16 @@ function ProviderMenuItem({
 }
 
 /**
- * Single source-of-truth model picker. Adapts to the active engine:
- *   - Vercel AI SDK (BYOK): every model whose provider has a key (or whose
- *     local server is configured) is pickable.
- *   - Claude Code: Anthropic models only — the CLI can't drive others.
+ * Single source-of-truth model picker for the default model. One BYOK engine
+ * (the Vercel AI SDK) drives every provider — there is no engine selection. A
+ * model is pickable when its provider is configured: a cloud provider needs a
+ * key in the OS keychain; a local provider (LM Studio / MLX / Ollama /
+ * OpenAI-compatible) needs its base URL + model id set.
  *
  * The picker hides anything that isn't currently pickable, then surfaces a
- * "N locked — connect more providers" footer so users still see the choice
+ * "N hidden — connect more providers" footer so users still see the choice
  * is there. Writes through to the persisted `defaultModelId`, which is
- * mirrored into the chat store so the status bar and generator agree.
+ * mirrored into the chat store so the status bar and every AI surface agree.
  */
 function DefaultModelBlock({
   defaultModel,
@@ -409,7 +416,7 @@ function DefaultModelBlock({
           ? "A draft is open in the generator. Start a new session to switch models."
           : "";
   const engineHint =
-    "Used by the test-case generator unless you override it for a single run. Only providers you've connected are pickable.";
+    "The default for every AI feature — the test-case generator, Suite Chat, Commit Review, and Confidence — unless you override it for a single run. Only providers you've connected are pickable.";
 
   // When the active default isn't usable under the current configuration,
   // surface it inline rather than silently substituting at run time. The
@@ -505,7 +512,7 @@ function DefaultModelBlock({
               strokeWidth={1.75}
             />
             <span>
-              Current default isn't usable under the active engine —{" "}
+              Your current default model isn't connected —{" "}
               {defaultReason ?? "configure its provider"} or pick another above.
             </span>
           </p>
