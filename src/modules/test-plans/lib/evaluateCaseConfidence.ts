@@ -49,7 +49,7 @@ export async function evaluateCaseConfidence(
     sourceSha,
     sourceBranch,
     modelId,
-    keys: chat.apiKeys,
+    keys: await chat.ensureApiKeys(),
     local: localProviderConfig(prefs),
     runs: opts?.runs ?? 1,
     contextBlocks: blocks,

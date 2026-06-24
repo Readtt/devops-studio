@@ -16,7 +16,12 @@ vi.mock("@/modules/ai", () => ({
   hasKeyForModel: (...a: unknown[]) => hasKeyForModel(...a),
 }));
 vi.mock("@/modules/ai/store/chatStore", () => ({
-  useChatStore: { getState: () => ({ selectedModelId: "claude-opus-4-8" }) },
+  useChatStore: {
+    getState: () => ({
+      selectedModelId: "claude-opus-4-8",
+      ensureApiKeys: async () => ({}),
+    }),
+  },
 }));
 vi.mock("../lib/confidenceApi", () => ({
   getConfidenceMany: (...a: unknown[]) => getConfidenceMany(...a),

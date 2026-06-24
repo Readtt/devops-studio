@@ -7,8 +7,12 @@ import {
   type ProviderId,
 } from "../config";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { setDefaultModel } from "@/modules/settings/store";
-import { EMPTY_PROVIDER_KEYS, type ProviderKeys } from "../lib/keyring";
+import { setDefaultModel, onKeysChanged } from "@/modules/settings/store";
+import {
+  EMPTY_PROVIDER_KEYS,
+  getAllKeys,
+  type ProviderKeys,
+} from "../lib/keyring";
 import { pushRecentModel } from "../lib/modelPrefs";
 
 // Pared down to a model + API-key holder. The general chat/agent surface
@@ -18,8 +22,27 @@ import { pushRecentModel } from "../lib/modelPrefs";
 // from here is the selected model and the provider keys.
 type StoreState = {
   apiKeys: ProviderKeys;
+  /** True once the OS-keychain keys have been read into the store at least
+   *  once. Stays false on a cold start until `initApiKeys` resolves, so the
+   *  run surfaces can tell "keys not loaded yet" apart from "key missing". */
+  keysLoaded: boolean;
   setApiKeys: (keys: ProviderKeys) => void;
   setApiKey: (provider: ProviderId, key: string | null) => void;
+  /** Hydrate `apiKeys` from the OS keychain and keep them live by re-reading
+   *  whenever the Settings window saves or clears a key. Call exactly once at
+   *  app boot (App.tsx). Returns the unlisten for the keys-changed
+   *  subscription so the caller can detach on unmount.
+   *
+   *  This is THE source that the four BYOK surfaces (Generator, Suite Chat,
+   *  Commit Review, Confidence) read from at run time — without it every
+   *  key-requiring provider reports a false "missing key". */
+  initApiKeys: () => Promise<() => void>;
+  /** Return the provider keys, first awaiting the keychain hydration if it
+   *  hasn't completed. Run surfaces call THIS rather than reading `apiKeys`
+   *  directly, so a run dispatched in the brief cold-start window (before
+   *  `initApiKeys` resolves) can't read the all-null placeholder and report a
+   *  false "missing key". After hydration it resolves instantly. */
+  ensureApiKeys: () => Promise<ProviderKeys>;
 
   selectedModelId: ModelId;
   setSelectedModelId: (id: ModelId) => void;
@@ -27,9 +50,22 @@ type StoreState = {
 
 export const useChatStore = create<StoreState>((set, get) => ({
   apiKeys: { ...EMPTY_PROVIDER_KEYS },
-  setApiKeys: (keys) => set({ apiKeys: keys }),
+  keysLoaded: false,
+  setApiKeys: (keys) => set({ apiKeys: keys, keysLoaded: true }),
   setApiKey: (provider, key) => {
     set({ apiKeys: { ...get().apiKeys, [provider]: key } });
+  },
+  initApiKeys: async () => {
+    await reloadApiKeys();
+    // Re-hydrate whenever a key is saved/cleared in the Settings window, so a
+    // freshly-pasted key works in the open main window without a restart.
+    return onKeysChanged(() => {
+      void reloadApiKeys();
+    });
+  },
+  ensureApiKeys: async () => {
+    if (!get().keysLoaded) await (hydrationPromise ?? reloadApiKeys());
+    return get().apiKeys;
   },
 
   selectedModelId: DEFAULT_MODEL_ID,
@@ -44,6 +80,25 @@ export const useChatStore = create<StoreState>((set, get) => ({
     void setDefaultModel(id);
   },
 }));
+
+// Shared keychain loader. Module-level so boot hydration (initApiKeys) and a
+// cold-start run (ensureApiKeys) share ONE in-flight fetch instead of racing
+// two reads. `hydrationPromise` holds the latest load so concurrent callers
+// await the same work; the keys-changed listener resets it on each save.
+let hydrationPromise: Promise<void> | null = null;
+function reloadApiKeys(): Promise<void> {
+  hydrationPromise = (async () => {
+    try {
+      const keys = await getAllKeys();
+      useChatStore.setState({ apiKeys: keys, keysLoaded: true });
+    } catch {
+      // Keychain unreadable (locked / denied) — mark loaded so callers stop
+      // waiting; the per-run guard still catches an actually-missing key.
+      useChatStore.setState({ keysLoaded: true });
+    }
+  })();
+  return hydrationPromise;
+}
 
 export function getActiveProviderKey(): string | null {
   const { selectedModelId, apiKeys } = useChatStore.getState();

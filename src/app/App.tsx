@@ -199,9 +199,25 @@ export default function App() {
 
 function AppShell() {
   const initPrefs = usePreferencesStore((s) => s.init);
+  const initApiKeys = useChatStore((s) => s.initApiKeys);
   useEffect(() => {
     void initPrefs();
-  }, [initPrefs]);
+    // Hydrate provider API keys from the OS keychain into the chat store so
+    // every BYOK surface (Generator, Suite Chat, Commit Review, Confidence)
+    // can actually find them at run time — and keep them live as the Settings
+    // window saves keys. Without this, key-requiring providers (Anthropic,
+    // OpenAI, …) all report a false "missing key".
+    let cancelled = false;
+    let unlistenKeys: (() => void) | undefined;
+    void initApiKeys().then((un) => {
+      if (cancelled) un();
+      else unlistenKeys = un;
+    });
+    return () => {
+      cancelled = true;
+      unlistenKeys?.();
+    };
+  }, [initPrefs, initApiKeys]);
 
   // Subscribe per-cell: the activeId selector emits a single number, the
   // active tab selector emits one object. Unrelated tab churn (closing a

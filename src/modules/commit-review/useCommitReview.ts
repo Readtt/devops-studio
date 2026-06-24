@@ -645,7 +645,7 @@ export const useCommitReview = create<State>((set, get) => ({
 
       const result = await runCommitReview({
         modelId: effectiveModelId,
-        keys: chat.apiKeys,
+        keys: await chat.ensureApiKeys(),
         local: localProviderConfig(prefs),
         sourceRoot: prefs.codeSearchEnabled ? slice.cwd : null,
         diffs,

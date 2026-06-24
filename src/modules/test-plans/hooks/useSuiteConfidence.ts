@@ -203,11 +203,14 @@ export const useSuiteConfidence = create<State>((set, get) => ({
     }
     clearDismiss();
 
-    // Pre-flight: don't launch a doomed batch of N key-error failures.
+    // Pre-flight: don't launch a doomed batch of N key-error failures. Await
+    // key hydration first so a cold-start run doesn't false-negative on the
+    // all-null placeholder (the run engine reads the same store).
+    await useChatStore.getState().ensureApiKeys();
     if (!hasKeyForModel(useChatStore.getState().selectedModelId)) {
       finishWithNotice(
         suiteName,
-        "No API key for the selected model — add one in Settings → AI.",
+        "No API key for the selected model — add one in Settings → Models.",
       );
       return;
     }
