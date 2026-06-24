@@ -15,7 +15,7 @@ import {
   renderChangesetsBlock,
   renderTargetContext,
   formatAttachmentBlock,
-  type GenerationMode,
+  type Coverage,
   type RunAttachment,
   type TargetContext,
 } from "./qaAnalystRun";
@@ -26,7 +26,8 @@ export type RefinePromptInput = {
   /** Original spec the first generation was anchored against. */
   requirements: string;
   attachments: RunAttachment[];
-  mode: GenerationMode;
+  coverage: Coverage;
+  suggestBugs: boolean;
   targetContext?: TargetContext | null;
   relatedCases?: RelatedCase[];
   /** Cases the user has decided to keep — what they actually want to live
@@ -46,12 +47,13 @@ export type RefinePromptInput = {
 };
 
 export function buildRefineUserPrompt(input: RefinePromptInput): string {
-  const modeLine =
-    input.mode === "happy"
-      ? "Mode: happy — keep happy-path scope unless the follow-up expands it."
-      : input.mode === "thorough"
-        ? "Mode: thorough — happy + edge cases + negative paths, refined per the follow-up."
-        : "Mode: bug-hunt — thorough plus actionable bug flags. Apply the follow-up.";
+  const coverageLine =
+    input.coverage === "happy"
+      ? "Coverage: happy path only — keep happy-path scope unless the follow-up expands it."
+      : "Coverage: full — happy paths, edge cases, and negative paths, refined per the follow-up.";
+  const bugsLine = input.suggestBugs
+    ? "Bug suggestions: ON — surface actionable bug flags with codeRefs where warranted."
+    : "Bug suggestions: OFF — test cases only; do not propose bugs.";
 
   const targetBlock = renderTargetContext(input.targetContext);
   const relatedBlock = renderRelatedCases(input.relatedCases ?? []);
@@ -79,7 +81,8 @@ export function buildRefineUserPrompt(input: RefinePromptInput): string {
         input.attachments.map(formatAttachmentBlock).join("\n\n");
 
   return [
-    modeLine,
+    coverageLine,
+    bugsLine,
     "",
     "MODE: REFINE — you are iterating on a draft batch the user is reviewing.",
     "Return a FULL, replacement DraftBatch JSON. Keep what still fits, edit",

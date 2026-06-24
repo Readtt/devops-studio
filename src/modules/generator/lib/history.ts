@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ReviewedBug, ReviewedCase } from "./draftBatchSchema";
 import type { ActivityEntry } from "./activityLog";
-import type { GenerationMode } from "./qaAnalystRun";
+import type { Coverage, GenerationMode } from "./qaAnalystRun";
 import type { Attachment } from "@/components/chat/attachments";
 
 /**
@@ -46,6 +46,10 @@ export type DraftPayload = {
    *  saw — without this a refine after re-open would silently broaden
    *  coverage back to the full spec. */
   changesets?: string;
+  /** Two-axis generation settings. `mode` is the legacy single-axis value kept
+   *  only so drafts saved before the split still restore (via modeToAxes). */
+  coverage?: Coverage;
+  suggestBugs?: boolean;
   mode?: GenerationMode;
   cases?: ReviewedCase[];
   bugs?: ReviewedBug[];

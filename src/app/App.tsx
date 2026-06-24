@@ -47,6 +47,7 @@ import {
   type SessionState,
 } from "@/modules/generator/store/useGenerationSession";
 import { saveRun } from "@/modules/generator/lib/history";
+import { describeGeneration } from "@/modules/generator/lib/qaAnalystRun";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -760,7 +761,8 @@ function AppShell() {
         suiteId: s.suiteId,
         planName: s.planName,
         suiteName: s.suiteName,
-        mode: s.mode,
+        coverage: s.coverage,
+        suggestBugs: s.suggestBugs,
         overrideModelId: s.overrideModelId,
         durationMs: s.durationMs,
         cases: s.cases,
@@ -792,7 +794,8 @@ function AppShell() {
         const draftPayload = {
           requirements: s.requirements,
           changesets: s.changesets,
-          mode: s.mode,
+          coverage: s.coverage,
+          suggestBugs: s.suggestBugs,
           cases: s.cases,
           bugs: s.bugs,
           rawText: s.rawText,
@@ -810,7 +813,7 @@ function AppShell() {
           planName: s.planName,
           suiteId: s.suiteId,
           suiteName: s.suiteName,
-          mode: s.mode,
+          mode: describeGeneration(s.coverage, s.suggestBugs),
           specExcerpt: (s.requirements ?? "").slice(0, 500),
           cases: s.cases.map((c) => {
             const log = s.publishLog.find((l) => l.uid === c.uid);

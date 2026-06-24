@@ -20,7 +20,8 @@ const base: RunInput = {
   requirements: "Feature spec",
   attachments: [],
   existingCaseTitles: [],
-  mode: "thorough",
+  coverage: "full",
+  suggestBugs: false,
   keys: {} as never,
   modelId: "gpt-5.4-mini" as never,
 };

@@ -19,7 +19,43 @@ import {
   type ContextBlock,
 } from "@/modules/ai/lib/contextBlocks";
 
+/** Legacy single-axis mode. Kept only so old saved drafts / history rows
+ *  (which persisted this) still load — see {@link modeToAxes}. New code uses
+ *  the two independent axes below. */
 export type GenerationMode = "happy" | "thorough" | "bug-hunt";
+
+/** Coverage depth — how wide the generated cases go. Orthogonal to bug
+ *  suggestions (see RunInput.suggestBugs); the old combined "mode" picker
+ *  squashed these two decisions into one, which is why it was split. */
+export type Coverage = "happy" | "full";
+
+/** Map a legacy 3-value mode onto the two-axis model so old saved drafts and
+ *  history rows still load. Unknown / absent ⇒ the new default (full + bugs). */
+export function modeToAxes(mode: string | null | undefined): {
+  coverage: Coverage;
+  suggestBugs: boolean;
+} {
+  switch (mode) {
+    case "happy":
+      return { coverage: "happy", suggestBugs: false };
+    case "thorough":
+      return { coverage: "full", suggestBugs: false };
+    case "bug-hunt":
+      return { coverage: "full", suggestBugs: true };
+    default:
+      return { coverage: "full", suggestBugs: true };
+  }
+}
+
+/** Short human label for a (coverage, suggestBugs) pair — shown on history
+ *  rows and the run preview. */
+export function describeGeneration(
+  coverage: Coverage,
+  suggestBugs: boolean,
+): string {
+  const base = coverage === "happy" ? "Happy path" : "Full coverage";
+  return suggestBugs ? `${base} + bug hunt` : base;
+}
 
 /** Subset of session Attachment surface the analyst engines understand. Kept
  *  here (not imported from the store) so the lib layer doesn't depend on the
@@ -79,7 +115,10 @@ export type RunInput = {
    *  Passed to the analyst as a scope hint to narrow coverage. See
    *  SCOPING in QA_ANALYST_PROMPT. */
   changesets?: string;
-  mode: GenerationMode;
+  /** Coverage depth for the generated cases. */
+  coverage: Coverage;
+  /** Whether to also flag concrete bug suggestions. Independent of coverage. */
+  suggestBugs: boolean;
   /** Provider keys hydrated from the OS keychain (chatStore.apiKeys). */
   keys: ProviderKeys;
   modelId: ModelId;
@@ -113,6 +152,15 @@ export type RunResult = {
   batch: DraftBatchLLM;
   rawText: string;
   durationMs: number;
+  /** Whether the model returned a schema-valid batch. False when the runner
+   *  had to salvage from raw text or the response was empty — callers use this
+   *  to tell "the model genuinely found nothing" apart from "the response
+   *  couldn't be read", which need different user-facing guidance. */
+  ok: boolean;
+  /** When `ok` is false: `empty` ⇒ the provider returned no usable text (common
+   *  with OpenAI-compatible endpoints lacking JSON mode); `schema_violation` ⇒
+   *  text came back but didn't match the expected shape. */
+  reason?: "schema_violation" | "empty";
 };
 
 export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
@@ -134,8 +182,10 @@ export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
   const tools = buildSuiteChatTools(input.sourceRoot ?? null);
 
   // Schema-validated, temperature-0 structured output via the shared runner.
-  // With tools the runner uses experimental_output (schema still enforced);
-  // tool-less it uses generateObject.
+  // With tools the runner runs the agentic read loop (generateText) then
+  // validates the model's final text against the schema; tool-less it uses
+  // generateObject. Either way DraftBatchLLMSchema is enforced — which is why
+  // the salvageDraftBatch fallback below exists for the validate-the-text path.
   const r = await runTask({
     modelId: input.modelId,
     keys: input.keys,
@@ -157,16 +207,23 @@ export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
   // (partial-batch acceptance) instead of dropping everything. Then null out
   // any bug→case links that point past the end of the cases array.
   const batch = clampBugLinks(r.ok ? r.object : salvageDraftBatch(r.text));
-  return { batch, rawText: r.text, durationMs: Date.now() - start };
+  return {
+    batch,
+    rawText: r.text,
+    durationMs: Date.now() - start,
+    ok: r.ok,
+    reason: r.ok ? undefined : r.reason,
+  };
 }
 
 function buildUserPrompt(input: RunInput): string {
-  const modeLine =
-    input.mode === "happy"
-      ? "Mode: happy — only generate happy-path cases."
-      : input.mode === "thorough"
-        ? "Mode: thorough — happy + edge cases + negative paths."
-        : "Mode: bug-hunt — thorough plus flag concrete bug suggestions where warranted.";
+  const coverageLine =
+    input.coverage === "happy"
+      ? "Coverage: happy path only — generate the main successful flows."
+      : "Coverage: full — happy paths, edge cases, and negative / error paths.";
+  const bugsLine = input.suggestBugs
+    ? "Bug suggestions: ON — also flag concrete defect risks where the spec or readable code reveals a real bug (with codeRefs)."
+    : "Bug suggestions: OFF — generate test cases only; do not propose bugs.";
 
   const existing = renderExistingCases(input.existingCaseTitles, input.existingCases);
 
@@ -181,7 +238,8 @@ function buildUserPrompt(input: RunInput): string {
   const changesetsBlock = renderChangesetsBlock(input.changesets);
 
   return [
-    modeLine,
+    coverageLine,
+    bugsLine,
     "",
     targetBlock,
     "Feature requirements:",
