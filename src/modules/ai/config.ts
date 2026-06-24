@@ -625,6 +625,20 @@ export function supportsVision(id: ModelId | string): boolean {
   }
 }
 
+/** Whether a model is a reasoning model. Reasoning models on several providers
+ *  (DeepSeek's reasoner, xAI Grok reasoning, OpenAI o-series) reject or ignore
+ *  sampling params like `temperature` — the native @ai-sdk/openai provider
+ *  strips them, but @ai-sdk/openai-compatible and @ai-sdk/xai pass them through
+ *  unconditionally and can 400. The runner uses this to omit temperature for
+ *  reasoning targets. Unknown ids (custom / local) conservatively return false. */
+export function isReasoningModel(id: ModelId | string): boolean {
+  try {
+    return getModel(id as ModelId).tags?.includes("reasoning") ?? false;
+  } catch {
+    return false;
+  }
+}
+
 export const DEFAULT_MODEL_ID: ModelId = "gpt-5.4-mini";
 
 /** Approximate context window (in tokens) per model. Used for the

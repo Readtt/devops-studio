@@ -209,9 +209,10 @@ async function runConfidenceOnce(
   prompt: string,
 ): Promise<ConfidenceVerdictLLM | null> {
   const tools = buildSuiteChatTools(input.sourceRoot);
-  // Schema-validated, temperature-0. With code-search tools the runner uses
-  // experimental_output; tool-less it uses generateObject — either way the
-  // verdict shape is enforced.
+  // Schema-validated, temperature-0. With code-search tools the runner runs the
+  // agentic loop (generateText) then validates the model's final text against
+  // the schema; tool-less it uses generateObject. Either way the verdict shape
+  // is enforced; on a validation miss we fall back to parseConfidenceVerdict.
   const r = await runTask({
     modelId: input.modelId,
     keys: input.keys,

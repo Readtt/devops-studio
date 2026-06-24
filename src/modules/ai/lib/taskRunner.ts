@@ -27,7 +27,13 @@ import {
   type ToolSet,
 } from "ai";
 import type { z } from "zod";
-import { getModel, MAX_AGENT_STEPS, type ModelId } from "../config";
+import {
+  getModel,
+  isReasoningModel,
+  MAX_AGENT_STEPS,
+  supportsVision,
+  type ModelId,
+} from "../config";
 import {
   buildConfiguredLanguageModel,
   buildStableSystem,
@@ -225,6 +231,29 @@ function liveToolOnChunk(
   };
 }
 
+/** Drop image attachments when the active model has no vision support, so a
+ *  pasted/dropped image degrades to its text reference (formatAttachmentBlock
+ *  already emits one) instead of a hard provider 400. Mirrors how
+ *  best-practice images are gated upstream. */
+function visionSafe(input: {
+  modelId: ModelId;
+  attachments?: ImageLike[];
+}): ImageLike[] | undefined {
+  if (supportsVision(input.modelId)) return input.attachments;
+  return (input.attachments ?? []).filter((a) => a.kind !== "image");
+}
+
+/** Omit `temperature` for reasoning models — DeepSeek's reasoner, xAI Grok
+ *  reasoning, etc. reject or mishandle sampling params, and the
+ *  openai-compatible / xai providers (unlike native OpenAI) pass them through
+ *  unconditionally. Returns the caller's temperature for every other model. */
+function effectiveTemperature(input: {
+  modelId: ModelId;
+  temperature?: number;
+}): number | undefined {
+  return isReasoningModel(input.modelId) ? undefined : input.temperature;
+}
+
 /** Non-streaming run. Returns prose text and, in structured mode, a validated
  *  `object`. On repeated schema failure returns `{ ok: false }` so surfaces can
  *  map it to their existing empty / UNEVALUABLE / warning states. */
@@ -238,10 +267,11 @@ export async function runTask<
     input.local ?? {},
   );
   const system = assembleSystem(input);
-  const userTurn = buildUserTurn(input.prompt, input.attachments);
+  const userTurn = buildUserTurn(input.prompt, visionSafe(input));
   const tools = input.tools ?? undefined;
   const maxSteps = input.maxSteps ?? MAX_AGENT_STEPS;
   const repairAttempts = input.repairAttempts ?? DEFAULT_REPAIR_ATTEMPTS;
+  const temperature = effectiveTemperature(input);
 
   // --- Structured, tool-less: generateObject -------------------------------
   if (input.schema && !tools) {
@@ -256,9 +286,20 @@ export async function runTask<
           system,
           ...userTurn,
           schema: input.schema,
-          ...(input.temperature !== undefined
-            ? { temperature: input.temperature }
-            : {}),
+          // OpenAI-compatible / local models often wrap the object in ```json
+          // fences or add prose; strip to the JSON block and let the SDK
+          // re-parse before giving up (the tool-bearing path already does this
+          // via validateAgainstSchema). Without it, fenced output → a parse
+          // failure → an "empty result" the user can't explain.
+          experimental_repairText: async ({ text }) => {
+            try {
+              const sliced = extractJsonBlock(text.trim());
+              return sliced && sliced !== text ? sliced : null;
+            } catch {
+              return null;
+            }
+          },
+          ...(temperature !== undefined ? { temperature } : {}),
           ...(input.seed !== undefined ? { seed: input.seed } : {}),
           abortSignal: input.signal,
         });
@@ -276,7 +317,10 @@ export async function runTask<
     }
     return {
       ok: false,
-      reason: "schema_violation",
+      // No recoverable text at all ⇒ the endpoint returned nothing (common with
+      // OpenAI-compatible connectors that don't honor JSON/response-format);
+      // some text but unparseable ⇒ a true schema violation.
+      reason: lastText.trim() ? "schema_violation" : "empty",
       text: lastText,
       durationMs: Date.now() - start,
     };
@@ -287,9 +331,7 @@ export async function runTask<
     model,
     ...buildRequestPrompt(input.modelId, system, userTurn),
     ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
-    ...(input.temperature !== undefined
-      ? { temperature: input.temperature }
-      : {}),
+    ...(temperature !== undefined ? { temperature } : {}),
     ...(input.seed !== undefined ? { seed: input.seed } : {}),
     abortSignal: input.signal,
     onStepFinish: onStepFinishFor(start, input.onToolEvent),
@@ -301,6 +343,16 @@ export async function runTask<
     // validate that against the schema (the prompts instruct "return ONLY the
     // JSON"). On failure the surface's own salvage/parse fallback can still
     // recover partial output from `text`.
+    if (!text.trim()) {
+      // The provider streamed/returned no final text — distinct from a schema
+      // violation so the surface can show "model returned nothing" guidance.
+      return {
+        ok: false,
+        reason: "empty",
+        text: "",
+        durationMs: Date.now() - start,
+      };
+    }
     const parsed = validateAgainstSchema(text, input.schema);
     if (!parsed.ok) {
       return {
@@ -341,18 +393,17 @@ export async function streamTask<
     input.local ?? {},
   );
   const system = assembleSystem(input);
-  const userTurn = buildUserTurn(input.prompt, input.attachments);
+  const userTurn = buildUserTurn(input.prompt, visionSafe(input));
   const tools = input.tools ?? undefined;
   const maxSteps = input.maxSteps ?? MAX_AGENT_STEPS;
+  const temperature = effectiveTemperature(input);
 
   const toolStart = new Map<string, number>();
   const result = streamText({
     model,
     ...buildRequestPrompt(input.modelId, system, userTurn),
     ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
-    ...(input.temperature !== undefined
-      ? { temperature: input.temperature }
-      : {}),
+    ...(temperature !== undefined ? { temperature } : {}),
     ...(input.seed !== undefined ? { seed: input.seed } : {}),
     abortSignal: input.signal,
     // Live per-tool events (spinner → done) plus the step-finish sweep as a
