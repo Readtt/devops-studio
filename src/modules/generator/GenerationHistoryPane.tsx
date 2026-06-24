@@ -104,6 +104,19 @@ export function GenerationHistoryPane({
     };
   }, [refresh]);
 
+  // Manual reload beside the filter (mirrors the Plans tab). Tracks its own
+  // spinner so a deliberate click reads as "reloading", distinct from the
+  // silent debounced autosave refresh above.
+  const [refreshing, setRefreshing] = useState(false);
+  const reload = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refresh]);
+
   const filteredRuns = useMemo(() => {
     if (!runs) return null;
     const needle = textFilter.trim().toLowerCase();
@@ -178,12 +191,34 @@ export function GenerationHistoryPane({
       ) : null}
 
       <div className="border-b border-border/60 px-2 pt-1.5">
-        <input
-          value={textFilter}
-          onChange={(e) => setTextFilter(e.target.value)}
-          placeholder="Filter by plan, suite, case, or text…"
-          className="mb-1.5 w-full rounded-md border border-border/60 bg-background/70 px-2 py-1 text-[11.5px] outline-none focus:border-primary/50"
-        />
+        <div className="mb-1.5 flex items-center gap-1.5">
+          <input
+            value={textFilter}
+            onChange={(e) => setTextFilter(e.target.value)}
+            placeholder="Filter by plan, suite, case, or text…"
+            className="min-w-0 flex-1 rounded-md border border-border/60 bg-background/70 px-2 py-1 text-[11.5px] outline-none focus:border-primary/50"
+          />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                aria-label="Reload generations"
+                onClick={() => void reload()}
+              >
+                <HugeiconsIcon
+                  icon={RefreshIcon}
+                  size={12}
+                  strokeWidth={1.75}
+                  className={refreshing ? "animate-spin" : ""}
+                />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-[11px]">
+              Reload generations from disk
+            </TooltipContent>
+          </Tooltip>
+        </div>
         {/* Console-tab filter row — flush, shared baseline, monospace counts.
             Matches the editor/terminal voice the rest of the app uses for
             tree-state controls. */}

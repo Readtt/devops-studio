@@ -31,7 +31,6 @@ import {
   ArrowTurnBackwardIcon,
   Cancel01Icon,
   Clock01Icon,
-  AlertCircleIcon,
   AiBrain01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -40,6 +39,7 @@ import {
   type SessionState,
 } from "../store/useGenerationSession";
 import { AnalyzeActivityLog } from "./AnalyzeActivityLog";
+import { InlineNotice } from "./InlineNotice";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   MentionDropdown,
@@ -441,38 +441,16 @@ export function RefineComposer({ isRefining }: Props) {
       <DockHeader rightSlot={headerExtras} />
 
       {refineError ? (
-        <div className="mb-2 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/[0.06] px-2.5 py-1.5">
-          <HugeiconsIcon
-            icon={AlertCircleIcon}
-            size={12}
-            strokeWidth={1.75}
-            className="mt-0.5 shrink-0 text-destructive"
-          />
-          <div className="min-w-0 flex-1">
-            <p className="font-mono text-[10.5px] uppercase tracking-wider text-destructive/85">
-              refine failed
-            </p>
-            <p className="mt-0.5 break-words text-[10.5px] text-destructive/90">
-              {refineError}
-            </p>
-            <p className="mt-1 text-[10px] text-muted-foreground">
-              Your draft is unchanged — fix the underlying issue and try
-              again.
-            </p>
-          </div>
-          <button
-            type="button"
-            aria-label="Dismiss refine error"
-            onClick={dismissRefineError}
-            className="shrink-0 rounded-sm p-0.5 text-destructive/70 hover:bg-destructive/15 hover:text-destructive"
-          >
-            <HugeiconsIcon
-              icon={Cancel01Icon}
-              size={10}
-              strokeWidth={2}
-            />
-          </button>
-        </div>
+        <InlineNotice
+          tone="error"
+          label="refine failed"
+          className="mb-2"
+          onDismiss={dismissRefineError}
+          dismissLabel="Dismiss refine error"
+          hint="Your draft is unchanged — fix the underlying issue and try again."
+        >
+          {refineError}
+        </InlineNotice>
       ) : null}
 
       {refineUndoSnapshot ? (

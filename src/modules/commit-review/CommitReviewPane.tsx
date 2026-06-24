@@ -290,12 +290,18 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
             }
             trigger={({ label, provider }) => (
               <span
-                title="Model for this review. Pinning scopes only to this tab."
+                title={
+                  // A pin only "counts" while it differs from the current global
+                  // default; otherwise this review already uses that model.
+                  slice.modelId != null && slice.modelId !== defaultModelId
+                    ? "Pinned for this review — scoped to this tab. Click to change or unpin."
+                    : "Inherits the global default. Click to pin a model for this tab only."
+                }
                 className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border/50 bg-card/60 px-2 text-[11px] text-foreground/85 transition-colors hover:bg-foreground/[0.05]"
               >
                 <ProviderIcon provider={provider} size={12} />
                 <span className="max-w-[150px] truncate">{label}</span>
-                {slice.modelId ? (
+                {slice.modelId != null && slice.modelId !== defaultModelId ? (
                   <span className="rounded-sm bg-primary/15 px-1 text-[9px] font-medium uppercase tracking-wide text-primary">
                     pinned
                   </span>

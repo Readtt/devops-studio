@@ -17,6 +17,7 @@ import {
 } from "@/modules/ado/components/WorkItemMention";
 import { useBugContext } from "@/modules/ado/hooks/useBugContext";
 import { useGenerationSession } from "../store/useGenerationSession";
+import { InlineNotice } from "./InlineNotice";
 import { ChatMarkdown } from "@/components/ChatMarkdown";
 import { ToolCallStrip } from "@/components/chat/ToolCallStrip";
 import {
@@ -327,15 +328,16 @@ export function ReviewChat({ onClose }: Props) {
       </div>
 
       {error ? (
-        <div className="flex shrink-0 items-start gap-1.5 border-t border-destructive/30 bg-destructive/[0.06] px-3 py-1.5 text-[10.5px] text-destructive">
-          <span className="flex-1">{error}</span>
-          <button
-            type="button"
-            onClick={() => dismissError()}
-            className="text-[10px] underline-offset-2 hover:underline"
+        <div className="shrink-0 px-2 pt-2">
+          <InlineNotice
+            tone="error"
+            label="message failed"
+            onDismiss={() => dismissError()}
+            dismissLabel="Dismiss error"
+            hint="Your conversation is intact — check the connection or model key, then resend."
           >
-            dismiss
-          </button>
+            {error}
+          </InlineNotice>
         </div>
       ) : null}
 

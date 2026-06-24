@@ -721,6 +721,7 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
         modelId={modelId}
         activeModel={activeModel}
         activeModelId={activeModelId}
+        globalModelId={globalModelId}
         setModel={(id) => setModel(planId, suiteId, id)}
         availabilityFilter={availability.isAvailable}
         onNewThread={() => {
@@ -839,6 +840,7 @@ function ChatHeader({
   modelId,
   activeModel,
   activeModelId,
+  globalModelId,
   setModel,
   availabilityFilter,
   onNewThread,
@@ -864,6 +866,7 @@ function ChatHeader({
   modelId: ModelId | null;
   activeModel: { label: string } | undefined;
   activeModelId: ModelId;
+  globalModelId: ModelId;
   setModel: (id: ModelId | null) => void;
   availabilityFilter: (id: ModelId) => boolean;
   onNewThread: () => void;
@@ -877,6 +880,10 @@ function ChatHeader({
   currentThreadTitle: string | null;
   currentThreadMessageCount: number;
 }) {
+  // A pin only "counts" while it differs from the current global default —
+  // otherwise the chat already uses that model, so the badge/title should read
+  // as inheriting, not pinned (matches the generator's run-only override fix).
+  const showPin = modelId != null && modelId !== globalModelId;
   return (
     <header className="flex shrink-0 flex-col gap-1.5 border-b border-border/60 bg-card/30 px-5 py-3 backdrop-blur-sm">
       <div className="flex items-start justify-between gap-3">
@@ -922,7 +929,7 @@ function ChatHeader({
             trigger={({ label, provider }) => (
               <span
                 title={
-                  modelId
+                  showPin
                     ? "Model pinned for this chat — click to change or unset."
                     : `Inherits the global model (${activeModel?.label ?? activeModelId}). Click to pin a different model for this chat only.`
                 }
@@ -930,7 +937,7 @@ function ChatHeader({
               >
                 <ProviderIcon provider={provider} className="size-3" />
                 <span className="truncate">{label}</span>
-                {modelId ? (
+                {showPin ? (
                   <span className="ml-0.5 rounded-sm bg-primary/15 px-1 py-px text-[9.5px] font-medium text-primary">
                     pin
                   </span>

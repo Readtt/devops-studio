@@ -6,11 +6,13 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Cancel01Icon,
   GitBranchIcon,
   Loading03Icon,
+  RefreshIcon,
 } from "@hugeicons/core-free-icons";
 import {
   deleteCommitReview,
@@ -78,6 +80,19 @@ export function CommitReviewHistoryPane({
     };
   }, [refresh]);
 
+  // Manual reload beside the filter (mirrors the Plans tab). Own spinner so a
+  // deliberate click reads as "reloading", distinct from the silent debounced
+  // refresh above.
+  const [refreshing, setRefreshing] = useState(false);
+  const reload = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refresh]);
+
   const onDelete = useCallback(async (runId: string) => {
     try {
       await deleteCommitReview(runId);
@@ -102,12 +117,34 @@ export function CommitReviewHistoryPane({
   return (
     <div className="flex h-full flex-col">
       <div className="shrink-0 border-b border-border/60 px-2 py-1.5">
-        <input
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          placeholder="Filter reviews by commit or status…"
-          className="w-full rounded-md border border-border/60 bg-background/70 px-2 py-1 text-[11.5px] outline-none focus:border-primary/50"
-        />
+        <div className="flex items-center gap-1.5">
+          <input
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter reviews by commit or status…"
+            className="min-w-0 flex-1 rounded-md border border-border/60 bg-background/70 px-2 py-1 text-[11.5px] outline-none focus:border-primary/50"
+          />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                aria-label="Reload commit reviews"
+                onClick={() => void reload()}
+              >
+                <HugeiconsIcon
+                  icon={RefreshIcon}
+                  size={12}
+                  strokeWidth={1.75}
+                  className={refreshing ? "animate-spin" : ""}
+                />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-[11px]">
+              Reload commit reviews from disk
+            </TooltipContent>
+          </Tooltip>
+        </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {!rows ? (
