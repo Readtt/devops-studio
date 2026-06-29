@@ -10,8 +10,12 @@ import {
 } from "@/components/ui/tooltip";
 import { AzureDevOpsBrand } from "@/components/AzureDevOpsBrand";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { setCodeSearchEnabled } from "@/modules/settings/store";
+import {
+  emitAdoConnectionChanged,
+  setCodeSearchEnabled,
+} from "@/modules/settings/store";
 import { cn } from "@/lib/utils";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   adoErrorMessage,
   getConnection,
@@ -138,6 +142,10 @@ export function AzureDevOpsSection() {
         defaultTrackingBranch: CURRENT_BRANCH_SENTINEL,
       });
       setPat("");
+      // Tell the main window the connection changed so it re-reads + reloads
+      // the Plans explorer immediately (this lives in a separate webview, so
+      // the backend's in-memory state update doesn't reach it on its own).
+      void emitAdoConnectionChanged();
       const ok = await verify();
       if (ok) {
         const s = await getConnection();
@@ -439,9 +447,13 @@ function PatHelpBlock({ orgUrl }: { orgUrl: string }) {
     <div className="flex flex-col gap-1.5 rounded-md border border-dashed border-border/60 bg-muted/30 px-3 py-2 text-[10.5px] text-muted-foreground">
       <div>
         Open{" "}
-        <span className="font-mono break-all text-foreground/80">
+        <button
+          type="button"
+          onClick={() => void openUrl(tokensUrl)}
+          className="break-all font-mono text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
+        >
           {tokensUrl}
-        </span>{" "}
+        </button>{" "}
         and create a new token with these scopes:
       </div>
       <ul className="ml-1 flex flex-col gap-0.5">

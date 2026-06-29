@@ -642,6 +642,21 @@ export function onKeysChanged(cb: () => void): Promise<UnlistenFn> {
   return listen(KEYS_CHANGED_EVENT, () => cb());
 }
 
+// The ADO connection (org/project/PAT) is owned by the Rust backend, not the
+// prefs store, so a save in the Settings window can't reach the main window
+// through onPreferencesChange. Broadcast a dedicated event so the main window
+// re-reads the connection and reloads the Plans explorer the moment the user
+// connects — instead of waiting for a window refocus or app restart.
+const ADO_CONNECTION_CHANGED_EVENT = "devops-studio://ado-connection-changed";
+
+export async function emitAdoConnectionChanged(): Promise<void> {
+  await emit(ADO_CONNECTION_CHANGED_EVENT);
+}
+
+export function onAdoConnectionChanged(cb: () => void): Promise<UnlistenFn> {
+  return listen(ADO_CONNECTION_CHANGED_EVENT, () => cb());
+}
+
 // Generation busy state — broadcast by the main window whenever any
 // generator tab transitions between idle / running / refining / in-draft.
 // The settings window's Models page subscribes so it can lock the default

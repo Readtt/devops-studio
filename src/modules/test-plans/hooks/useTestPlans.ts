@@ -3,9 +3,11 @@ import {
   getCase,
   getConnection,
   listPlans,
+  listProjects,
   listSuiteCases,
   listSuites,
   listSuitesForCase,
+  setConnection,
   toAdoError,
   updatePlanName,
   updateSuiteName,
@@ -53,7 +55,13 @@ export type CaseDetailsState = {
 
 type State = {
   initialized: boolean;
+  /** True once CONNECTED to the org (org URL + PAT present). Independent of
+   *  whether a project is selected — see `project`. */
   configured: boolean;
+  /** The selected ADO project name. Empty string ⇒ connected but no project
+   *  chosen yet (the explorer shows the project switcher + a prompt). Plans
+   *  only load when this is non-empty. */
+  project: string;
   plans: TestPlanRef[];
   plansLoading: boolean;
   plansError: AdoError | null;
@@ -68,6 +76,10 @@ type State = {
   revealTarget: RevealTarget | null;
 
   refreshConnection: () => Promise<void>;
+  /** Connected but no project selected: if the PAT can see exactly ONE project,
+   *  adopt it automatically so plans load with zero clicks. With zero or
+   *  multiple projects we leave the choice to the explorer's project switcher. */
+  autoSelectSingleProject: () => Promise<void>;
   refreshPlans: () => Promise<void>;
   loadSuites: (planId: number, opts?: { force?: boolean }) => Promise<void>;
   loadSuiteCases: (
@@ -159,6 +171,7 @@ function refreshCompatViews(load: SuiteLoad): SuiteLoad {
 export const useTestPlans = create<State>((set, get) => ({
   initialized: false,
   configured: false,
+  project: "",
   plans: [],
   plansLoading: false,
   plansError: null,
@@ -169,16 +182,52 @@ export const useTestPlans = create<State>((set, get) => ({
   refreshConnection: async () => {
     try {
       const s = await getConnection();
-      set({ configured: s.configured, initialized: true });
-      if (s.configured && get().plans.length === 0) {
-        await get().refreshPlans();
+      set({ configured: s.configured, project: s.project, initialized: true });
+      if (!s.configured) return;
+      if (s.project) {
+        // Connected with a project — load its plans (cheap no-op if cached).
+        if (get().plans.length === 0) await get().refreshPlans();
+      } else {
+        // Connected but no project yet (first-time setup, since Settings no
+        // longer collects a project). Try to adopt the only project so the
+        // sidebar populates without a manual pick.
+        await get().autoSelectSingleProject();
       }
     } catch {
       set({ configured: false, initialized: true });
     }
   },
 
+  autoSelectSingleProject: async () => {
+    try {
+      const projects = await listProjects();
+      // 0 ⇒ nothing to pick (PAT can't see any). >1 ⇒ don't guess for the
+      // user; the explorer's switcher lets them choose. Exactly 1 ⇒ adopt it.
+      if (projects.length !== 1) return;
+      const s = await getConnection();
+      await setConnection({
+        orgUrl: s.orgUrl,
+        project: projects[0].name,
+        // Preserve the tracking-branch setting exactly — switching project
+        // must never rewrite it.
+        defaultTrackingBranch: s.defaultTrackingBranch,
+        // Omit pat → keep the stored token untouched.
+      });
+      set({ project: projects[0].name });
+      await get().refreshPlans();
+    } catch {
+      // Best-effort — leave the project unselected for the manual switcher.
+    }
+  },
+
   refreshPlans: async () => {
+    // No project selected ⇒ there's nothing to list (a project-scoped ADO URL
+    // built with an empty project is malformed). Keep plans empty rather than
+    // firing a doomed request — the explorer shows the project switcher.
+    if (!get().project) {
+      set({ plans: [], plansLoading: false, plansError: null });
+      return;
+    }
     set({ plansLoading: true, plansError: null });
     try {
       const plans = await listPlans();
@@ -453,6 +502,7 @@ export const useTestPlans = create<State>((set, get) => ({
     set({
       initialized: false,
       configured: false,
+      project: "",
       plans: [],
       plansLoading: false,
       plansError: null,

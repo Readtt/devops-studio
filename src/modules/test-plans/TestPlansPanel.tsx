@@ -164,6 +164,7 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
   const {
     initialized,
     configured,
+    project,
     plans,
     plansLoading,
     plansError,
@@ -201,12 +202,15 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
       setConn(null);
       return;
     }
+    // Re-read whenever the selected project changes too (auto-select on first
+    // connect, or a switch via the project switcher) so the web-link URLs
+    // built from `conn` always target the active project.
     void getConnection()
       .then((c) =>
         setConn({ orgUrl: c.orgUrl.replace(/\/$/, ""), project: c.project }),
       )
       .catch(() => setConn(null));
-  }, [configured]);
+  }, [configured, project]);
 
   // Manual refresh wrapper used by the toolbar button (and anyone else who
   // wants to force a re-sync of the Explorer tree). We hit `listPlans` for
@@ -394,9 +398,15 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
 
   return (
     <div className="flex h-full flex-col">
-      {/* Project header — title-band that doubles as the project switcher. */}
-      <ProjectHeader projectName={conn?.project ?? ""} />
+      {/* Project header — title-band that doubles as the project switcher.
+          Always rendered while connected so the user can pick / switch the
+          project even before one is selected. */}
+      <ProjectHeader projectName={project} />
 
+      {!project ? (
+        <SelectProjectMessage />
+      ) : (
+        <>
       <div className="flex items-center gap-1.5 border-b border-border/60 px-2 py-1.5">
         <button
           type="button"
@@ -522,6 +532,8 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
           ))}
         </ul>
       </div>
+        </>
+      )}
 
       {newSuiteRequest ? (
         <NewSuiteDialog
@@ -1524,6 +1536,23 @@ function PanelMessage({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
       {children}
+    </div>
+  );
+}
+
+/** Connected, but no project chosen yet. The project switcher sits in the
+ *  header right above this — point the user at it so they aren't staring at a
+ *  blank tree wondering why nothing loaded. */
+function SelectProjectMessage() {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-1 px-6 text-center">
+      <p className="text-[12px] font-medium text-foreground/85">
+        Choose a project
+      </p>
+      <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+        You're connected to Azure DevOps. Pick a project from the selector at
+        the top to load its test plans, suites, and cases.
+      </p>
     </div>
   );
 }

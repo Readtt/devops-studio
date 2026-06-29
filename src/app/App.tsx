@@ -18,6 +18,7 @@ import { SidebarRail, type SidebarViewId } from "@/modules/sidebar";
 import { useGlobalShortcuts } from "@/modules/shortcuts";
 import {
   emitGenerationBusy,
+  onAdoConnectionChanged,
   setSourceRoot,
   setTheme,
   type GenerationBusyReason,
@@ -1105,10 +1106,25 @@ function AppShell() {
     const id = window.setInterval(refresh, 30_000);
     const onFocus = () => void refresh();
     window.addEventListener("focus", onFocus);
+    // The Settings window emits this when the user saves a connection. Re-read
+    // the pill AND hard-reset the Plans explorer so it re-hydrates against the
+    // new connection right away — without this the sidebar stays "Not
+    // connected" until an app restart (its store only hydrates once on mount).
+    let unlistenConn: (() => void) | undefined;
+    void onAdoConnectionChanged(() => {
+      void refresh();
+      const tp = useTestPlans.getState();
+      tp.reset();
+      void tp.refreshConnection();
+    }).then((un) => {
+      if (cancelled) un();
+      else unlistenConn = un;
+    });
     return () => {
       cancelled = true;
       window.clearInterval(id);
       window.removeEventListener("focus", onFocus);
+      unlistenConn?.();
     };
   }, []);
 

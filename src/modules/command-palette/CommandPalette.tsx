@@ -85,7 +85,7 @@ export function CommandPalette({
   sourceRoot,
 }: Props) {
   const [query, setQuery] = useState("");
-  const { plans, configured, refreshConnection } = useTestPlans();
+  const { plans, configured, project, refreshConnection } = useTestPlans();
   const { search } = useSearchIndex();
 
   // Keep the plan list warm when the palette is opened.
@@ -103,8 +103,13 @@ export function CommandPalette({
   const numericId = idMatch ? Number(idMatch[1]) : null;
   const bugOnlyId = bugOnlyMatch ? Number(bugOnlyMatch[1]) : null;
 
-  const caseLookup = useDebouncedLookup(numericId, getCase);
-  const bugLookup = useDebouncedLookup(numericId ?? bugOnlyId, getBug);
+  // getCase/getBug are project-scoped — don't fire them until a project is
+  // selected (otherwise the URL is built with an empty project segment).
+  const caseLookup = useDebouncedLookup(project ? numericId : null, getCase);
+  const bugLookup = useDebouncedLookup(
+    project ? numericId ?? bugOnlyId : null,
+    getBug,
+  );
 
   const searchResults = useMemo(() => {
     if (numericId !== null || bugOnlyId !== null) return [];
@@ -121,6 +126,10 @@ export function CommandPalette({
     if (
       !onOpenWorkItem ||
       !configured ||
+      // searchWorkItems is project-scoped (WIQL on System.TeamProject); skip it
+      // until a project is selected so we don't fire a malformed request on
+      // every keystroke.
+      !project ||
       numericId !== null ||
       bugOnlyId !== null ||
       q.length < 2
@@ -144,7 +153,7 @@ export function CommandPalette({
         });
     }, 250);
     return () => window.clearTimeout(t);
-  }, [query, configured, numericId, bugOnlyId, onOpenWorkItem]);
+  }, [query, configured, project, numericId, bugOnlyId, onOpenWorkItem]);
 
   const run = (fn: () => void | Promise<void>) => {
     onOpenChange(false);

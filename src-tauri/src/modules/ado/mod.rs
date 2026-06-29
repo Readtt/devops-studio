@@ -133,9 +133,20 @@ pub async fn ado_set_connection(
     state: State<'_, AdoState>,
     input: SetConnectionInput,
 ) -> Result<(), String> {
+    // An empty project means "leave the selected project as-is" — Settings no
+    // longer has a project field (the project is chosen from the explorer's
+    // switcher / auto-selected on connect), so it always sends "". Preserving
+    // the stored project here mirrors how an omitted PAT is preserved, and
+    // stops a Settings re-save (e.g. updating the PAT) from wiping the project.
+    let project = if input.project.trim().is_empty() {
+        let (existing, _) = state.snapshot();
+        existing.map(|c| c.project).unwrap_or_default()
+    } else {
+        input.project
+    };
     let conn = Connection {
         org_url: normalize_org_url(&input.org_url),
-        project: input.project,
+        project,
         default_tracking_branch: input
             .default_tracking_branch
             .unwrap_or_else(|| "main".to_string()),
@@ -159,7 +170,15 @@ pub async fn ado_get_connection(
     let (conn, pat) = state.snapshot();
     let c = conn.unwrap_or_default();
     let has_pat = pat.is_some();
-    let configured = !c.org_url.is_empty() && !c.project.is_empty() && has_pat;
+    // "configured" means CONNECTED to the org — org URL + PAT present. The
+    // project is a SEPARATE selection made from the explorer's project switcher,
+    // not part of being connected. (It used to require a non-empty project, but
+    // the project <Select> was removed from Settings in favour of the explorer
+    // switcher — which only renders once connected. Requiring a project here
+    // deadlocked first-time setup: no way to pick a project, so never
+    // "configured", so the switcher never shows.) Callers that need a project
+    // (plan/suite/case reads) gate on `project` being non-empty themselves.
+    let configured = !c.org_url.is_empty() && has_pat;
     Ok(ConnectionStatus {
         configured,
         has_pat,
