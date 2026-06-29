@@ -7,6 +7,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.11.1] - 2026-06-29
+
+### Fixed
+
+- Azure DevOps now connects with just an organization URL and a PAT. Previously, entering them in Settings left the app stuck on "Not connected" in the status bar and the Plans sidebar — and the Settings panel showed it disconnected again on reopen — because a project had to be selected first, yet the only project picker was hidden until you were already connected.
+- The "create a PAT" link in Settings → Azure DevOps is now clickable and opens in your browser.
+
+### Added
+
+- The Plans explorer shows a project switcher as soon as you're connected, and auto-selects the project when your PAT can see exactly one — so plans, suites, and cases load without an extra step. With multiple projects, pick one from the switcher.
+
+### Changed
+
+- Connecting in the Settings window now refreshes the main window immediately, without an app restart.
+
 ## [0.11.0] - 2026-06-24
 
 ### Added
