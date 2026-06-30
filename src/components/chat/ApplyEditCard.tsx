@@ -13,6 +13,8 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { DeveloperPicker } from "@/components/DeveloperPicker";
+import { useTeamMembers } from "@/modules/ado";
 import type {
   AppliedEditRecord,
   ApplyEditHandler,
@@ -218,7 +220,12 @@ export function ApplyEditCard({
   const [state, setState] = useState<ApplyState>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
+  // Developer this new bug will be assigned to (uniqueName/email), for the
+  // create-bug card only. Interactive — the user picks, the model never does.
+  const [assignedTo, setAssignedTo] = useState<string | null>(null);
   const parsed = useMemo(() => parseEdit(body), [body]);
+  // Lazily load the roster only when this card is actually a create-bug card.
+  const team = useTeamMembers(parsed.ok && parsed.kind === "create-bug");
 
   const current = parsed.ok && parsed.caseId != null
     ? lookupCase?.(parsed.caseId) ?? null
@@ -294,6 +301,7 @@ export function ApplyEditCard({
         payload.reproSteps = parsed.reproSteps ?? "";
         if (parsed.severity) payload.severity = parsed.severity;
         if (parsed.caseId != null) payload.linkCaseId = parsed.caseId;
+        if (assignedTo) payload.assignedTo = assignedTo;
       }
       if (parsed.kind === "update-bug") {
         payload.bugId = parsed.bugId;
@@ -608,6 +616,21 @@ export function ApplyEditCard({
           />
         </div>
       </div>
+
+      {parsed.kind === "create-bug" ? (
+        <div className="flex items-center gap-2 border-t border-border/30 px-3 py-1.5">
+          <span className="shrink-0 text-[10.5px] text-muted-foreground">
+            Assign to
+          </span>
+          <DeveloperPicker
+            value={assignedTo}
+            members={team.members}
+            loading={team.loading}
+            onChange={setAssignedTo}
+            placeholder="unassigned"
+          />
+        </div>
+      ) : null}
 
       {expanded ? (
         <div className="min-w-0 overflow-hidden border-t border-border/30">

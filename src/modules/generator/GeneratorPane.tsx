@@ -83,7 +83,7 @@ import { ReviewChat } from "./components/ReviewChat";
 import { InlineNotice } from "./components/InlineNotice";
 import { TargetContextChip } from "./components/TargetContextChip";
 import { BugCaseLinkPicker } from "./components/BugCaseLinkPicker";
-import { DeveloperPicker } from "./components/DeveloperPicker";
+import { DeveloperPicker } from "@/components/DeveloperPicker";
 import { CopyableSectionHeader } from "@/components/CopyableSectionHeader";
 import { SeverityChip } from "@/components/chat/ApplyEditCard";
 import { RefineChangesPanel } from "./RefineChangesPanel";
@@ -1470,12 +1470,15 @@ const OUTCOME_SHORT: Record<Exclude<ExecutionOutcome, "Active">, string> = {
 function ReviewOutcomePicker({
   value,
   auto,
+  autoReason,
   onChange,
 }: {
   value: Exclude<ExecutionOutcome, "Active"> | null;
-  /** Outcome was auto-set from the confidence verdict — surfaced so the
-   *  reviewer knows it wasn't their pick and can override it. */
+  /** Outcome was auto-set (from the confidence verdict or an attached bug) —
+   *  surfaced so the reviewer knows it wasn't their pick and can override it. */
   auto?: boolean;
+  /** Why it was auto-set, so the tooltip can explain it. */
+  autoReason?: "bug" | "verdict";
   onChange: (next: Exclude<ExecutionOutcome, "Active"> | null) => void;
 }) {
   const current = value ? (OUTCOMES.find((o) => o.value === value) ?? null) : null;
@@ -1504,7 +1507,9 @@ function ReviewOutcomePicker({
         </TooltipTrigger>
         <TooltipContent side="bottom" className="max-w-[260px] text-[11px]">
           {auto && current
-            ? "Auto-set from the confidence score — pick a status to override it."
+            ? autoReason === "bug"
+              ? "Auto-set to Failed because a bug is attached — pick a status to override it."
+              : "Auto-set from the confidence score — pick a status to override it."
             : "Set this case's run outcome (Pass / Fail / Blocked). It's recorded in Azure DevOps right after the case is published."}
         </TooltipContent>
       </Tooltip>
@@ -2150,6 +2155,11 @@ function ReviewPhase({
                   <ReviewOutcomePicker
                     value={c.desiredOutcome ?? null}
                     auto={!!c.outcomeAuto}
+                    autoReason={
+                      (linkedKeptBugsByCaseIndex.get(i)?.length ?? 0) > 0
+                        ? "bug"
+                        : "verdict"
+                    }
                     onChange={(next) => setCaseOutcome(c.uid, next)}
                   />
                 </div>

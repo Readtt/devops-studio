@@ -302,8 +302,9 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
       const reproSteps = typeof p.reproSteps === "string" ? p.reproSteps : "";
       const severity = normalizeSeverity(p.severity);
       const linkCaseId = toNum(p.linkCaseId);
+      const assignedTo = typeof p.assignedTo === "string" ? p.assignedTo : null;
       try {
-        const draft = { title, reproSteps, severity, codeLinks: [] };
+        const draft = { title, reproSteps, severity, assignedTo, codeLinks: [] };
         const result = linkCaseId
           ? await createBugAndLink(linkCaseId, draft)
           : await createBug(draft);

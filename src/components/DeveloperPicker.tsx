@@ -32,10 +32,11 @@ type Props = {
 };
 
 /**
- * Searchable developer picker for assigning bugs in the review phase. Same
- * cmdk-in-a-Popover pattern as BranchPicker so it reads identically to the
- * branch / suite pickers elsewhere — fuzzy search, capped height, an explicit
- * "Unassigned" reset at the top.
+ * Searchable developer picker for assigning bugs. Same cmdk-in-a-Popover
+ * pattern as BranchPicker so it reads identically to the branch / suite
+ * pickers elsewhere — fuzzy search, capped height, an explicit "Unassigned"
+ * reset at the top. Shared by the generator review pane and the Suite Chat
+ * create-bug card, so it lives next to BranchPicker rather than inside a pane.
  */
 export function DeveloperPicker({
   value,

@@ -51,7 +51,7 @@ import {
 } from "../lib/relatedCases";
 import { renderBlock } from "@/modules/test-plans/lib/sourceLinksParser";
 import { saveConfidence } from "@/modules/test-plans/lib/confidenceApi";
-import { outcomeFromVerdict } from "../lib/confidenceOutcome";
+import { reconcileAutoOutcomes } from "../lib/caseAutoOutcome";
 import type { SourceLink } from "@/modules/ado";
 import {
   newRunId,
@@ -845,7 +845,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       const runId = reuseRunId ?? newRunId();
       set({
         phase: "review",
-        cases,
+        cases: reconcileAutoOutcomes(cases, bugs),
         bugs,
         rawText: result.rawText,
         durationMs: result.durationMs,
@@ -982,10 +982,13 @@ export function createGenerationSessionStore(): GenerationSessionStore {
               ? { ...b, decision: "skip" as const }
               : b,
           );
-          return { cases: nextCases, bugs: nextBugs };
+          return {
+            cases: reconcileAutoOutcomes(nextCases, nextBugs),
+            bugs: nextBugs,
+          };
         }
       }
-      return { cases: nextCases };
+      return { cases: reconcileAutoOutcomes(nextCases, s.bugs) };
     });
     schedulePersistDraft();
   },
@@ -1005,9 +1008,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           return {}; // refuse the keep — UI surfaces a "re-link first" hint
         }
       }
-      return {
-        bugs: s.bugs.map((b) => (b.uid === uid ? { ...b, decision } : b)),
-      };
+      const nextBugs = s.bugs.map((b) =>
+        b.uid === uid ? { ...b, decision } : b,
+      );
+      return { bugs: nextBugs, cases: reconcileAutoOutcomes(s.cases, nextBugs) };
     });
     schedulePersistDraft();
   },
@@ -1016,46 +1020,53 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       const idx =
         caseUid === null ? null : s.cases.findIndex((c) => c.uid === caseUid);
       if (caseUid !== null && (idx === null || idx < 0)) return {};
-      return {
-        bugs: s.bugs.map((b) =>
-          b.uid === bugUid
-            ? { ...b, linkedDraftCaseIndex: idx ?? null }
-            : b,
-        ),
-      };
+      const nextBugs = s.bugs.map((b) =>
+        b.uid === bugUid ? { ...b, linkedDraftCaseIndex: idx ?? null } : b,
+      );
+      return { bugs: nextBugs, cases: reconcileAutoOutcomes(s.cases, nextBugs) };
     });
     schedulePersistDraft();
   },
 
   restoreCaseContent: (uid, from) => {
-    set((s) => ({
-      cases: s.cases.map((c) =>
+    set((s) => {
+      const nextCases = s.cases.map((c) =>
         // Keep the live uid, position, and keep/skip choice; restore everything
         // else (title, steps, description, verdict, outcome…) to the snapshot.
         c.uid === uid ? { ...from, uid: c.uid, decision: c.decision } : c,
-      ),
-    }));
+      );
+      // The snapshot may carry a stale auto outcome; reconcile so it agrees with
+      // the case's current bug/verdict state instead of resurrecting it blindly.
+      return { cases: reconcileAutoOutcomes(nextCases, s.bugs) };
+    });
     schedulePersistDraft();
   },
   restoreBugContent: (uid, from) => {
-    set((s) => ({
-      bugs: s.bugs.map((b) =>
+    set((s) => {
+      // Restoring can re-point the bug's parent (from.linkedDraftCaseIndex), so
+      // recompute auto outcomes against the new bug array.
+      const nextBugs = s.bugs.map((b) =>
         b.uid === uid ? { ...from, uid: b.uid, decision: b.decision } : b,
-      ),
-    }));
+      );
+      return { bugs: nextBugs, cases: reconcileAutoOutcomes(s.cases, nextBugs) };
+    });
     schedulePersistDraft();
   },
   restoreRemovedCase: (from) => {
     // Idempotent: re-adding is a no-op if it's already back (double-click safe).
-    set((s) =>
-      s.cases.some((c) => c.uid === from.uid) ? {} : { cases: [...s.cases, from] },
-    );
+    set((s) => {
+      if (s.cases.some((c) => c.uid === from.uid)) return {};
+      const nextCases = [...s.cases, from];
+      return { cases: reconcileAutoOutcomes(nextCases, s.bugs) };
+    });
     schedulePersistDraft();
   },
   restoreRemovedBug: (from) => {
-    set((s) =>
-      s.bugs.some((b) => b.uid === from.uid) ? {} : { bugs: [...s.bugs, from] },
-    );
+    set((s) => {
+      if (s.bugs.some((b) => b.uid === from.uid)) return {};
+      const nextBugs = [...s.bugs, from];
+      return { bugs: nextBugs, cases: reconcileAutoOutcomes(s.cases, nextBugs) };
+    });
     schedulePersistDraft();
   },
 
@@ -1084,22 +1095,16 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     schedulePersistDraft();
   },
   setCaseVerdict: (uid, verdict) => {
-    set((s) => ({
-      cases: s.cases.map((c) => {
-        if (c.uid !== uid) return c;
-        // Auto-set the run outcome from the verdict unless the reviewer has
-        // already chosen one by hand. A decisive verdict (confident Pass, or
-        // any Fail/Blocked) flips the status; an ambiguous one leaves it. The
-        // reviewer can always override afterward (which clears outcomeAuto).
-        const auto = outcomeFromVerdict(verdict);
-        const takeAuto =
-          auto !== null &&
-          (c.desiredOutcome === undefined || c.outcomeAuto === true);
-        return takeAuto
-          ? { ...c, verdict, desiredOutcome: auto, outcomeAuto: true }
-          : { ...c, verdict };
-      }),
-    }));
+    set((s) => {
+      const nextCases = s.cases.map((c) =>
+        c.uid === uid ? { ...c, verdict } : c,
+      );
+      // Recompute auto-managed outcomes now that this case has a verdict: a
+      // decisive verdict (confident Pass, or any Fail/Blocked) flips the status,
+      // unless an attached bug already forced Failed or the reviewer set it by
+      // hand. The reviewer can always override afterward (clears outcomeAuto).
+      return { cases: reconcileAutoOutcomes(nextCases, s.bugs) };
+    });
     schedulePersistDraft();
   },
   setCaseUpdateTarget: (uid, caseId) => {
@@ -1692,7 +1697,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
 
       set((curr) => ({
         isRefining: false,
-        cases: nextCases,
+        cases: reconcileAutoOutcomes(nextCases, nextBugs),
         bugs: nextBugs,
         rawText: result.rawText,
         stepLabel: "",
@@ -1969,7 +1974,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       coverage: payload.coverage ?? modeToAxes(payload.mode).coverage,
       suggestBugs: payload.suggestBugs ?? modeToAxes(payload.mode).suggestBugs,
       overrideModelId: payload.overrideModelId ?? null,
-      cases: payload.cases ?? [],
+      cases: reconcileAutoOutcomes(payload.cases ?? [], payload.bugs ?? []),
       bugs: payload.bugs ?? [],
       rawText: payload.rawText ?? "",
       planId: payload.planId ?? run.planId ?? null,
