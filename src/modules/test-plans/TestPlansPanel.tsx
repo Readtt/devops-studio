@@ -24,12 +24,14 @@ import {
 import { useWorkItemTitles } from "@/modules/ado/hooks/useWorkItemTitles";
 import { useTestPlans, type CaseDetailsState, type SuiteLoad } from "./hooks/useTestPlans";
 import { useSuiteConfidence } from "./hooks/useSuiteConfidence";
+import { copyOpenBugsForSuite } from "./lib/copyOpenBugs";
 import { NewSuiteDialog } from "./NewSuiteDialog";
 import {
   ArrowDown01Icon,
   ArrowRight01Icon,
   BubbleChatIcon,
   Bug01Icon,
+  Copy01Icon,
   ExternalLink,
   FileEditIcon,
   FolderAddIcon,
@@ -1097,6 +1099,14 @@ function SuiteRow({
             </ContextMenuItem>
           ) : null}
           <ContextMenuSeparator />
+          <ContextMenuItem
+            icon={<HugeiconsIcon icon={Copy01Icon} size={12} strokeWidth={1.75} />}
+            description="Copy this suite's open bugs as a pasteable list."
+            disabled={!conn}
+            onSelect={() => void copyOpenBugsForSuite(planId, suite.id)}
+          >
+            Copy all open bugs
+          </ContextMenuItem>
           <ContextMenuItem
             icon={<HugeiconsIcon icon={ExternalLink} size={12} strokeWidth={1.75} />}
             disabled={!suiteWebUrl}

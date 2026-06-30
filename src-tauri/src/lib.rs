@@ -507,6 +507,7 @@ pub fn run() {
             ado::ado_update_suite_name,
             ado::ado_update_plan_name,
             ado::ado_get_case,
+            ado::ado_list_suite_bugs,
             ado::ado_list_test_points,
             ado::ado_list_suites_for_case,
             ado::ado_set_test_point_outcome,

@@ -19,9 +19,12 @@ use super::client::{
     delete_request, get_json, patch_json_patch, post_json, project_api, AdoState,
 };
 use super::errors::{AdoError, AdoResult};
-use super::test_cases::{display_name_field, friendly_rel_name, relation_to_linked};
+use super::test_cases::{
+    build_web_url_for_workitem, display_name_field, friendly_rel_name, relation_to_linked,
+};
 use super::types::{
-    Bug, BugRef, CodeLink, Connection, CreatedWorkItem, DraftBug, LinkedWorkItem, WorkItemRef,
+    Bug, BugRef, CodeLink, Connection, CreatedWorkItem, DraftBug, LinkedWorkItem, PagedResponse,
+    SuiteBug, WorkItemRef,
 };
 
 const CODE_LINKS_OPEN: &str = "<!-- devops-studio:code-links:v1 -->";
@@ -280,6 +283,176 @@ async fn hydrate_bug_refs(
         }
     }
     Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
+}
+
+/// Every Bug linked (Tested by / Child) to a test case in the given suite, each
+/// stamped with its ADO workflow state category so the client can filter "open"
+/// bugs without hardcoding process-specific state names.
+///
+/// Composes existing primitives rather than a bespoke WIQL link query: list the
+/// suite's cases, batch-read their relations, hydrate the linked Bugs, and
+/// resolve each Bug state to its category.
+pub async fn list_suite_bugs(
+    state: &AdoState,
+    plan_id: i64,
+    suite_id: i64,
+) -> AdoResult<Vec<SuiteBug>> {
+    use std::collections::HashSet;
+
+    let (conn, _) = state.snapshot();
+    let conn = conn.ok_or(AdoError::NotConfigured)?;
+
+    // 1. The suite's test case ids.
+    let case_ids: Vec<i64> = super::test_plans::list_suite_cases(state, plan_id, suite_id)
+        .await?
+        .into_iter()
+        .map(|c| c.id)
+        .collect();
+    if case_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // 2. Batch-read each case's relations and collect the linked bug-candidate
+    //    ids. `$expand=relations` and `fields` are mutually exclusive on this
+    //    endpoint, so the relations live in their own batch call. `errorPolicy=
+    //    Omit` keeps a single recycled case from 400-ing the whole batch.
+    let mut candidate_ids: Vec<i64> = Vec::new();
+    let mut seen: HashSet<i64> = HashSet::new();
+    for chunk in case_ids.chunks(200) {
+        let ids_csv = chunk
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let url = project_api(
+            &conn,
+            &format!("wit/workitems?ids={ids_csv}&$expand=relations&errorPolicy=Omit"),
+        );
+        let raw: Value = get_json(state, &url, "suite case relations").await?;
+        let items = raw
+            .get("value")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for item in items {
+            let Some(rels) = item.get("relations").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            for rel in rels {
+                let Some(link) = relation_to_linked(rel, "", "") else {
+                    continue;
+                };
+                // "Tested by" (TestedBy-Forward) and "Child" (Hierarchy-Forward)
+                // are the two ways a bug attaches to a case in this app.
+                if (link.kind == "Tested by" || link.kind == "Child")
+                    && seen.insert(link.id)
+                {
+                    candidate_ids.push(link.id);
+                }
+            }
+        }
+    }
+    if candidate_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // 3. Hydrate the candidates and keep only Bugs (a Child link can point at a
+    //    non-bug). `errorPolicy=Omit` skips relations to soft-deleted items.
+    let mut bugs: Vec<SuiteBug> = Vec::new();
+    for chunk in candidate_ids.chunks(200) {
+        let ids_csv = chunk
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let url = project_api(
+            &conn,
+            &format!(
+                "wit/workitems?ids={ids_csv}&fields=System.Title,System.State,System.WorkItemType,Microsoft.VSTS.Common.Severity,System.AssignedTo&errorPolicy=Omit"
+            ),
+        );
+        let raw: Value = get_json(state, &url, "suite bug details").await?;
+        let items = raw
+            .get("value")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for item in items {
+            let Some(id) = item.get("id").and_then(|v| v.as_i64()) else {
+                continue;
+            };
+            let fields = item.get("fields");
+            let is_bug = fields
+                .and_then(|f| f.get("System.WorkItemType"))
+                .and_then(|v| v.as_str())
+                == Some("Bug");
+            if !is_bug {
+                continue;
+            }
+            let title = fields
+                .and_then(|f| f.get("System.Title"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let state_str = fields
+                .and_then(|f| f.get("System.State"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let severity = fields
+                .and_then(|f| f.get("Microsoft.VSTS.Common.Severity"))
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let assigned_to = display_name_field(fields.and_then(|f| f.get("System.AssignedTo")));
+            bugs.push(SuiteBug {
+                id,
+                title,
+                state: state_str,
+                state_category: String::new(), // resolved in step 4
+                severity,
+                assigned_to,
+                web_url: build_web_url_for_workitem(&conn.org_url, &conn.project, id),
+            });
+        }
+    }
+    if bugs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // 4. Resolve Bug state name -> workflow category so the client can decide
+    //    "open" (category not Completed/Removed). Best-effort: if the metadata
+    //    call fails we still return the bugs (category stays "" → treated open).
+    let category_by_state = bug_state_categories(state, &conn).await.unwrap_or_default();
+    for b in &mut bugs {
+        if let Some(cat) = category_by_state.get(&b.state) {
+            b.state_category = cat.clone();
+        }
+    }
+
+    bugs.sort_by_key(|b| b.id);
+    Ok(bugs)
+}
+
+/// Map of Bug work-item state name -> workflow state category (Proposed /
+/// InProgress / Resolved / Completed / Removed). Fetched per call — a project's
+/// process rarely changes mid-session and this only runs when a suite's bugs
+/// are listed.
+async fn bug_state_categories(
+    state: &AdoState,
+    conn: &Connection,
+) -> AdoResult<std::collections::HashMap<String, String>> {
+    #[derive(serde::Deserialize)]
+    struct BugStateRow {
+        name: String,
+        category: Option<String>,
+    }
+    let url = project_api(conn, "wit/workitemtypes/Bug/states");
+    let resp: PagedResponse<BugStateRow> = get_json(state, &url, "bug states").await?;
+    Ok(resp
+        .value
+        .into_iter()
+        .filter_map(|r| r.category.map(|c| (r.name, c)))
+        .collect())
 }
 
 /// Work-item picker source for the inline `#id` mention. Same WIQL shape as

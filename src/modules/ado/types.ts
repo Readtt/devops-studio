@@ -209,6 +209,21 @@ export const BugRefSchema = z.object({
 });
 export type BugRef = z.infer<typeof BugRefSchema>;
 
+/** A Bug linked to a suite's test cases, with its ADO workflow state *category*
+ *  resolved. The category lets callers decide "open" (not Completed/Removed)
+ *  without hardcoding process-specific or localized state names. */
+export const SuiteBugSchema = z.object({
+  id: z.number().int(),
+  title: z.string(),
+  state: z.string(),
+  stateCategory: z.string(),
+  severity: z.string().nullable().optional(),
+  assignedTo: z.string().nullable().optional(),
+  /** Browser-openable work-item URL, so a copy can hyperlink the bug id. */
+  webUrl: z.string(),
+});
+export type SuiteBug = z.infer<typeof SuiteBugSchema>;
+
 /** Lightweight work-item projection for the inline `#id` mention — like
  *  BugRef but spans every work-item type and carries the type so the picker
  *  can label each row. */

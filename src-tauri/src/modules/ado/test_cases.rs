@@ -416,7 +416,7 @@ fn merge_description(base: &str, links_block: Option<&str>) -> String {
     }
 }
 
-fn build_web_url_for_workitem(org_url: &str, project: &str, id: i64) -> String {
+pub(super) fn build_web_url_for_workitem(org_url: &str, project: &str, id: i64) -> String {
     format!(
         "{}/{}/_workitems/edit/{}",
         org_url.trim_end_matches('/'),

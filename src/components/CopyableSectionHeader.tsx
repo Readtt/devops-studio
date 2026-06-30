@@ -7,18 +7,12 @@ import {
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { type CopyableItem, copyItems } from "./copyableItems";
 
-/** Shape of a single row the header knows how to copy. */
-export type CopyableItem = {
-  /** ADO work-item id, or null for pre-publish drafts. When present the
-   *  clipboard payload renders the prefix as a hyperlink to webUrl so a
-   *  paste into Asana / Notion auto-recognises the work item. */
-  id: number | null;
-  title: string;
-  /** Browser-openable URL to the work item. Required for the HTML payload
-   *  to carry a real link; without it we fall back to plain text. */
-  webUrl?: string | null;
-};
+// The item shape + clipboard format live in copyableItems.ts so other surfaces
+// (e.g. the suite context menu's "Copy all open bugs") copy identically.
+// Re-exported here for existing importers.
+export type { CopyableItem };
 
 type Props = {
   /** Display label — "Cases" / "Bugs" / "Bug suggestions" / etc. */
@@ -54,26 +48,8 @@ export function CopyableSectionHeader({
 
   const onCopy = async () => {
     if (items.length === 0) return;
-    const { plain, html } = buildPayload(kind, items);
     try {
-      // Prefer the rich form when supported. ClipboardItem isn't available
-      // in older webviews, so fall back to plain text — that still satisfies
-      // the "paste my published IDs somewhere" use case, just without the
-      // automatic hyperlink on the id.
-      if (
-        typeof ClipboardItem !== "undefined" &&
-        navigator.clipboard &&
-        // Some webviews ship ClipboardItem but not navigator.clipboard.write.
-        typeof navigator.clipboard.write === "function"
-      ) {
-        const blobs: Record<string, Blob> = {
-          "text/plain": new Blob([plain], { type: "text/plain" }),
-          "text/html": new Blob([html], { type: "text/html" }),
-        };
-        await navigator.clipboard.write([new ClipboardItem(blobs)]);
-      } else if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(plain);
-      }
+      await copyItems(kind, items);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1100);
     } catch {
@@ -140,42 +116,4 @@ export function CopyableSectionHeader({
       </Tooltip>
     </div>
   );
-}
-
-/** Assemble the plain-text and HTML payloads for a set of items. The HTML
- *  payload wraps the "<Kind> <id>" prefix in an anchor so rich-text targets
- *  like Asana auto-link it; the plain payload is the same string without
- *  anchor markup. Items missing an id still copy — just without a leading
- *  reference (`<title>` alone) so the caller doesn't have to filter. */
-function buildPayload(
-  kind: string,
-  items: CopyableItem[],
-): { plain: string; html: string } {
-  const lines = items.map((it) => {
-    const ref = it.id != null ? `${kind} ${it.id}` : null;
-    const plain = ref ? `${ref}: ${it.title}` : it.title;
-    const safeTitle = escapeHtml(it.title);
-    let html: string;
-    if (ref && it.webUrl) {
-      html = `<a href="${escapeHtml(it.webUrl)}">${escapeHtml(ref)}</a>: ${safeTitle}`;
-    } else if (ref) {
-      html = `${escapeHtml(ref)}: ${safeTitle}`;
-    } else {
-      html = safeTitle;
-    }
-    return { plain, html };
-  });
-  return {
-    plain: lines.map((l) => l.plain).join("\n"),
-    html: `<div>${lines.map((l) => l.html).join("<br>")}</div>`,
-  };
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }

@@ -22,6 +22,7 @@ import {
   ProjectRefSchema,
   PullRequestRefSchema,
   RepoRefSchema,
+  SuiteBugSchema,
   SuiteRefSchema,
   TeamMemberSchema,
   TestCaseRefSchema,
@@ -47,6 +48,7 @@ import {
   type FileContent,
   type ProjectRef,
   type RepoRef,
+  type SuiteBug,
   type SuiteRef,
   type TeamMember,
   type TestCase,
@@ -163,6 +165,17 @@ export async function listSuiteCases(
 ): Promise<TestCaseRef[]> {
   const raw = await invoke("ado_list_suite_cases", { planId, suiteId });
   return TestCaseRefSchema.array().parse(raw);
+}
+
+/** Every Bug linked to a suite's test cases, with each bug's ADO workflow state
+ *  category resolved (so the caller can filter "open" without hardcoding state
+ *  names). Walks the suite's cases and their work-item relations server-side. */
+export async function listSuiteBugs(
+  planId: number,
+  suiteId: number,
+): Promise<SuiteBug[]> {
+  const raw = await invoke("ado_list_suite_bugs", { planId, suiteId });
+  return SuiteBugSchema.array().parse(raw);
 }
 
 export type CreateSuiteArgs = {

@@ -29,8 +29,8 @@ use errors::AdoError;
 use types::{
     BranchRef, Bug, BugRef, CaseSuiteMembership, CommitInfo, Connection, ConnectionStatus,
     CreatedWorkItem, DraftBug, DraftCase, FileContent, ProjectRef, PullRequestRef, RepoRef,
-    SuiteRef, TeamMember, TestCase, TestCaseRef, TestConnectionResult, TestPlanRef, TestPointInfo,
-    WorkItemRef,
+    SuiteBug, SuiteRef, TeamMember, TestCase, TestCaseRef, TestConnectionResult, TestPlanRef,
+    TestPointInfo, WorkItemRef,
 };
 
 const STORE_PATH: &str = "devops-studio-settings.json";
@@ -238,6 +238,15 @@ pub async fn ado_get_case(
     case_id: i64,
 ) -> Result<TestCase, AdoError> {
     test_plans::get_case(&state, case_id).await
+}
+
+#[tauri::command]
+pub async fn ado_list_suite_bugs(
+    state: State<'_, AdoState>,
+    plan_id: i64,
+    suite_id: i64,
+) -> Result<Vec<SuiteBug>, AdoError> {
+    bugs::list_suite_bugs(&state, plan_id, suite_id).await
 }
 
 // --- Test execution (Execute tab) ---

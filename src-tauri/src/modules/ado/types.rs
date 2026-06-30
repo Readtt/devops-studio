@@ -233,6 +233,24 @@ pub struct BugRef {
     pub severity: Option<String>,
 }
 
+/// A Bug linked to a suite's test cases, with its ADO workflow state *category*
+/// resolved. The category (Proposed | InProgress | Resolved | Completed |
+/// Removed) lets the client decide which bugs are "open" without hardcoding
+/// process-specific or localized state names.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuiteBug {
+    pub id: i64,
+    pub title: String,
+    pub state: String,
+    /// Workflow state category, or "" if it couldn't be resolved.
+    pub state_category: String,
+    pub severity: Option<String>,
+    pub assigned_to: Option<String>,
+    /// Browser-openable work-item URL, so a copy can hyperlink the bug id.
+    pub web_url: String,
+}
+
 /// Lightweight work-item projection for the inline `#id` mention. Like BugRef
 /// but spans every work-item type and carries the type so the picker can show
 /// it. Full bodies come from `get_bug` (which works for any type) on selection.

@@ -65,6 +65,7 @@ import {
   BranchSwitchDialog,
 } from "@/modules/git";
 import { getConnection, type WorkItemRef } from "@/modules/ado";
+import { ActionToast } from "@/components/ActionToast";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { AzureDevOpsBrand } from "@/components/AzureDevOpsBrand";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
@@ -1472,6 +1473,7 @@ function AppShell() {
                       capsule at the bottom) when both appear. */}
                   <div className="pointer-events-none absolute bottom-3 left-3 z-40 flex flex-col-reverse items-start gap-2">
                     <ConfidenceProgressCapsule />
+                    <ActionToast />
                     <BranchSwitchToast />
                     {showUpdaterToast && (
                       <UpdaterToast
