@@ -95,6 +95,8 @@ function composeSwitchDone(
       return { message: base, tone: "ok" };
     case "diverged":
       return { message: `${base} · pull skipped, branch diverged`, tone: "info" };
+    case "local-changes":
+      return { message: `${base} · pull skipped, uncommitted changes`, tone: "info" };
     case "offline":
       return { message: `${base} · couldn't reach remote`, tone: "info" };
     default:
@@ -245,6 +247,12 @@ export const useBranchSwitch = create<State>((set, get) => {
         break;
       case "no-upstream":
         message = `${branch} isn't tracking a remote — nothing to pull`;
+        tone = "info";
+        break;
+      case "local-changes":
+        message =
+          pull.message ||
+          "You have uncommitted changes the update would overwrite. Commit or stash them, then pull.";
         tone = "info";
         break;
       default:

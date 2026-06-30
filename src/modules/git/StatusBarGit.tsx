@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Command,
   CommandEmpty,
@@ -32,6 +32,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { cn } from "@/lib/utils";
 import {
+  emitSourceGitChanged,
   gitBranches,
   gitFetch,
   type BranchListItem,
@@ -146,7 +147,13 @@ function BranchSwitcher({
 
   const current = status.branch;
   const label = current ?? (status.commit ? `(${status.commit})` : "(detached)");
-  const canPull = status.behind > 0 && !!status.upstream && !!current;
+  // Pull is offered whenever the current branch tracks an upstream — not gated
+  // on `behind`, because that count is only as fresh as the last fetch (it reads
+  // the cached origin/<branch> ref). `git pull --ff-only` fetches first, so it's
+  // correct even when the cached count says 0, and a safe no-op when truly in
+  // sync. Gating on `behind` is what made pulling the current branch impossible
+  // without first switching away and back.
+  const canPull = !!current && !!status.upstream;
 
   const locals = branches.filter((b) => b.kind === "local");
   const remotes = branches.filter((b) => b.kind === "remote");
@@ -192,6 +199,10 @@ function BranchSwitcher({
         // Reuse the current load signal so a popover that closed (or a cwd that
         // changed) while the fetch was in flight cancels this reload too.
         loadBranches(loadSignal.current ?? undefined);
+        // A fetch updates the cached origin/<branch> ref, which is what the
+        // ahead/behind chips read — nudge the status poll so "Pull latest ↓N"
+        // reflects what we just learned instead of lagging until the 30 s tick.
+        emitSourceGitChanged();
       } else {
         setFetchNote(res.message);
       }
@@ -336,7 +347,9 @@ function BranchSwitcher({
           </CommandList>
 
           {hasRemotes || canPull || fetchNote ? (
-            <div className="border-t border-border/50">
+            // -mb-1 cancels the Command's bottom p-1 so the footer bar sits
+            // flush against the popover's bottom edge (no dead strip below it).
+            <div className="-mb-1 border-t border-border/50">
               {hasRemotes || canPull ? (
                 <div className="flex items-center justify-between gap-2 px-1.5 py-1.5">
                   <div className="flex items-center gap-0.5">
@@ -346,16 +359,31 @@ function BranchSwitcher({
                         label={fetching ? "Fetching…" : "Fetch"}
                         spinning={fetching}
                         disabled={fetching}
-                        tooltip="Refresh the branch list from the remote — new branches show up here."
+                        tooltip="Check the remote for new branches and updates — without changing your files."
                         onClick={() => void onFetch()}
                       />
                     ) : null}
                     {canPull ? (
                       <FooterAction
                         icon={CloudDownloadIcon}
-                        label="Pull"
-                        count={status.behind}
-                        tooltip={`Fast-forward ${current} to the latest — ${status.behind} commit${status.behind === 1 ? "" : "s"} behind.`}
+                        label="Pull latest"
+                        trailing={
+                          status.behind > 0 ? (
+                            <span className="flex items-center gap-0.5 rounded-sm bg-primary/12 px-1 font-mono text-[9px] font-medium text-primary">
+                              <HugeiconsIcon
+                                icon={ArrowDown01Icon}
+                                size={9}
+                                strokeWidth={2.25}
+                              />
+                              {status.behind}
+                            </span>
+                          ) : null
+                        }
+                        tooltip={
+                          status.behind > 0
+                            ? `Fast-forward ${current} — ${status.behind} commit${status.behind === 1 ? "" : "s"} behind`
+                            : `Fetch and fast-forward ${current} if it's behind`
+                        }
                         onClick={() => {
                           pullOnly(cwd, current ?? "");
                           setOpen(false);
@@ -437,7 +465,7 @@ function FooterAction({
   icon,
   label,
   tooltip,
-  count,
+  trailing,
   spinning,
   disabled,
   onClick,
@@ -445,7 +473,8 @@ function FooterAction({
   icon: typeof CloudDownloadIcon;
   label: string;
   tooltip: string;
-  count?: number;
+  /** Optional badge after the label (e.g. the behind-count chip on Pull). */
+  trailing?: ReactNode;
   spinning?: boolean;
   disabled?: boolean;
   onClick: () => void;
@@ -466,9 +495,7 @@ function FooterAction({
             className={cn(spinning && "animate-spin")}
           />
           {label}
-          {typeof count === "number" ? (
-            <span className="tabular-nums text-muted-foreground/60">{count}</span>
-          ) : null}
+          {trailing}
         </button>
       </TooltipTrigger>
       <TooltipContent side="top" className="max-w-[220px] text-[11px]">

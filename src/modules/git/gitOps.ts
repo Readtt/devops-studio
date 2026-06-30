@@ -87,6 +87,8 @@ export type GitPullResult = {
     | "up-to-date"
     | "no-upstream"
     | "diverged"
+    /** A fast-forward would overwrite uncommitted edits — git refused, tree intact. */
+    | "local-changes"
     | "offline"
     | "error";
   message: string;

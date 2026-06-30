@@ -218,7 +218,10 @@ fn do_checkout(path: &Path, branch: &str, mode: &str) -> Result<GitCheckoutResul
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitPullResult {
-    /// "updated" | "up-to-date" | "no-upstream" | "diverged" | "offline" | "error".
+    /// "updated" | "up-to-date" | "no-upstream" | "diverged" | "local-changes"
+    /// | "offline" | "error".
+    /// - local-changes: a fast-forward would overwrite uncommitted edits, so git
+    ///   refused and the tree is untouched — the user commits or stashes first.
     pub status: String,
     pub message: String,
 }
@@ -270,7 +273,13 @@ fn do_pull(path: &Path) -> Result<GitPullResult, String> {
         });
     }
 
-    let status = if lower.contains("not possible to fast-forward")
+    let status = if lower.contains("overwritten by merge")
+        || lower.contains("commit your changes or stash them")
+    {
+        // A fast-forward would clobber uncommitted edits; git aborted before
+        // touching anything (the fetch already ran, but the tree is intact).
+        "local-changes"
+    } else if lower.contains("not possible to fast-forward")
         || lower.contains("diverging")
         || lower.contains("diverged")
         || lower.contains("reconcile")
@@ -282,6 +291,10 @@ fn do_pull(path: &Path) -> Result<GitPullResult, String> {
         "error"
     };
     let message = match status {
+        "local-changes" => {
+            "You have uncommitted changes the update would overwrite. Commit or stash them, then pull."
+                .into()
+        }
         "diverged" => {
             "Your branch and its remote have diverged. Pull manually (merge or rebase) to reconcile."
                 .into()
@@ -720,6 +733,27 @@ mod tests {
         assert_eq!(res.status, "diverged");
         // Nothing was merged or rebased — our local commit is intact.
         assert!(fs::read_to_string(p.join("a.txt")).unwrap().contains("local"));
+    }
+
+    #[test]
+    fn pull_refuses_when_local_changes_would_be_overwritten() {
+        // On a tracking branch that's behind, an uncommitted edit to a file the
+        // fast-forward would touch makes git refuse. We classify that as
+        // "local-changes" (not a generic error) and leave the edit intact.
+        let (local, remote) = repo_with_upstream();
+        let p = local.path();
+        advance_remote(remote.path(), |o| {
+            fs::write(o.join("a.txt"), "one\ntwo\nremote\n").unwrap();
+            git(o, &["commit", "-qam", "remote edit"]);
+        });
+        git(p, &["fetch", "-q", "origin"]);
+        // Uncommitted local edit to the same file the FF would update.
+        fs::write(p.join("a.txt"), "one\ntwo\nmine\n").unwrap();
+
+        let res = do_pull(p).unwrap();
+        assert_eq!(res.status, "local-changes");
+        // The working tree is untouched — our edit survives.
+        assert!(fs::read_to_string(p.join("a.txt")).unwrap().contains("mine"));
     }
 
     #[test]
