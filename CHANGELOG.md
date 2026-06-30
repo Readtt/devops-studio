@@ -7,6 +7,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.12.0] - 2026-06-30
+
+### Added
+
+- Right-click any suite in the Plans explorer and choose **Copy all open bugs** to put that suite's outstanding bugs on your clipboard as a pasteable list — `Bug <id>: <title>` rows with each id hyperlinked to the work item, so a paste into Asana or Notion auto-recognises it (the same format the generation History pane uses). "Open" means any bug whose Azure DevOps state isn't Completed or Removed, so a Resolved bug you still need to re-test is included. A glass capsule in the bottom-left reports the outcome — how many bugs were copied, that the suite has none, or why the lookup failed.
+- When Suite Chat proposes creating a bug, the **Apply to ADO** card now includes an "Assign to" developer picker, so you can hand the new bug to a project team member as you file it — previously every bug created from chat landed unassigned. It's the same searchable roster (with an "Unassigned" reset) used in the generator's review pane, loaded only when a card is actually a create-bug card. The assignee is always your choice — the AI never sets it.
+
+### Changed
+
+- In the generator's review step, keeping a bug on a draft case now automatically sets that case's run outcome to **Failed** — a filed bug is concrete evidence the test failed, so it outweighs a confidence verdict that predicted Pass (previously only the verdict drove the auto-outcome, so a confident-pass case with a bug attached still defaulted to Passed). The outcome is recomputed consistently after every keep/skip, bug re-link, content restore, and verdict change, and only ever touches auto-managed cases — a status you set by hand is never overwritten. Unlink or skip the bug and the outcome falls back to the verdict (or clears); the picker's tooltip explains when an outcome was auto-set because of an attached bug.
+
+### Fixed
+
+- You can now **Pull latest** for the current branch from the status-bar branch switcher even when it reads "0 behind". That count only reflects your last fetch, so a branch that had since moved on the remote couldn't be pulled without first switching to another branch and back. Pull is now offered whenever the branch tracks an upstream; because it fast-forwards only after fetching, it's correct when there's something to pull and a harmless no-op when you're already up to date. The behind-count now rides as a small chip on the button, and a manual **Fetch** refreshes the ahead/behind indicators immediately instead of waiting for the next 30-second poll.
+- Pulling no longer surfaces git's raw error (or a vague "pull failed") when uncommitted work is in the way. When a fast-forward — the **Pull latest** action or the automatic pull right after a branch switch — would overwrite uncommitted edits, the app now reports a clear, actionable message ("You have uncommitted changes the update would overwrite. Commit or stash them, then pull.") and leaves your working tree untouched.
+
 ## [0.11.1] - 2026-06-29
 
 ### Fixed
