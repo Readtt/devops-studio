@@ -63,6 +63,8 @@ import {
   StatusBarGit,
   BranchSwitchToast,
   BranchSwitchDialog,
+  CloneProgressCapsule,
+  CloneSourceDialog,
 } from "@/modules/git";
 import { getConnection, type WorkItemRef } from "@/modules/ado";
 import { ActionToast } from "@/components/ActionToast";
@@ -1473,6 +1475,7 @@ function AppShell() {
                       capsule at the bottom) when both appear. */}
                   <div className="pointer-events-none absolute bottom-3 left-3 z-40 flex flex-col-reverse items-start gap-2">
                     <ConfidenceProgressCapsule />
+                    <CloneProgressCapsule />
                     <ActionToast />
                     <BranchSwitchToast />
                     {showUpdaterToast && (
@@ -1485,6 +1488,7 @@ function AppShell() {
                   </div>
                   <ConfidenceConfirmDialog />
                   <BranchSwitchDialog />
+                  <CloneSourceDialog />
                   <GeneratorCallbacksProvider value={generatorCallbacks}>
                     <TabsDndProvider>
                       <PaneTreeRenderer

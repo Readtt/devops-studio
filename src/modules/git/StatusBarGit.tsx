@@ -40,6 +40,7 @@ import {
 } from "./gitOps";
 import { useSourceDirStatus } from "./useSourceDirStatus";
 import { useBranchSwitch } from "./useBranchSwitch";
+import { GetSourceCodeDialog } from "./GetSourceCodeDialog";
 
 /**
  * Bottom status-bar git widget: the source directory + a live branch switcher.
@@ -113,8 +114,58 @@ export function StatusBarGit({
           <span aria-hidden className="w-px self-stretch bg-border/70" />
           <BranchSwitcher cwd={sourceRoot} status={status} />
         </>
-      ) : null}
+      ) : (
+        <>
+          <span aria-hidden className="w-px self-stretch bg-border/70" />
+          <GetSourceCodeButton sourceRoot={sourceRoot} notRepoButSet={!!sourceRoot} />
+        </>
+      )}
     </div>
+  );
+}
+
+/**
+ * Shown in place of the branch switcher when the source directory isn't a git
+ * repo (or none is set): a call-to-action that opens the clone wizard. This is
+ * the QA-tester on-ramp — they hand us an Azure DevOps PAT, so we can clone the
+ * code it can read without them touching git themselves.
+ */
+function GetSourceCodeButton({
+  sourceRoot,
+  notRepoButSet,
+}: {
+  sourceRoot: string | null;
+  notRepoButSet: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="flex items-center gap-1 px-1.5 text-muted-foreground transition-colors hover:bg-foreground/[0.04] hover:text-foreground"
+            aria-label="Get source code"
+          >
+            <HugeiconsIcon icon={CloudDownloadIcon} size={11} strokeWidth={1.75} />
+            <span>Get source code</span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent
+          side="top"
+          align="start"
+          sideOffset={6}
+          variant="panel"
+          className="max-w-[320px] px-3 py-2 text-[11px] leading-relaxed"
+        >
+          {notRepoButSet
+            ? "This folder isn't a git repository. Clone one here to enable code links and branch switching."
+            : "Clone a repository onto this machine — using your Azure DevOps token, or any HTTPS URL."}
+        </TooltipContent>
+      </Tooltip>
+      <GetSourceCodeDialog open={open} onOpenChange={setOpen} sourceRoot={sourceRoot} />
+    </>
   );
 }
 
