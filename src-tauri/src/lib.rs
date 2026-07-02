@@ -1,8 +1,8 @@
 mod modules;
 
 use modules::{
-    ado, chat_threads, command, commit_review, confidence_store, fs, git, git_ops, history, net,
-    pty, secrets,
+    ado, chat_threads, command, commit_review, confidence_store, fs, git, git_bin, git_clone,
+    git_ops, history, net, pty, secrets,
 };
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -448,6 +448,11 @@ pub fn run() {
                 }
             });
 
+            // Load any manual git-path override so every git spawn resolves the
+            // right executable even when the app was launched from a GUI (which
+            // doesn't inherit the shell PATH).
+            git_bin::hydrate(app.handle());
+
             // Kill all live PTYs when the main window goes away. Without
             // this, a user closing the app with terminal tabs open leaves
             // orphan shell processes behind — fine on Unix where they
@@ -574,6 +579,11 @@ pub fn run() {
             git_ops::git_pull,
             git_ops::git_fetch,
             git_ops::git_stash_restore,
+            // --- Git install detection + clone (Get source code wizard) ---
+            git_bin::git_check_installed,
+            git_bin::git_set_path,
+            git_clone::git_clone,
+            git_clone::git_clone_cancel,
             command::run_readonly_command_cmd,
             // --- PTY / embedded terminal ---
             pty::pty_spawn,

@@ -19,7 +19,7 @@ use std::process::{Command, Stdio};
 /// `envs` lets us set `GIT_TERMINAL_PROMPT=0` so a fetch needing credentials
 /// fails fast instead of blocking on an invisible prompt.
 fn run_capture(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (bool, String, String) {
-    let mut cmd = Command::new("git");
+    let mut cmd = Command::new(super::git_bin::git_program());
     cmd.args(args)
         .current_dir(cwd)
         // C locale so the pull-outcome classification below matches git's

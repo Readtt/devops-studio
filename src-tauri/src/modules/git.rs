@@ -103,7 +103,7 @@ pub(crate) fn current_commit(path: &Path) -> Option<String> {
 }
 
 pub(crate) fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    let mut cmd = Command::new("git");
+    let mut cmd = Command::new(super::git_bin::git_program());
     cmd.args(args)
         .current_dir(cwd)
         // Force the C locale so git's messages (and anything we string-match on,
