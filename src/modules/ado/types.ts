@@ -261,6 +261,11 @@ export const RepoRefSchema = z.object({
   name: z.string(),
   defaultBranch: z.string().nullable().optional(),
   webUrl: z.string().nullable().optional(),
+  // Canonical HTTPS clone URL (dev.azure.com/{org}/{project}/_git/{repo}) — used
+  // by the "Get source code" clone wizard; distinct from webUrl (browser URL).
+  remoteUrl: z.string().nullable().optional(),
+  // Owning project name (present on the org-wide list).
+  project: z.string().nullable().optional(),
 });
 export type RepoRef = z.infer<typeof RepoRefSchema>;
 

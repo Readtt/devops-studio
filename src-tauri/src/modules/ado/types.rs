@@ -380,6 +380,10 @@ pub struct RepoRef {
     pub default_branch: Option<String>,
     #[serde(default)]
     pub web_url: Option<String>,
+    #[serde(default)]
+    pub remote_url: Option<String>,
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

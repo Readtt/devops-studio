@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use similar::{ChangeTag, TextDiff};
 
-use super::client::{get_json, get_raw_json, project_api, AdoState};
+use super::client::{get_json, get_raw_json, org_api, project_api, AdoState};
 use super::errors::{AdoError, AdoResult};
 use super::types::{
     BranchRef, CommitInfo, Connection, FileContent, PagedResponse, PullRequestRef, RepoRef,
@@ -19,7 +19,9 @@ const ADO_PATCH_CAP: usize = 60 * 1024;
 pub async fn list_repos(state: &AdoState) -> AdoResult<Vec<RepoRef>> {
     let (conn, _) = state.snapshot();
     let conn = conn.ok_or(AdoError::NotConfigured)?;
-    let url = project_api(&conn, "git/repositories");
+    // Org-wide (not project-scoped): the clone picker should surface every repo
+    // the PAT can read, across all projects — not just the connection's project.
+    let url = org_api(&conn, "git/repositories");
     let resp: PagedResponse<RawRepo> = get_json(state, &url, "git repos").await?;
     Ok(resp.value.into_iter().map(RawRepo::into_ref).collect())
 }
@@ -566,6 +568,20 @@ struct RawRepo {
     default_branch: Option<String>,
     #[serde(default)]
     web_url: Option<String>,
+    // The canonical HTTPS clone URL (e.g. https://dev.azure.com/{org}/{project}/_git/{repo}).
+    // Used by the "Get source code" clone flow; distinct from web_url (the browser URL).
+    #[serde(default)]
+    remote_url: Option<String>,
+    // Owning project — present on the org-wide list, used to disambiguate repos
+    // with the same name across projects.
+    #[serde(default)]
+    project: Option<RawProject>,
+}
+
+#[derive(Deserialize)]
+struct RawProject {
+    #[serde(default)]
+    name: Option<String>,
 }
 
 impl RawRepo {
@@ -577,6 +593,8 @@ impl RawRepo {
                 .default_branch
                 .map(|b| b.trim_start_matches("refs/heads/").to_string()),
             web_url: self.web_url,
+            remote_url: self.remote_url,
+            project: self.project.and_then(|p| p.name),
         }
     }
 }
