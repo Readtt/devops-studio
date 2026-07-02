@@ -7,6 +7,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.13.0] - 2026-07-02
+
+### Added
+
+- **Get source code** — a new wizard that clones repositories onto this machine so QA testers who don't manage git themselves can get set up without touching a terminal. Launch it from the status-bar git control (the natural next step when no source directory is set). Clone one or more **Azure DevOps** repos — now listed across your entire organization rather than just the connected project, with the owning project shown so same-named repos stay distinct — into a parent folder you choose, each in its own subfolder; or switch to **Other repository** and paste any HTTPS URL with an optional username and password/token. Progress streams live in a glass capsule and an in-flight clone can be cancelled; when the batch finishes, a picker asks which cloned repo should become the app's source directory.
+- Azure DevOps clones use your saved PAT automatically — no re-entering it — and, with your opt-in, the credential is remembered in the OS credential store so later branch switches, pulls, and fetches just work. The token is never written into the repo's config and never appears on a command line.
+- If git isn't installed, the wizard explains how to install it for your OS (with a copy-paste command and a download link) and offers a **Locate git…** picker to point at an existing install. Git is now resolved from its standard install locations as well as PATH, so a fresh install is found without restarting the app, and a GUI launch that didn't inherit your shell PATH still works.
+
 ## [0.12.0] - 2026-06-30
 
 ### Added
