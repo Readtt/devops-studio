@@ -29,3 +29,5 @@ export { useBranchSwitch } from "./useBranchSwitch";
 export { StatusBarGit } from "./StatusBarGit";
 export { BranchSwitchToast } from "./BranchSwitchToast";
 export { BranchSwitchDialog } from "./BranchSwitchDialog";
+export { CloneProgressCapsule } from "./CloneProgressCapsule";
+export { CloneSourceDialog } from "./CloneSourceDialog";
