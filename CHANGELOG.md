@@ -7,6 +7,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.15.0] - 2026-07-24
+
+### Added
+
+- Claude Opus 5 (`claude-opus-5`) across every AI surface — the new Anthropic flagship, also available via OpenRouter.
+
+### Changed
+
+- Streamlined the model picker to the best model of each tier. Since same-tier models are priced identically, only the current-generation flagship of each family is shown.
+
+### Removed
+
+- Retired superseded, same-price models: Claude Opus 4.8 / 4.7 / 4.6, Claude Sonnet 4.6, Gemini 2.5 Pro / Flash, and GPT-4.1 mini. Persisted selections, favorites, and recents that pointed at a retired model now fall back gracefully instead of erroring.
+
 ## [0.14.0] - 2026-07-24
 
 ### Added
