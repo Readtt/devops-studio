@@ -187,32 +187,14 @@ export const MODELS = [
     capabilities: { intelligence: 4, speed: 4, cost: 3 },
     tags: ["tools", "coding"],
   },
-  {
-    id: "gpt-4.1-mini",
-    provider: "openai",
-    label: "GPT-4.1 mini",
-    hint: "Cheap",
-    description: "Ultra-cheap workhorse for bulk tasks.",
-    capabilities: { intelligence: 3, speed: 4, cost: 5 },
-    tags: ["vision", "tools"],
-  },
 
   // ── Anthropic ─────────────────────────────────────────────────────────────
   {
-    id: "claude-opus-4-8",
+    id: "claude-opus-5",
     provider: "anthropic",
-    label: "Claude Opus 4.8",
+    label: "Claude Opus 5",
     hint: "Best",
-    description: "Anthropic's flagship for long reasoning.",
-    capabilities: { intelligence: 5, speed: 2, cost: 1 },
-    tags: ["vision", "reasoning", "tools", "coding"],
-  },
-  {
-    id: "claude-opus-4-7",
-    provider: "anthropic",
-    label: "Claude Opus 4.7",
-    hint: "Powerful",
-    description: "Prior-generation flagship Opus.",
+    description: "Anthropic's flagship for deep reasoning and agentic work.",
     capabilities: { intelligence: 5, speed: 2, cost: 1 },
     tags: ["vision", "reasoning", "tools", "coding"],
   },
@@ -226,15 +208,6 @@ export const MODELS = [
     tags: ["vision", "tools", "coding"],
   },
   {
-    id: "claude-sonnet-4-6",
-    provider: "anthropic",
-    label: "Claude Sonnet 4.6",
-    hint: "Balanced",
-    description: "Sweet spot of quality and speed.",
-    capabilities: { intelligence: 4, speed: 4, cost: 3 },
-    tags: ["vision", "tools", "coding"],
-  },
-  {
     id: "claude-haiku-4-5",
     provider: "anthropic",
     label: "Claude Haiku 4.5",
@@ -242,15 +215,6 @@ export const MODELS = [
     description: "Quick, cheap, multimodal.",
     capabilities: { intelligence: 3, speed: 5, cost: 4 },
     tags: ["vision", "tools"],
-  },
-  {
-    id: "claude-opus-4-6",
-    provider: "anthropic",
-    label: "Claude Opus 4.6",
-    hint: "Legacy",
-    description: "Previous-gen Opus.",
-    capabilities: { intelligence: 5, speed: 2, cost: 1 },
-    tags: ["vision", "reasoning", "tools", "coding"],
   },
 
   // ── Google ────────────────────────────────────────────────────────────────
@@ -270,24 +234,6 @@ export const MODELS = [
     hint: "Fast",
     description: "Fast multimodal, 1M context.",
     capabilities: { intelligence: 4, speed: 5, cost: 4 },
-    tags: ["vision", "tools"],
-  },
-  {
-    id: "gemini-2.5-pro",
-    provider: "google",
-    label: "Gemini 2.5 Pro",
-    hint: "Stable",
-    description: "Production-stable Gemini.",
-    capabilities: { intelligence: 4, speed: 3, cost: 3 },
-    tags: ["vision", "tools", "coding"],
-  },
-  {
-    id: "gemini-2.5-flash",
-    provider: "google",
-    label: "Gemini 2.5 Flash",
-    hint: "Cheap",
-    description: "Bulk throughput at low cost.",
-    capabilities: { intelligence: 3, speed: 5, cost: 5 },
     tags: ["vision", "tools"],
   },
 
@@ -447,22 +393,13 @@ export const MODELS = [
     tags: ["vision", "tools", "coding"],
   },
   {
-    id: "anthropic/claude-opus-4-7",
+    id: "anthropic/claude-opus-5",
     provider: "openrouter",
-    label: "Claude Opus 4.7",
+    label: "Claude Opus 5",
     hint: "OpenRouter",
     description: "Anthropic flagship via OpenRouter.",
     capabilities: { intelligence: 5, speed: 2, cost: 1 },
     tags: ["vision", "reasoning", "tools", "coding"],
-  },
-  {
-    id: "anthropic/claude-sonnet-4-6",
-    provider: "openrouter",
-    label: "Claude Sonnet 4.6",
-    hint: "OpenRouter",
-    description: "Balanced Claude via OpenRouter.",
-    capabilities: { intelligence: 4, speed: 4, cost: 3 },
-    tags: ["vision", "tools", "coding"],
   },
   {
     id: "openai/gpt-5.5",
@@ -631,6 +568,13 @@ export function getModel(id: ModelId): ModelInfo {
   return m;
 }
 
+/** Whether `id` is a currently-registered model. Used to sanitize persisted
+ *  selections (default/favorites/recents) after a model is retired — a stale id
+ *  would otherwise crash `getModel` at the picker/runner. */
+export function isKnownModelId(id: string): id is ModelId {
+  return MODELS.some((x) => x.id === id);
+}
+
 /** Whether a model accepts image input. Used to gate sending image
  *  attachments / best-practices images as real vision parts — non-vision
  *  models would error, so callers fall back to a text-only reference. Unknown
@@ -667,17 +611,11 @@ export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "gpt-5.4-mini": 400_000,
   "gpt-5.4-nano": 400_000,
   "gpt-5.3-codex": 400_000,
-  "gpt-4.1-mini": 1_047_576,
-  "claude-opus-4-8": 1_000_000,
-  "claude-opus-4-7": 1_000_000,
+  "claude-opus-5": 1_000_000,
   "claude-sonnet-5": 1_000_000,
-  "claude-sonnet-4-6": 1_000_000,
   "claude-haiku-4-5": 200_000,
-  "claude-opus-4-6": 1_000_000,
   "gemini-3.1-pro-preview": 1_000_000,
   "gemini-3-flash-preview": 1_000_000,
-  "gemini-2.5-pro": 1_000_000,
-  "gemini-2.5-flash": 1_000_000,
   "grok-4.20-reasoning": 2_000_000,
   "grok-4.20-non-reasoning": 2_000_000,
   "grok-4-fast-reasoning": 2_000_000,
@@ -690,8 +628,7 @@ export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "openai/gpt-oss-20b": 128_000,
   "llama-3.3-70b-versatile": 128_000,
   "deepseek-r1-distill-llama-70b": 128_000,
-  "anthropic/claude-opus-4-7": 1_000_000,
-  "anthropic/claude-sonnet-4-6": 1_000_000,
+  "anthropic/claude-opus-5": 1_000_000,
   "anthropic/claude-sonnet-5": 1_000_000,
   "openai/gpt-5.5": 1_050_000,
   "openai/gpt-5.4-mini": 400_000,
@@ -736,17 +673,11 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
   "gpt-5.4-mini": { input: 0.4, output: 1.6, cacheRead: 0.04 },
   "gpt-5.4-nano": { input: 0.1, output: 0.4, cacheRead: 0.01 },
   "gpt-5.3-codex": { input: 1.5, output: 6, cacheRead: 0.15 },
-  "gpt-4.1-mini": { input: 0.4, output: 1.6, cacheRead: 0.1 },
-  "claude-opus-4-8": { input: 15, output: 75, cacheRead: 1.5 },
-  "claude-opus-4-7": { input: 15, output: 75, cacheRead: 1.5 },
-  "claude-opus-4-6": { input: 15, output: 75, cacheRead: 1.5 },
+  "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5 },
   "claude-sonnet-5": { input: 3, output: 15, cacheRead: 0.3 },
-  "claude-sonnet-4-6": { input: 3, output: 15, cacheRead: 0.3 },
   "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1 },
   "gemini-3.1-pro-preview": { input: 1.25, output: 10, cacheRead: 0.31 },
   "gemini-3-flash-preview": { input: 0.3, output: 2.5, cacheRead: 0.075 },
-  "gemini-2.5-pro": { input: 1.25, output: 10, cacheRead: 0.31 },
-  "gemini-2.5-flash": { input: 0.3, output: 2.5, cacheRead: 0.075 },
   "grok-4.20-reasoning": { input: 3, output: 15 },
   "grok-4.20-non-reasoning": { input: 1, output: 5 },
   "grok-4-fast-reasoning": { input: 0.2, output: 0.5 },

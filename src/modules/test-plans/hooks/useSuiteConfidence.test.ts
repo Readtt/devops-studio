@@ -18,7 +18,7 @@ vi.mock("@/modules/ai", () => ({
 vi.mock("@/modules/ai/store/chatStore", () => ({
   useChatStore: {
     getState: () => ({
-      selectedModelId: "claude-opus-4-8",
+      selectedModelId: "claude-opus-5",
       ensureApiKeys: async () => ({}),
     }),
   },

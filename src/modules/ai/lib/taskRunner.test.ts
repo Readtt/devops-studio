@@ -143,9 +143,9 @@ describe("streamTask", () => {
 });
 
 describe("prompt caching (Anthropic breakpoint)", () => {
-  // "claude-opus-4-8" resolves to provider "anthropic" via the real config
+  // "claude-opus-5" resolves to provider "anthropic" via the real config
   // registry (config is not mocked here); "gpt-5.4-mini" resolves to "openai".
-  const anthropic = { ...baseInput, modelId: "claude-opus-4-8" as never };
+  const anthropic = { ...baseInput, modelId: "claude-opus-5" as never };
 
   it("generateText: Anthropic gets a cached system message and NO top-level system", async () => {
     generateText.mockResolvedValue({ text: "ok" });

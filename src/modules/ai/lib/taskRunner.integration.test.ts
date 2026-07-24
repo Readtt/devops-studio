@@ -127,7 +127,7 @@ describe("taskRunner integration (real AI SDK + Zod v4, mock model)", () => {
     } as never);
     const r = await runTask({
       ...base,
-      modelId: "claude-opus-4-8" as never,
+      modelId: "claude-opus-5" as never,
       tools: { read_file: { description: "r", inputSchema: z.object({}) } } as never,
     });
     expect(r.ok).toBe(true);

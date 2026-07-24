@@ -1,5 +1,6 @@
 import {
   DEFAULT_MODEL_ID,
+  isKnownModelId,
   LMSTUDIO_DEFAULT_BASE_URL,
   MLX_DEFAULT_BASE_URL,
   OLLAMA_DEFAULT_BASE_URL,
@@ -267,6 +268,10 @@ async function writePref<T>(key: string, value: T): Promise<void> {
   await emit(PREFS_CHANGED_EVENT, { key, value });
 }
 
+function sanitizeModelId(id: string | undefined, fallback: ModelId): ModelId {
+  return id && isKnownModelId(id) ? id : fallback;
+}
+
 export async function loadPreferences(): Promise<Preferences> {
   // Single IPC roundtrip — fetching keys individually fans out to one
   // `plugin:store|get` per setting and is the dominant boot cost.
@@ -284,8 +289,12 @@ export async function loadPreferences(): Promise<Preferences> {
   }
   return {
     theme: get<ThemePref>(KEY_THEME) ?? DEFAULT_PREFERENCES.theme,
-    defaultModelId:
-      get<ModelId>(KEY_DEFAULT_MODEL) ?? DEFAULT_PREFERENCES.defaultModelId,
+    // A retired model id persisted from an older build would crash the picker
+    // and runner (both call the throwing `getModel`) — fall back to the default.
+    defaultModelId: sanitizeModelId(
+      get<string>(KEY_DEFAULT_MODEL),
+      DEFAULT_PREFERENCES.defaultModelId,
+    ),
     editorTheme: normalizeEditorTheme(get<unknown>(KEY_EDITOR_THEME)),
     customInstructions:
       get<string>(KEY_CUSTOM_INSTRUCTIONS) ??
@@ -315,11 +324,14 @@ export async function loadPreferences(): Promise<Preferences> {
     openaiCompatibleContextLimit:
       get<number>(KEY_OPENAI_COMPAT_CONTEXT_LIMIT) ??
       DEFAULT_PREFERENCES.openaiCompatibleContextLimit,
-    favoriteModelIds:
+    // Drop any retired ids so they don't linger in the picker's Recent/Favorites.
+    favoriteModelIds: (
       get<string[]>(KEY_FAVORITE_MODELS) ??
-      DEFAULT_PREFERENCES.favoriteModelIds,
-    recentModelIds:
-      get<string[]>(KEY_RECENT_MODELS) ?? DEFAULT_PREFERENCES.recentModelIds,
+      DEFAULT_PREFERENCES.favoriteModelIds
+    ).filter(isKnownModelId),
+    recentModelIds: (
+      get<string[]>(KEY_RECENT_MODELS) ?? DEFAULT_PREFERENCES.recentModelIds
+    ).filter(isKnownModelId),
     terminalWebglEnabled:
       get<boolean>(KEY_TERMINAL_WEBGL_ENABLED) ??
       DEFAULT_PREFERENCES.terminalWebglEnabled,
