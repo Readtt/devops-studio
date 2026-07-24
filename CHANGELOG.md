@@ -7,6 +7,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.14.0] - 2026-07-24
+
+### Added
+
+- **Context meter on every AI surface.** The Generator, refine composer, Suite Chat, and Commit Review now show a live, model-aware estimate of how much context a run will send, with a breakdown of what's contributing — the spec, dragged-in files, images, and the custom instructions + best-practices files that are injected into every run.
+- **Quality guardrail.** The meter turns amber the moment a run grows large enough that answer quality starts to thin, and red when it's heavily bloated or might not fit the selected model — each with an inline note on how to trim. A confirmation only interrupts you when a run genuinely might not fit. Toggle the warnings under Settings (on by default); the passive meter always shows.
+- **Best-practices baseline readout in Settings**, so a bloated standards file that quietly inflates every AI run is easy to spot and trim.
+
 ## [0.13.0] - 2026-07-02
 
 ### Added
