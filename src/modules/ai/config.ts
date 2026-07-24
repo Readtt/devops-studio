@@ -217,6 +217,15 @@ export const MODELS = [
     tags: ["vision", "reasoning", "tools", "coding"],
   },
   {
+    id: "claude-sonnet-5",
+    provider: "anthropic",
+    label: "Claude Sonnet 5",
+    hint: "Balanced",
+    description: "Frontier Sonnet with a 1M-token context window.",
+    capabilities: { intelligence: 5, speed: 4, cost: 3 },
+    tags: ["vision", "tools", "coding"],
+  },
+  {
     id: "claude-sonnet-4-6",
     provider: "anthropic",
     label: "Claude Sonnet 4.6",
@@ -429,6 +438,15 @@ export const MODELS = [
 
   // ── OpenRouter (gateway — curated cross-provider routes) ──────────────────
   {
+    id: "anthropic/claude-sonnet-5",
+    provider: "openrouter",
+    label: "Claude Sonnet 5",
+    hint: "OpenRouter",
+    description: "Frontier Sonnet via OpenRouter.",
+    capabilities: { intelligence: 5, speed: 4, cost: 3 },
+    tags: ["vision", "tools", "coding"],
+  },
+  {
     id: "anthropic/claude-opus-4-7",
     provider: "openrouter",
     label: "Claude Opus 4.7",
@@ -639,7 +657,7 @@ export function isReasoningModel(id: ModelId | string): boolean {
   }
 }
 
-export const DEFAULT_MODEL_ID: ModelId = "gpt-5.4-mini";
+export const DEFAULT_MODEL_ID: ModelId = "claude-sonnet-5";
 
 /** Approximate context window (in tokens) per model. Used for the
  *  context-usage indicator in the AI mini-window header. Conservative
@@ -649,12 +667,13 @@ export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "gpt-5.4-mini": 400_000,
   "gpt-5.4-nano": 400_000,
   "gpt-5.3-codex": 400_000,
-  "gpt-4.1-mini": 128_000,
-  "claude-opus-4-8": 200_000,
-  "claude-opus-4-7": 200_000,
-  "claude-sonnet-4-6": 200_000,
+  "gpt-4.1-mini": 1_047_576,
+  "claude-opus-4-8": 1_000_000,
+  "claude-opus-4-7": 1_000_000,
+  "claude-sonnet-5": 1_000_000,
+  "claude-sonnet-4-6": 1_000_000,
   "claude-haiku-4-5": 200_000,
-  "claude-opus-4-6": 200_000,
+  "claude-opus-4-6": 1_000_000,
   "gemini-3.1-pro-preview": 1_000_000,
   "gemini-3-flash-preview": 1_000_000,
   "gemini-2.5-pro": 1_000_000,
@@ -671,21 +690,22 @@ export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "openai/gpt-oss-20b": 128_000,
   "llama-3.3-70b-versatile": 128_000,
   "deepseek-r1-distill-llama-70b": 128_000,
-  "anthropic/claude-opus-4-7": 200_000,
-  "anthropic/claude-sonnet-4-6": 200_000,
+  "anthropic/claude-opus-4-7": 1_000_000,
+  "anthropic/claude-sonnet-4-6": 1_000_000,
+  "anthropic/claude-sonnet-5": 1_000_000,
   "openai/gpt-5.5": 1_050_000,
   "openai/gpt-5.4-mini": 400_000,
   "google/gemini-3.1-pro-preview": 1_000_000,
   "x-ai/grok-4.20-reasoning": 2_000_000,
   "deepseek/deepseek-v4-pro": 1_000_000,
   "deepseek/deepseek-reasoner": 128_000,
-  "meta-llama/llama-4-scout-17b-16e-instruct": 128_000,
-  "meta-llama/llama-4-maverick": 128_000,
+  "meta-llama/llama-4-scout-17b-16e-instruct": 1_000_000,
+  "meta-llama/llama-4-maverick": 1_000_000,
   "moonshotai/kimi-k2.5": 256_000,
   "qwen/qwen3-max": 256_000,
   "qwen/qwen3-coder": 256_000,
   "mistralai/mistral-large-latest": 128_000,
-  "z-ai/glm-4.6": 128_000,
+  "z-ai/glm-4.6": 200_000,
   "openai-compatible-custom": 128_000,
   "lmstudio-local": 32_000,
   "mlx-local": 32_000,
@@ -720,6 +740,7 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
   "claude-opus-4-8": { input: 15, output: 75, cacheRead: 1.5 },
   "claude-opus-4-7": { input: 15, output: 75, cacheRead: 1.5 },
   "claude-opus-4-6": { input: 15, output: 75, cacheRead: 1.5 },
+  "claude-sonnet-5": { input: 3, output: 15, cacheRead: 0.3 },
   "claude-sonnet-4-6": { input: 3, output: 15, cacheRead: 0.3 },
   "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1 },
   "gemini-3.1-pro-preview": { input: 1.25, output: 10, cacheRead: 0.31 },

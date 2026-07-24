@@ -70,6 +70,17 @@ import { MODELS, type ModelId } from "@/modules/ai/config";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { useChatStore } from "@/modules/ai/store/chatStore";
+import {
+  ContextGuardNotice,
+  ContextMeter,
+  ContextOverflowDialog,
+  useContextGuard,
+} from "@/modules/ai/components/ContextMeter";
+import { useContextBaseline } from "@/modules/ai/lib/useContextBaseline";
+import {
+  estimateTokens,
+  type ContextSegment,
+} from "@/modules/ai/lib/contextEstimate";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -687,6 +698,38 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
     caseCap: PROMPT_CASE_CAP,
   };
 
+  // Context contributors the composer can't see on its own — the accumulating
+  // conversation, the suite cases sent as scope, and #mentioned work items.
+  // Computed here (plain reduces, not hooks — this is past the early-return
+  // guard) and handed to the always-mounted Composer, which folds in the draft,
+  // attachments, and Settings baseline before metering against the model.
+  const extraSegments: ContextSegment[] = [
+    ...(messages.length > 0
+      ? [
+          {
+            label: `Conversation (${messages.length} msg${messages.length === 1 ? "" : "s"})`,
+            tokens: messages.reduce((n, m) => n + estimateTokens(m.content), 0),
+          },
+        ]
+      : []),
+    ...(scopedCases.length > 0
+      ? [
+          {
+            label: `Suite cases (${scopedCases.length})`,
+            tokens: estimateTokens(JSON.stringify(scopedCases)),
+          },
+        ]
+      : []),
+    ...(mentioned.length > 0
+      ? [
+          {
+            label: `Work items (${mentioned.length})`,
+            tokens: mentioned.length * 300,
+          },
+        ]
+      : []),
+  ];
+
   const submit = () => {
     const text = draft.trim();
     if ((!text && att.attachments.length === 0) || busy || !cases) return;
@@ -816,6 +859,9 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
         onRemoveAttachment={att.remove}
         onDismissAttachmentError={att.dismissError}
         mention={mention}
+        modelId={activeModelId}
+        modelLabel={activeModel?.label}
+        extraSegments={extraSegments}
         bugChips={
           <WorkItemChips items={bugCtx.selected} onRemove={bugCtx.remove} />
         }
@@ -1528,6 +1574,9 @@ function Composer({
   onDismissAttachmentError,
   mention,
   bugChips,
+  modelId,
+  modelLabel,
+  extraSegments,
 }: {
   draft: string;
   onChange: (v: string) => void;
@@ -1547,6 +1596,11 @@ function Composer({
   mention?: WorkItemMention;
   /** Attached work-item chips, rendered above the input. */
   bugChips?: React.ReactNode;
+  /** Active model for this thread — drives the context meter's window. */
+  modelId?: string;
+  modelLabel?: string;
+  /** Context the composer can't see (conversation, cases, work items). */
+  extraSegments?: ContextSegment[];
 }) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -1556,6 +1610,31 @@ function Composer({
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
   }, [draft]);
+
+  // Context guardrail: the composer folds in what it owns (message + attachments)
+  // plus the Settings baseline and the parent's extraSegments (conversation,
+  // cases, work items), then meters the total against the thread's model.
+  const baseline = useContextBaseline();
+  const compatOverride = usePreferencesStore(
+    (s) => s.openaiCompatibleContextLimit,
+  );
+  const attachTextTokens = attachments
+    .filter((a) => a.kind !== "image")
+    .reduce((n, a) => n + estimateTokens(a.content), 0);
+  const imageCount = attachments.filter((a) => a.kind === "image").length;
+  const guard = useContextGuard({
+    modelId,
+    compatOverride,
+    imagesCount: imageCount,
+    segments: [
+      { label: "Your message", tokens: estimateTokens(draft) },
+      ...(attachTextTokens > 0
+        ? [{ label: "Attachments", tokens: attachTextTokens }]
+        : []),
+      ...(extraSegments ?? []),
+      ...baseline.segments,
+    ],
+  });
 
   // Composer chrome matches the rest of the app: shadcn-style rounded-md
   // border, h-8 controls, 12px body text. No leading icon — it was throwing
@@ -1572,6 +1651,13 @@ function Composer({
           className="mb-2"
         />
         {bugChips ? <div className="mb-1.5">{bugChips}</div> : null}
+        <ContextGuardNotice
+          usage={guard.usage}
+          guardEnabled={guard.guardEnabled}
+          modelLabel={modelLabel}
+          className="mb-2"
+        />
+        <ContextOverflowDialog guard={guard} modelLabel={modelLabel} />
         <div
           onDrop={onDrop}
           onDragOver={(e) => e.preventDefault()}
@@ -1602,7 +1688,7 @@ function Composer({
               if (mention?.onKeyDown(e)) return;
               if (e.key === "Enter" && !e.shiftKey && !e.metaKey) {
                 e.preventDefault();
-                onSubmit();
+                guard.attempt(onSubmit);
               }
             }}
             rows={1}
@@ -1637,7 +1723,7 @@ function Composer({
                 <Button
                   size="icon-xs"
                   aria-label="Send message"
-                  onClick={onSubmit}
+                  onClick={() => guard.attempt(onSubmit)}
                   disabled={(!draft.trim() && attachments.length === 0) || disabled}
                   className="shrink-0"
                 >
@@ -1669,6 +1755,7 @@ function Composer({
             <Kbd>#</Kbd>
             attach a work item
           </span>
+          <ContextMeter usage={guard.usage} className="ml-auto" />
         </div>
       </div>
     </div>

@@ -98,6 +98,15 @@ import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { getModel } from "@/modules/ai/config";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
+import {
+  ContextGuardNotice,
+  ContextMeter,
+  ContextOverflowDialog,
+  useContextGuard,
+} from "@/modules/ai/components/ContextMeter";
+import { useContextBaseline } from "@/modules/ai/lib/useContextBaseline";
+import { estimateTokens } from "@/modules/ai/lib/contextEstimate";
+import { usePreferencesStore } from "@/modules/settings/preferences";
 import { ArrowDown01Icon, ArrowRight01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 
 /** Tab title trimmer — keeps the cap below the visible width budget so
@@ -762,6 +771,40 @@ function InputPhase() {
   const suiteName = suites.find((s) => s.id === suiteId)?.name ?? null;
   const git = useSourceDirGitInfo();
 
+  // Context guardrail. Everything the analyze run will actually send — the spec,
+  // text attachments, attached work items, images, and the always-injected
+  // Settings baseline (custom instructions + best-practices files) — measured
+  // against the active model's window so an oversized run warns before it burns
+  // credits and fails partway.
+  const baseline = useContextBaseline();
+  const compatContextLimit = usePreferencesStore(
+    (s) => s.openaiCompatibleContextLimit,
+  );
+  const attachTextTokens = attachments
+    .filter((a) => a.kind !== "image")
+    .reduce((n, a) => n + estimateTokens(a.content), 0);
+  const imageCount = attachments.filter((a) => a.kind === "image").length;
+  const guard = useContextGuard({
+    modelId: activeModelId,
+    compatOverride: compatContextLimit,
+    imagesCount: imageCount,
+    segments: [
+      { label: "Requirements / spec", tokens: estimateTokens(requirements) },
+      ...(attachTextTokens > 0
+        ? [{ label: "Attachments", tokens: attachTextTokens }]
+        : []),
+      ...(attachedWorkItems.length > 0
+        ? [
+            {
+              label: `Work items (${attachedWorkItems.length})`,
+              tokens: attachedWorkItems.length * 300,
+            },
+          ]
+        : []),
+      ...baseline.segments,
+    ],
+  });
+
   return (
     // Container-query-driven layout: stack vertically on narrow panes, side-
     // by-side only once we have real room. @3xl (≈ 48rem ≈ 768px container)
@@ -1060,6 +1103,12 @@ function InputPhase() {
           </label>
         ) : null}
 
+        <ContextGuardNotice
+          usage={guard.usage}
+          guardEnabled={guard.guardEnabled}
+          modelLabel={activeModel.label}
+        />
+
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/40 pt-3">
           {/* Per-run model picker. Picks up the current default from the
               status bar / settings, but lets the user swap for just this
@@ -1196,16 +1245,20 @@ function InputPhase() {
             </Tooltip>
           ) : null}
           <Button
-            onClick={() => {
-              if (hasDraft) setReAnalyzeOpen(true);
-              else void analyze();
-            }}
+            onClick={() =>
+              guard.attempt(() => {
+                if (hasDraft) setReAnalyzeOpen(true);
+                else void analyze();
+              })
+            }
             disabled={!canAnalyze}
           >
             <HugeiconsIcon icon={PlayIcon} size={11} strokeWidth={2} />
             {hasDraft ? "Re-analyze" : "Analyze"}
           </Button>
         </div>
+
+        <ContextOverflowDialog guard={guard} modelLabel={activeModel.label} />
 
         {/* Re-analyze confirm. Discarding a hand-edited draft because of a
             stray click is the kind of silent loss the user explicitly
@@ -1313,6 +1366,7 @@ function InputPhase() {
               )
             }
           />
+          <PreviewRow label="Context" value={<ContextMeter usage={guard.usage} />} />
         </ul>
         <p className="text-[10px] leading-relaxed text-muted-foreground/85">
           The analyzer will read the spec above + any source files you've

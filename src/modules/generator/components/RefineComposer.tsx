@@ -41,6 +41,16 @@ import {
 import { AnalyzeActivityLog } from "./AnalyzeActivityLog";
 import { InlineNotice } from "./InlineNotice";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { useChatStore } from "@/modules/ai/store/chatStore";
+import { getModel } from "@/modules/ai/config";
+import {
+  ContextGuardNotice,
+  ContextMeter,
+  ContextOverflowDialog,
+  useContextGuard,
+} from "@/modules/ai/components/ContextMeter";
+import { useContextBaseline } from "@/modules/ai/lib/useContextBaseline";
+import { estimateTokens } from "@/modules/ai/lib/contextEstimate";
 import {
   MentionDropdown,
   WorkItemChips,
@@ -239,6 +249,48 @@ export function RefineComposer({ isRefining }: Props) {
 
   const codeSearchOn = codeSearchEnabled && !!sourceRoot;
 
+  // Context guardrail for the follow-up. A refine re-sends the current draft
+  // plus the instruction plus attachments plus the always-injected baseline, so
+  // the meter measures all of that against the session's active model.
+  const overrideModelId = useGenerationSession((s) => s.overrideModelId);
+  const defaultModelId = useChatStore((s) => s.selectedModelId);
+  const activeModelId = overrideModelId ?? defaultModelId;
+  const activeModel = getModel(activeModelId);
+  const compatContextLimit = usePreferencesStore(
+    (s) => s.openaiCompatibleContextLimit,
+  );
+  const baseline = useContextBaseline();
+  const attachTextTokens = attachments
+    .filter((a) => a.kind !== "image")
+    .reduce((n, a) => n + estimateTokens(a.content), 0);
+  const imageCount = attachments.filter((a) => a.kind === "image").length;
+  const draftTokens =
+    estimateTokens(JSON.stringify(cases.filter((c) => c.decision === "keep"))) +
+    estimateTokens(JSON.stringify(bugs.filter((b) => b.decision === "keep")));
+  const guard = useContextGuard({
+    modelId: activeModelId,
+    compatOverride: compatContextLimit,
+    imagesCount: imageCount,
+    segments: [
+      { label: "Your follow-up", tokens: estimateTokens(text) },
+      ...(draftTokens > 0
+        ? [{ label: "Current draft", tokens: draftTokens }]
+        : []),
+      ...(attachTextTokens > 0
+        ? [{ label: "Attachments", tokens: attachTextTokens }]
+        : []),
+      ...(bugCtx.selected.length > 0
+        ? [
+            {
+              label: `Work items (${bugCtx.selected.length})`,
+              tokens: bugCtx.selected.length * 300,
+            },
+          ]
+        : []),
+      ...baseline.segments,
+    ],
+  });
+
   const submit = useCallback(() => {
     const value = text.trim();
     if (!value || isRefining) return;
@@ -259,10 +311,10 @@ export function RefineComposer({ isRefining }: Props) {
         (e.metaKey || e.ctrlKey) && (e.key === "Enter" || e.key === "Return");
       if (submitCombo) {
         e.preventDefault();
-        submit();
+        guard.attempt(submit);
       }
     },
-    [submit, mention],
+    [guard, submit, mention],
   );
 
   const applyPreset = (prompt: string) => {
@@ -551,6 +603,15 @@ export function RefineComposer({ isRefining }: Props) {
         </div>
       ) : null}
 
+      <ContextGuardNotice
+        usage={guard.usage}
+        guardEnabled={guard.guardEnabled}
+        modelLabel={activeModel.label}
+        className="mb-2"
+      />
+
+      <ContextOverflowDialog guard={guard} modelLabel={activeModel.label} />
+
       {/* Relative (non-clipping) wrapper so the `#`-mention dropdown, which
           floats above the composer, isn't cut off by the composer's
           overflow-hidden rounded frame. */}
@@ -616,6 +677,8 @@ export function RefineComposer({ isRefining }: Props) {
             >
               code-search: {codeSearchOn ? "on" : "off"}
             </span>
+            <span className="text-muted-foreground/40">·</span>
+            <ContextMeter usage={guard.usage} />
           </div>
           <div className="flex items-center gap-2">
             <AttachButton onFilePicker={onFilePicker} />
@@ -646,7 +709,7 @@ export function RefineComposer({ isRefining }: Props) {
             </KbdGroup>
             <Button
               size="sm"
-              onClick={submit}
+              onClick={() => guard.attempt(submit)}
               disabled={text.trim().length === 0}
             >
               <HugeiconsIcon icon={PlayIcon} size={10} strokeWidth={2} />

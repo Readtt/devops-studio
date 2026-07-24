@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
   Command,
@@ -31,10 +31,21 @@ import {
   SparklesIcon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
-import { type ModelId } from "@/modules/ai/config";
+import { MODELS, type ModelId } from "@/modules/ai/config";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
+import {
+  ContextGuardNotice,
+  ContextMeter,
+  ContextOverflowDialog,
+  useContextGuard,
+} from "@/modules/ai/components/ContextMeter";
+import { useContextBaseline } from "@/modules/ai/lib/useContextBaseline";
+import {
+  estimateTokens,
+  estimateTokensFromBytes,
+} from "@/modules/ai/lib/contextEstimate";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { setCodeSearchEnabled } from "@/modules/settings/store";
@@ -119,6 +130,68 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
   useEffect(() => {
     if (showDiff) bodyRef.current?.scrollTo({ top: 0, behavior: "smooth" });
   }, [showDiff]);
+
+  // Context guardrail. The selected diff usually dominates the payload here, and
+  // it's already loaded on the frontend — so meter it alongside the pasted spec,
+  // attachments, work items, and the Settings baseline against the active model.
+  // Computed before the early returns (reading `slice` defensively) so the hook
+  // order stays stable whether or not a slice exists yet.
+  const guardCompatOverride = usePreferencesStore(
+    (s) => s.openaiCompatibleContextLimit,
+  );
+  const guardBaseline = useContextBaseline();
+  const guardDiffs = slice ? selectedDiffs(slice) : [];
+  // combinedPatchBytes TextEncodes every selected patch — expensive on a large
+  // multi-commit selection. The "Added context" field is store-backed, so every
+  // keystroke re-renders this parent; memoize on the stable selection signature
+  // + load state so we don't re-encode megabytes per character.
+  const guardDiffSig = (slice?.selectedShas ?? []).join("|");
+  const guardDiffsReady = slice ? allDiffsLoaded(slice) : false;
+  const guardDiffTokens = useMemo(
+    () => estimateTokensFromBytes(combinedPatchBytes(guardDiffs)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [guardDiffSig, guardDiffsReady],
+  );
+  const guardAttachments = slice?.attachments ?? [];
+  const guardAttachTextTokens = guardAttachments
+    .filter((a) => a.kind !== "image")
+    .reduce((n, a) => n + estimateTokens(a.content), 0);
+  const guardImageCount = guardAttachments.filter(
+    (a) => a.kind === "image",
+  ).length;
+  const guardWorkItems = slice?.workItems ?? [];
+  const guardModelId = slice?.modelId ?? defaultModelId;
+  const guardModelLabel = MODELS.find((m) => m.id === guardModelId)?.label;
+  const guard = useContextGuard({
+    modelId: guardModelId,
+    compatOverride: guardCompatOverride,
+    imagesCount: guardImageCount,
+    segments: [
+      ...(guardDiffTokens > 0
+        ? [
+            {
+              label: `Diff${guardDiffs.length > 1 ? ` (${guardDiffs.length} changes)` : ""}`,
+              tokens: guardDiffTokens,
+            },
+          ]
+        : []),
+      ...((slice?.context ?? "").trim().length > 0
+        ? [{ label: "Added context", tokens: estimateTokens(slice?.context) }]
+        : []),
+      ...(guardAttachTextTokens > 0
+        ? [{ label: "Attachments", tokens: guardAttachTextTokens }]
+        : []),
+      ...(guardWorkItems.length > 0
+        ? [
+            {
+              label: `Work items (${guardWorkItems.length})`,
+              tokens: guardWorkItems.length * 300,
+            },
+          ]
+        : []),
+      ...guardBaseline.segments,
+    ],
+  });
 
   if (!slice) {
     return (
@@ -315,6 +388,7 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
               </span>
             )}
           />
+          <ContextMeter usage={guard.usage} className="mr-0.5" />
           {slice.busy ? (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -337,7 +411,7 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
                 <button
                   type="button"
                   disabled={!canRun}
-                  onClick={() => void run(tabId)}
+                  onClick={() => guard.attempt(() => void run(tabId))}
                   className={cn(
                     "inline-flex h-7 items-center gap-1.5 rounded-md px-3 text-[11.5px] font-medium transition-colors",
                     "bg-primary text-primary-foreground hover:bg-primary/90",
@@ -427,6 +501,16 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
           budget and yield thinner findings — consider reviewing fewer at a time.
         </Banner>
       ) : null}
+      {guard.guardEnabled && guard.usage.tier !== "comfortable" ? (
+        <div className="px-3 py-1.5">
+          <ContextGuardNotice
+            usage={guard.usage}
+            guardEnabled={guard.guardEnabled}
+            modelLabel={guardModelLabel}
+          />
+        </div>
+      ) : null}
+      <ContextOverflowDialog guard={guard} modelLabel={guardModelLabel} />
       {!slice.busy && (slice.status === "interrupted" || slice.status === "cancelled") ? (
         <Banner tone="warn">
           This review was {slice.status === "interrupted" ? "interrupted" : "cancelled"} before it finished. Re-run to complete it.
@@ -454,7 +538,7 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
           slice={slice}
           tabId={tabId}
           applyFix={applyFix}
-          onRun={() => void run(tabId)}
+          onRun={() => guard.attempt(() => void run(tabId))}
           showDiff={showDiff}
         />
       </div>

@@ -12,9 +12,13 @@ import { cn } from "@/lib/utils";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   setBestPracticeFiles,
+  setContextGuardEnabled,
   setCustomInstructions,
   type BestPracticeFile,
 } from "@/modules/settings/store";
+import { MODELS, estimateCost, getModelContextLimit } from "@/modules/ai/config";
+import { useContextBaseline } from "@/modules/ai/lib/useContextBaseline";
+import { formatCostUsd, formatTokens } from "@/modules/ai/lib/contextEstimate";
 import {
   Cancel01Icon,
   CheckmarkCircle02Icon,
@@ -111,6 +115,8 @@ export function BestPracticesPanel() {
 
   return (
     <div className="flex flex-col gap-5">
+      <ContextBudgetCard />
+
       {/* Free-text instructions appended to the system prompt of every AI
           surface (Generator, Suite Chat, review Ask, Code Review, confidence
           scoring) via TaskInput.customInstructions → buildStableSystem. */}
@@ -184,6 +190,73 @@ export function BestPracticesPanel() {
               />
             ))}
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Context-budget card: the guardrail toggle plus a live readout of how much the
+ * always-injected Settings context (custom instructions + best-practices files)
+ * costs against the default model's window. Makes the "invisible" baseline that
+ * rides on every AI request visible where the user can actually trim it.
+ */
+function ContextBudgetCard() {
+  const baseline = useContextBaseline();
+  const defaultModelId = usePreferencesStore((s) => s.defaultModelId);
+  const guardEnabled = usePreferencesStore((s) => s.contextGuardEnabled);
+  const compatOverride = usePreferencesStore(
+    (s) => s.openaiCompatibleContextLimit,
+  );
+  const windowTokens = getModelContextLimit(defaultModelId, compatOverride);
+  const defaultModel = MODELS.find((m) => m.id === defaultModelId);
+  const rawPct = Math.round((baseline.tokens / windowTokens) * 100);
+  const pctLabel = baseline.tokens > 0 && rawPct < 1 ? "<1%" : `${rawPct}%`;
+  const cost = estimateCost(defaultModelId, {
+    inputTokens: baseline.tokens,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+  });
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card/60 px-3 py-2.5">
+      <label className="flex cursor-pointer items-start justify-between gap-3">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium tracking-tight text-muted-foreground">
+            Warn before oversized requests
+          </span>
+          <p className="max-w-[440px] text-[10.5px] leading-relaxed text-muted-foreground/70">
+            Shows a live context meter in every AI input, an amber note when a
+            run gets heavy, and a confirm when it likely won&rsquo;t fit the
+            model — so a giant paste can&rsquo;t quietly burn credits and fail
+            partway. You can always send anyway; the meter stays either way.
+          </p>
+        </div>
+        <Switch
+          checked={guardEnabled}
+          onCheckedChange={(v) => void setContextGuardEnabled(v)}
+          className="mt-0.5"
+        />
+      </label>
+      <div className="border-t border-border/50 pt-2">
+        {baseline.tokens > 0 ? (
+          <p className="text-[10.5px] leading-relaxed text-muted-foreground">
+            Your custom instructions + best-practices files add{" "}
+            <span className="font-medium text-foreground/85">
+              ~{formatTokens(baseline.tokens)} tokens
+            </span>{" "}
+            to every request — about {pctLabel} of{" "}
+            {defaultModel?.label ?? "the default model"}&rsquo;s{" "}
+            {formatTokens(windowTokens)} window
+            {cost !== null ? <> · ~{formatCostUsd(cost)} per run at its input rate</> : null}.
+          </p>
+        ) : (
+          <p className="text-[10.5px] leading-relaxed text-muted-foreground/70">
+            Nothing extra is injected yet. Anything you add below rides on every
+            AI request and counts against the model&rsquo;s context window —
+            this line will show how much.
+          </p>
         )}
       </div>
     </div>

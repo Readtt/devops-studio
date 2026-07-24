@@ -123,6 +123,11 @@ export type Preferences = {
    *  Read/Glob/Grep) to ground its answers? Applies to every surface —
    *  Generator, Suite Chat, Code Review, Confidence. Default on. */
   codeSearchEnabled: boolean;
+  /** Warn before firing an AI run whose estimated context is large for the
+   *  selected model (cost + quality + mid-run-failure risk). Governs the amber
+   *  warning banner and the overflow confirm across every input surface; the
+   *  passive meter always shows. Default on. */
+  contextGuardEnabled: boolean;
   // Code editor preferences — applied to the read-only CodeMirror pane.
   /** Editor font size in px. */
   editorFontSize: number;
@@ -174,6 +179,7 @@ const KEY_ZOOM_LEVEL = "zoomLevel";
 const KEY_SHORTCUTS = "shortcuts";
 const KEY_SOURCE_ROOT = "sourceRoot";
 const KEY_CODE_SEARCH_ENABLED = "codeSearchEnabled";
+const KEY_CONTEXT_GUARD_ENABLED = "contextGuardEnabled";
 // Removed when the app consolidated on a single BYOK engine. Kept here only so
 // loadPreferences can scrub them from older settings files.
 const KEY_LEGACY_AI_ENGINE = "aiEngine";
@@ -237,6 +243,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   shortcuts: {} as Record<ShortcutId, KeyBinding[]>,
   sourceRoot: null,
   codeSearchEnabled: true,
+  contextGuardEnabled: true,
   editorFontSize: EDITOR_FONT_SIZE_DEFAULT,
   editorLineNumbers: true,
   editorWordWrap: false,
@@ -351,6 +358,9 @@ export async function loadPreferences(): Promise<Preferences> {
     codeSearchEnabled:
       get<boolean>(KEY_CODE_SEARCH_ENABLED) ??
       DEFAULT_PREFERENCES.codeSearchEnabled,
+    contextGuardEnabled:
+      get<boolean>(KEY_CONTEXT_GUARD_ENABLED) ??
+      DEFAULT_PREFERENCES.contextGuardEnabled,
     editorFontSize: clampEditorFontSize(
       get<number>(KEY_EDITOR_FONT_SIZE) ?? DEFAULT_PREFERENCES.editorFontSize,
     ),
@@ -379,6 +389,10 @@ export async function setSourceRoot(value: string | null): Promise<void> {
 
 export async function setCodeSearchEnabled(value: boolean): Promise<void> {
   await writePref(KEY_CODE_SEARCH_ENABLED, value);
+}
+
+export async function setContextGuardEnabled(value: boolean): Promise<void> {
+  await writePref(KEY_CONTEXT_GUARD_ENABLED, value);
 }
 
 export async function setTheme(value: ThemePref): Promise<void> {
@@ -603,6 +617,7 @@ export async function onPreferencesChange(
     [KEY_SHORTCUTS]: "shortcuts",
     [KEY_SOURCE_ROOT]: "sourceRoot",
     [KEY_CODE_SEARCH_ENABLED]: "codeSearchEnabled",
+    [KEY_CONTEXT_GUARD_ENABLED]: "contextGuardEnabled",
     [KEY_EDITOR_FONT_SIZE]: "editorFontSize",
     [KEY_EDITOR_LINE_NUMBERS]: "editorLineNumbers",
     [KEY_EDITOR_WORD_WRAP]: "editorWordWrap",
