@@ -1,9 +1,13 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 
-/** Streaming events emitted by the Rust `ai_http_stream` command. */
+/** Streaming events emitted by the Rust `ai_http_stream` command. Chunk bytes
+ *  travel as base64 — a `Vec<u8>` would serialize as a JSON array with one
+ *  number per byte, and at token-stream rates that per-chunk stringify/parse
+ *  cost lands on the webview main thread and starves the UI (frozen clicks
+ *  during long agentic runs). */
 type AiStreamEvent =
   | { kind: "headers"; status: number; headers: Record<string, string> }
-  | { kind: "chunk"; bytes: number[] }
+  | { kind: "chunk"; data: string }
   | { kind: "end" }
   | { kind: "error"; message: string };
 
@@ -26,25 +30,48 @@ function headerInitToRecord(
   return out;
 }
 
-async function bodyToBytes(
+/** Encode the request body as base64 for the IPC hop. Agentic-loop bodies grow
+ *  to hundreds of KB (every step resends the whole conversation + tool
+ *  results); as a number[] they'd JSON-stringify to multi-MB strings on the
+ *  main thread on EVERY step — the app visibly freezes. Base64 is one compact
+ *  string instead. */
+async function bodyToBase64(
   body: BodyInit | null | undefined,
-): Promise<number[] | undefined> {
+): Promise<string | undefined> {
   if (body == null) return undefined;
   if (typeof body === "string") {
-    return Array.from(new TextEncoder().encode(body));
+    return bytesToBase64(new TextEncoder().encode(body));
   }
-  if (body instanceof ArrayBuffer) return Array.from(new Uint8Array(body));
+  if (body instanceof ArrayBuffer) return bytesToBase64(new Uint8Array(body));
   if (ArrayBuffer.isView(body)) {
     const view = body as ArrayBufferView;
-    return Array.from(
+    return bytesToBase64(
       new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
     );
   }
   if (body instanceof Blob)
-    return Array.from(new Uint8Array(await body.arrayBuffer()));
+    return bytesToBase64(new Uint8Array(await body.arrayBuffer()));
   // FormData / URLSearchParams / ReadableStream — uncommon for AI SDK calls.
   const text = await new Response(body as BodyInit).text();
-  return Array.from(new TextEncoder().encode(text));
+  return bytesToBase64(new TextEncoder().encode(text));
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  // btoa takes a binary string; build it in slices so a multi-hundred-KB body
+  // can't blow the argument limit of String.fromCharCode.apply.
+  let bin = "";
+  const SLICE = 0x8000;
+  for (let i = 0; i < bytes.length; i += SLICE) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + SLICE));
+  }
+  return btoa(bin);
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
 
 export function createProxyFetch(
@@ -70,7 +97,7 @@ async function proxyFetchImpl(
   const url = input instanceof URL ? input.toString() : String(input);
   const method = (init?.method ?? "GET").toUpperCase();
   const headers = headerInitToRecord(init?.headers);
-  const body = await bodyToBytes(init?.body);
+  const body = await bodyToBase64(init?.body);
 
   const signal = init?.signal;
   if (signal?.aborted) {
@@ -135,7 +162,7 @@ async function proxyFetchImpl(
           break;
         }
         case "chunk": {
-          streamController?.enqueue(Uint8Array.from(event.bytes));
+          streamController?.enqueue(base64ToBytes(event.data));
           break;
         }
         case "end": {

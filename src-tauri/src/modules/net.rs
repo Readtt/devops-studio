@@ -3,6 +3,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use bytes::Bytes;
 use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -315,8 +316,11 @@ pub enum AiStreamEvent {
         status: u16,
         headers: HashMap<String, String>,
     },
+    /// Body bytes as base64. A `Vec<u8>` would cross the IPC as a JSON array
+    /// with one number per byte — at token-stream rates that parse cost lands
+    /// on the webview main thread and freezes the UI during long runs.
     Chunk {
-        bytes: Vec<u8>,
+        data: String,
     },
     End,
     Error {
@@ -385,7 +389,7 @@ pub async fn ai_http_stream(
     url: String,
     method: String,
     headers: Option<HashMap<String, String>>,
-    body: Option<Vec<u8>>,
+    body: Option<String>,
     allow_private_network: Option<bool>,
     request_id: Option<u64>,
     on_event: Channel<AiStreamEvent>,
@@ -429,6 +433,21 @@ pub async fn ai_http_stream(
             let _ = on_event.send(AiStreamEvent::Error { message: e.clone() });
             return Err(e);
         }
+    };
+
+    // Body arrives base64-encoded (see AiStreamEvent::Chunk for why).
+    let body = match body {
+        Some(b64) => match B64.decode(b64) {
+            Ok(bytes) => Some(bytes),
+            Err(e) => {
+                let msg = format!("invalid request body encoding: {e}");
+                let _ = on_event.send(AiStreamEvent::Error {
+                    message: msg.clone(),
+                });
+                return Err(msg);
+            }
+        },
+        None => None,
     };
 
     let client = build_safe_client(allow_private, &[(host, safe_ips)])?;
@@ -488,12 +507,8 @@ pub async fn ai_http_stream(
             None => break,
             Some(Ok(chunk)) => {
                 let bytes: Bytes = chunk;
-                if on_event
-                    .send(AiStreamEvent::Chunk {
-                        bytes: bytes.to_vec(),
-                    })
-                    .is_err()
-                {
+                let data = B64.encode(&bytes);
+                if on_event.send(AiStreamEvent::Chunk { data }).is_err() {
                     // Channel dropped (frontend aborted) — stop streaming.
                     return Ok(());
                 }
