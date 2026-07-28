@@ -16,7 +16,7 @@ import {
   type SuiteRef,
   type TestCase,
 } from "@/modules/ado";
-import { supportsVision, type ModelId } from "@/modules/ai/config";
+import { isKnownModelId, supportsVision, type ModelId } from "@/modules/ai/config";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import { bugsToContextBlocks } from "@/modules/ado/lib/bugContextBlock";
 import type { Attachment } from "@/components/chat/attachments";
@@ -280,7 +280,13 @@ async function hydrateThread(
         hydrated: true,
         title: stored.title,
         messages: stored.messages,
-        modelId: stored.modelId,
+        // A model retired since this thread was saved would crash the picker
+        // and runner (both call the throwing getModel) — fall back to "use the
+        // global default" rather than pinning a ghost.
+        modelId:
+          stored.modelId && isKnownModelId(stored.modelId)
+            ? stored.modelId
+            : null,
       });
     } else {
       patchThread(set, planId, suiteId, threadId, { hydrated: true });

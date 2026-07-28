@@ -4,7 +4,7 @@
 // explicit stop() or tab close aborts.
 
 import { create } from "zustand";
-import { supportsVision, type ModelId } from "@/modules/ai/config";
+import { isKnownModelId, supportsVision, type ModelId } from "@/modules/ai/config";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import {
   localProviderConfig,
@@ -210,7 +210,13 @@ export const useCommitReview = create<State>((set, get) => ({
 
     set((s) => {
       const next = new Map(s.byTab);
-      next.set(tabId, emptySlice(cwd, modelId ?? null));
+      // The tab's persisted modelId can name a model retired since it was
+      // saved — feeding that into the picker/runner would throw at getModel.
+      // Degrade to "use the global default" instead.
+      next.set(
+        tabId,
+        emptySlice(cwd, modelId && isKnownModelId(modelId) ? modelId : null),
+      );
       return { byTab: next };
     });
 
