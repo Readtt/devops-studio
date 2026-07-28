@@ -399,6 +399,14 @@ export async function streamTask<
   const temperature = effectiveTemperature(input);
 
   const toolStart = new Map<string, number>();
+  // streamText NEVER rejects: a provider/network failure mid-stream (429 on a
+  // follow-up agentic step, overload, dropped connection) is reported via
+  // `onError` and textStream simply ENDS. Without capturing it, a failed run
+  // looks like the model stopping after a sentence — which the schema surfaces
+  // then misreport as "the model didn't return findings in the expected
+  // format". Capture the first error and rethrow it below so callers' existing
+  // catch paths show the REAL provider message.
+  let streamError: unknown = null;
   const result = streamText({
     model,
     ...buildRequestPrompt(input.modelId, system, userTurn),
@@ -410,12 +418,41 @@ export async function streamTask<
     // backstop; both key entries by toolCallId so they merge, not duplicate.
     onChunk: liveToolOnChunk(start, toolStart, input.onToolEvent),
     onStepFinish: onStepFinishFor(start, input.onToolEvent),
+    onError: ({ error }) => {
+      if (streamError == null) streamError = error;
+    },
   });
 
   let acc = "";
   for await (const chunk of result.textStream) {
     acc += chunk;
     input.onText(chunk);
+  }
+
+  // A user abort also lands here as a quietly-ended stream. Rethrow it as an
+  // AbortError so surfaces map it to their "cancelled" state instead of an
+  // error banner (checked before streamError — the SDK may report the abort
+  // through onError too, and "cancelled" must win over "failed").
+  if (input.signal?.aborted) {
+    throw new DOMException("Request aborted", "AbortError");
+  }
+  if (streamError != null) {
+    // The one recoverable case: the full structured object arrived before the
+    // stream blipped. Don't throw away a complete result over a trailing error.
+    if (input.schema) {
+      const parsed = validateAgainstSchema(acc, input.schema);
+      if (parsed.ok) {
+        return {
+          ok: true,
+          text: acc,
+          object: parsed.value as InferObject<S>,
+          durationMs: Date.now() - start,
+        };
+      }
+    }
+    throw streamError instanceof Error
+      ? streamError
+      : new Error(String(streamError));
   }
 
   if (input.schema) {

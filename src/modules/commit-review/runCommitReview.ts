@@ -121,21 +121,36 @@ export async function runCommitReview(
 
   // --- Stage 2: verify / filter -------------------------------------------
   input.onStage?.("verify");
-  const stage2 = await runTask({
-    modelId: input.modelId,
-    keys: input.keys,
-    local: input.local ?? {},
-    systemPrompt: verifySystemPrompt(input.diffs.length),
-    customInstructions: input.customInstructions,
-    prompt: buildVerifyPrompt(input, candidates),
-    attachments,
-    tools: tools ?? null,
-    temperature: 0,
-    maxSteps: SURFACE_STEP_CAPS.commitReviewVerify,
-    schema: Stage2Schema,
-    onToolEvent: input.onToolEvent,
-    signal: input.signal,
-  });
+  // The unverified fallback: stage 1's candidates are already bought and paid
+  // for, so a verify-pass failure of ANY kind — unparseable verdicts below, or
+  // a thrown provider error here (a rate limit right after the token-heavy
+  // investigate pass is the common case) — degrades to returning them
+  // unverified instead of torching the whole run. Only a user abort propagates.
+  let stage2;
+  try {
+    stage2 = await runTask({
+      modelId: input.modelId,
+      keys: input.keys,
+      local: input.local ?? {},
+      systemPrompt: verifySystemPrompt(input.diffs.length),
+      customInstructions: input.customInstructions,
+      prompt: buildVerifyPrompt(input, candidates),
+      attachments,
+      tools: tools ?? null,
+      temperature: 0,
+      maxSteps: SURFACE_STEP_CAPS.commitReviewVerify,
+      schema: Stage2Schema,
+      onToolEvent: input.onToolEvent,
+      signal: input.signal,
+    });
+  } catch (e) {
+    if ((e as { name?: string } | null)?.name === "AbortError") throw e;
+    console.warn("[commit-review] verify pass failed, returning unverified:", e);
+    const findings: Finding[] = candidates
+      .map((c) => ({ ...c, verified: false }))
+      .sort(compareFindings);
+    return { ok: true, findings, durationMs: stage1.durationMs };
+  }
 
   const totalMs = stage1.durationMs + stage2.durationMs;
 

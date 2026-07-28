@@ -140,6 +140,83 @@ describe("streamTask", () => {
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.object).toEqual({ a: 9 });
   });
+
+  // streamText NEVER rejects: provider/network errors mid-stream go to the
+  // `onError` callback and textStream simply ends. Without surfacing them, a
+  // rate-limited or dropped run masquerades as "the model returned bad output"
+  // (the exact misreport users hit in Commit Review). These pin the contract:
+  // real errors reject; the caller's catch shows the true provider message.
+
+  it("rejects with the real provider error when the stream errors mid-run (schema mode)", async () => {
+    const schema = z.object({ a: z.number() });
+    const providerError = new Error(
+      "rate_limit_error: This request would exceed your organization's rate limit",
+    );
+    streamText.mockImplementation((opts: { onError?: (e: { error: unknown }) => void }) => ({
+      textStream: (async function* () {
+        yield "I'll start by examining the changed files and their context";
+        // The follow-up request 429'd: SDK reports via onError, stream ends.
+        opts.onError?.({ error: providerError });
+      })(),
+    }));
+    await expect(
+      streamTask({
+        ...baseInput,
+        schema,
+        tools: { read_file: {} } as never,
+        onText: () => {},
+      }),
+    ).rejects.toThrow(/rate_limit_error/);
+  });
+
+  it("rejects with the real provider error when a prose stream errors mid-run", async () => {
+    const providerError = new Error("overloaded_error: upstream is overloaded");
+    streamText.mockImplementation((opts: { onError?: (e: { error: unknown }) => void }) => ({
+      textStream: (async function* () {
+        yield "partial answer…";
+        opts.onError?.({ error: providerError });
+      })(),
+    }));
+    await expect(
+      streamTask({ ...baseInput, onText: () => {} }),
+    ).rejects.toThrow(/overloaded_error/);
+  });
+
+  it("rejects with AbortError when the caller aborted (maps to 'cancelled', not an error state)", async () => {
+    const abort = new AbortController();
+    streamText.mockImplementation(() => ({
+      textStream: (async function* () {
+        yield "partial";
+        abort.abort();
+      })(),
+    }));
+    await expect(
+      streamTask({
+        ...baseInput,
+        signal: abort.signal,
+        onText: () => {},
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("salvages a fully-valid schema object even if the stream errored after it", async () => {
+    const schema = z.object({ a: z.number() });
+    streamText.mockImplementation((opts: { onError?: (e: { error: unknown }) => void }) => ({
+      textStream: (async function* () {
+        yield '{"a":7}';
+        // Trailing blip after the complete object — result is still usable.
+        opts.onError?.({ error: new Error("connection reset") });
+      })(),
+    }));
+    const r = await streamTask({
+      ...baseInput,
+      schema,
+      tools: { read_file: {} } as never,
+      onText: () => {},
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.object).toEqual({ a: 7 });
+  });
 });
 
 describe("prompt caching (Anthropic breakpoint)", () => {
