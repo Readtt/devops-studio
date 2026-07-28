@@ -7,6 +7,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.15.1] - 2026-07-28
+
+### Fixed
+
+- Commit Review no longer misreports provider failures as "The model didn't return findings in the expected format." A rate limit, overload, dropped connection, or timeout mid-run now surfaces the real provider error (and pressing Stop shows "cancelled", not an error). If the verify pass fails after investigation finished, the run returns the findings unverified instead of failing outright.
+- Long AI runs no longer freeze the app. Request bodies and streamed chunks crossed the Rust↔webview IPC as per-byte JSON arrays; at agentic-loop sizes that stalled the main thread badly enough that opening tabs and clicking around went dead during a Commit Review (Suite Chat and the Generator shared the path). Both directions now travel as base64.
+- A model retired by the 0.15 model prune could linger pinned to a Commit Review tab or a suite-chat thread from an older build and crash the pane's model picker on open. Stale ids now fall back to the global default model.
+
 ## [0.15.0] - 2026-07-24
 
 ### Added
