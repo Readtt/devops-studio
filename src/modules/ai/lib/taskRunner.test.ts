@@ -298,3 +298,104 @@ describe("prompt caching (Anthropic breakpoint)", () => {
     expect(arg.messages).toBeUndefined();
   });
 });
+
+describe("rate-limit resilience", () => {
+  const anthropic = { ...baseInput, modelId: "claude-opus-5" as never };
+  type Msg = {
+    role: string;
+    content: string;
+    providerOptions?: Record<string, Record<string, unknown>>;
+  };
+  type PrepareStep = (input: { messages: Msg[] }) =>
+    | { messages: Msg[] }
+    | undefined;
+
+  it("raises maxRetries on every call path so Retry-After windows are ridden out", async () => {
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({ ...baseInput });
+    expect(
+      (generateText.mock.calls[0][0] as { maxRetries?: number }).maxRetries,
+    ).toBe(6);
+
+    generateObject.mockResolvedValue({ object: { a: 1 } });
+    await runTask({ ...baseInput, schema: z.object({ a: z.number() }) });
+    expect(
+      (generateObject.mock.calls[0][0] as { maxRetries?: number }).maxRetries,
+    ).toBe(6);
+
+    streamText.mockReturnValue({
+      textStream: (async function* () {
+        yield "x";
+      })(),
+    });
+    await streamTask({ ...baseInput, onText: () => {} });
+    expect(
+      (streamText.mock.calls[0][0] as { maxRetries?: number }).maxRetries,
+    ).toBe(6);
+  });
+
+  it("Anthropic + tools gets a per-step cache prepareStep; other providers don't", async () => {
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({ ...anthropic, tools: { read_file: {} } as never });
+    const anthropicArg = generateText.mock.calls[0][0] as {
+      prepareStep?: PrepareStep;
+    };
+    expect(typeof anthropicArg.prepareStep).toBe("function");
+
+    generateText.mockClear();
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({ ...baseInput, tools: { read_file: {} } as never }); // openai
+    const openaiArg = generateText.mock.calls[0][0] as {
+      prepareStep?: PrepareStep;
+    };
+    expect(openaiArg.prepareStep).toBeUndefined();
+
+    // Tool-less runs are single-request — no step loop, no prepareStep.
+    generateText.mockClear();
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({ ...anthropic });
+    expect(
+      (generateText.mock.calls[0][0] as { prepareStep?: PrepareStep })
+        .prepareStep,
+    ).toBeUndefined();
+  });
+
+  it("prepareStep tags ONLY the last message, keeps the system breakpoint, strips stale tags, and never mutates its input", async () => {
+    streamText.mockReturnValue({
+      textStream: (async function* () {
+        yield "x";
+      })(),
+    });
+    await streamTask({
+      ...anthropic,
+      tools: { grep: {} } as never,
+      onText: () => {},
+    });
+    const prepareStep = (
+      streamText.mock.calls[0][0] as { prepareStep: PrepareStep }
+    ).prepareStep;
+
+    const cache = { cacheControl: { type: "ephemeral" } };
+    const messages: Msg[] = [
+      { role: "system", content: "SYS", providerOptions: { anthropic: cache } },
+      { role: "user", content: "big diff" },
+      // Simulates a stale tag from a prior step surviving in the array — the
+      // sweep must remove it so a request never exceeds 2 breakpoints.
+      { role: "assistant", content: "calling tools", providerOptions: { anthropic: cache } },
+      { role: "tool", content: "tool result" },
+    ];
+    const snapshot = JSON.parse(JSON.stringify(messages));
+    const result = prepareStep({ messages });
+    expect(result).toBeDefined();
+    const out = result!.messages;
+    // System breakpoint intact, stale mid-array tag gone, last message tagged.
+    expect(out[0].providerOptions?.anthropic).toMatchObject(cache);
+    expect(out[1].providerOptions?.anthropic).toBeUndefined();
+    expect(out[2].providerOptions?.anthropic).not.toHaveProperty("cacheControl");
+    expect(out[3].providerOptions?.anthropic).toMatchObject(cache);
+    // Input untouched (the SDK reuses its own arrays across steps).
+    expect(messages).toEqual(snapshot);
+    // Degenerate request: nothing to cache.
+    expect(prepareStep({ messages: [messages[0]] })).toBeUndefined();
+  });
+});

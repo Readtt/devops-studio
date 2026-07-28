@@ -107,6 +107,74 @@ export type TaskResult<S extends z.ZodTypeAny | undefined = undefined> =
 
 const DEFAULT_REPAIR_ATTEMPTS = 2;
 
+/** Retries for transient provider failures (429/529/5xx). The SDK honors a
+ *  Retry-After header when it's under 60s and falls back to exponential
+ *  backoff (2s base, ×2) otherwise — but its DEFAULT of 2 retries gives up ~6s
+ *  in, which is useless against per-MINUTE token buckets. BYOK keys on low
+ *  provider tiers breach those constantly mid-agentic-loop, and before this
+ *  the run just died. Six retries waits out a full rate-limit window (worst
+ *  case ≈2 min, usually one Retry-After hop); an abort still cancels retry
+ *  waits instantly. */
+const TASK_MAX_RETRIES = 6;
+
+/** Per-step prompt-cache breakpoint for Anthropic agentic loops.
+ *
+ *  buildRequestPrompt's system-message breakpoint caches the STATIC prefix
+ *  (tool definitions + system prompt), but an agentic loop re-sends the entire
+ *  GROWING conversation every step — the fat diff/spec turn plus every
+ *  accumulated tool result — and without a breakpoint covering it, each step
+ *  re-bills all of it as fresh input tokens. On a 20-step run that's the bulk
+ *  of the spend and exactly what breaches per-minute input-token limits on
+ *  low-tier BYOK keys.
+ *
+ *  Tagging the LAST message of each step's request makes the next step read
+ *  the whole prior transcript as a cache hit (~10% of input price, and mostly
+ *  exempt from Anthropic's ITPM accounting), paying fresh only for what the
+ *  step added. The SDK rebuilds each step's message array from its own
+ *  pristine copies, so tags never accumulate — each request carries exactly
+ *  two breakpoints (system + last message), well under Anthropic's cap of 4;
+ *  the untag sweep is belt-and-braces should that internal ever change.
+ *  Non-Anthropic providers return undefined: their automatic prefix caching
+ *  needs no explicit breakpoints, and their requests must stay byte-identical. */
+function anthropicStepCachePrepare(
+  modelId: ModelId,
+): (({ messages }: { messages: ModelMessage[] }) => { messages: ModelMessage[] } | undefined) | undefined {
+  if (!isAnthropicCacheable(modelId)) return undefined;
+  return ({ messages }) => {
+    // Nothing to gain on a system-only / empty request (never happens in
+    // practice — every surface sends a user turn).
+    if (messages.length < 2) return undefined;
+    const next = messages.map((m, i) =>
+      i > 0 ? untagAnthropicCache(m) : m,
+    );
+    next[next.length - 1] = tagAnthropicCache(next[next.length - 1]);
+    return { messages: next };
+  };
+}
+
+function tagAnthropicCache(m: ModelMessage): ModelMessage {
+  return {
+    ...m,
+    providerOptions: {
+      ...m.providerOptions,
+      anthropic: {
+        ...(m.providerOptions?.anthropic ?? {}),
+        cacheControl: { type: "ephemeral" },
+      },
+    },
+  } as ModelMessage;
+}
+
+function untagAnthropicCache(m: ModelMessage): ModelMessage {
+  const anthropic = m.providerOptions?.anthropic;
+  if (!anthropic || !("cacheControl" in anthropic)) return m;
+  const { cacheControl: _drop, ...rest } = anthropic;
+  return {
+    ...m,
+    providerOptions: { ...m.providerOptions, anthropic: rest },
+  } as ModelMessage;
+}
+
 /** Assemble the system prompt: base + optional project memory + custom
  *  instructions. Surfaces that pass neither get the base verbatim. */
 function assembleSystem(input: TaskInput<z.ZodTypeAny | undefined>): string {
@@ -285,6 +353,7 @@ export async function runTask<
           model,
           system,
           ...userTurn,
+          maxRetries: TASK_MAX_RETRIES,
           schema: input.schema,
           // OpenAI-compatible / local models often wrap the object in ```json
           // fences or add prose; strip to the JSON block and let the SDK
@@ -327,12 +396,15 @@ export async function runTask<
   }
 
   // --- Structured + tools, or prose: generateText --------------------------
+  const prepareStep = tools ? anthropicStepCachePrepare(input.modelId) : undefined;
   const r = await generateText({
     model,
     ...buildRequestPrompt(input.modelId, system, userTurn),
     ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
+    ...(prepareStep ? { prepareStep } : {}),
     ...(temperature !== undefined ? { temperature } : {}),
     ...(input.seed !== undefined ? { seed: input.seed } : {}),
+    maxRetries: TASK_MAX_RETRIES,
     abortSignal: input.signal,
     onStepFinish: onStepFinishFor(start, input.onToolEvent),
   });
@@ -407,12 +479,15 @@ export async function streamTask<
   // format". Capture the first error and rethrow it below so callers' existing
   // catch paths show the REAL provider message.
   let streamError: unknown = null;
+  const prepareStep = tools ? anthropicStepCachePrepare(input.modelId) : undefined;
   const result = streamText({
     model,
     ...buildRequestPrompt(input.modelId, system, userTurn),
     ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
+    ...(prepareStep ? { prepareStep } : {}),
     ...(temperature !== undefined ? { temperature } : {}),
     ...(input.seed !== undefined ? { seed: input.seed } : {}),
+    maxRetries: TASK_MAX_RETRIES,
     abortSignal: input.signal,
     // Live per-tool events (spinner → done) plus the step-finish sweep as a
     // backstop; both key entries by toolCallId so they merge, not duplicate.
