@@ -7,6 +7,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.15.2] - 2026-07-28
+
+### Fixed
+
+- AI runs now ride out provider rate limits instead of dying on them. Retries honor the provider's Retry-After header for up to ~2 minutes (the previous budget gave up after ~6 seconds — useless against per-minute token windows), and aborting still cancels instantly.
+
+### Changed
+
+- Anthropic agentic runs now cache the growing conversation between steps, not just the system prompt and tools. Each step re-reads the prior transcript at ~10% of the input price instead of re-billing all of it, which cuts both cost and tokens-per-minute pressure by roughly an order of magnitude on multi-step Commit Reviews, Suite Chats, and Generator runs — the reason low-tier keys were hitting rate limits at all.
+
 ## [0.15.1] - 2026-07-28
 
 ### Fixed

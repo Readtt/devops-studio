@@ -1,6 +1,6 @@
 [package]
 name = "devops-studio"
-version = "0.15.1"
+version = "0.15.2"
 description = "DevOps Studio — AI-native Azure DevOps Test Plans assistant"
 authors = ["DevOps Studio"]
 edition = "2021"
