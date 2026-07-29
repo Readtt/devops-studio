@@ -20,6 +20,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  AiBrain01Icon,
   AlertCircleIcon,
   ArrowDown01Icon,
   ArrowRight01Icon,
@@ -28,13 +29,23 @@ import {
   GitBranchIcon,
   Loading03Icon,
   PencilEdit01Icon,
+  PlayIcon,
   SparklesIcon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
-import { MODELS, type ModelId } from "@/modules/ai/config";
+import { MODELS, RESUME_TOPUP_STEPS, type ModelId } from "@/modules/ai/config";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
+import { canOfferResume } from "@/modules/ai/lib/errorClass";
+import {
+  classifyProviderError,
+  RunErrorPanel,
+  unclassifiedError,
+  type ErrorClass,
+} from "@/modules/ai/components/RunErrorPanel";
+import { relativeTime, ResumeCard } from "@/modules/ai/components/ResumeCard";
+import { StallHint } from "@/modules/ai/components/StallHint";
 import {
   ContextGuardNotice,
   ContextMeter,
@@ -98,6 +109,8 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
   const removeWorkItem = useCommitReview((s) => s.removeWorkItem);
   const setModel = useCommitReview((s) => s.setModel);
   const run = useCommitReview((s) => s.run);
+  const resume = useCommitReview((s) => s.resume);
+  const discardCheckpoint = useCommitReview((s) => s.discardCheckpoint);
   const stop = useCommitReview((s) => s.stop);
   const applyFix = useCommitReview((s) => s.applyFix);
 
@@ -267,6 +280,12 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
     localDiff.files.length === 0;
   const canRun = allDiffsLoaded(slice) && !slice.diffLoading && !localOnlyEmpty;
   const hasRun = slice.status !== "idle" && slice.status !== "running";
+  // Gate for every Resume affordance below: judges whether the checkpoint left
+  // behind can plausibly continue, not just whether one exists (a local const,
+  // not a property access, so TS can narrow `resumable` in the branches below).
+  const resumable = slice.resumable;
+  const offerResume =
+    resumable != null && canOfferResume(resumable.outcome, slice.error);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -314,13 +333,11 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
                 </span>
               </button>
             </TooltipTrigger>
-            <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
-              {showDiff ? "Hide the diff." : "Show the diff."}{" "}
+            <TooltipContent side="bottom" className="text-[11px]">
+              {showDiff ? "Hide the diff." : "Show the diff."}
               {selectionCount > 1
-                ? `These ${selectionCount} changes are reviewed together as one combined diff.`
-                : "Only the selected change is reviewed."}{" "}
-              The model investigates its blast radius across your code with
-              read-only tools.
+                ? ` These ${selectionCount} changes review together as one.`
+                : ""}
             </TooltipContent>
           </Tooltip>
         ) : slice.diffLoading ? (
@@ -402,7 +419,8 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
                 </button>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="text-[11px]">
-                Cancel this review. Partial progress is saved.
+                Cancel this review. Progress is checkpointed — you can resume
+                it later.
               </TooltipContent>
             </Tooltip>
           ) : (
@@ -512,9 +530,32 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
       ) : null}
       <ContextOverflowDialog guard={guard} modelLabel={guardModelLabel} />
       {!slice.busy && (slice.status === "interrupted" || slice.status === "cancelled") ? (
-        <Banner tone="warn">
-          This review was {slice.status === "interrupted" ? "interrupted" : "cancelled"} before it finished. Re-run to complete it.
-        </Banner>
+        resumable && offerResume ? (
+          <div className="border-b border-border/45 px-3 py-2">
+            <ResumeCard
+              title={
+                slice.status === "cancelled"
+                  ? "You stopped this review"
+                  : "This review didn't finish"
+              }
+              detail={[
+                `Stopped during ${stageWord(resumable.stage)}`,
+                resumable.stepsUsed > 0
+                  ? `${resumable.stepsUsed} step${resumable.stepsUsed === 1 ? "" : "s"} in`
+                  : null,
+                relativeTime(resumable.updatedAt),
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+              onResume={() => guard.attempt(() => void resume(tabId))}
+              onDiscard={() => discardCheckpoint(tabId)}
+            />
+          </div>
+        ) : (
+          <Banner tone="warn">
+            This review was {slice.status === "interrupted" ? "interrupted" : "cancelled"} before it finished. Re-run to complete it.
+          </Banner>
+        )
       ) : null}
 
       {/* Add context (collapsed) */}
@@ -539,11 +580,18 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
           tabId={tabId}
           applyFix={applyFix}
           onRun={() => guard.attempt(() => void run(tabId))}
+          onResume={() => guard.attempt(() => void resume(tabId))}
           showDiff={showDiff}
         />
       </div>
     </div>
   );
+}
+
+/** Human phrasing for a checkpoint's stage — "investigate"/"verify" are the
+ *  wire enum, not what a QA tester reads in a banner. */
+function stageWord(stage: "investigate" | "verify"): string {
+  return stage === "verify" ? "verification" : "investigation";
 }
 
 function Banner({
@@ -578,21 +626,76 @@ function Body({
   tabId,
   applyFix,
   onRun,
+  onResume,
   showDiff,
 }: {
   slice: CommitReviewSlice;
   tabId: number;
   applyFix: (tabId: number, findingId: string, record: AppliedPatchRecord) => void;
   onRun: () => void;
+  onResume: () => void;
   showDiff: boolean;
 }) {
   const diffs = selectedDiffs(slice);
   return (
     <div className="flex flex-col gap-3">
       {showDiff && diffs.length > 0 ? <CommitDiffPanel diffs={diffs} /> : null}
-      <BodyContent slice={slice} tabId={tabId} applyFix={applyFix} onRun={onRun} />
+      <BodyContent
+        slice={slice}
+        tabId={tabId}
+        applyFix={applyFix}
+        onRun={onRun}
+        onResume={onResume}
+      />
     </div>
   );
+}
+
+/** Commit-review-specific error classification. The parse outcomes are keyed
+ *  on the STRUCTURAL errorReason (never sentence matching); everything thrown
+ *  by the provider routes through the shared classifier so this surface and
+ *  the Generator render identical remediation for the same failure. */
+function classifyReviewError(slice: CommitReviewSlice): ErrorClass {
+  if (slice.errorReason === "step_cap") {
+    return {
+      code: "REV/03 · STEP-CAP",
+      title: "Hit the step budget before writing findings",
+      icon: AiBrain01Icon,
+      tone: "config",
+      why: "The reviewer spent its entire step budget investigating the change — reading files, tracing callers — and never reached the point of writing its findings.",
+      steps: [
+        `Resume grants ${RESUME_TOPUP_STEPS} more steps and tells the model to finish with what it already read — usually enough to land the findings.`,
+        "If it caps again, review fewer commits at once, or turn off code search so there's less to read.",
+      ],
+    };
+  }
+  if (slice.errorReason === "empty") {
+    return {
+      code: "REV/02 · EMPTY-RESULT",
+      title: "The model returned nothing usable",
+      icon: AiBrain01Icon,
+      tone: "config",
+      why: "The run completed but the model wrote no findings output at all. OpenAI-compatible or custom endpoints often need JSON mode (structured output) turned on before they return a usable answer.",
+      steps: [
+        "Re-run — transient truncation happens.",
+        "If it repeats, switch to a more capable model for this review.",
+      ],
+    };
+  }
+  if (slice.errorReason === "schema_violation") {
+    return {
+      code: "REV/01 · BAD-FORMAT",
+      title: "The model didn't return findings in the expected format",
+      icon: AiBrain01Icon,
+      tone: "config",
+      why: "The model answered, but its output couldn't be read as the structured findings this review expects. Common with models that don't reliably produce structured JSON.",
+      steps: [
+        "Open the raw output below to see exactly what it sent back.",
+        "Re-run, or switch to a more capable model for this review.",
+      ],
+    };
+  }
+  return classifyProviderError(slice.error ?? "") ?? unclassifiedError();
 }
 
 function BodyContent({
@@ -600,11 +703,13 @@ function BodyContent({
   tabId,
   applyFix,
   onRun,
+  onResume,
 }: {
   slice: CommitReviewSlice;
   tabId: number;
   applyFix: (tabId: number, findingId: string, record: AppliedPatchRecord) => void;
   onRun: () => void;
+  onResume: () => void;
 }) {
   if (slice.busy) {
     return (
@@ -620,36 +725,78 @@ function BodyContent({
             ? "Verifying findings — trying to refute each one to kill false positives…"
             : "Investigating the change and its blast radius…"}
         </div>
+        <StallHint signature={`${slice.activity.length}:${slice.stage}`} />
         <AnalyzeActivityLog entries={slice.activity} running maxHeightClass="max-h-[60vh]" />
       </div>
     );
   }
 
-  if (slice.status === "error") {
+  // A stopped run's frozen activity log — the where-it-was context under the
+  // resume card, so a reopened interrupted review shows what it had been
+  // doing instead of an empty "press Review" state.
+  if (
+    (slice.status === "interrupted" || slice.status === "cancelled") &&
+    slice.activity.length > 0
+  ) {
     return (
-      <div className="rounded-md border border-destructive/40 bg-destructive/[0.05] p-4">
-        <p className="text-[12px] font-medium text-destructive">
-          {slice.error ?? "The review failed."}
-        </p>
-        {slice.schemaViolationRaw ? (
-          <details className="mt-2">
-            <summary className="cursor-pointer text-[10.5px] text-muted-foreground hover:text-foreground">
-              Show the model's raw output
-            </summary>
-            <pre className="mt-1 max-h-64 overflow-auto rounded-sm border border-border/40 bg-foreground/[0.04] p-2 text-[10.5px] leading-relaxed text-foreground/80">
-              {slice.schemaViolationRaw}
-            </pre>
-          </details>
-        ) : null}
-        <button
-          type="button"
-          onClick={onRun}
-          className="mt-3 inline-flex h-7 items-center gap-1.5 rounded-md border border-border/60 bg-card/60 px-2.5 text-[11.5px] font-medium hover:bg-foreground/[0.05]"
-        >
-          <HugeiconsIcon icon={SparklesIcon} size={12} strokeWidth={2} />
-          Re-run
-        </button>
-      </div>
+      <AnalyzeActivityLog entries={slice.activity} maxHeightClass="max-h-[60vh]" />
+    );
+  }
+
+  if (slice.status === "error") {
+    const resumable = slice.resumable;
+    const offerResume =
+      resumable != null && canOfferResume(resumable.outcome, slice.error);
+    const klass = classifyReviewError(slice);
+    return (
+      <RunErrorPanel
+        klass={klass}
+        raw={slice.schemaViolationRaw ?? slice.error}
+        rawLabel={
+          slice.schemaViolationRaw
+            ? "show the model's raw output"
+            : "show raw error"
+        }
+      >
+        <div className="flex flex-wrap items-center gap-2 border-t border-border/40 pt-3">
+          {resumable && offerResume ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={onResume}
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md px-3 text-[11.5px] font-medium bg-primary text-primary-foreground hover:bg-primary/90"
+                >
+                  <HugeiconsIcon icon={PlayIcon} size={12} strokeWidth={2} />
+                  Resume
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[240px] text-[11px]">
+                Continues where it stopped with the original model — finished
+                steps aren't re-run.
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
+          {klass.primary ? (
+            <button
+              type="button"
+              onClick={klass.primary.onClick}
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border/60 bg-card/60 px-2.5 text-[11.5px] font-medium hover:bg-foreground/[0.05]"
+            >
+              <HugeiconsIcon icon={klass.primary.icon} size={12} strokeWidth={2} />
+              {klass.primary.label}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={onRun}
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border/60 bg-card/60 px-2.5 text-[11.5px] font-medium hover:bg-foreground/[0.05]"
+          >
+            <HugeiconsIcon icon={SparklesIcon} size={12} strokeWidth={2} />
+            Re-run
+          </button>
+        </div>
+      </RunErrorPanel>
     );
   }
 

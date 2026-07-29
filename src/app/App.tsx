@@ -311,7 +311,18 @@ function AppShell() {
   // crash/refresh into "interrupted" so the History tab shows them honestly
   // instead of as a perpetual spinner.
   useEffect(() => {
-    void sweepStaleCommitReviews(new Date().toISOString()).catch(() => {});
+    void sweepStaleCommitReviews(new Date().toISOString())
+      .then((reconciled) => {
+        // The History pane mounts (hidden) alongside this effect and fetches
+        // immediately — without a nudge it caches the PRE-sweep list and
+        // keeps showing a crashed run as "running" until a manual reload.
+        if (reconciled > 0) {
+          window.dispatchEvent(
+            new CustomEvent("devops-studio:commit-review-updated"),
+          );
+        }
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -1430,6 +1441,34 @@ function AppShell() {
                             suiteId: run.suiteId,
                             hydrateFrom: store,
                             runId: run.id,
+                          });
+                        }}
+                        onOpenInterrupted={(cp) => {
+                          // Same dedup: the checkpoint's run may already be
+                          // open (it usually isn't — open tabs are filtered
+                          // out of the interrupted list, but races happen).
+                          const existing = Object.values(
+                            useTabsStore.getState().tabs,
+                          ).find(
+                            (t) =>
+                              t.kind === "generator" && t.runId === cp.runId,
+                          );
+                          if (existing) {
+                            setActiveId(existing.id);
+                            return;
+                          }
+                          // Hydrate from the checkpoint BEFORE the tab opens:
+                          // it lands on the input phase with the resume
+                          // affordance showing — never auto-runs.
+                          const store = createGenerationSessionStore();
+                          store
+                            .getState()
+                            .loadCheckpoint(cp.payload, cp.updatedAt);
+                          openGeneratorTab({
+                            planId: cp.payload.form.planId,
+                            suiteId: cp.payload.form.suiteId,
+                            hydrateFrom: store,
+                            runId: cp.runId,
                           });
                         }}
                       />

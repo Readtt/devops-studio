@@ -16,9 +16,20 @@ import { cn } from "@/lib/utils";
 import {
   deleteRun,
   listRuns,
+  specExcerpt,
   type GenerationRun,
   type RunStatus,
 } from "./lib/history";
+import { describeGeneration } from "./lib/qaAnalystRun";
+import {
+  checkpointIsNewer,
+  deleteCheckpoint,
+  getCheckpoint,
+  listCheckpoints,
+  type GeneratorCheckpointV1,
+} from "@/modules/ai/lib/checkpointApi";
+import { canOfferResume } from "@/modules/ai/lib/errorClass";
+import { useTabsStore } from "@/modules/tabs/store/useTabsStore";
 import { useTestPlans } from "@/modules/test-plans";
 import { CopyableSectionHeader } from "@/components/CopyableSectionHeader";
 import {
@@ -28,12 +39,21 @@ import {
   Delete02Icon,
   ExternalLink,
   FileEditIcon,
+  PlayIcon,
   RefreshIcon,
   TaskDone01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useState } from "react";
+
+/** An interrupted analyze recovered from its on-disk checkpoint — a run that
+ *  never reached review (so it has no history row), whose tab is gone. */
+export type InterruptedGenRun = {
+  runId: string;
+  updatedAt: string;
+  payload: GeneratorCheckpointV1;
+};
 
 type Props = {
   onOpenCase: (input: { caseId: number; title: string }) => void;
@@ -45,10 +65,39 @@ type Props = {
    *  Lets the user navigate Done ↔ Review ↔ Input via the same breadcrumbs
    *  the live publish flow uses. */
   onOpenPublished?: (run: GenerationRun) => void;
+  /** Reopen an interrupted analyze from its checkpoint — the tab lands on the
+   *  input phase with the resume affordance front and center. */
+  onOpenInterrupted?: (cp: InterruptedGenRun) => void;
   /** When embedded under a parent tab switcher (the History segmented control),
    *  hide this pane's own title bar — the switcher is the title. */
   embedded?: boolean;
 };
+
+/** Orphaned-but-resumable generator checkpoints, newest first. Best-effort:
+ *  a failed probe returns [] rather than failing the whole History pane. */
+async function loadInterruptedRuns(): Promise<InterruptedGenRun[]> {
+  let entries: Awaited<ReturnType<typeof listCheckpoints>>;
+  try {
+    entries = await listCheckpoints("generator");
+  } catch {
+    return [];
+  }
+  const out: InterruptedGenRun[] = [];
+  for (const e of entries.slice(0, 10)) {
+    try {
+      const cp = await getCheckpoint(e.runId);
+      if (!cp || cp.payload.surface !== "generator") continue;
+      const outcome = cp.payload.lastOutcome;
+      // Same gate as every Resume affordance — a run that answered badly
+      // (empty / schema_violation) would just re-fail; don't list it.
+      if (!canOfferResume(outcome, outcome?.message ?? null)) continue;
+      out.push({ runId: e.runId, updatedAt: cp.updatedAt, payload: cp.payload });
+    } catch {
+      // skip this row
+    }
+  }
+  return out;
+}
 
 /**
  * Sidebar pane that lists every persisted generation run with case + bug
@@ -60,17 +109,29 @@ export function GenerationHistoryPane({
   onOpenBug,
   onOpenDraft,
   onOpenPublished,
+  onOpenInterrupted,
   embedded,
 }: Props) {
   const [runs, setRuns] = useState<GenerationRun[] | null>(null);
+  const [interrupted, setInterrupted] = useState<InterruptedGenRun[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<"all" | RunStatus>("all");
+  const [statusFilter, setStatusFilter] = useState<
+    "all" | RunStatus | "interrupted"
+  >("all");
   const [textFilter, setTextFilter] = useState("");
+  // Live tab set: a checkpoint whose run is OPEN in a generator tab isn't
+  // "interrupted" — it's either running right now or already showing its own
+  // resume affordance. Listing it here would double-surface (or mislabel) it.
+  const tabs = useTabsStore((s) => s.tabs);
 
   const refresh = useCallback(async () => {
     try {
-      const list = await listRuns();
+      const [list, cps] = await Promise.all([
+        listRuns(),
+        loadInterruptedRuns(),
+      ]);
       setRuns(list);
+      setInterrupted(cps);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -117,10 +178,32 @@ export function GenerationHistoryPane({
     }
   }, [refresh]);
 
+  // A checkpoint whose run is open in a generator tab is hidden here (it's
+  // live, or that tab already shows its own resume affordance); a RUN row is
+  // hidden when a NEWER checkpoint supersedes it — an interrupted re-analyze
+  // of a saved draft, where the checkpoint is the current truth.
+  const visibleInterrupted = useMemo(() => {
+    const openRunIds = new Set<string>();
+    for (const t of Object.values(tabs)) {
+      if (t.kind === "generator" && t.runId) openRunIds.add(t.runId);
+    }
+    return interrupted.filter((c) => {
+      if (openRunIds.has(c.runId)) return false;
+      const run = runs?.find((r) => r.id === c.runId);
+      return !run || checkpointIsNewer(c.updatedAt, run.timestamp);
+    });
+  }, [interrupted, runs, tabs]);
+  const supersededRunIds = useMemo(
+    () => new Set(visibleInterrupted.map((c) => c.runId)),
+    [visibleInterrupted],
+  );
+
   const filteredRuns = useMemo(() => {
     if (!runs) return null;
+    if (statusFilter === "interrupted") return [];
     const needle = textFilter.trim().toLowerCase();
     return runs.filter((r) => {
+      if (supersededRunIds.has(r.id)) return false;
       const effectiveStatus = r.status ?? "published";
       if (statusFilter !== "all" && effectiveStatus !== statusFilter) {
         return false;
@@ -138,7 +221,25 @@ export function GenerationHistoryPane({
         .toLowerCase();
       return haystack.includes(needle);
     });
-  }, [runs, statusFilter, textFilter]);
+  }, [runs, statusFilter, textFilter, supersededRunIds]);
+
+  const filteredInterrupted = useMemo(() => {
+    if (statusFilter !== "all" && statusFilter !== "interrupted") return [];
+    const needle = textFilter.trim().toLowerCase();
+    return visibleInterrupted.filter((c) => {
+      if (!needle) return true;
+      const form = c.payload.form;
+      const haystack = [
+        form.planName ?? "",
+        form.suiteName ?? "",
+        describeGeneration(form.coverage, form.suggestBugs),
+        form.requirements,
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(needle);
+    });
+  }, [visibleInterrupted, statusFilter, textFilter]);
 
   const onDelete = useCallback(
     async (runId: string) => {
@@ -152,6 +253,15 @@ export function GenerationHistoryPane({
     [],
   );
 
+  const onDiscardInterrupted = useCallback(async (runId: string) => {
+    try {
+      await deleteCheckpoint(runId);
+      setInterrupted((curr) => curr.filter((c) => c.runId !== runId));
+    } catch {
+      // ignore — refresh will reconcile on next mount
+    }
+  }, []);
+
   if (runs === null) {
     return (
       <div className="flex flex-col gap-2 p-3">
@@ -163,8 +273,44 @@ export function GenerationHistoryPane({
   }
 
   const visibleRuns = filteredRuns ?? [];
-  const showingEmpty = runs.length === 0;
-  const showingFilteredEmpty = !showingEmpty && visibleRuns.length === 0;
+  const showingEmpty = runs.length === 0 && visibleInterrupted.length === 0;
+  const showingFilteredEmpty =
+    !showingEmpty &&
+    visibleRuns.length === 0 &&
+    filteredInterrupted.length === 0;
+
+  // One merged, newest-first list: interrupted checkpoints interleave with
+  // saved runs by their own timestamps instead of clumping at the top.
+  const items: Array<
+    | { kind: "run"; ts: number; run: GenerationRun }
+    | { kind: "interrupted"; ts: number; cp: InterruptedGenRun }
+  > = [
+    ...visibleRuns.map((run) => ({
+      kind: "run" as const,
+      ts: Date.parse(run.timestamp) || 0,
+      run,
+    })),
+    ...filteredInterrupted.map((cp) => ({
+      kind: "interrupted" as const,
+      ts: Date.parse(cp.updatedAt) || 0,
+      cp,
+    })),
+  ].sort((a, b) => b.ts - a.ts);
+
+  const baseRuns = runs.filter((r) => !supersededRunIds.has(r.id));
+  const chipIds = [
+    "all",
+    "draft",
+    "published",
+    ...(visibleInterrupted.length > 0 || statusFilter === "interrupted"
+      ? (["interrupted"] as const)
+      : []),
+  ] as const;
+  const chipCount = (id: (typeof chipIds)[number]): number => {
+    if (id === "all") return baseRuns.length + visibleInterrupted.length;
+    if (id === "interrupted") return visibleInterrupted.length;
+    return baseRuns.filter((r) => (r.status ?? "published") === id).length;
+  };
 
   return (
     <div className="flex h-full flex-col">
@@ -223,13 +369,8 @@ export function GenerationHistoryPane({
             Matches the editor/terminal voice the rest of the app uses for
             tree-state controls. */}
         <div className="-mb-px flex items-center gap-3 font-mono text-[10.5px]">
-          {(["all", "draft", "published"] as const).map((id) => {
-            const count =
-              id === "all"
-                ? runs.length
-                : runs.filter(
-                    (r) => (r.status ?? "published") === id,
-                  ).length;
+          {chipIds.map((id) => {
+            const count = chipCount(id);
             const isActive = statusFilter === id;
             return (
               <button
@@ -282,17 +423,26 @@ export function GenerationHistoryPane({
           </div>
         ) : null}
         <ul className="flex flex-col gap-px px-1 py-1">
-          {visibleRuns.map((r) => (
-            <RunCard
-              key={r.id}
-              run={r}
-              onOpenCase={onOpenCase}
-              onOpenBug={onOpenBug}
-              onOpenDraft={onOpenDraft}
-              onOpenPublished={onOpenPublished}
-              onDelete={() => void onDelete(r.id)}
-            />
-          ))}
+          {items.map((item) =>
+            item.kind === "run" ? (
+              <RunCard
+                key={item.run.id}
+                run={item.run}
+                onOpenCase={onOpenCase}
+                onOpenBug={onOpenBug}
+                onOpenDraft={onOpenDraft}
+                onOpenPublished={onOpenPublished}
+                onDelete={() => void onDelete(item.run.id)}
+              />
+            ) : (
+              <InterruptedRunCard
+                key={item.cp.runId}
+                cp={item.cp}
+                onOpen={onOpenInterrupted}
+                onDiscard={() => void onDiscardInterrupted(item.cp.runId)}
+              />
+            ),
+          )}
         </ul>
       </div>
     </div>
@@ -609,6 +759,139 @@ function RunCard({
             onSelect={onDelete}
           >
             Delete
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+    </li>
+  );
+}
+
+/** An interrupted analyze, recovered from its checkpoint. One click reopens
+ *  it in a generator tab with the resume affordance showing; the run itself
+ *  never auto-starts from here. */
+function InterruptedRunCard({
+  cp,
+  onOpen,
+  onDiscard,
+}: {
+  cp: InterruptedGenRun;
+  onOpen?: (cp: InterruptedGenRun) => void;
+  onDiscard: () => void;
+}) {
+  const form = cp.payload.form;
+  const stepsUsed = cp.payload.transcript?.stepsUsed ?? 0;
+  const planLabel =
+    form.planName ?? (form.planId != null ? `Plan #${form.planId}` : "—");
+  const suiteLabel =
+    form.suiteName ?? (form.suiteId != null ? `Suite #${form.suiteId}` : "—");
+  const open = onOpen ? () => onOpen(cp) : undefined;
+
+  return (
+    <li>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <div className="group/run rounded-md border border-amber-500/30 bg-amber-500/[0.04] transition-colors hover:bg-amber-500/[0.08]">
+            <div className="flex w-full items-start gap-2 px-2 py-1.5 text-[11.5px]">
+              <button
+                type="button"
+                onClick={open}
+                disabled={!open}
+                className="min-w-0 flex-1 text-left"
+              >
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="font-medium">
+                    {formatTimestamp(cp.updatedAt)}
+                  </span>
+                  <span className="text-[10.5px] text-muted-foreground">
+                    {describeGeneration(form.coverage, form.suggestBugs)}
+                  </span>
+                  <span className="rounded-sm bg-amber-500/15 px-1.5 py-px font-mono text-[10px] text-amber-700 dark:text-amber-300">
+                    interrupted
+                  </span>
+                </div>
+                <p className="mt-0.5 truncate text-[10.5px] text-muted-foreground">
+                  {planLabel}
+                  {" · "}
+                  {suiteLabel}
+                  {stepsUsed > 0 ? ` · ${stepsUsed} steps in` : ""}
+                </p>
+                {form.requirements.trim() ? (
+                  <p className="mt-0.5 truncate text-[10.5px] italic text-muted-foreground/85">
+                    {specExcerpt(form.requirements, 120)}
+                  </p>
+                ) : null}
+              </button>
+              <div className="flex shrink-0 items-center gap-1">
+                {open ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label="Open this run to resume it"
+                        onClick={open}
+                        className="grid size-5 place-items-center rounded text-muted-foreground hover:bg-primary/15 hover:text-primary"
+                      >
+                        <HugeiconsIcon
+                          icon={PlayIcon}
+                          size={10}
+                          strokeWidth={1.75}
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="text-[11px]">
+                      Open to resume
+                    </TooltipContent>
+                  </Tooltip>
+                ) : null}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="Discard this run's saved progress"
+                      onClick={onDiscard}
+                      className="grid size-5 place-items-center rounded text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
+                    >
+                      <HugeiconsIcon
+                        icon={Cancel01Icon}
+                        size={10}
+                        strokeWidth={2}
+                      />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="text-[11px]">
+                    Discard saved progress
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+            </div>
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent className="w-56">
+          <ContextMenuItem
+            icon={<HugeiconsIcon icon={PlayIcon} size={12} strokeWidth={1.75} />}
+            description="Reopens this run with its saved progress so you can resume."
+            disabled={!open}
+            onSelect={() => open?.()}
+          >
+            Open to resume
+          </ContextMenuItem>
+          <ContextMenuItem
+            icon={<HugeiconsIcon icon={Copy01Icon} size={12} strokeWidth={1.75} />}
+            disabled={!form.requirements.trim()}
+            onSelect={() => void copyText(form.requirements)}
+          >
+            Copy spec
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            variant="destructive"
+            icon={
+              <HugeiconsIcon icon={Delete02Icon} size={12} strokeWidth={1.75} />
+            }
+            description="Deletes the saved progress. The spec itself isn't recoverable after this."
+            onSelect={onDiscard}
+          >
+            Discard saved progress
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>

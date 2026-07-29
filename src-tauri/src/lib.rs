@@ -1,8 +1,8 @@
 mod modules;
 
 use modules::{
-    ado, chat_threads, command, commit_review, confidence_store, fs, git, git_bin, git_clone,
-    git_ops, history, net, pty, secrets,
+    ado, ai_checkpoints, chat_threads, command, commit_review, confidence_store, fs, git,
+    git_bin, git_clone, git_ops, history, net, pty, secrets,
 };
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -437,6 +437,7 @@ pub fn run() {
         .manage(chat_threads::ChatThreadsState::default())
         .manage(commit_review::CommitReviewState::default())
         .manage(confidence_store::ConfidenceStoreState::default())
+        .manage(ai_checkpoints::AiCheckpointsState::default())
         .setup(|app| {
             // Hydrate the in-memory ADO connection state from disk + keychain.
             // Non-blocking; failures (e.g. first run with no settings) are
@@ -560,6 +561,11 @@ pub fn run() {
             confidence_store::confidence_delete,
             confidence_store::confidence_get,
             confidence_store::confidence_get_many,
+            // --- AI run checkpoints (resume substrate for Generator + Commit Review) ---
+            ai_checkpoints::ai_checkpoint_save,
+            ai_checkpoints::ai_checkpoint_get,
+            ai_checkpoints::ai_checkpoint_list,
+            ai_checkpoints::ai_checkpoint_delete,
             // --- Generation history ---
             history::history_save_run,
             history::history_list_runs,

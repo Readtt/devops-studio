@@ -52,7 +52,8 @@ unstaged, and new files vs HEAD, reviewable before you commit) — and the
 read-only code analysis) then *verify* (skeptically refute false positives) — and
 returns severity-ranked findings with evidence. Suggested fixes render as
 click-to-apply patch cards. Every run persists and reopens from History exactly
-as you left it.
+as you left it — and an interrupted one greets you with a **Resume** card when
+you come back, continuing from its last checkpoint instead of starting over.
 
 ### Source-linked, branch-aware
 Every generated case carries `repo + file + symbol` — clickable in the embedded
@@ -82,6 +83,11 @@ Cerebras, Groq, DeepSeek, Mistral, OpenRouter, any OpenAI-compatible endpoint,
 plus local **LM Studio / MLX / Ollama**. Keys live in the OS keychain. All four
 AI surfaces (Generator, Confidence, Suite Chat, Commit Review) route through one
 shared task runner and stay read-only against your source.
+
+Long runs are interruption-proof: every agentic step checkpoints to disk, so a
+quit, crash, rate limit, or dropped connection ends in a one-click **Resume**
+that replays the saved transcript — the investigation you already paid for is
+never re-run. Runs whose tab is gone resurface as *interrupted* rows in History.
 
 ## Install
 

@@ -1,6 +1,12 @@
 import { SURFACE_STEP_CAPS, type ModelId } from "@/modules/ai/config";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
-import { runTask } from "@/modules/ai/lib/taskRunner";
+import {
+  runTask,
+  streamTask,
+  type TaskCheckpoint,
+  type TaskUsage,
+} from "@/modules/ai/lib/taskRunner";
+import type { ModelMessage } from "ai";
 import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
 import {
@@ -159,48 +165,112 @@ export type RunResult = {
   ok: boolean;
   /** When `ok` is false: `empty` ⇒ the provider returned no usable text (common
    *  with OpenAI-compatible endpoints lacking JSON mode); `schema_violation` ⇒
-   *  text came back but didn't match the expected shape. */
-  reason?: "schema_violation" | "empty";
+   *  text came back but didn't match the expected shape; `step_cap` ⇒ the
+   *  agentic loop ran out of steps before writing its answer. */
+  reason?: "schema_violation" | "empty" | "step_cap";
+  /** Agentic steps this call completed. Drives the checkpoint's cumulative
+   *  step count and the "n / cap steps" readout. */
+  stepsUsed?: number;
+  /** Token usage this call accrued, when the provider reported it. */
+  usage?: TaskUsage;
 };
 
-export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
+/** Everything the model call needs, with prompt assembly already done. Split
+ *  out from execution so a run can be checkpointed BEFORE the provider is
+ *  touched — and re-executed later from the persisted copy without re-running
+ *  the ADO prefetch that produced it. */
+export type PreparedAnalystRun = {
+  modelId: ModelId;
+  /** Fully assembled user turn: buildUserPrompt (or the refine override) plus
+   *  any context blocks. */
+  userPrompt: string;
+  /** Session attachments merged with context-block images — the exact vision
+   *  set the request carries. */
+  attachments: RunAttachment[];
+  sourceRoot: string | null;
+  customInstructions?: string;
+};
+
+/** Pure prompt assembly — no keys, no network, no tool construction. */
+export function prepareQaAnalystRun(input: RunInput): PreparedAnalystRun {
   const ctxText = formatContextBlocks(input.contextBlocks ?? []);
   const basePrompt = input.userPromptOverride ?? buildUserPrompt(input);
   const userPrompt = ctxText ? `${basePrompt}\n\n${ctxText}` : basePrompt;
-  // Merge best-practice / bug-context images into the vision attachments so a
-  // standards screenshot reaches the model the same way a dropped image does.
-  const attachments = [
-    ...input.attachments,
-    ...collectContextImages(input.contextBlocks ?? []),
-  ];
+  return {
+    modelId: input.modelId,
+    userPrompt,
+    // Merge best-practice / bug-context images into the vision attachments so a
+    // standards screenshot reaches the model the same way a dropped image does.
+    attachments: [
+      ...input.attachments,
+      ...collectContextImages(input.contextBlocks ?? []),
+    ],
+    sourceRoot: input.sourceRoot ?? null,
+    customInstructions: input.customInstructions,
+  };
+}
+
+export type ExecuteAnalystOptions = {
+  /** Provider keys hydrated from the OS keychain. Never persisted. */
+  keys: ProviderKeys;
+  local?: LocalProviderConfig;
+  /** Defaults to SURFACE_STEP_CAPS.generator; a resume passes a smaller top-up. */
+  maxSteps?: number;
+  onActivity?: (e: ActivityEntry) => void;
+  /** Fired after each completed agentic step so the caller can persist a
+   *  resume point. Tool-bearing path only (tool-less runs are single-shot). */
+  onCheckpoint?: (cp: TaskCheckpoint) => void;
+  /** Liveness only — fires on the tool-bearing (streaming) path. */
+  onText?: (delta: string) => void;
+  /** Continuation transcript from an earlier attempt at this same run. */
+  resumeMessages?: ModelMessage[];
+  signal?: AbortSignal;
+};
+
+const NO_OP_TEXT = () => {};
+
+export async function executeQaAnalystRun(
+  prepared: PreparedAnalystRun,
+  opts: ExecuteAnalystOptions,
+): Promise<RunResult> {
   const start = Date.now();
 
   // Read-only source tools when code search is on — the analyzer can trace the
   // spec across real files instead of guessing from the prompt alone. SAFETY:
   // these are READ-ONLY (read_file / list_files / grep); the runner never
   // injects write/edit/bash tools.
-  const tools = buildSuiteChatTools(input.sourceRoot ?? null);
+  const tools = buildSuiteChatTools(prepared.sourceRoot);
 
   // Schema-validated, temperature-0 structured output via the shared runner.
-  // With tools the runner runs the agentic read loop (generateText) then
-  // validates the model's final text against the schema; tool-less it uses
-  // generateObject. Either way DraftBatchLLMSchema is enforced — which is why
-  // the salvageDraftBatch fallback below exists for the validate-the-text path.
-  const r = await runTask({
-    modelId: input.modelId,
-    keys: input.keys,
-    local: input.local ?? {},
+  // With tools the runner runs the agentic read loop then validates the
+  // model's final text against the schema; tool-less it uses generateObject.
+  // Either way DraftBatchLLMSchema is enforced — which is why the
+  // salvageDraftBatch fallback below exists for the validate-the-text path.
+  const task = {
+    modelId: prepared.modelId,
+    keys: opts.keys,
+    local: opts.local ?? {},
     systemPrompt: QA_ANALYST_PROMPT,
-    customInstructions: input.customInstructions,
-    prompt: userPrompt,
-    attachments,
+    customInstructions: prepared.customInstructions,
+    prompt: prepared.userPrompt,
+    attachments: prepared.attachments,
     tools: tools ?? null,
     temperature: 0,
-    maxSteps: SURFACE_STEP_CAPS.generator,
+    maxSteps: opts.maxSteps ?? SURFACE_STEP_CAPS.generator,
     schema: DraftBatchLLMSchema,
-    onToolEvent: input.onActivity,
-    signal: input.signal,
-  });
+    onToolEvent: opts.onActivity,
+    onCheckpoint: opts.onCheckpoint,
+    resumeMessages: opts.resumeMessages,
+    signal: opts.signal,
+  };
+  // Stream only the tool-bearing path: it gets live text for the "still
+  // writing" readout plus the runner's trailing-error salvage. The tool-less
+  // path stays on runTask so schema+no-tools keeps hitting generateObject
+  // (SDK-native JSON mode) — streaming it would regress OpenAI-compatible
+  // endpoints that only produce a valid batch through structured output.
+  const r = tools
+    ? await streamTask({ ...task, onText: opts.onText ?? NO_OP_TEXT })
+    : await runTask(task);
 
   // Prefer the strictly-validated object; if the model produced a batch that
   // didn't fully validate, salvage the valid cases/bugs from the raw text
@@ -213,7 +283,18 @@ export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
     durationMs: Date.now() - start,
     ok: r.ok,
     reason: r.ok ? undefined : r.reason,
+    stepsUsed: r.stepsUsed,
+    usage: r.usage,
   };
+}
+
+export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
+  return executeQaAnalystRun(prepareQaAnalystRun(input), {
+    keys: input.keys,
+    local: input.local,
+    onActivity: input.onActivity,
+    signal: input.signal,
+  });
 }
 
 function buildUserPrompt(input: RunInput): string {

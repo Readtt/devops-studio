@@ -26,12 +26,29 @@ import {
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import {
   describeGeneration,
+  executeQaAnalystRun,
   modeToAxes,
+  prepareQaAnalystRun,
   type Coverage,
+  type PreparedAnalystRun,
+  type RunAttachment,
   type RunResult,
   type TargetContext,
   runQaAnalyst,
 } from "../lib/qaAnalystRun";
+import { resumeBudget, sumUsage } from "../lib/resumePolicy";
+import {
+  createCheckpointWriter,
+  deleteCheckpoint,
+  getCheckpoint,
+  sanitizeTranscriptMessages,
+  type CheckpointOutcome,
+  type CheckpointWriter,
+  type GeneratorCheckpointV1,
+  type TranscriptCheckpoint,
+} from "@/modules/ai/lib/checkpointApi";
+import { classifyForResume } from "@/modules/ai/lib/errorClass";
+import type { TaskCheckpoint } from "@/modules/ai/lib/taskRunner";
 import { CURRENT_BRANCH_SENTINEL, resolveTrackingBranch } from "@/modules/git";
 import {
   localProviderConfig,
@@ -86,7 +103,13 @@ export type PublishLogEntry = {
   error?: string;
 };
 
-import { supportsVision, type ModelId } from "@/modules/ai/config";
+import {
+  isKnownModelId,
+  RESUME_TOPUP_STEPS,
+  SURFACE_STEP_CAPS,
+  supportsVision,
+  type ModelId,
+} from "@/modules/ai/config";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import { bugsToContextBlocks } from "@/modules/ado/lib/bugContextBlock";
 import type { WorkItemRef } from "@/modules/ado";
@@ -146,10 +169,29 @@ export type SessionState = {
    *  can see what the agent is doing (which files it read, what it grepped). */
   activityLog: ActivityEntry[];
   durationMs: number | null;
-  /** History run id assigned when the session reaches review. The draft
-   *  snapshot is saved under this id; the later publish path upserts on the
-   *  same id so the row reads "published" instead of creating a duplicate. */
+  /** History run id, minted when analyze STARTS (not when it reaches review) so
+   *  a run that dies mid-flight still has an identity its checkpoint and its
+   *  tab can be keyed by. The draft snapshot is saved under this id; the later
+   *  publish path upserts on the same id so the row reads "published" instead
+   *  of creating a duplicate. */
   runId: string | null;
+  /** Agentic steps the current/last analyze has completed — cumulative across
+   *  resumes, so it keeps counting up rather than restarting at 0. */
+  stepsUsed: number | null;
+  /** Step budget in force for the current/last analyze: the full generator cap,
+   *  or the smaller top-up a step-cap resume runs under. */
+  stepCap: number | null;
+  /** Date.now() when the current/last analyze started, for the elapsed timer. */
+  analyzeStartedAt: number | null;
+  /** Set when a failed / cancelled analyze left a checkpoint worth continuing.
+   *  Null when there's nothing to resume (never ran, ran to completion, or the
+   *  user discarded it). */
+  resumable: {
+    stepsUsed: number;
+    totalTokens: number | null;
+    updatedAt: string;
+    outcome: CheckpointOutcome | null;
+  } | null;
   // Review
   cases: ReviewedCase[];
   bugs: ReviewedBug[];
@@ -186,6 +228,15 @@ export type SessionState = {
   removeWorkItem: (id: number) => void;
   clearWorkItems: () => void;
   analyze: () => Promise<void>;
+  /** Continue the last analyze from its persisted checkpoint instead of paying
+   *  for the transcript again. Re-issues the assembled prompt plus everything
+   *  the run had already read; makes NO ADO calls. */
+  resumeAnalyze: () => Promise<void>;
+  /** Restore the form + resume affordance from a persisted checkpoint. Pure
+   *  state, no IPC — the caller already read the row. */
+  loadCheckpoint: (payload: GeneratorCheckpointV1, updatedAt: string) => void;
+  /** Throw away the resume point (and its persisted row) for this run. */
+  discardCheckpoint: () => void;
   /** Cancel an in-flight analyze and return to the input phase. Aborts the
    *  model request itself (via the shared runner's abort signal) so the
    *  provider stops generating — not just a discard of the result. */
@@ -354,6 +405,76 @@ function isCancelledError(e: unknown): boolean {
   );
 }
 
+/** Fold one runner checkpoint into a persistable transcript, carrying the
+ *  totals earlier attempts already accrued. Returns null when the messages
+ *  can't survive a JSON round-trip — the caller then persists inputs-only
+ *  rather than a transcript that would fail to parse on the way back in. */
+function toTranscript(
+  cp: TaskCheckpoint,
+  base: TranscriptCheckpoint | null,
+): TranscriptCheckpoint | null {
+  const messages = sanitizeTranscriptMessages(cp.messages);
+  if (!messages) return null;
+  return {
+    messages,
+    stepsUsed: (base?.stepsUsed ?? 0) + cp.stepsUsed,
+    usage: sumUsage(base?.usage, cp.usage),
+  };
+}
+
+/** Engine attachments → the checkpoint's wire shape, which requires an `id`
+ *  and a concrete `kind`. Session attachments already carry a real id; the
+ *  context-block images merged in beside them may not, so those get a stable
+ *  positional one. Round-tripping back through PreparedAnalystRun is a no-op —
+ *  the engine only ever reads path/content/kind/mime. */
+function toCheckpointAttachments(
+  attachments: (RunAttachment & { id?: string })[],
+): Attachment[] {
+  return attachments.map((a, i) => ({
+    ...a,
+    id: a.id ?? `cp-att-${i}`,
+    kind: a.kind ?? "text",
+  }));
+}
+
+/** Attach the streamed-but-never-parsed final answer, so a run that died
+ *  mid-answer keeps what it had written for salvage/debugging. */
+function withPartialText(
+  transcript: TranscriptCheckpoint | null,
+  partialText: string,
+): TranscriptCheckpoint | null {
+  if (!transcript || !partialText) return transcript;
+  return { ...transcript, partialText };
+}
+
+/** The resume affordance derived from the payload we just flushed, so what the
+ *  UI offers and what's actually on disk can't drift. */
+function resumableFrom(
+  payload: GeneratorCheckpointV1,
+  outcome: CheckpointOutcome,
+): NonNullable<SessionState["resumable"]> {
+  return {
+    stepsUsed: payload.transcript?.stepsUsed ?? 0,
+    totalTokens: payload.transcript?.usage?.totalTokens ?? null,
+    updatedAt: outcome.at,
+    outcome,
+  };
+}
+
+/** Nudge the History pane (and anything else listening) that a run's durable
+ *  state changed — a terminal checkpoint flush, a draft save, the checkpoint
+ *  getting deleted. Without this an interrupted run only appeared in History
+ *  after a manual reload. */
+function notifyHistoryUpdated(runId: string | null): void {
+  try {
+    window.dispatchEvent(
+      new CustomEvent("devops-studio:history-updated", { detail: { runId } }),
+    );
+  } catch {
+    // Non-fatal — synchronous dispatch should never throw.
+  }
+}
+
 /** Build the ADO work-item web URL for a case id — used to link an UPDATED
  *  case from the publish log (the create path gets this from the Rust result;
  *  the update path has no such response, so we construct it). */
@@ -379,6 +500,9 @@ const initialState: Omit<
   | "removeWorkItem"
   | "clearWorkItems"
   | "analyze"
+  | "resumeAnalyze"
+  | "loadCheckpoint"
+  | "discardCheckpoint"
   | "cancel"
   | "tryAgain"
   | "setCaseDecision"
@@ -435,6 +559,10 @@ const initialState: Omit<
   activityLog: [],
   durationMs: null,
   runId: null,
+  stepsUsed: null,
+  stepCap: null,
+  analyzeStartedAt: null,
+  resumable: null,
   cases: [],
   bugs: [],
   rawText: "",
@@ -567,6 +695,184 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     let analyzeAbort: AbortController | null = null;
     let refineAbort: AbortController | null = null;
     let chatAbort: AbortController | null = null;
+    // Checkpoint handles for the in-flight analyze/resume. They live out here
+    // (beside the abort handles) because cancel() has to flush a terminal
+    // "cancelled" outcome from outside the run's own scope.
+    let analyzeWriter: CheckpointWriter | null = null;
+    let analyzeCheckpointPayload:
+      | ((outcome: CheckpointOutcome | null) => GeneratorCheckpointV1)
+      | null = null;
+    /** Final answer streamed so far, kept so a run that dies mid-answer can
+     *  persist what it had written. */
+    let analyzePartialText = "";
+
+    /** Each activity entry either appends (new id) or replaces an earlier entry
+     *  (same id — used when a tool_use is later completed by its tool_result,
+     *  carrying duration and output). The most recent entry doubles as the
+     *  transient stepLabel for compact displays. */
+    const onAnalyzeActivity = (entry: ActivityEntry) => {
+      set((s) => {
+        const i = s.activityLog.findIndex((e) => e.id === entry.id);
+        const next = s.activityLog.slice();
+        if (i >= 0) {
+          next[i] = { ...next[i], ...entry };
+        } else {
+          next.push(entry);
+        }
+        return { activityLog: next, stepLabel: entryToLabel(entry) };
+      });
+    };
+
+    /** Terminal handling shared by analyze() and resumeAnalyze(): map the
+     *  batch, branch on the two "nothing usable came back" shapes, and on
+     *  success move to review, persist the draft, then drop the checkpoint. */
+    const settleAnalyzeRun = async (args: {
+      runId: string;
+      result: RunResult;
+      existingCaseTitles: { id: number; title: string }[];
+      planName: string | null;
+      suiteName: string | null;
+      stepCap: number;
+      writer: CheckpointWriter;
+      buildPayload: (outcome: CheckpointOutcome | null) => GeneratorCheckpointV1;
+    }): Promise<void> => {
+      const { result, writer, buildPayload } = args;
+      const cases: ReviewedCase[] = result.batch.cases.map((c) => ({
+        ...c,
+        uid: uid(),
+        decision: "keep",
+        similarMatches: findSimilarCases(c.title, args.existingCaseTitles),
+      }));
+      const bugs: ReviewedBug[] = result.batch.bugs.map((b) => ({
+        ...b,
+        uid: uid(),
+        decision: "keep",
+      }));
+      // If the user cancelled while the model was running, don't drop them
+      // into review — the cancel() action already moved us back to input.
+      if (get().phase !== "analyzing") return;
+
+      // A loop that burned its whole budget still calling tools never reached
+      // the point of writing an answer — that's continuable, unlike a model
+      // that genuinely found nothing, so it gets its own copy and a resume.
+      if (!result.ok && result.reason === "step_cap") {
+        const outcome: CheckpointOutcome = {
+          at: new Date().toISOString(),
+          kind: "step_cap",
+        };
+        const payload = buildPayload(outcome);
+        set({
+          phase: "error",
+          error: `The run hit its ${args.stepCap}-step budget before it could write the final test-case batch. Resume grants ${RESUME_TOPUP_STEPS} more steps and asks the model to finish with what it has already read.`,
+          errorPhase: "analyze",
+          stepLabel: "",
+          resumable: resumableFrom(payload, outcome),
+        });
+        await writer.flush(payload);
+        notifyHistoryUpdated(args.runId);
+        return;
+      }
+
+      // An empty batch is a dead-end: dropping into a blank review reads as
+      // "nothing happened" and is the silent-failure users hit with custom
+      // connectors. Surface it as a classified error with WHY-specific
+      // guidance instead. tryAgain() keeps the spec, so it's a one-click fix.
+      if (cases.length === 0 && bugs.length === 0) {
+        const why = !result.ok
+          ? result.reason === "empty"
+            ? "The model returned an empty response — no test cases came back. OpenAI-compatible or custom endpoints often need JSON mode (structured output) turned on before they return a usable batch."
+            : "The model's response couldn't be read as the structured format the generator expects, and nothing usable could be salvaged from it. This is common with OpenAI-compatible or custom endpoints that don't fully support structured JSON output."
+          : "The model ran but produced no test cases or bugs for this spec.";
+        set({
+          phase: "error",
+          error: `No test cases generated. ${why}`,
+          errorPhase: "analyze",
+          stepLabel: "",
+        });
+        // The run COMPLETED — there's no partial work to continue, so the
+        // inputs stay on disk for a fresh attempt but no resume is offered.
+        await writer.flush(
+          buildPayload({ at: new Date().toISOString(), kind: "empty" }),
+        );
+        notifyHistoryUpdated(args.runId);
+        return;
+      }
+
+      set({
+        phase: "review",
+        cases: reconcileAutoOutcomes(cases, bugs),
+        bugs,
+        rawText: result.rawText,
+        durationMs: result.durationMs,
+        stepLabel: "",
+        // Seed display names from the resolved target context so the tab
+        // title can render "<Plan> · <Suite>" without an extra ADO fetch.
+        planName: args.planName,
+        suiteName: args.suiteName,
+      });
+
+      // Persist a draft snapshot as soon as we reach review so a closed
+      // window or restart doesn't lose the generated cases. The publish
+      // path later upserts on the same id with status=published. We embed
+      // the full draft payload (cases, bugs, spec, mode) so the history
+      // pane's "Open draft" action can fully restore review state.
+      try {
+        const s = get();
+        const draftRun: GenerationRun = {
+          id: args.runId,
+          timestamp: newTimestamp(),
+          planId: s.planId,
+          planName: args.planName,
+          suiteId: s.suiteId,
+          suiteName: args.suiteName,
+          mode: describeGeneration(s.coverage, s.suggestBugs),
+          specExcerpt: specExcerpt(s.requirements ?? ""),
+          cases: s.cases.map((c) => ({
+            title: c.title,
+            adoId: null,
+            webUrl: null,
+          })),
+          bugs: s.bugs.map((b) => ({
+            title: b.title,
+            severity: b.severity,
+            adoId: null,
+            webUrl: null,
+          })),
+          publishLog: [],
+          status: "draft",
+          draftPayload: {
+            requirements: s.requirements,
+            changesets: s.changesets,
+            coverage: s.coverage,
+            suggestBugs: s.suggestBugs,
+            overrideModelId: s.overrideModelId,
+            cases: s.cases,
+            bugs: s.bugs,
+            rawText: s.rawText,
+            planId: s.planId,
+            planName: args.planName,
+            suiteId: s.suiteId,
+            suiteName: args.suiteName,
+            refineRounds: s.refineRounds,
+            refineUndoSnapshot: s.refineUndoSnapshot,
+            attachments: s.attachments,
+          },
+        };
+        // Awaited (not fire-and-forget) so the draft is on disk before the
+        // user can reload — otherwise a reload right after generating races
+        // the write, getRun returns null on restore, and the tab snaps back
+        // to the input form ("refresh resets to input").
+        await saveRun(draftRun);
+      } catch {
+        // Persistence is best-effort.
+      }
+      // Only AFTER the draft landed: a crash between the two must leave the
+      // checkpoint standing, never a window where neither copy exists.
+      await writer.delete();
+      set({ resumable: null });
+      notifyHistoryUpdated(args.runId);
+    };
+
     return ({
   ...initialState,
 
@@ -653,12 +959,27 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         ? s.runId
         : null;
     })();
+    // A published run's checkpoint can never be reached again once we mint a
+    // fresh id, so drop it rather than leaving an orphan row behind.
+    const supersededRunId = (() => {
+      const s = get();
+      return !reuseRunId && s.runId && s.resumable ? s.runId : null;
+    })();
+    if (supersededRunId) void deleteCheckpoint(supersededRunId).catch(() => {});
+    const runId = reuseRunId ?? newRunId();
     set({
       phase: "analyzing",
       stepLabel: "Reading suite…",
       activityLog: [],
       error: null,
       errorPhase: null,
+      // Minted up front (not at the review transition) so a run that dies
+      // mid-flight still has an id its checkpoint and tab can be keyed by.
+      runId,
+      stepsUsed: 0,
+      stepCap: SURFACE_STEP_CAPS.generator,
+      analyzeStartedAt: Date.now(),
+      resumable: null,
       // Clean-slate the prior run's RESULT state (mirrors tryAgain). When
       // analyze is reached from a reopened published/draft run via the input
       // breadcrumb, goToInput preserves everything — without this, the new
@@ -681,23 +1002,16 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     // running (and billing) to completion behind the discarded result.
     const analyzeAc = new AbortController();
     analyzeAbort = analyzeAc;
-
-    // Each activity entry either appends (new id) or replaces an earlier
-    // entry (same id — used when a tool_use is later completed by its
-    // tool_result, carrying duration and output). The most recent entry
-    // doubles as the transient stepLabel for compact displays.
-    const onActivity = (entry: ActivityEntry) => {
-      set((s) => {
-        const i = s.activityLog.findIndex((e) => e.id === entry.id);
-        const next = s.activityLog.slice();
-        if (i >= 0) {
-          next[i] = { ...next[i], ...entry };
-        } else {
-          next.push(entry);
-        }
-        return { activityLog: next, stepLabel: entryToLabel(entry) };
-      });
+    // Only clear our own handle — a cancelled run's cleanup can land after the
+    // user already started a fresh run with a new controller.
+    const releaseAnalyzeClaim = () => {
+      if (analyzeAbort === analyzeAc) analyzeAbort = null;
     };
+    // No checkpoint exists until the prompt is assembled — a failure before
+    // that point spent nothing, so there's nothing to resume.
+    analyzeWriter = null;
+    analyzeCheckpointPayload = null;
+    analyzePartialText = "";
 
     let existingCaseTitles: { id: number; title: string }[] = [];
     let existingCases: {
@@ -785,153 +1099,364 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         : [];
     const contextBlocks = [...bpBlocks, ...bugBlocks];
 
-    try {
-      set({ stepLabel: "Calling model…" });
-      const result: RunResult = await runQaAnalyst({
+    const sourceRoot = prefs.codeSearchEnabled ? prefs.sourceRoot : null;
+    const customInstructions = prefs.customInstructions || undefined;
+    const prepared = prepareQaAnalystRun({
+      requirements,
+      changesets,
+      attachments,
+      existingCaseTitles,
+      existingCases,
+      relatedCases,
+      targetContext,
+      coverage,
+      suggestBugs,
+      keys,
+      modelId,
+      sourceRoot,
+      contextBlocks,
+      customInstructions,
+    });
+
+    // A cancel during the prefetch flipped us back to input and found no
+    // writer to flush — so bail before creating one. Writing the row here
+    // would leave a cancelled run with an inputs-only checkpoint (lastOutcome
+    // null) that survives restart and reads as resumable, for a run that never
+    // reached the provider and spent nothing.
+    if (get().phase !== "analyzing") {
+      releaseAnalyzeClaim();
+      return;
+    }
+
+    // Everything above is recoverable input; from here on the run costs money,
+    // so the resume point goes to disk BEFORE the provider is touched.
+    const createdAt = new Date().toISOString();
+    const writer = createCheckpointWriter({
+      runId,
+      surface: "generator",
+      cwd: null,
+      createdAt,
+    });
+    analyzeWriter = writer;
+    const basePayload: GeneratorCheckpointV1 = {
+      v: 1,
+      surface: "generator",
+      runId,
+      createdAt,
+      modelId,
+      sourceRoot,
+      customInstructions,
+      form: {
         requirements,
         changesets,
         attachments,
-        existingCaseTitles,
-        existingCases,
-        relatedCases,
-        targetContext,
+        attachedWorkItems,
+        planId,
+        planName: targetContext?.planName ?? null,
+        suiteId,
+        suiteName: targetContext?.suiteName ?? null,
         coverage,
         suggestBugs,
+        tagSourceBranch: get().tagSourceBranch,
+        overrideModelId,
+      },
+      prepared: {
+        userPrompt: prepared.userPrompt,
+        attachments: toCheckpointAttachments(prepared.attachments),
+      },
+      activity: [],
+      transcript: null,
+      lastOutcome: null,
+    };
+    let transcript: TranscriptCheckpoint | null = null;
+    const buildPayload = (
+      outcome: CheckpointOutcome | null,
+    ): GeneratorCheckpointV1 => ({
+      ...basePayload,
+      activity: get().activityLog,
+      transcript: withPartialText(transcript, analyzePartialText),
+      lastOutcome: outcome,
+    });
+    analyzeCheckpointPayload = buildPayload;
+    await writer.flush(basePayload);
+
+    try {
+      set({ stepLabel: "Calling model…" });
+      const result: RunResult = await executeQaAnalystRun(prepared, {
         keys,
-        modelId,
         local: localProviderConfig(prefs),
-        sourceRoot: prefs.codeSearchEnabled ? prefs.sourceRoot : null,
-        contextBlocks,
-        customInstructions: prefs.customInstructions || undefined,
-        onActivity,
+        onActivity: onAnalyzeActivity,
+        onCheckpoint: (cp) => {
+          // A step that finishes in the same tick as cancel()/settle would
+          // otherwise queue a live-run payload on top of the terminal outcome
+          // they just wrote. Same phase signal the catch below guards on.
+          if (get().phase !== "analyzing") return;
+          set({ stepsUsed: cp.stepsUsed });
+          transcript = toTranscript(cp, null);
+          writer.save(buildPayload(null));
+        },
+        onText: (delta) => {
+          if (!analyzePartialText) set({ stepLabel: "Writing output…" });
+          analyzePartialText += delta;
+        },
         signal: analyzeAc.signal,
       });
-      const cases: ReviewedCase[] = result.batch.cases.map((c) => ({
-        ...c,
-        uid: uid(),
-        decision: "keep",
-        similarMatches: findSimilarCases(c.title, existingCaseTitles),
-      }));
-      const bugs: ReviewedBug[] = result.batch.bugs.map((b) => ({
-        ...b,
-        uid: uid(),
-        decision: "keep",
-      }));
-      // If the user cancelled while the model was running, don't drop them
-      // into review — the cancel() action already moved us back to input.
-      if (get().phase !== "analyzing") return;
-      // An empty batch is a dead-end: dropping into a blank review reads as
-      // "nothing happened" and is the silent-failure users hit with custom
-      // connectors. Surface it as a classified error with WHY-specific
-      // guidance instead. tryAgain() keeps the spec, so it's a one-click fix.
-      if (cases.length === 0 && bugs.length === 0) {
-        const why = !result.ok
-          ? result.reason === "empty"
-            ? "The model returned an empty response — no test cases came back. OpenAI-compatible or custom endpoints often need JSON mode (structured output) turned on before they return a usable batch."
-            : "The model's response couldn't be read as the structured format the generator expects, and nothing usable could be salvaged from it. This is common with OpenAI-compatible or custom endpoints that don't fully support structured JSON output."
-          : "The model ran but produced no test cases or bugs for this spec.";
-        set({
-          phase: "error",
-          error: `No test cases generated. ${why}`,
-          errorPhase: "analyze",
-          stepLabel: "",
-        });
-        return;
-      }
-      // Reuse the id only for an as-yet-unpublished draft (decided above, before
-      // the clean-slate set wiped publishLog); once anything was published this
-      // is a new run and gets a fresh id so the saveRun below can't overwrite
-      // the published history row in place.
-      const runId = reuseRunId ?? newRunId();
-      set({
-        phase: "review",
-        cases: reconcileAutoOutcomes(cases, bugs),
-        bugs,
-        rawText: result.rawText,
-        durationMs: result.durationMs,
-        stepLabel: "",
+      await settleAnalyzeRun({
         runId,
-        // Seed display names from the resolved target context so the tab
-        // title can render "<Plan> · <Suite>" without an extra ADO fetch.
+        result,
+        existingCaseTitles,
         planName: targetContext?.planName ?? null,
         suiteName: targetContext?.suiteName ?? null,
+        stepCap: SURFACE_STEP_CAPS.generator,
+        writer,
+        buildPayload,
       });
-
-      // Persist a draft snapshot as soon as we reach review so a closed
-      // window or restart doesn't lose the generated cases. The publish
-      // path later upserts on the same id with status=published. We embed
-      // the full draft payload (cases, bugs, spec, mode) so the history
-      // pane's "Open draft" action can fully restore review state.
-      try {
-        const s = get();
-        const draftRun: GenerationRun = {
-          id: runId,
-          timestamp: newTimestamp(),
-          planId: s.planId,
-          planName: targetContext?.planName ?? null,
-          suiteId: s.suiteId,
-          suiteName: targetContext?.suiteName ?? null,
-          mode: describeGeneration(s.coverage, s.suggestBugs),
-          specExcerpt: specExcerpt(s.requirements ?? ""),
-          cases: s.cases.map((c) => ({
-            title: c.title,
-            adoId: null,
-            webUrl: null,
-          })),
-          bugs: s.bugs.map((b) => ({
-            title: b.title,
-            severity: b.severity,
-            adoId: null,
-            webUrl: null,
-          })),
-          publishLog: [],
-          status: "draft",
-          draftPayload: {
-            requirements: s.requirements,
-            changesets: s.changesets,
-            coverage: s.coverage,
-            suggestBugs: s.suggestBugs,
-            overrideModelId: s.overrideModelId,
-            cases: s.cases,
-            bugs: s.bugs,
-            rawText: s.rawText,
-            planId: s.planId,
-            planName: targetContext?.planName ?? null,
-            suiteId: s.suiteId,
-            suiteName: targetContext?.suiteName ?? null,
-            refineRounds: s.refineRounds,
-            refineUndoSnapshot: s.refineUndoSnapshot,
-            attachments: s.attachments,
-          },
-        };
-        // Awaited (not fire-and-forget) so the draft is on disk before the
-        // user can reload — otherwise a reload right after generating races
-        // the write, getRun returns null on restore, and the tab snaps back
-        // to the input form ("refresh resets to input").
-        await saveRun(draftRun);
-      } catch {
-        // Persistence is best-effort.
-      }
     } catch (e) {
       // A cancelled run rejects with AbortError after cancel() already moved
       // us back to input — the phase guard swallows it like any late result.
+      // (That guard is also what keeps cancel()'s flush the only "cancelled"
+      // write: we never reach the flush below on the cancel path.)
       if (get().phase !== "analyzing") return;
       if (isCancelledError(e)) return;
       // Log the raw value too — `[object Object]` in the UI is a dead-end
       // for debugging; keeping the original here lets devtools surface the
       // full shape even when our stringifier had to fall back.
       console.error("[generator] analyze failed:", e);
+      const outcome: CheckpointOutcome = {
+        at: new Date().toISOString(),
+        kind: "error",
+        errorKind: classifyForResume(e).kind,
+        message: errToString(e),
+      };
+      const payload = buildPayload(outcome);
       set({
         phase: "error",
         error: errToString(e),
         errorPhase: "analyze",
         stepLabel: "",
+        resumable: resumableFrom(payload, outcome),
       });
+      await writer.flush(payload);
+      notifyHistoryUpdated(runId);
     } finally {
-      // Only clear our own handle — a cancelled run's finally can land after
-      // the user already started a fresh run with a new controller.
-      if (analyzeAbort === analyzeAc) analyzeAbort = null;
+      releaseAnalyzeClaim();
+      if (analyzeWriter === writer) {
+        analyzeWriter = null;
+        analyzeCheckpointPayload = null;
+      }
     }
+  },
+
+  resumeAnalyze: async () => {
+    const start = get();
+    if (start.phase !== "input" && start.phase !== "error") return;
+    const runId = start.runId;
+    if (!runId) return;
+    // Claim the analyze slot synchronously — every gate below awaits, so
+    // without this a double-click starts two runs on the same checkpoint.
+    if (analyzeAbort) return;
+    const resumeAc = new AbortController();
+    analyzeAbort = resumeAc;
+    const releaseClaim = () => {
+      if (analyzeAbort === resumeAc) analyzeAbort = null;
+    };
+
+    let row: Awaited<ReturnType<typeof getCheckpoint>> = null;
+    try {
+      row = await getCheckpoint(runId);
+    } catch (e) {
+      console.warn("[generator] couldn't read the checkpoint:", e);
+    }
+    if (!row) {
+      releaseClaim();
+      set({ resumable: null });
+      return;
+    }
+    const payload = row.payload;
+    if (payload.surface !== "generator") {
+      releaseClaim();
+      void deleteCheckpoint(runId).catch(() => {});
+      set({ resumable: null });
+      return;
+    }
+    // The transcript is pinned to the model that produced it, so a retired id
+    // can't be resumed. Keep the row — the user may still want its inputs.
+    if (!isKnownModelId(payload.modelId)) {
+      releaseClaim();
+      set({
+        phase: "error",
+        error: `This run used ${payload.modelId}, which is no longer available, so it can't be resumed. Run it again from scratch with a current model.`,
+        errorPhase: "analyze",
+        stepLabel: "",
+        resumable: null,
+      });
+      return;
+    }
+    if (!payload.prepared) {
+      // It died before the prompt was assembled — nothing model-side was
+      // spent, and the form is still in state, so just run it normally.
+      releaseClaim();
+      await get().analyze();
+      return;
+    }
+
+    const { cap, resumeMessages } = resumeBudget(payload);
+    const base = payload.transcript;
+    const baseSteps = base?.stepsUsed ?? 0;
+
+    set({
+      phase: "analyzing",
+      stepLabel: "Resuming…",
+      // Seeded from the checkpoint so the log reads as one continuous run.
+      activityLog: payload.activity,
+      analyzeStartedAt: Date.now(),
+      // Displayed ceiling, not the runner's budget: stepsUsed keeps counting
+      // cumulatively across resumes, so the readout's cap must be the prior
+      // total plus this call's budget — otherwise a step-cap resume shows
+      // "step 27/8" (26 done + an 8-step top-up).
+      stepCap: baseSteps + cap,
+      stepsUsed: baseSteps,
+      error: null,
+      errorPhase: null,
+      resumable: null,
+      cases: [],
+      bugs: [],
+      rawText: "",
+      publishLog: [],
+      durationMs: null,
+      refineRounds: [],
+      refineHistory: [],
+      refineUndoSnapshot: null,
+    });
+
+    const writer = createCheckpointWriter({
+      runId,
+      surface: "generator",
+      cwd: null,
+      createdAt: payload.createdAt,
+    });
+    analyzeWriter = writer;
+    analyzePartialText = "";
+    let transcript: TranscriptCheckpoint | null = base;
+    const buildPayload = (
+      outcome: CheckpointOutcome | null,
+    ): GeneratorCheckpointV1 => ({
+      ...payload,
+      activity: get().activityLog,
+      transcript: withPartialText(transcript, analyzePartialText),
+      lastOutcome: outcome,
+    });
+    analyzeCheckpointPayload = buildPayload;
+
+    const prepared: PreparedAnalystRun = {
+      modelId: payload.modelId,
+      userPrompt: payload.prepared.userPrompt,
+      attachments: payload.prepared.attachments,
+      sourceRoot: payload.sourceRoot,
+      customInstructions: payload.customInstructions,
+    };
+
+    try {
+      const prefs = usePreferencesStore.getState();
+      const keys = await useChatStore.getState().ensureApiKeys();
+      const result: RunResult = await executeQaAnalystRun(prepared, {
+        keys,
+        local: localProviderConfig(prefs),
+        maxSteps: cap,
+        resumeMessages,
+        onActivity: onAnalyzeActivity,
+        onCheckpoint: (cp) => {
+          if (get().phase !== "analyzing") return;
+          // cp.messages already carries the resumed prefix (the runner
+          // prepends it), so only the COUNTERS need the earlier totals added.
+          transcript = toTranscript(cp, base);
+          set({ stepsUsed: baseSteps + cp.stepsUsed });
+          writer.save(buildPayload(null));
+        },
+        onText: (delta) => {
+          if (!analyzePartialText) set({ stepLabel: "Writing output…" });
+          analyzePartialText += delta;
+        },
+        signal: resumeAc.signal,
+      });
+      await settleAnalyzeRun({
+        runId,
+        result,
+        // A resume never re-reads the suite, so there are no titles to match
+        // against — the draft just loses its "similar to #N" chips.
+        existingCaseTitles: [],
+        planName: payload.form.planName,
+        suiteName: payload.form.suiteName,
+        stepCap: cap,
+        writer,
+        buildPayload,
+      });
+    } catch (e) {
+      if (get().phase !== "analyzing") return;
+      if (isCancelledError(e)) return;
+      console.error("[generator] resume failed:", e);
+      const outcome: CheckpointOutcome = {
+        at: new Date().toISOString(),
+        kind: "error",
+        errorKind: classifyForResume(e).kind,
+        message: errToString(e),
+      };
+      const failed = buildPayload(outcome);
+      set({
+        phase: "error",
+        error: errToString(e),
+        errorPhase: "analyze",
+        stepLabel: "",
+        resumable: resumableFrom(failed, outcome),
+      });
+      await writer.flush(failed);
+      notifyHistoryUpdated(runId);
+    } finally {
+      releaseClaim();
+      if (analyzeWriter === writer) {
+        analyzeWriter = null;
+        analyzeCheckpointPayload = null;
+      }
+    }
+  },
+
+  loadCheckpoint: (payload, updatedAt) => {
+    const form = payload.form;
+    set({
+      ...initialState,
+      phase: "input",
+      requirements: form.requirements,
+      changesets: form.changesets,
+      attachments: form.attachments,
+      attachedWorkItems: form.attachedWorkItems,
+      planId: form.planId,
+      planName: form.planName,
+      suiteId: form.suiteId,
+      suiteName: form.suiteName,
+      coverage: form.coverage,
+      suggestBugs: form.suggestBugs,
+      tagSourceBranch: form.tagSourceBranch,
+      overrideModelId: form.overrideModelId,
+      runId: payload.runId,
+      activityLog: payload.activity,
+      stepsUsed: payload.transcript?.stepsUsed ?? null,
+      resumable: {
+        stepsUsed: payload.transcript?.stepsUsed ?? 0,
+        totalTokens: payload.transcript?.usage?.totalTokens ?? null,
+        updatedAt,
+        outcome: payload.lastOutcome,
+      },
+    });
+  },
+
+  discardCheckpoint: () => {
+    const id = get().runId;
+    if (id) {
+      void deleteCheckpoint(id)
+        .catch(() => {})
+        .then(() => notifyHistoryUpdated(id));
+    }
+    set({ resumable: null });
   },
 
   cancel: () => {
@@ -940,6 +1465,23 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       set({ phase: "input", stepLabel: "", error: null, errorPhase: null });
       // Abort AFTER the phase flip so the rejection lands on the guard above.
       analyzeAbort?.abort();
+      // …and that guard is why this is the only place a "cancelled" outcome
+      // gets written: the run's own catch returns before it can flush.
+      const writer = analyzeWriter;
+      const buildPayload = analyzeCheckpointPayload;
+      if (writer && buildPayload) {
+        const outcome: CheckpointOutcome = {
+          at: new Date().toISOString(),
+          kind: "cancelled",
+        };
+        const payload = buildPayload(outcome);
+        set({ resumable: resumableFrom(payload, outcome) });
+        const runId = get().runId;
+        // Notify AFTER the flush lands so a History refresh reads the
+        // cancelled checkpoint, not the pre-cancel row. This is what makes a
+        // tab closed mid-analyze (dispose → cancel) appear in History at all.
+        void writer.flush(payload).then(() => notifyHistoryUpdated(runId));
+      }
     }
   },
 
@@ -949,7 +1491,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     // search toggle, model override) is explicitly preserved by NOT being
     // listed here. Past behavior was the same, but spelling it out makes
     // sure a future "clear X here too" never sneaks the spec out from under
-    // the user.
+    // the user. `resumable` belongs to that preserved set too — clearing it
+    // would strand the checkpoint the user still has the option to continue.
     set({
       phase: "input",
       stepLabel: "",

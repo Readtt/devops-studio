@@ -742,3 +742,8 @@ export const SURFACE_STEP_CAPS = {
   commitReviewVerify: 12,
   confidence: 18,
 } as const;
+
+/** Extra steps granted when resuming a run that exhausted its step cap —
+ *  paired with a "finish now" nudge, so a looping run converges instead of
+ *  burning another full budget. */
+export const RESUME_TOPUP_STEPS = 8;
