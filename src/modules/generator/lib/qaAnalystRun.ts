@@ -159,8 +159,9 @@ export type RunResult = {
   ok: boolean;
   /** When `ok` is false: `empty` ⇒ the provider returned no usable text (common
    *  with OpenAI-compatible endpoints lacking JSON mode); `schema_violation` ⇒
-   *  text came back but didn't match the expected shape. */
-  reason?: "schema_violation" | "empty";
+   *  text came back but didn't match the expected shape; `step_cap` ⇒ the
+   *  agentic loop ran out of steps before writing its answer. */
+  reason?: "schema_violation" | "empty" | "step_cap";
 };
 
 export async function runQaAnalyst(input: RunInput): Promise<RunResult> {

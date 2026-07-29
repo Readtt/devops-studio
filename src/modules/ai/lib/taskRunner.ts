@@ -23,6 +23,7 @@ import {
   generateText,
   stepCountIs,
   streamText,
+  type FinishReason,
   type ModelMessage,
   type ToolSet,
 } from "ai";
@@ -55,6 +56,28 @@ import {
 /** Minimal attachment shape the vision helper understands. */
 type ImageLike = { kind?: string; content: string; mime?: string };
 
+export type TaskUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cacheReadTokens?: number;
+};
+
+/** Everything needed to continue an agentic run that died mid-loop. */
+export type TaskCheckpoint = {
+  /** Full continuation transcript: resumeMessages (if any) + every completed
+   *  step's response messages from this call, in order. */
+  messages: ModelMessage[];
+  /** Steps completed in THIS call (excludes resumed prior steps). */
+  stepsUsed: number;
+  /** Usage summed across THIS call's completed steps. Summing inputTokens
+   *  across steps intentionally counts the re-sent transcript each step —
+   *  that is what was actually billed. */
+  usage: TaskUsage;
+  /** finishReason of the most recent completed step. */
+  finishReason?: FinishReason;
+};
+
 export type TaskInput<S extends z.ZodTypeAny | undefined = undefined> = {
   modelId: ModelId;
   keys: ProviderKeys;
@@ -83,6 +106,15 @@ export type TaskInput<S extends z.ZodTypeAny | undefined = undefined> = {
   repairAttempts?: number;
   /** Tool-activity callback (Read/Glob/Grep), upsert by id. */
   onToolEvent?: (e: ActivityEntry) => void;
+  /** Fired after each completed agentic step with the accumulated transcript.
+   *  Only fires on the tool-bearing generateText/streamText paths; the
+   *  tool-less generateObject path ignores it (single-shot, no steps). */
+  onCheckpoint?: (cp: TaskCheckpoint) => void;
+  /** Continuation transcript from a previous call. When set, the request is
+   *  [rebuilt system + user turn, ...resumeMessages]. The user turn is rebuilt
+   *  fresh from prompt/attachments (images stay Uint8Array — they never come
+   *  from persisted state; callers rebuild them from stored attachments). */
+  resumeMessages?: ModelMessage[];
   signal?: AbortSignal;
 };
 
@@ -90,20 +122,33 @@ type InferObject<S extends z.ZodTypeAny | undefined> = S extends z.ZodTypeAny
   ? z.infer<S>
   : undefined;
 
+/** Per-run scalars both result arms carry, so a failed run still tells the
+ *  surface how far it got and what it cost. */
+type TaskScalars = {
+  /** Agentic steps completed in this call. 0 on the tool-less generateObject
+   *  path (single-shot) and on any path where the provider reported no steps. */
+  stepsUsed: number;
+  finishReason?: FinishReason;
+  usage?: TaskUsage;
+};
+
 export type TaskResult<S extends z.ZodTypeAny | undefined = undefined> =
-  | {
+  | ({
       ok: true;
       text: string;
       object: InferObject<S>;
       durationMs: number;
-    }
-  | {
+    } & TaskScalars)
+  | ({
       ok: false;
-      /** schema_violation ⇒ repair budget exhausted; empty ⇒ no usable text. */
-      reason: "schema_violation" | "empty";
+      /** schema_violation ⇒ repair budget exhausted; empty ⇒ no usable text;
+       *  step_cap ⇒ the loop burned its whole step budget still calling tools,
+       *  so the model never got to write its answer (retryable with a bigger
+       *  budget or a resume — not a model that returned garbage). */
+      reason: "schema_violation" | "empty" | "step_cap";
       text: string;
       durationMs: number;
-    };
+    } & TaskScalars);
 
 const DEFAULT_REPAIR_ATTEMPTS = 2;
 
@@ -233,14 +278,140 @@ function buildRequestPrompt(
   return { messages: [systemMessage, ...userMessages] };
 }
 
-function onStepFinishFor(
-  start: number,
-  onToolEvent: ((e: ActivityEntry) => void) | undefined,
+/** Rebuild the request for a RESUMED run: a freshly assembled system + user turn
+ *  followed by the transcript an earlier attempt accumulated. The user turn is
+ *  rebuilt rather than replayed from the transcript because image parts never
+ *  survive persistence — callers hand them back from stored attachments.
+ *
+ *  With nothing to resume this is `buildRequestPrompt` verbatim: non-Anthropic
+ *  providers cache on a byte-identical prefix, so a fresh run must NOT grow a
+ *  `messages` key it didn't have before. */
+function buildResumableRequest(
+  modelId: ModelId,
+  system: string,
+  userTurn: { prompt: string } | { messages: ModelMessage[] },
+  resumeMessages: ModelMessage[] | undefined,
 ) {
-  if (!onToolEvent) return undefined;
-  return (step: Parameters<typeof stepToActivity>[0]) => {
-    for (const e of stepToActivity(step, start)) onToolEvent(e);
+  if (!resumeMessages || resumeMessages.length === 0) {
+    return buildRequestPrompt(modelId, system, userTurn);
+  }
+  const userMessages: ModelMessage[] =
+    "messages" in userTurn
+      ? userTurn.messages
+      : [{ role: "user", content: userTurn.prompt }];
+  return buildRequestPrompt(modelId, system, {
+    messages: [...userMessages, ...resumeMessages],
+  });
+}
+
+type SdkUsageLike = {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  inputTokenDetails?: { cacheReadTokens?: number };
+  /** Deprecated alias some providers still populate. */
+  cachedInputTokens?: number;
+};
+
+/** The slice of the SDK's StepResult the accumulator reads. Structural rather
+ *  than `StepResult<ToolSet>` so one handler stays assignable to both
+ *  generateText's and streamText's onStepFinish parameter types. */
+type AccumulatedStep = Parameters<typeof stepToActivity>[0] & {
+  response?: { messages?: ModelMessage[] };
+  finishReason?: FinishReason;
+  usage?: SdkUsageLike;
+};
+
+const USAGE_FIELDS = [
+  "inputTokens",
+  "outputTokens",
+  "totalTokens",
+  "cacheReadTokens",
+] as const;
+
+/** Normalize one SDK usage record. A count the provider didn't report stays
+ *  ABSENT rather than 0 — otherwise a sum over steps silently turns "unknown"
+ *  into a confident wrong number (or NaN). */
+function toTaskUsage(u: SdkUsageLike | undefined): TaskUsage | undefined {
+  if (!u) return undefined;
+  const out: TaskUsage = {};
+  if (typeof u.inputTokens === "number") out.inputTokens = u.inputTokens;
+  if (typeof u.outputTokens === "number") out.outputTokens = u.outputTokens;
+  if (typeof u.totalTokens === "number") out.totalTokens = u.totalTokens;
+  const cacheRead = u.inputTokenDetails?.cacheReadTokens ?? u.cachedInputTokens;
+  if (typeof cacheRead === "number") out.cacheReadTokens = cacheRead;
+  return out;
+}
+
+/** Per-step bookkeeping shared by the generateText and streamText paths: the
+ *  tool-activity sweep as before, PLUS the transcript, step count, usage and
+ *  finish reason a caller needs to resume a run that dies mid-loop.
+ *
+ *  Unlike the callback it replaces this is always attached — the scalars it
+ *  collects feed the TaskResult even when nobody subscribed to onToolEvent or
+ *  onCheckpoint. */
+function makeStepAccumulator(
+  start: number,
+  input: Pick<
+    TaskInput<z.ZodTypeAny | undefined>,
+    "onToolEvent" | "onCheckpoint" | "resumeMessages"
+  >,
+) {
+  const messages: ModelMessage[] = [];
+  const usage: TaskUsage = {};
+  let stepsUsed = 0;
+  let finishReason: FinishReason | undefined;
+
+  const snapshotUsage = (): TaskUsage => ({ ...usage });
+
+  return {
+    get stepsUsed() {
+      return stepsUsed;
+    },
+    get finishReason() {
+      return finishReason;
+    },
+    get usage() {
+      return snapshotUsage();
+    },
+    onStepFinish(step: AccumulatedStep) {
+      if (input.onToolEvent) {
+        for (const e of stepToActivity(step, start)) input.onToolEvent(e);
+      }
+      if (step.response?.messages) messages.push(...step.response.messages);
+      stepsUsed++;
+      finishReason = step.finishReason;
+      const stepUsage = toTaskUsage(step.usage);
+      if (stepUsage) {
+        for (const k of USAGE_FIELDS) {
+          const v = stepUsage[k];
+          if (v !== undefined) usage[k] = (usage[k] ?? 0) + v;
+        }
+      }
+      // Snapshot, don't alias: a caller persisting the checkpoint must not see
+      // it mutate underneath them when the next step lands.
+      input.onCheckpoint?.({
+        messages: [...(input.resumeMessages ?? []), ...messages],
+        stepsUsed,
+        usage: snapshotUsage(),
+        finishReason,
+      });
+    },
   };
+}
+
+/** A run that burned its whole step budget and stopped still calling tools never
+ *  reached the point of writing its answer — that's a cut-off loop, not a model
+ *  that returned garbage, and only the former is worth resuming with more
+ *  budget. Schema-valid text always wins as a success, whatever the step count. */
+function stepCapReason<R extends "empty" | "schema_violation">(
+  fallback: R,
+  scalars: TaskScalars,
+  maxSteps: number,
+): R | "step_cap" {
+  return scalars.stepsUsed === maxSteps && scalars.finishReason === "tool-calls"
+    ? "step_cap"
+    : fallback;
 }
 
 /** Live tool activity for the STREAMING surfaces. `onStepFinish` only fires
@@ -377,6 +548,9 @@ export async function runTask<
           text: JSON.stringify(r.object),
           object: r.object as InferObject<S>,
           durationMs: Date.now() - start,
+          // Single-shot: no agentic loop, so nothing to resume from.
+          stepsUsed: 0,
+          usage: toTaskUsage(r.usage),
         };
       } catch (e) {
         if (input.signal?.aborted) throw e;
@@ -392,23 +566,30 @@ export async function runTask<
       reason: lastText.trim() ? "schema_violation" : "empty",
       text: lastText,
       durationMs: Date.now() - start,
+      stepsUsed: 0,
     };
   }
 
   // --- Structured + tools, or prose: generateText --------------------------
   const prepareStep = tools ? anthropicStepCachePrepare(input.modelId) : undefined;
+  const steps = makeStepAccumulator(start, input);
   const r = await generateText({
     model,
-    ...buildRequestPrompt(input.modelId, system, userTurn),
+    ...buildResumableRequest(input.modelId, system, userTurn, input.resumeMessages),
     ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
     ...(prepareStep ? { prepareStep } : {}),
     ...(temperature !== undefined ? { temperature } : {}),
     ...(input.seed !== undefined ? { seed: input.seed } : {}),
     maxRetries: TASK_MAX_RETRIES,
     abortSignal: input.signal,
-    onStepFinish: onStepFinishFor(start, input.onToolEvent),
+    onStepFinish: steps.onStepFinish,
   });
 
+  const scalars: TaskScalars = {
+    stepsUsed: steps.stepsUsed,
+    finishReason: steps.finishReason,
+    usage: steps.usage,
+  };
   const text = r.text ?? "";
   if (input.schema) {
     // The model ran its tool loop and emitted the object as its final text;
@@ -420,18 +601,20 @@ export async function runTask<
       // violation so the surface can show "model returned nothing" guidance.
       return {
         ok: false,
-        reason: "empty",
+        reason: stepCapReason("empty", scalars, maxSteps),
         text: "",
         durationMs: Date.now() - start,
+        ...scalars,
       };
     }
     const parsed = validateAgainstSchema(text, input.schema);
     if (!parsed.ok) {
       return {
         ok: false,
-        reason: "schema_violation",
+        reason: stepCapReason("schema_violation", scalars, maxSteps),
         text,
         durationMs: Date.now() - start,
+        ...scalars,
       };
     }
     return {
@@ -439,6 +622,7 @@ export async function runTask<
       text,
       object: parsed.value as InferObject<S>,
       durationMs: Date.now() - start,
+      ...scalars,
     };
   }
   return {
@@ -446,6 +630,7 @@ export async function runTask<
     text,
     object: undefined as InferObject<S>,
     durationMs: Date.now() - start,
+    ...scalars,
   };
 }
 
@@ -480,9 +665,10 @@ export async function streamTask<
   // catch paths show the REAL provider message.
   let streamError: unknown = null;
   const prepareStep = tools ? anthropicStepCachePrepare(input.modelId) : undefined;
+  const steps = makeStepAccumulator(start, input);
   const result = streamText({
     model,
-    ...buildRequestPrompt(input.modelId, system, userTurn),
+    ...buildResumableRequest(input.modelId, system, userTurn, input.resumeMessages),
     ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
     ...(prepareStep ? { prepareStep } : {}),
     ...(temperature !== undefined ? { temperature } : {}),
@@ -492,7 +678,7 @@ export async function streamTask<
     // Live per-tool events (spinner → done) plus the step-finish sweep as a
     // backstop; both key entries by toolCallId so they merge, not duplicate.
     onChunk: liveToolOnChunk(start, toolStart, input.onToolEvent),
-    onStepFinish: onStepFinishFor(start, input.onToolEvent),
+    onStepFinish: steps.onStepFinish,
     onError: ({ error }) => {
       if (streamError == null) streamError = error;
     },
@@ -503,6 +689,12 @@ export async function streamTask<
     acc += chunk;
     input.onText(chunk);
   }
+
+  const scalars: TaskScalars = {
+    stepsUsed: steps.stepsUsed,
+    finishReason: steps.finishReason,
+    usage: steps.usage,
+  };
 
   // A user abort also lands here as a quietly-ended stream. Rethrow it as an
   // AbortError so surfaces map it to their "cancelled" state instead of an
@@ -522,6 +714,7 @@ export async function streamTask<
           text: acc,
           object: parsed.value as InferObject<S>,
           durationMs: Date.now() - start,
+          ...scalars,
         };
       }
     }
@@ -535,9 +728,10 @@ export async function streamTask<
     if (!parsed.ok) {
       return {
         ok: false,
-        reason: "schema_violation",
+        reason: stepCapReason("schema_violation", scalars, maxSteps),
         text: acc,
         durationMs: Date.now() - start,
+        ...scalars,
       };
     }
     return {
@@ -545,6 +739,7 @@ export async function streamTask<
       text: acc,
       object: parsed.value as InferObject<S>,
       durationMs: Date.now() - start,
+      ...scalars,
     };
   }
   return {
@@ -552,6 +747,7 @@ export async function streamTask<
     text: acc,
     object: undefined as InferObject<S>,
     durationMs: Date.now() - start,
+    ...scalars,
   };
 }
 
