@@ -1,4 +1,5 @@
 pub mod ado;
+pub mod ai_checkpoints;
 pub mod chat_threads;
 pub mod command;
 pub mod commit_review;
