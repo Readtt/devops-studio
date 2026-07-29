@@ -387,6 +387,50 @@ describe("createCheckpointWriter", () => {
     expect(invoke).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps the promise chain alive after a save() IPC rejection — a later flush/delete still invokes", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    invoke.mockRejectedValueOnce(new Error("ipc down"));
+
+    const w = writer();
+    w.save(makeGeneratorPayload({ customInstructions: "first" }));
+    await vi.advanceTimersByTimeAsync(500); // fires the throttled write; invoke rejects once
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1); // the failure was caught + warned, not thrown
+
+    // The chain must still be alive: a later flush() still reaches invoke...
+    await w.flush(makeGeneratorPayload({ customInstructions: "second" }));
+    expect(invoke).toHaveBeenCalledTimes(2);
+
+    const saved = savedPayloads();
+    expect(saved).toHaveLength(2);
+    expect(saved[0].customInstructions).toBe("first");
+    expect(saved[1].customInstructions).toBe("second");
+
+    // ...and a final delete() still lands, chained after it — nothing here
+    // throws or hangs despite the earlier rejection.
+    await w.delete();
+    expect(invoke).toHaveBeenCalledTimes(3);
+    expect(invoke).toHaveBeenLastCalledWith("ai_checkpoint_delete", {
+      input: { runId: "run-1" },
+    });
+
+    warn.mockRestore();
+  });
+
+  it("keeps the chain alive after a delete() IPC rejection (no throw)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    invoke.mockRejectedValueOnce(new Error("delete ipc down"));
+
+    const w = writer();
+    await expect(w.delete()).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    warn.mockRestore();
+  });
+
   it("degrades an oversize payload to transcript: null + last-100 activity before sending", async () => {
     const bigActivity: ActivityEntry[] = Array.from(
       { length: 150 },
