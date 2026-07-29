@@ -1310,7 +1310,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       // Seeded from the checkpoint so the log reads as one continuous run.
       activityLog: payload.activity,
       analyzeStartedAt: Date.now(),
-      stepCap: cap,
+      // Displayed ceiling, not the runner's budget: stepsUsed keeps counting
+      // cumulatively across resumes, so the readout's cap must be the prior
+      // total plus this call's budget — otherwise a step-cap resume shows
+      // "step 27/8" (26 done + an 8-step top-up).
+      stepCap: baseSteps + cap,
       stepsUsed: baseSteps,
       error: null,
       errorPhase: null,

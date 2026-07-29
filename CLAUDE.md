@@ -10,6 +10,7 @@ DevOps Studio is a Tauri 2 desktop app for QA testers working in Azure DevOps Te
 - **Icons:** `@hugeicons/react` for app glyphs, `simple-icons` for brand marks (ADO, Anthropic, OpenAI, etc.) via `src/components/BrandIcon.tsx`
 - **State:** Zustand stores under `src/modules/*/store/`
 - **AI:** Vercel AI SDK — one BYOK engine, every provider via API key. All four AI surfaces (Generator, Suite Chat, Commit Review, Confidence) route through **one shared task runner** (`ai/lib/taskRunner.ts`: `runTask`/`streamTask`). **Read-only against the user's source** — the AI *suggests* artifacts the user applies (test cases via `ado_*`; commit-review patches via `fs_write_file` behind `ApplyPatchCard`); it never autonomously writes files, and the only shell access is a strictly read-only, allowlisted `run_command` tool (git/file inspection — `src-tauri/src/modules/command.rs`; no writes, deletes, network, or shell chaining). Read access (files + `run_command`) is gated by the global `codeSearchEnabled` preference; per-surface agentic-loop step caps live in `config.ts` `SURFACE_STEP_CAPS`.
+- **AI checkpoint/resume:** long agentic runs (Generator analyze, Commit Review) checkpoint every step to `ai_checkpoints.sqlite` (`ai/lib/checkpointApi.ts` over `src-tauri/src/modules/ai_checkpoints.rs`; opaque JSON payloads, keep-10 per surface, deleted on success). An interrupted run resurfaces automatically: a fresh Commit Review tab **adopts** the newest resumable checkpoint for its cwd (`useCommitReview.ensure`), a restarted generator tab rehydrates from its checkpoint (`TabContent`), and orphaned generator checkpoints show as "interrupted" rows in History. Resume replays the persisted transcript (`resumeMessages`) so completed steps are never re-run; resumability is gated by the shared `errorClass.canOfferResume` (empty / schema_violation / context-overflow never resume). The resume affordance is the shared `ResumeCard`, structured run errors render through the shared `RunErrorPanel` (both in `ai/components/`). In `streamTask`, schema validation runs against the FINAL step's text, never the all-steps textStream concatenation — mid-run narration containing fenced JSON used to shadow the real answer and "validate" as an empty batch.
 - **ADO client:** Native Rust HTTP via `reqwest`, PAT stored in OS keychain
 - **Code viewer:** CodeMirror 6
 - **Secrets:** Tauri `secrets` plugin → Windows Credential Manager / macOS Keychain / libsecret
@@ -45,6 +46,7 @@ src-tauri/src/                            Rust backend
 ├── lib.rs                                Tauri builder + command handler registry
 └── modules/
     ├── ado/                              Typed ADO HTTP client (plans, suites, cases, bugs, repos)
+    ├── ai_checkpoints.rs                 SQLite store for AI run resume checkpoints (opaque payloads; keep-10/surface)
     ├── chat_threads.rs                   SQLite-backed persistence for suite-chat threads
     ├── command.rs                        Read-only allowlisted `run_command` runner (git/file inspection; no writes, no shell)
     ├── commit_review.rs                  SQLite-backed persistence for saved commit reviews

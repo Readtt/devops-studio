@@ -420,6 +420,17 @@ async function adoptInterruptedRun(
     }
     if (row?.status === "done") continue;
 
+    // Re-validate the claim in the same synchronous step as the patch: a
+    // second fresh tab for this cwd (Duplicate persists across restarts, and
+    // a leaf mounts all its tabs at once) races this same probe, and both
+    // saw the pre-await claimed set. Whoever patches first wins; the loser
+    // sees the runId here and moves on to the next entry.
+    const nowClaimed = new Set<string>();
+    for (const [id, s] of get().byTab) {
+      if (id !== tabId && s.runId) nowClaimed.add(s.runId);
+    }
+    if (nowClaimed.has(entry.runId)) continue;
+
     const snapshotDiffs: Record<string, CommitDiff> = {};
     for (const d of p.inputs.diffs) snapshotDiffs[d.sha] = d;
     const status: Status =
@@ -428,10 +439,24 @@ async function adoptInterruptedRun(
         : row?.status === "error" || p.lastOutcome?.kind === "error"
           ? "error"
           : "interrupted";
+    // Same token lift the rehydrate branch does: settleResult persists the
+    // raw reason ("step_cap" / …) into the row's error column, and the
+    // outcome kind carries it for unflushed rows — without this an adopted
+    // step-capped run classifies as "Something went wrong".
+    const kind = p.lastOutcome?.kind;
+    const reason =
+      kind === "step_cap" || kind === "empty" || kind === "schema_violation"
+        ? kind
+        : row?.error === "step_cap" ||
+            row?.error === "empty" ||
+            row?.error === "schema_violation"
+          ? row.error
+          : null;
     patch(set, tabId, {
       runId: p.runId,
       createdAt: p.createdAt,
       status,
+      errorReason: status === "error" ? reason : null,
       error:
         status === "error"
           ? (p.lastOutcome?.message ??
@@ -717,6 +742,10 @@ export const useCommitReview = create<State>((set, get) => ({
       schemaViolationRaw: null,
       runId: null,
       durationMs: null,
+      // Walking away from the reviewed set also walks away from any adopted
+      // resume point — the affordance is gated on status anyway, but a stale
+      // resumable must not linger behind a null runId.
+      resumable: null,
     });
     useTabsStore.getState().patchCommitReviewTab(tabId, { selectedShas: nextShas });
     await get().loadDiffs(tabId);
@@ -745,6 +774,10 @@ export const useCommitReview = create<State>((set, get) => ({
       schemaViolationRaw: null,
       runId: null,
       durationMs: null,
+      // Walking away from the reviewed set also walks away from any adopted
+      // resume point — the affordance is gated on status anyway, but a stale
+      // resumable must not linger behind a null runId.
+      resumable: null,
     });
     useTabsStore
       .getState()
@@ -767,6 +800,10 @@ export const useCommitReview = create<State>((set, get) => ({
       schemaViolationRaw: null,
       runId: null,
       durationMs: null,
+      // Walking away from the reviewed set also walks away from any adopted
+      // resume point — the affordance is gated on status anyway, but a stale
+      // resumable must not linger behind a null runId.
+      resumable: null,
     });
     useTabsStore.getState().patchCommitReviewTab(tabId, { selectedShas: [] });
   },

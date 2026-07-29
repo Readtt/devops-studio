@@ -452,6 +452,49 @@ describe("ensure (fresh-mount adoption)", () => {
 
     expect(mockListCheckpoints).not.toHaveBeenCalled();
   });
+
+  it("lifts a step-capped run's reason token so the error card classifies it", async () => {
+    mockListCheckpoints.mockResolvedValue([entry("crun-1")]);
+    mockGetCheckpoint.mockResolvedValue(
+      checkpointRow(
+        checkpoint({
+          lastOutcome: { at: "2026-01-01T00:01:00.000Z", kind: "step_cap" },
+        }),
+      ),
+    );
+    // settleResult persists the raw token into the row's error column.
+    mockGetRow.mockResolvedValue({ ...savedRow("error"), error: "step_cap" });
+
+    await useCommitReview.getState().ensure(1, "C:/repo", null, null);
+
+    const s = slice(1);
+    expect(s.status).toBe("error");
+    expect(s.errorReason).toBe("step_cap");
+    // Still resumable — that's the whole point of surfacing it.
+    expect(s.resumable).toMatchObject({
+      outcome: { kind: "step_cap" },
+    });
+  });
+
+  it("two same-cwd tabs mounting together adopt the checkpoint exactly once", async () => {
+    mockListCheckpoints.mockResolvedValue([entry("crun-1")]);
+    mockGetCheckpoint.mockResolvedValue(
+      checkpointRow(checkpoint({ lastOutcome: null })),
+    );
+    mockGetRow.mockResolvedValue(savedRow("interrupted"));
+
+    // A duplicated commit-review tab survives restart; both fresh tabs fire
+    // ensure() in the same tick, so both compute their pre-await claimed set
+    // before either patches.
+    const state = useCommitReview.getState();
+    await Promise.all([
+      state.ensure(1, "C:/repo", null, null),
+      state.ensure(2, "C:/repo", null, null),
+    ]);
+
+    const adopted = [slice(1), slice(2)].filter((s) => s.runId === "crun-1");
+    expect(adopted).toHaveLength(1);
+  });
 });
 
 /** A tab mid-review of one commit, with a resume point on disk. */
