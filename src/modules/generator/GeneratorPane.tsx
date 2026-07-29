@@ -1507,8 +1507,12 @@ function AnalyzingPhase() {
         </div>
         <div className="flex shrink-0 items-center gap-3">
           {stepCap != null ? (
+            // The step IN PROGRESS, not the completed count — "step 1/26"
+            // while the first model turn runs, instead of a "0/26" that reads
+            // as stuck. stepsUsed only ticks when a turn completes.
             <span className="text-[11px] tabular-nums text-muted-foreground">
-              step {stepsUsed ?? 0}/{stepCap} · {elapsed}
+              step {Math.min((stepsUsed ?? 0) + 1, stepCap)}/{stepCap} ·{" "}
+              {elapsed}
             </span>
           ) : null}
           <Tooltip>

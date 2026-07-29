@@ -33,6 +33,7 @@ vi.mock("@/modules/ai/lib/checkpointApi", async (importOriginal) => {
     createCheckpointWriter: vi.fn(),
     getCheckpoint: vi.fn(),
     deleteCheckpoint: vi.fn(),
+    listCheckpoints: vi.fn(),
   };
 });
 
@@ -59,6 +60,7 @@ import {
   createCheckpointWriter,
   deleteCheckpoint,
   getCheckpoint,
+  listCheckpoints,
   type CommitReviewCheckpointV1,
 } from "@/modules/ai/lib/checkpointApi";
 import type { CandidateFinding } from "./schema";
@@ -73,6 +75,7 @@ const mockGetRow = vi.mocked(getCommitReview);
 const mockCreateWriter = vi.mocked(createCheckpointWriter);
 const mockGetCheckpoint = vi.mocked(getCheckpoint);
 const mockDeleteCheckpoint = vi.mocked(deleteCheckpoint);
+const mockListCheckpoints = vi.mocked(listCheckpoints);
 
 /** Every write the run made to its checkpoint, in order. */
 type WriterCall = { kind: "save" | "flush" | "delete"; payload?: unknown };
@@ -266,6 +269,7 @@ beforeEach(() => {
   mockCommitDiff.mockImplementation(async (_cwd, sha) => commitDiffOf(sha));
   mockSaveRow.mockResolvedValue(undefined);
   mockDeleteCheckpoint.mockResolvedValue(undefined);
+  mockListCheckpoints.mockResolvedValue([]);
   writerLog = [];
   mockCreateWriter.mockImplementation(() => ({
     save: (payload) => {
@@ -357,6 +361,96 @@ describe("refreshSource", () => {
     await useCommitReview.getState().refreshSource(1);
     expect(slice(1).diffBySha[LOCAL_CHANGES_SHA]).toBeUndefined();
     expect(mockWorkingTreeDiff).not.toHaveBeenCalled();
+  });
+});
+
+// A fresh mount (app restart, new tab) must surface an interrupted run for its
+// cwd instead of presenting a clean review that hides the recoverable spend
+// behind History — that was exactly how users lost interrupted runs.
+describe("ensure (fresh-mount adoption)", () => {
+  const entry = (runId: string) => ({
+    runId,
+    cwd: "C:/repo",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:02:00.000Z",
+  });
+
+  it("adopts the newest resumable checkpoint: inputs, status, resume affordance", async () => {
+    mockListCheckpoints.mockResolvedValue([entry("crun-1")]);
+    mockGetCheckpoint.mockResolvedValue(
+      checkpointRow(checkpoint({ lastOutcome: null })),
+    );
+    mockGetRow.mockResolvedValue(savedRow("interrupted"));
+
+    await useCommitReview.getState().ensure(1, "C:/repo", null, null);
+
+    const s = slice(1);
+    expect(mockListCheckpoints).toHaveBeenCalledWith("commit-review", "C:/repo");
+    expect(s.runId).toBe("crun-1");
+    expect(s.status).toBe("interrupted");
+    expect(s.context).toBe("the ticket");
+    expect(s.selectedShas).toEqual(["aaa"]);
+    expect(s.diffBySha["aaa"]).toBeDefined();
+    expect(s.activity.map((a) => a.id)).toEqual(["a1"]);
+    expect(s.resumable).toMatchObject({ stage: "verify", stepsUsed: 5 });
+    // The snapshot seeded every selected diff — nothing re-read from git.
+    expect(mockCommitDiff).not.toHaveBeenCalled();
+  });
+
+  it("maps a cancelled run to the cancelled banner state", async () => {
+    mockListCheckpoints.mockResolvedValue([entry("crun-1")]);
+    mockGetCheckpoint.mockResolvedValue(checkpointRow()); // cancelled outcome
+    mockGetRow.mockResolvedValue(savedRow("cancelled"));
+
+    await useCommitReview.getState().ensure(1, "C:/repo", null, null);
+
+    expect(slice(1).status).toBe("cancelled");
+    expect(slice(1).error).toBeNull();
+    expect(slice(1).resumable).not.toBeNull();
+  });
+
+  it("never steals a run another live tab already owns", async () => {
+    seed(2, { runId: "crun-1", busy: true });
+    mockListCheckpoints.mockResolvedValue([entry("crun-1")]);
+    mockGetCheckpoint.mockResolvedValue(checkpointRow());
+
+    await useCommitReview.getState().ensure(1, "C:/repo", null, null);
+
+    expect(slice(1).runId).toBeNull();
+    expect(slice(1).resumable).toBeNull();
+  });
+
+  it("skips unresumable outcomes and finished runs' orphaned checkpoints", async () => {
+    mockListCheckpoints.mockResolvedValue([entry("crun-a"), entry("crun-b")]);
+    mockGetCheckpoint.mockImplementation(async (runId) =>
+      runId === "crun-a"
+        ? checkpointRow(
+            checkpoint({
+              runId: "crun-a",
+              lastOutcome: {
+                at: "2026-01-01T00:01:00.000Z",
+                kind: "schema_violation",
+              },
+            }),
+          )
+        : checkpointRow(checkpoint({ runId: "crun-b", lastOutcome: null })),
+    );
+    // crun-b finished — its checkpoint is a delete-on-success orphan.
+    mockGetRow.mockResolvedValue(savedRow("done"));
+
+    await useCommitReview.getState().ensure(1, "C:/repo", null, null);
+
+    expect(slice(1).runId).toBeNull();
+    expect(slice(1).resumable).toBeNull();
+  });
+
+  it("a rehydrate mount never probes the cwd checkpoint list", async () => {
+    mockGetRow.mockResolvedValue(savedRow("done"));
+    mockGetCheckpoint.mockResolvedValue(null);
+
+    await useCommitReview.getState().ensure(1, "C:/repo", "crun-1", null);
+
+    expect(mockListCheckpoints).not.toHaveBeenCalled();
   });
 });
 

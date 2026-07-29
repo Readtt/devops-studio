@@ -22,13 +22,14 @@ import {
   createCheckpointWriter,
   deleteCheckpoint,
   getCheckpoint,
+  listCheckpoints,
   sanitizeTranscriptMessages,
   type CheckpointOutcome,
   type CheckpointWriter,
   type CommitReviewCheckpointV1,
   type TranscriptCheckpoint,
 } from "@/modules/ai/lib/checkpointApi";
-import { classifyForResume } from "@/modules/ai/lib/errorClass";
+import { canOfferResume, classifyForResume } from "@/modules/ai/lib/errorClass";
 import { sumUsage } from "@/modules/generator/lib/resumePolicy";
 import type { TaskCheckpoint } from "@/modules/ai/lib/taskRunner";
 import type { ContextBlock } from "@/modules/ai/lib/contextBlocks";
@@ -361,6 +362,95 @@ async function settleFailure(
   window.dispatchEvent(new CustomEvent("devops-studio:commit-review-updated"));
 }
 
+/** On a FRESH mount (no rehydrateRunId — a brand-new tab, or the persisted
+ *  tab coming back after an app restart), find the newest resumable checkpoint
+ *  for this cwd and adopt it: the reopened tab then IS the interrupted review
+ *  — inputs restored, resume front and center — instead of a fresh review
+ *  that hides the interrupted one behind History. That was the way users
+ *  actually hit this: quit mid-run, reopen, get a fresh tab with the same
+ *  settings and no hint their spend was recoverable. */
+async function adoptInterruptedRun(
+  set: SetState,
+  get: () => State,
+  tabId: number,
+  cwd: string,
+): Promise<void> {
+  let entries: Awaited<ReturnType<typeof listCheckpoints>>;
+  try {
+    entries = await listCheckpoints("commit-review", cwd);
+  } catch {
+    return;
+  }
+  // Another live tab's run — busy, or already adopted — is not ours to take.
+  const claimed = new Set<string>();
+  for (const [id, s] of get().byTab) {
+    if (id !== tabId && s.runId) claimed.add(s.runId);
+  }
+
+  // Newest first (the Rust list orders by updated_at DESC). Bounded probe: an
+  // orphaned-but-unresumable row shouldn't make mount cost N round-trips.
+  for (const entry of entries.slice(0, 5)) {
+    if (claimed.has(entry.runId)) continue;
+    let cp: Awaited<ReturnType<typeof getCheckpoint>> = null;
+    try {
+      cp = await getCheckpoint(entry.runId);
+    } catch {
+      continue;
+    }
+    if (!cp || cp.payload.surface !== "commit-review") continue;
+    const p = cp.payload;
+    // Same gate as every Resume affordance: a run that answered badly
+    // (schema_violation / empty) or died non-resumably would just re-fail.
+    if (!canOfferResume(p.lastOutcome, p.lastOutcome?.message ?? null)) continue;
+    // A finished review's checkpoint is an orphan (delete-on-success swallows
+    // IPC failures), not a resume point — the persisted row is the truth.
+    let row: Awaited<ReturnType<typeof getCommitReview>> = null;
+    try {
+      row = await getCommitReview(entry.runId);
+    } catch {
+      // No row usually means the crash beat the first persist — still adoptable.
+    }
+    if (row?.status === "done") continue;
+
+    const snapshotDiffs: Record<string, CommitDiff> = {};
+    for (const d of p.inputs.diffs) snapshotDiffs[d.sha] = d;
+    const status: Status =
+      row?.status === "cancelled" || p.lastOutcome?.kind === "cancelled"
+        ? "cancelled"
+        : row?.status === "error" || p.lastOutcome?.kind === "error"
+          ? "error"
+          : "interrupted";
+    patch(set, tabId, {
+      runId: p.runId,
+      createdAt: p.createdAt,
+      status,
+      error:
+        status === "error"
+          ? (p.lastOutcome?.message ??
+            row?.error ??
+            "This review ended with an error.")
+          : null,
+      activity: p.activity,
+      context: p.inputs.context,
+      attachments: p.inputs.attachments,
+      workItems: p.inputs.workItems,
+      selectedShas: p.inputs.selectedShas,
+      // The snapshot the run was reviewing. Safe to seed: commit diffs are
+      // immutable, and a fresh run() re-reads the live working tree anyway —
+      // only resume() deliberately replays this snapshot.
+      diffBySha: snapshotDiffs,
+      resumable: {
+        stage: p.stage,
+        stepsUsed: p.transcript?.stepsUsed ?? 0,
+        totalTokens: p.transcript?.usage?.totalTokens ?? null,
+        updatedAt: cp.updatedAt,
+        outcome: p.lastOutcome,
+      },
+    });
+    return;
+  }
+}
+
 function emptySlice(cwd: string, modelId: ModelId | null): CommitReviewSlice {
   return {
     cwd,
@@ -505,6 +595,10 @@ export const useCommitReview = create<State>((set, get) => ({
           context: tab.context ?? "",
         });
       }
+      // A fresh mount is where an interrupted run resurfaces after an app
+      // restart — adopt it (inputs + resume affordance) instead of leaving
+      // it discoverable only through History.
+      await adoptInterruptedRun(set, get, tabId, cwd);
     }
 
     await get().loadCommits(tabId);

@@ -147,8 +147,11 @@ function LogChrome({ count, running }: { count?: number; running?: boolean }) {
         Analyst activity
       </span>
       {count !== undefined ? (
+        // "actions", not "steps": each row is one tool call / thought, and one
+        // budgeted agentic STEP (the "step 4/26" readout) usually spans several
+        // of them — calling both "steps" made the two counters look wrong.
         <span className="ml-auto rounded-sm bg-foreground/[0.06] px-1.5 py-px font-mono text-[9.5px] tabular-nums text-muted-foreground/85">
-          {count} step{count === 1 ? "" : "s"}
+          {count} action{count === 1 ? "" : "s"}
         </span>
       ) : null}
     </div>

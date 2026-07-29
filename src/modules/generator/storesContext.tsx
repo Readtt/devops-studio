@@ -23,6 +23,19 @@ type GeneratorStoresApi = {
 
 const GeneratorStoresContext = createContext<GeneratorStoresApi | null>(null);
 
+/** Parity with commit-review's disposeTab: a closed tab must not keep an
+ *  invisible model run streaming (and billing). cancel() aborts an in-flight
+ *  analyze AND flushes a "cancelled" checkpoint — which is exactly what makes
+ *  a tab closed mid-run resurface as interrupted in History instead of
+ *  vanishing unrecoverably. The cancel actions are tolerant no-ops when
+ *  nothing is running. */
+function disposeStore(store: GenerationSessionStore): void {
+  const s = store.getState();
+  s.cancel();
+  s.cancelRefine();
+  s.cancelChat();
+}
+
 export function GeneratorStoresProvider({ children }: { children: ReactNode }) {
   const ref = useRef<Map<number, GenerationSessionStore>>(new Map());
 
@@ -41,6 +54,8 @@ export function GeneratorStoresProvider({ children }: { children: ReactNode }) {
         ref.current.set(tabId, store);
       },
       detach: (tabId) => {
+        const store = ref.current.get(tabId);
+        if (store) disposeStore(store);
         ref.current.delete(tabId);
       },
     }),
@@ -54,7 +69,11 @@ export function GeneratorStoresProvider({ children }: { children: ReactNode }) {
     const unsub = useTabsStore.subscribe((state, prev) => {
       if (state.tabs === prev.tabs) return;
       for (const id of Array.from(ref.current.keys())) {
-        if (!state.tabs[id]) ref.current.delete(id);
+        if (!state.tabs[id]) {
+          const store = ref.current.get(id);
+          if (store) disposeStore(store);
+          ref.current.delete(id);
+        }
       }
     });
     return unsub;

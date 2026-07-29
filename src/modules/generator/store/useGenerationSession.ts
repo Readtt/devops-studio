@@ -461,6 +461,20 @@ function resumableFrom(
   };
 }
 
+/** Nudge the History pane (and anything else listening) that a run's durable
+ *  state changed — a terminal checkpoint flush, a draft save, the checkpoint
+ *  getting deleted. Without this an interrupted run only appeared in History
+ *  after a manual reload. */
+function notifyHistoryUpdated(runId: string | null): void {
+  try {
+    window.dispatchEvent(
+      new CustomEvent("devops-studio:history-updated", { detail: { runId } }),
+    );
+  } catch {
+    // Non-fatal — synchronous dispatch should never throw.
+  }
+}
+
 /** Build the ADO work-item web URL for a case id — used to link an UPDATED
  *  case from the publish log (the create path gets this from the Rust result;
  *  the update path has no such response, so we construct it). */
@@ -755,6 +769,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           resumable: resumableFrom(payload, outcome),
         });
         await writer.flush(payload);
+        notifyHistoryUpdated(args.runId);
         return;
       }
 
@@ -779,6 +794,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         await writer.flush(
           buildPayload({ at: new Date().toISOString(), kind: "empty" }),
         );
+        notifyHistoryUpdated(args.runId);
         return;
       }
 
@@ -854,6 +870,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       // checkpoint standing, never a window where neither copy exists.
       await writer.delete();
       set({ resumable: null });
+      notifyHistoryUpdated(args.runId);
     };
 
     return ({
@@ -1220,6 +1237,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         resumable: resumableFrom(payload, outcome),
       });
       await writer.flush(payload);
+      notifyHistoryUpdated(runId);
     } finally {
       releaseAnalyzeClaim();
       if (analyzeWriter === writer) {
@@ -1388,6 +1406,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         resumable: resumableFrom(failed, outcome),
       });
       await writer.flush(failed);
+      notifyHistoryUpdated(runId);
     } finally {
       releaseClaim();
       if (analyzeWriter === writer) {
@@ -1428,7 +1447,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
 
   discardCheckpoint: () => {
     const id = get().runId;
-    if (id) void deleteCheckpoint(id).catch(() => {});
+    if (id) {
+      void deleteCheckpoint(id)
+        .catch(() => {})
+        .then(() => notifyHistoryUpdated(id));
+    }
     set({ resumable: null });
   },
 
@@ -1449,7 +1472,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         };
         const payload = buildPayload(outcome);
         set({ resumable: resumableFrom(payload, outcome) });
-        void writer.flush(payload);
+        const runId = get().runId;
+        // Notify AFTER the flush lands so a History refresh reads the
+        // cancelled checkpoint, not the pre-cancel row. This is what makes a
+        // tab closed mid-analyze (dispose → cancel) appear in History at all.
+        void writer.flush(payload).then(() => notifyHistoryUpdated(runId));
       }
     }
   },
