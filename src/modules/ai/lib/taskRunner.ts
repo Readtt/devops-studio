@@ -320,6 +320,7 @@ type AccumulatedStep = Parameters<typeof stepToActivity>[0] & {
   response?: { messages?: ModelMessage[] };
   finishReason?: FinishReason;
   usage?: SdkUsageLike;
+  text?: string;
 };
 
 const USAGE_FIELDS = [
@@ -358,6 +359,7 @@ function makeStepAccumulator(
   >,
 ) {
   const messages: ModelMessage[] = [];
+  const stepTexts: string[] = [];
   const usage: TaskUsage = {};
   let stepsUsed = 0;
   let finishReason: FinishReason | undefined;
@@ -374,11 +376,17 @@ function makeStepAccumulator(
     get usage() {
       return snapshotUsage();
     },
+    /** Each completed step's text, in order — what streamTask needs to tell
+     *  the FINAL answer apart from the all-steps textStream concatenation. */
+    get stepTexts(): readonly string[] {
+      return stepTexts;
+    },
     onStepFinish(step: AccumulatedStep) {
       if (input.onToolEvent) {
         for (const e of stepToActivity(step, start)) input.onToolEvent(e);
       }
       if (step.response?.messages) messages.push(...step.response.messages);
+      stepTexts.push(typeof step.text === "string" ? step.text : "");
       stepsUsed++;
       finishReason = step.finishReason;
       const stepUsage = toTaskUsage(step.usage);
@@ -696,6 +704,19 @@ export async function streamTask<
     usage: steps.usage,
   };
 
+  // `acc` is EVERY step's text concatenated (the SDK's textStream spans the
+  // whole agentic loop), but the answer is only the LAST step's text —
+  // validating the concatenation let a fenced snippet from mid-run narration
+  // shadow the real answer (and, with defaulted schemas, "validate" as an
+  // empty batch: the generator's "produced no test cases", Commit Review's
+  // false clean). Completed steps' texts are exact prefixes of `acc`, so any
+  // remainder is the in-flight step that never finished — the right text to
+  // salvage when the stream died mid-answer.
+  const completedTextLen = steps.stepTexts.reduce((n, t) => n + t.length, 0);
+  const inFlightTail = acc.slice(completedTextLen);
+  const lastStepText = steps.stepTexts[steps.stepTexts.length - 1] ?? "";
+  const finalText = inFlightTail.trim() ? inFlightTail : lastStepText || acc;
+
   // A user abort also lands here as a quietly-ended stream. Rethrow it as an
   // AbortError so surfaces map it to their "cancelled" state instead of an
   // error banner (checked before streamError — the SDK may report the abort
@@ -707,11 +728,11 @@ export async function streamTask<
     // The one recoverable case: the full structured object arrived before the
     // stream blipped. Don't throw away a complete result over a trailing error.
     if (input.schema) {
-      const parsed = validateAgainstSchema(acc, input.schema);
+      const parsed = validateAgainstSchema(finalText, input.schema);
       if (parsed.ok) {
         return {
           ok: true,
-          text: acc,
+          text: finalText,
           object: parsed.value as InferObject<S>,
           durationMs: Date.now() - start,
           ...scalars,
@@ -724,19 +745,31 @@ export async function streamTask<
   }
 
   if (input.schema) {
-    const parsed = validateAgainstSchema(acc, input.schema);
+    if (!finalText.trim()) {
+      // No final answer at all — mirror runTask's "empty" (or step_cap when
+      // the loop burned its budget still calling tools) instead of blaming
+      // the schema. `text` keeps the narration for display/salvage.
+      return {
+        ok: false,
+        reason: stepCapReason("empty", scalars, maxSteps),
+        text: acc,
+        durationMs: Date.now() - start,
+        ...scalars,
+      };
+    }
+    const parsed = validateAgainstSchema(finalText, input.schema);
     if (!parsed.ok) {
       return {
         ok: false,
         reason: stepCapReason("schema_violation", scalars, maxSteps),
-        text: acc,
+        text: finalText,
         durationMs: Date.now() - start,
         ...scalars,
       };
     }
     return {
       ok: true,
-      text: acc,
+      text: finalText,
       object: parsed.value as InferObject<S>,
       durationMs: Date.now() - start,
       ...scalars,

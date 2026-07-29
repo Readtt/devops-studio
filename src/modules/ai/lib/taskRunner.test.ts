@@ -41,6 +41,7 @@ type FakeStep = {
   response: { messages: Array<Record<string, unknown>> };
   finishReason: string;
   usage?: FakeUsage;
+  text?: string;
 };
 
 function step(
@@ -725,6 +726,111 @@ describe("resume", () => {
         { role: "user", content: "hello" },
       ],
     });
+  });
+});
+
+// The SDK's textStream spans EVERY agentic step, but the final answer is only
+// the LAST step's text. Validating the whole concatenation let a fenced snippet
+// from mid-investigation narration shadow the real answer — and because the
+// batch schemas default their arrays to [], a stray `{"pattern":"x"}` in step-1
+// narration "validated" as an EMPTY batch (ok:true, zero cases / zero findings).
+// That was the generator's "model ran but produced no test cases" and Commit
+// Review's false "clean commit". These pin final-step selection.
+describe("final-answer selection (multi-step streams)", () => {
+  const tools = { read_file: {} } as never;
+
+  /** Interleaves yields with their step-finish events the way the real SDK
+   *  does: each step's `text` is exactly the concatenation of its deltas. */
+  function streamSteps(
+    parts: Array<{ deltas: string[]; finishReason: string } | { deltas: string[] }>,
+    opts?: { trailingError?: Error },
+  ) {
+    streamText.mockImplementation(
+      (o: {
+        onStepFinish?: (s: FakeStep) => void;
+        onError?: (e: { error: unknown }) => void;
+      }) => ({
+        textStream: (async function* () {
+          for (const p of parts) {
+            for (const d of p.deltas) yield d;
+            if ("finishReason" in p) {
+              o.onStepFinish?.({
+                response: { messages: [{ role: "assistant", content: "m" }] },
+                finishReason: p.finishReason,
+                text: p.deltas.join(""),
+              });
+            }
+          }
+          if (opts?.trailingError) o.onError?.({ error: opts.trailingError });
+        })(),
+      }),
+    );
+  }
+
+  const narration =
+    'Let me check the config first:\n```json\n{"pattern": "checkpoint"}\n```\nNow reading more files…';
+
+  it("validates the FINAL step's text, not the all-steps concatenation", async () => {
+    const schema = z.object({ a: z.number() });
+    streamSteps([
+      { deltas: [narration], finishReason: "tool-calls" },
+      { deltas: ['{"a":', "9}"], finishReason: "stop" },
+    ]);
+    const r = await streamTask({ ...baseInput, schema, tools, onText: () => {} });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.object).toEqual({ a: 9 });
+      // The result's text is the final answer, not the narration.
+      expect(r.text).toBe('{"a":9}');
+    }
+  });
+
+  it("a defaulted schema cannot 'validate empty' off narration JSON", async () => {
+    // Mirrors DraftBatchLLMSchema / Stage1Schema: arrays default to [].
+    const schema = z.object({ items: z.array(z.string()).default([]) });
+    streamSteps([
+      { deltas: [narration], finishReason: "tool-calls" },
+      { deltas: ['{"items":["real"]}'], finishReason: "stop" },
+    ]);
+    const r = await streamTask({ ...baseInput, schema, tools, onText: () => {} });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.object).toEqual({ items: ["real"] });
+  });
+
+  it("trailing-error salvage validates the unfinished step's tail, not the narration", async () => {
+    const schema = z.object({ a: z.number() });
+    // Final answer streamed fully but its step never finished (stream died).
+    streamSteps(
+      [
+        { deltas: [narration], finishReason: "tool-calls" },
+        { deltas: ['{"a":7}'] },
+      ],
+      { trailingError: new Error("connection reset") },
+    );
+    const r = await streamTask({ ...baseInput, schema, tools, onText: () => {} });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.object).toEqual({ a: 7 });
+  });
+
+  it("no final text at all → reason 'empty', matching runTask", async () => {
+    const schema = z.object({ a: z.number() });
+    streamSteps([
+      { deltas: [""], finishReason: "tool-calls" },
+      { deltas: [""], finishReason: "stop" },
+    ]);
+    const r = await streamTask({ ...baseInput, schema, tools, onText: () => {} });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("empty");
+  });
+
+  it("prose (no-schema) streams still return the full accumulated text", async () => {
+    streamSteps([
+      { deltas: ["thinking… "], finishReason: "tool-calls" },
+      { deltas: ["the answer"], finishReason: "stop" },
+    ]);
+    const r = await streamTask({ ...baseInput, tools, onText: () => {} });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.text).toBe("thinking… the answer");
   });
 });
 
