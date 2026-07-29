@@ -311,7 +311,18 @@ function AppShell() {
   // crash/refresh into "interrupted" so the History tab shows them honestly
   // instead of as a perpetual spinner.
   useEffect(() => {
-    void sweepStaleCommitReviews(new Date().toISOString()).catch(() => {});
+    void sweepStaleCommitReviews(new Date().toISOString())
+      .then((reconciled) => {
+        // The History pane mounts (hidden) alongside this effect and fetches
+        // immediately — without a nudge it caches the PRE-sweep list and
+        // keeps showing a crashed run as "running" until a manual reload.
+        if (reconciled > 0) {
+          window.dispatchEvent(
+            new CustomEvent("devops-studio:commit-review-updated"),
+          );
+        }
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {

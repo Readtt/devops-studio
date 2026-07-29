@@ -192,6 +192,112 @@ describe("useGenerationSession — resumeAnalyze replays the paid-for transcript
   });
 });
 
+// The exact sequence from the field: reopen an interrupted run, press Resume,
+// the connection dies before the model answers, press Resume again from the
+// error screen. The second resume must continue from the SAME transcript —
+// a failed resume attempt must never write an inputs-only checkpoint over
+// the paid-for one.
+describe("useGenerationSession — a failed resume keeps the transcript for the next attempt", () => {
+  it("network-fail on resume → flushed checkpoint retains transcript → next resume replays it", async () => {
+    const store = createGenerationSessionStore();
+    const messages = [
+      { role: "assistant" as const, content: "prior investigation turn" },
+    ];
+    const payload = mkCheckpointPayload({
+      transcript: { messages, stepsUsed: 5, usage: { totalTokens: 999 } },
+      lastOutcome: { at: "2026-06-11T00:05:00.000Z", kind: "cancelled" },
+    });
+
+    // Disk simulation: get() serves whatever the last ai_checkpoint_save
+    // wrote (starting from the original row), so the second resume reads the
+    // failed attempt's flush — the true round-trip, parse and all.
+    let diskPayload = JSON.stringify(payload);
+    invoke.mockImplementation(async (cmd: unknown, args?: unknown) => {
+      if (cmd === "ai_checkpoint_save") {
+        diskPayload = (args as { input: { payload: string } }).input.payload;
+        return undefined;
+      }
+      if (cmd === "ai_checkpoint_get") {
+        return {
+          runId: payload.runId,
+          surface: "generator",
+          cwd: null,
+          payload: diskPayload,
+          createdAt: payload.createdAt,
+          updatedAt: "2026-06-11T00:06:00.000Z",
+        };
+      }
+      return undefined;
+    });
+
+    const seedResumable = () =>
+      store.setState({
+        phase: store.getState().phase === "error" ? "error" : "input",
+        runId: payload.runId,
+        resumable: {
+          stepsUsed: 5,
+          totalTokens: 999,
+          updatedAt: "2026-06-11T00:05:00.000Z",
+          outcome: { at: "2026-06-11T00:05:00.000Z", kind: "cancelled" },
+        },
+      });
+    seedResumable();
+
+    // Attempt 1: the proxy is off — the request dies before any step lands.
+    executeQaAnalystRun.mockRejectedValueOnce(new Error("fetch failed"));
+    await store.getState().resumeAnalyze();
+
+    const failed = store.getState();
+    expect(failed.phase).toBe("error");
+    // The affordance still reflects the PRIOR spend, not a reset run.
+    expect(failed.resumable?.stepsUsed).toBe(5);
+    // And the on-disk copy still carries the transcript.
+    const flushed = JSON.parse(diskPayload) as {
+      transcript: { messages: unknown[]; stepsUsed: number } | null;
+      lastOutcome: { kind: string; errorKind?: string } | null;
+    };
+    expect(flushed.transcript?.messages).toHaveLength(1);
+    expect(flushed.transcript?.stepsUsed).toBe(5);
+    expect(flushed.lastOutcome).toMatchObject({
+      kind: "error",
+      errorKind: "network",
+    });
+
+    // Attempt 2: connection is back — the engine must receive the SAME
+    // transcript as its continuation, not start the loop fresh.
+    executeQaAnalystRun.mockResolvedValueOnce({
+      batch: {
+        cases: [
+          {
+            title: "Reset password happy path",
+            description: "",
+            steps: [{ action: "a", expected: "b" }],
+            tags: [],
+            rationale: "",
+            sourceLinks: [],
+          },
+        ],
+        bugs: [],
+      },
+      rawText: "{}",
+      durationMs: 1,
+      ok: true,
+      stepsUsed: 1,
+      usage: {},
+    });
+    await store.getState().resumeAnalyze();
+
+    expect(executeQaAnalystRun).toHaveBeenCalledTimes(2);
+    const [, opts2] = executeQaAnalystRun.mock.calls[1] as [
+      PreparedAnalystRun,
+      ExecuteAnalystOptions,
+    ];
+    expect(opts2.resumeMessages).toBeDefined();
+    expect(opts2.resumeMessages?.[0]).toEqual(messages[0]);
+    expect(store.getState().phase).toBe("review");
+  });
+});
+
 describe("useGenerationSession — resumeAnalyze against a retired model", () => {
   it("errors and clears resumable instead of leaving the Resume button looping, and keeps the checkpoint row", async () => {
     const store = createGenerationSessionStore();

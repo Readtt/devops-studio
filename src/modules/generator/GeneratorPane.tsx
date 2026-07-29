@@ -105,6 +105,7 @@ import {
   type ErrorClass,
 } from "@/modules/ai/components/RunErrorPanel";
 import { relativeTime, ResumeCard } from "@/modules/ai/components/ResumeCard";
+import { StallHint } from "@/modules/ai/components/StallHint";
 import {
   ContextGuardNotice,
   ContextMeter,
@@ -1488,6 +1489,10 @@ function AnalyzingPhase() {
             <p className="truncate text-[10.5px] text-muted-foreground">
               {stepLabel || "Routing to the model."}
             </p>
+            <StallHint
+              signature={`${activityLog.length}:${stepsUsed ?? 0}:${stepLabel}`}
+              className="mt-0.5"
+            />
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-3">

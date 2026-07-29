@@ -45,6 +45,7 @@ import {
   type ErrorClass,
 } from "@/modules/ai/components/RunErrorPanel";
 import { relativeTime, ResumeCard } from "@/modules/ai/components/ResumeCard";
+import { StallHint } from "@/modules/ai/components/StallHint";
 import {
   ContextGuardNotice,
   ContextMeter,
@@ -724,6 +725,7 @@ function BodyContent({
             ? "Verifying findings — trying to refute each one to kill false positives…"
             : "Investigating the change and its blast radius…"}
         </div>
+        <StallHint signature={`${slice.activity.length}:${slice.stage}`} />
         <AnalyzeActivityLog entries={slice.activity} running maxHeightClass="max-h-[60vh]" />
       </div>
     );

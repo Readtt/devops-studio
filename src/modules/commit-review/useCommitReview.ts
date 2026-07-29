@@ -1314,6 +1314,21 @@ export const useCommitReview = create<State>((set, get) => ({
   disposeTab: (tabId) => {
     const slice = get().byTab.get(tabId);
     if (!slice) return;
+    // Flip the durable row FIRST, while the slice still exists: the aborted
+    // run's settleFailure persist no-ops once the slice is gone, which left a
+    // closed-mid-run tab's History row spinning as "running" until the next
+    // app-start sweep. persistRow reads the slice synchronously, so firing it
+    // before the delete below is safe. (App-quit skips this — the startup
+    // sweep reconciles those.)
+    if (slice.busy && slice.runId) {
+      void persistRow(tabId, { status: "cancelled" })
+        .then(() =>
+          window.dispatchEvent(
+            new CustomEvent("devops-studio:commit-review-updated"),
+          ),
+        )
+        .catch(() => {});
+    }
     // Abort any in-flight run so a closed tab stops streaming the model, then
     // free the slice (cached diffs, attachments, findings) so it doesn't leak
     // for the app's lifetime. Any pending writes from the aborted run no-op via
