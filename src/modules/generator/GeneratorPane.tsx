@@ -96,8 +96,10 @@ import { Attachment01Icon } from "@hugeicons/core-free-icons";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { useChatStore } from "@/modules/ai/store/chatStore";
-import { getModel } from "@/modules/ai/config";
+import { getModel, RESUME_TOPUP_STEPS, SURFACE_STEP_CAPS } from "@/modules/ai/config";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
+import { isResumableKind, matchErrorKind } from "@/modules/ai/lib/errorClass";
+import type { CheckpointOutcome } from "@/modules/ai/lib/checkpointApi";
 import {
   ContextGuardNotice,
   ContextMeter,
@@ -115,6 +117,14 @@ function ellipsizeForTab(s: string, max = 36): string {
   const trimmed = s.trim();
   if (trimmed.length <= max) return trimmed;
   return `${trimmed.slice(0, max - 1)}…`;
+}
+
+/** Milliseconds → "m:ss", for the analyzing-phase elapsed timer. */
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
 /** Resolve missing plan + suite names against the shared useTestPlans
@@ -218,6 +228,36 @@ function deriveTabLabelFromTarget(input: {
   const firstLine = input.requirements.trim().split("\n")[0];
   if (firstLine) return ellipsizeForTab(firstLine);
   return "Generate cases";
+}
+
+/** Gating rule for every Resume affordance (ErrorPhase button, InputPhase
+ *  notice). `loadCheckpoint` restores `resumable` unconditionally — this is
+ *  the one place that decides whether continuing can plausibly help:
+ *  step_cap/cancelled are always worth continuing, empty/schema_violation
+ *  mean the run already finished with nothing usable (re-run, not resume,
+ *  is the fix), a missing outcome is exactly what an unflushed crash leaves
+ *  (so it defaults to resumable), and a real error defers to the shared
+ *  isResumableKind table — falling back to a fresh classification only if
+ *  the checkpoint predates errorKind being recorded. */
+function canOfferResume(
+  resumable: SessionState["resumable"],
+  errorMessage: string,
+): boolean {
+  if (!resumable) return false;
+  const outcome = resumable.outcome;
+  if (!outcome) return true;
+  switch (outcome.kind) {
+    case "step_cap":
+    case "cancelled":
+      return true;
+    case "empty":
+    case "schema_violation":
+      return false;
+    case "error":
+      return isResumableKind(outcome.errorKind ?? matchErrorKind(errorMessage));
+    default:
+      return false;
+  }
 }
 
 const STEPS = [
@@ -650,6 +690,9 @@ function InputPhase() {
   const addWorkItem = useGenerationSession((s) => s.addWorkItem);
   const removeWorkItem = useGenerationSession((s) => s.removeWorkItem);
   const analyze = useGenerationSession((s) => s.analyze);
+  const resumable = useGenerationSession((s) => s.resumable);
+  const resumeAnalyze = useGenerationSession((s) => s.resumeAnalyze);
+  const discardCheckpoint = useGenerationSession((s) => s.discardCheckpoint);
   // Inline `#id` work-item mention — same affordance as the chats, so the
   // requirements box can attach a bug / work item as grounding context.
   const mention = useWorkItemMention({
@@ -817,6 +860,45 @@ function InputPhase() {
     // full pane width.
     <div className="grid grid-cols-1 gap-4 @3xl:grid-cols-[1fr_280px]">
       <section className="flex min-w-0 flex-col gap-3">
+        {resumable &&
+        canOfferResume(resumable, resumable.outcome?.message ?? "") ? (
+          <InlineNotice
+            tone="warning"
+            role="status"
+            label={
+              resumable.outcome?.kind === "cancelled"
+                ? "run stopped"
+                : "run interrupted"
+            }
+            onDismiss={discardCheckpoint}
+            dismissLabel="Discard saved progress"
+            hint="Resuming uses the original run's model and doesn't re-read your test plan."
+          >
+            {`A previous run ${
+              resumable.outcome?.kind === "cancelled" ? "was stopped" : "didn't finish"
+            } after ${resumable.stepsUsed} steps${
+              resumable.totalTokens != null
+                ? ` (~${resumable.totalTokens.toLocaleString()} tokens)`
+                : ""
+            }. Resume continues where it left off — or run again from scratch.`}{" "}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => void resumeAnalyze()}
+                  className="rounded-sm border border-amber-500/40 px-1.5 py-px text-[10.5px] font-medium text-amber-700 hover:bg-amber-500/10 dark:text-amber-300"
+                >
+                  Resume
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-[11px]">
+                Picks up the analyzer from step {resumable.stepsUsed} using the
+                saved transcript — nothing already read gets re-fetched or
+                re-paid for.
+              </TooltipContent>
+            </Tooltip>
+          </InlineNotice>
+        ) : null}
         <Field label="Requirements / feature spec">
           {planId !== null && suiteId !== null ? (
             <TargetContextChip
@@ -1388,6 +1470,9 @@ function AnalyzingPhase() {
   const suggestBugs = useGenerationSession((s) => s.suggestBugs);
   const activityLog = useGenerationSession((s) => s.activityLog);
   const attachments = useGenerationSession((s) => s.attachments);
+  const stepsUsed = useGenerationSession((s) => s.stepsUsed);
+  const stepCap = useGenerationSession((s) => s.stepCap);
+  const analyzeStartedAt = useGenerationSession((s) => s.analyzeStartedAt);
   // Long specs dominate the analyzing view — collapse anything past ~12
   // lines / 800 chars by default so the focus stays on the streaming log.
   const isLongSpec =
@@ -1406,6 +1491,20 @@ function AnalyzingPhase() {
     return () => window.removeEventListener("keydown", onKey);
   }, [cancel]);
 
+  // Live elapsed timer for the step counter below. Ticks off a wall-clock
+  // timestamp rather than a counting ref so it stays correct across a tab
+  // switch (no drift from throttled background timers).
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (analyzeStartedAt == null) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [analyzeStartedAt]);
+  const elapsed =
+    analyzeStartedAt != null
+      ? formatElapsed(Math.max(0, now - analyzeStartedAt))
+      : "0:00";
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-md border border-border/60 bg-card/40 px-3 py-2.5">
@@ -1418,14 +1517,21 @@ function AnalyzingPhase() {
             </p>
           </div>
         </div>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button size="sm" variant="outline" onClick={cancel} className="shrink-0">
-              Cancel
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">Press Esc to cancel.</TooltipContent>
-        </Tooltip>
+        <div className="flex shrink-0 items-center gap-3">
+          {stepCap != null ? (
+            <span className="text-[11px] tabular-nums text-muted-foreground">
+              step {stepsUsed ?? 0}/{stepCap} · {elapsed}
+            </span>
+          ) : null}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button size="sm" variant="outline" onClick={cancel} className="shrink-0">
+                Cancel
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Press Esc to cancel.</TooltipContent>
+          </Tooltip>
+        </div>
       </div>
 
       <div>
@@ -2829,11 +2935,33 @@ type ErrorClass = {
 /** Map an error message to a structured remediation. Pattern-matches on the
  *  string contents because the underlying APIs throw plain Errors with
  *  human-readable messages — we lift those into something the user can act on
- *  instead of just dumping the text. */
+ *  instead of just dumping the text. Provider-bucket detection (rate limit,
+ *  credits, overload, network, auth, context overflow) routes through the
+ *  shared `matchErrorKind` classifier so this file and errorClass.ts can't
+ *  drift on how the same message gets bucketed. */
 function classifyError(
   message: string,
   errorPhase: SessionState["errorPhase"],
+  opts?: { outcomeKind?: CheckpointOutcome["kind"] | null },
 ): ErrorClass {
+  // Structural signal, not string matching — the store already knows this
+  // was a step-cap failure (CheckpointOutcome.kind), so checking it first
+  // means the copy below can never be confused with a provider error that
+  // happens to mention "steps" or "budget".
+  if (opts?.outcomeKind === "step_cap") {
+    return {
+      code: "GEN/03 · STEP-CAP",
+      title: "Hit the step budget before writing the batch",
+      icon: AiBrain01Icon,
+      tone: "config",
+      why: "The analyzer spent its entire step budget reading the codebase — files, greps, related cases — and never reached the point of writing the final test-case batch.",
+      steps: [
+        `Resume grants ${RESUME_TOPUP_STEPS} more steps and tells the model to finish with what it already read — usually enough to land the batch.`,
+        "If it caps again, trim the spec or attachments, or turn off code search for this run so there's less to read.",
+      ],
+    };
+  }
+
   const lower = message.toLowerCase();
 
   if (
@@ -2872,113 +3000,103 @@ function classifyError(
     };
   }
 
-  if (
-    /context length|context window|prompt is too long|too long.*tokens|tokens.*(maximum|exceed)|maximum context|exceed.*context|input.*too long|context_length_exceeded|reduce the length/.test(
-      lower,
-    )
-  ) {
-    return {
-      code: "INPUT/02 · CONTEXT-OVERFLOW",
-      title: "Too much input for this model's context window",
-      icon: AiBrain01Icon,
-      tone: "config",
-      why: "The combined spec, attachments, and any files the analyzer read exceed the selected model's context window, so the provider rejected the request before generating anything. Different models have different limits.",
-      steps: [
-        "Trim the spec, or split a very large feature into separate runs.",
-        "Remove large attachments — paste only the relevant excerpts.",
-        "Turn off code search for this run (it reads files into the prompt), or point the source dir at a narrower folder.",
-        "Or switch to a larger-context model for this run (e.g. one with a 1M-token window).",
-      ],
-      primary: {
-        label: "Open AI / Models",
+  switch (matchErrorKind(message)) {
+    case "context-overflow":
+      return {
+        code: "INPUT/02 · CONTEXT-OVERFLOW",
+        title: "Too much input for this model's context window",
         icon: AiBrain01Icon,
-        onClick: () => void openSettingsWindow("models"),
-      },
-    };
-  }
+        tone: "config",
+        why: "The combined spec, attachments, and any files the analyzer read exceed the selected model's context window, so the provider rejected the request before generating anything. Different models have different limits.",
+        steps: [
+          "Trim the spec, or split a very large feature into separate runs.",
+          "Remove large attachments — paste only the relevant excerpts.",
+          "Turn off code search for this run (it reads files into the prompt), or point the source dir at a narrower folder.",
+          "Or switch to a larger-context model for this run (e.g. one with a 1M-token window).",
+        ],
+        primary: {
+          label: "Open AI / Models",
+          icon: AiBrain01Icon,
+          onClick: () => void openSettingsWindow("models"),
+        },
+      };
 
-  if (
-    /\b429\b|rate.?limit|too many requests|insufficient_quota|over.?loaded|\b529\b|\b503\b|\b502\b|service unavailable|payment required|\b402\b|insufficient.*credit|out of credit/.test(
-      lower,
-    )
-  ) {
-    const isCredits =
-      /payment required|\b402\b|insufficient.*credit|out of credit/.test(lower);
-    const isOverload = /over.?loaded|\b529\b|\b503\b|\b502\b|service unavailable/.test(lower);
-    return {
-      code: isCredits
-        ? "PROVIDER/02 · NO-CREDITS"
-        : isOverload
-          ? "PROVIDER/03 · OVERLOADED"
-          : "PROVIDER/01 · RATE-LIMIT",
-      title: isCredits
-        ? "Out of provider credits"
-        : isOverload
-          ? "The provider is temporarily overloaded"
-          : "Rate-limited by the provider",
-      icon: WifiDisconnected01Icon,
-      tone: "network",
-      why: isCredits
-        ? "The provider rejected the request for billing reasons (402 / insufficient credits). This is not a key problem — your key is valid."
-        : isOverload
-          ? "The provider is temporarily overloaded or unavailable (502 / 503 / 529). This is on their side, not your key — and you're usually not billed for it."
-          : "You hit the provider's rate limit (429) — too many requests in a short window. Your key is fine.",
-      steps: isCredits
-        ? [
-            "Top up credits or check billing in the provider's console.",
-            "Or switch to a model from a provider you have credit with.",
-          ]
-        : isOverload
-          ? [
-              "Wait a moment and retry — the run is idempotent until you publish.",
-              "If it keeps happening, try a different model or provider.",
-            ]
-          : [
-              "Wait a little and retry (the provider may send a Retry-After hint).",
-              "Or switch to a less rate-limited model for this run.",
-            ],
-    };
-  }
+    case "no-credits":
+      return {
+        code: "PROVIDER/02 · NO-CREDITS",
+        title: "Out of provider credits",
+        icon: WifiDisconnected01Icon,
+        tone: "network",
+        why: "The provider rejected the request for billing reasons (402 / insufficient credits). This is not a key problem — your key is valid.",
+        steps: [
+          "Top up credits or check billing in the provider's console.",
+          "Or switch to a model from a provider you have credit with.",
+        ],
+      };
 
-  if (
-    /network|timeout|econnreset|enotfound|fetch failed|failed to fetch|load failed|getaddrinfo|dns|connection (refused|reset)|private\/loopback|no safe ips|host not allowed|error sending request/.test(
-      lower,
-    )
-  ) {
-    return {
-      code: "NET/01 · UNREACHABLE",
-      title: "Couldn't reach the model provider",
-      icon: WifiDisconnected01Icon,
-      tone: "network",
-      why: "The HTTP request to the model API failed before a response came back. Most often this is no internet connection, a corporate proxy or VPN blocking the provider, transient DNS, or a wrong base URL on a custom provider.",
-      steps: [
-        "Check that this machine can reach the internet right now.",
-        "On a VPN or proxy, confirm the provider's domain isn't blocked.",
-        "Using a custom (OpenAI-compatible) provider? Double-check its base URL is reachable in Settings → Models.",
-        "Retry — the run is idempotent until you publish.",
-      ],
-    };
-  }
+    case "overloaded":
+      return {
+        code: "PROVIDER/03 · OVERLOADED",
+        title: "The provider is temporarily overloaded",
+        icon: WifiDisconnected01Icon,
+        tone: "network",
+        why: "The provider is temporarily overloaded or unavailable (502 / 503 / 529). This is on their side, not your key — and you're usually not billed for it.",
+        steps: [
+          "Wait a moment and retry — your progress is checkpointed — Resume continues from where it stopped instead of re-paying the whole run.",
+          "If it keeps happening, try a different model or provider.",
+        ],
+      };
 
-  if (
-    /401|unauthorized|invalid.*api.?key|bad.?pat|forbidden|sso/.test(lower)
-  ) {
-    return {
-      code: "AUTH/03 · REJECTED",
-      title: "The provider rejected your credentials",
-      icon: Key01Icon,
-      tone: "auth",
-      why: "The provider returned a 401/403. Either the stored API key is wrong, the key has been revoked, or your PAT needs SSO authorization.",
-      steps: [
-        "Regenerate the API key (or PAT) in the provider's console.",
-        "Paste the new value into the relevant settings tab and retry.",
-      ],
-      primary: {
-        label: "Open AI / Models",
-        icon: AiBrain01Icon,
-        onClick: () => void openSettingsWindow("models"),
-      },
-    };
+    case "rate-limit":
+      return {
+        code: "PROVIDER/01 · RATE-LIMIT",
+        title: "Rate-limited by the provider",
+        icon: WifiDisconnected01Icon,
+        tone: "network",
+        why: "You hit the provider's rate limit (429) — too many requests in a short window. Your key is fine.",
+        steps: [
+          "Wait a little and retry (the provider may send a Retry-After hint).",
+          "Or switch to a less rate-limited model for this run.",
+        ],
+      };
+
+    case "network":
+      return {
+        code: "NET/01 · UNREACHABLE",
+        title: "Couldn't reach the model provider",
+        icon: WifiDisconnected01Icon,
+        tone: "network",
+        why: "The HTTP request to the model API failed before a response came back. Most often this is no internet connection, a corporate proxy or VPN blocking the provider, transient DNS, or a wrong base URL on a custom provider.",
+        steps: [
+          "Check that this machine can reach the internet right now.",
+          "On a VPN or proxy, confirm the provider's domain isn't blocked.",
+          "Using a custom (OpenAI-compatible) provider? Double-check its base URL is reachable in Settings → Models.",
+          "Retry — your progress is checkpointed — Resume continues from where it stopped instead of re-paying the whole run.",
+        ],
+      };
+
+    case "auth":
+      return {
+        code: "AUTH/03 · REJECTED",
+        title: "The provider rejected your credentials",
+        icon: Key01Icon,
+        tone: "auth",
+        why: "The provider returned a 401/403. Either the stored API key is wrong, the key has been revoked, or your PAT needs SSO authorization.",
+        steps: [
+          "Regenerate the API key (or PAT) in the provider's console.",
+          "Paste the new value into the relevant settings tab and retry.",
+        ],
+        primary: {
+          label: "Open AI / Models",
+          icon: AiBrain01Icon,
+          onClick: () => void openSettingsWindow("models"),
+        },
+      };
+
+    default:
+      // stall / abort / unknown — none of these had a dedicated bucket
+      // before this refactor either; they fall through to the checks below.
+      break;
   }
 
   if (/no test cases generated/.test(lower)) {
@@ -3101,6 +3219,9 @@ function ErrorPhase() {
   const errorPhase = useGenerationSession((s) => s.errorPhase);
   const tryAgain = useGenerationSession((s) => s.tryAgain);
   const startNew = useGenerationSession((s) => s.startNew);
+  const resumable = useGenerationSession((s) => s.resumable);
+  const stepCap = useGenerationSession((s) => s.stepCap);
+  const resumeAnalyze = useGenerationSession((s) => s.resumeAnalyze);
   // Is there anything in the form worth protecting from an accidental wipe?
   // Drives whether "Start over" confirms first — the user lost their spec to
   // an unguarded click here once, so a non-empty form gets a confirm step.
@@ -3120,8 +3241,11 @@ function ErrorPhase() {
         : "Unknown error";
 
   const klass = useMemo(
-    () => classifyError(message, errorPhase),
-    [message, errorPhase],
+    () =>
+      classifyError(message, errorPhase, {
+        outcomeKind: resumable?.outcome?.kind ?? null,
+      }),
+    [message, errorPhase, resumable?.outcome?.kind],
   );
   const theme = TONE_THEME[klass.tone];
 
@@ -3236,6 +3360,25 @@ function ErrorPhase() {
           form; Start over is the explicit "I'm done with this spec" path. */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/40 pt-3">
         <div className="flex items-center gap-2">
+          {resumable && canOfferResume(resumable, message) ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button size="sm" onClick={() => void resumeAnalyze()}>
+                  <HugeiconsIcon icon={PlayIcon} size={11} strokeWidth={1.75} />
+                  Resume run
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-[260px] text-[11px]">
+                {`Continue from step ${resumable.stepsUsed} of ${
+                  stepCap ?? SURFACE_STEP_CAPS.generator
+                }${
+                  resumable.totalTokens != null
+                    ? `, ~${resumable.totalTokens.toLocaleString()} tokens already spent`
+                    : ""
+                } — completed work isn't re-paid. Uses the same model as the original run.`}
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
           {klass.primary ? (
             <Button size="sm" onClick={klass.primary.onClick}>
               <HugeiconsIcon

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createGenerationSessionStore } from "./useGenerationSession";
 import type { ReviewedBug, ReviewedCase } from "../lib/draftBatchSchema";
 import type { GenerationRun } from "../lib/history";
+import type { GeneratorCheckpointV1 } from "@/modules/ai/lib/checkpointApi";
 
 // Neutralize the debounced draft autosave (and any other Tauri IPC) so calling
 // real store actions in node doesn't reach for a backend that isn't there.
@@ -111,5 +112,68 @@ describe("useGenerationSession — auto-fail when a bug is attached", () => {
     expect(ok).toBe(true);
     expect(store.getState().cases[0].desiredOutcome).toBeUndefined();
     expect(store.getState().cases[1].desiredOutcome).toBe("Failed");
+  });
+});
+
+function mkCheckpointPayload(
+  partial: Partial<GeneratorCheckpointV1> = {},
+): GeneratorCheckpointV1 {
+  return {
+    v: 1,
+    surface: "generator",
+    runId: "run-cp-1",
+    createdAt: "2026-06-11T00:00:00.000Z",
+    modelId: "claude-sonnet-5",
+    sourceRoot: null,
+    form: {
+      requirements: "Users can reset a forgotten password.",
+      changesets: "",
+      attachments: [],
+      attachedWorkItems: [],
+      planId: 1,
+      planName: "Plan A",
+      suiteId: 2,
+      suiteName: "Suite B",
+      coverage: "full",
+      suggestBugs: true,
+      tagSourceBranch: true,
+      overrideModelId: null,
+    },
+    prepared: { userPrompt: "prompt", attachments: [] },
+    activity: [],
+    transcript: { messages: [], stepsUsed: 5, usage: {} },
+    lastOutcome: { at: "2026-06-11T00:05:00.000Z", kind: "step_cap" },
+    ...partial,
+  };
+}
+
+describe("useGenerationSession — loadCheckpoint / discardCheckpoint", () => {
+  it("loadCheckpoint restores form fields + runId + resumable, landing on phase input", () => {
+    const store = createGenerationSessionStore();
+
+    store.getState().loadCheckpoint(mkCheckpointPayload(), "2026-06-11T00:05:00.000Z");
+
+    const s = store.getState();
+    expect(s.phase).toBe("input");
+    expect(s.runId).toBe("run-cp-1");
+    expect(s.requirements).toBe("Users can reset a forgotten password.");
+    expect(s.planId).toBe(1);
+    expect(s.suiteId).toBe(2);
+    expect(s.resumable).toEqual({
+      stepsUsed: 5,
+      totalTokens: null,
+      updatedAt: "2026-06-11T00:05:00.000Z",
+      outcome: { at: "2026-06-11T00:05:00.000Z", kind: "step_cap" },
+    });
+  });
+
+  it("discardCheckpoint clears resumable", () => {
+    const store = createGenerationSessionStore();
+    store.getState().loadCheckpoint(mkCheckpointPayload(), "2026-06-11T00:05:00.000Z");
+    expect(store.getState().resumable).not.toBeNull();
+
+    store.getState().discardCheckpoint();
+
+    expect(store.getState().resumable).toBeNull();
   });
 });

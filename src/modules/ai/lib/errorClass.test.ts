@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   classifyForResume,
+  isResumableKind,
   matchErrorKind,
   STALL_MESSAGE,
   type ResumeErrorKind,
@@ -91,6 +92,22 @@ describe("matchErrorKind", () => {
       "no-credits",
     );
     expect(matchErrorKind(`${STALL_MESSAGE} — network timeout`)).toBe("stall");
+  });
+});
+
+describe("isResumableKind", () => {
+  it("is false only for context-overflow", () => {
+    expect(isResumableKind("context-overflow")).toBe(false);
+    for (const kind of ["rate-limit", "no-credits", "stall", "abort", "unknown"] as ResumeErrorKind[]) {
+      expect(isResumableKind(kind)).toBe(true);
+    }
+  });
+
+  it("agrees with classifyForResume's resumable flag — one shared table, not two", () => {
+    for (const message of ["429", "402", STALL_MESSAGE, "maximum context length", "unrecognised"]) {
+      const { kind, resumable } = classifyForResume(new Error(message));
+      expect(resumable).toBe(isResumableKind(kind));
+    }
   });
 });
 

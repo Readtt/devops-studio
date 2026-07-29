@@ -8,6 +8,7 @@ import { GenerationSessionProvider } from "@/modules/generator/store/useGenerati
 import { useGeneratorStoresApi } from "@/modules/generator/storesContext";
 import { useGeneratorCallbacks } from "@/modules/generator/callbacksContext";
 import { getRun } from "@/modules/generator/lib/history";
+import { getCheckpoint } from "@/modules/ai/lib/checkpointApi";
 import { TerminalPane } from "@/modules/terminal/TerminalPane";
 import { CommitReviewPane } from "@/modules/commit-review/CommitReviewPane";
 import type { AppTab, GeneratorTab } from "./store/types";
@@ -103,8 +104,11 @@ function GeneratorTabContent({ tab }: { tab: GeneratorTab }) {
     let cancelled = false;
     void (async () => {
       try {
-        const run = await getRun(tabRunId);
-        if (cancelled || !run) return;
+        const [run, checkpointRow] = await Promise.all([
+          getRun(tabRunId),
+          getCheckpoint(tabRunId),
+        ]);
+        if (cancelled) return;
         const latest = store.getState();
         // Re-check the guards — the user might have started typing while
         // the fetch was in flight; we don't want to clobber that work.
@@ -117,10 +121,31 @@ function GeneratorTabContent({ tab }: { tab: GeneratorTab }) {
         ) {
           return;
         }
-        if (run.status === "published") {
-          latest.loadPublishedRun(run);
-        } else {
-          latest.loadDraft(run);
+        // A foreign-surface row can't reach this runId in practice (checkpoints
+        // are keyed per-surface), but the payload is a union — narrow before
+        // handing it to the generator-only loadCheckpoint.
+        const cpPayload = checkpointRow?.payload;
+        const cp =
+          checkpointRow && cpPayload && cpPayload.surface === "generator"
+            ? { payload: cpPayload, updatedAt: checkpointRow.updatedAt }
+            : null;
+        if (!run && !cp) return;
+        // Numeric compare only, never lexicographic: a history row's
+        // timestamp comes from newTimestamp() (millis stripped) while a
+        // checkpoint's updatedAt is a full ISO string, so a same-second write
+        // can sort backwards as text. Date.parse orders them correctly, and
+        // an unparseable date on either side loses the `>` compare, which
+        // correctly defaults to the history row.
+        const checkpointIsNewer =
+          !!cp && !!run && Date.parse(cp.updatedAt) > Date.parse(run.timestamp);
+        if (cp && (!run || checkpointIsNewer)) {
+          latest.loadCheckpoint(cp.payload, cp.updatedAt);
+        } else if (run) {
+          if (run.status === "published") {
+            latest.loadPublishedRun(run);
+          } else {
+            latest.loadDraft(run);
+          }
         }
       } catch (e) {
         console.warn("[generator] rehydrate-from-runId failed:", e);

@@ -71,14 +71,21 @@ export function matchErrorKind(message: string): ResumeErrorKind {
   return "unknown";
 }
 
+/** Whether a resume attempt can plausibly succeed for this error kind.
+ *  context-overflow is the only hard no — a resumed request is a superset
+ *  of the one that overflowed. */
+export function isResumableKind(kind: ResumeErrorKind): boolean {
+  return kind !== "context-overflow";
+}
+
 export function classifyForResume(e: unknown): ResumeClass {
   // An abort carries no useful message (the SDK's is generic), so identify it by
   // name before any pattern matching.
   if ((e as { name?: string } | null | undefined)?.name === "AbortError") {
-    return { kind: "abort", resumable: true };
+    return { kind: "abort", resumable: isResumableKind("abort") };
   }
   const kind = matchErrorKind(errorText(e));
-  return { kind, resumable: kind !== "context-overflow" };
+  return { kind, resumable: isResumableKind(kind) };
 }
 
 /** The AI SDK wraps transport failures, so the useful string is often on
