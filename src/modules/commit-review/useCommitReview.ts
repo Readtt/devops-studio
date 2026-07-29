@@ -96,6 +96,9 @@ export type CommitReviewSlice = {
   busy: boolean;
   abort: AbortController | null;
   error: string | null;
+  /** Structural failure reason when the run RESOLVED unusable (vs threw) —
+   *  what the error card classifies on, so copy never string-matches. */
+  errorReason: "step_cap" | "empty" | "schema_violation" | null;
   /** Raw model text when stage 1 didn't return parseable findings. */
   schemaViolationRaw: string | null;
   runId: string | null;
@@ -149,6 +152,8 @@ type State = {
    *  it was snapshotted with, and — when stage 1 already parsed — no second
    *  investigate pass. */
   resume: (tabId: number) => Promise<void>;
+  /** Throw away the resume point (and its persisted row) for this tab's run. */
+  discardCheckpoint: (tabId: number) => void;
   stop: (tabId: number) => void;
   applyFix: (tabId: number, findingId: string, record: AppliedPatchRecord) => void;
   /** Abort any in-flight run and drop the per-tab slice. Called when the tab
@@ -296,6 +301,7 @@ async function settleResult(
       error: stepCapped
         ? `The review hit its step budget before it could write its findings. Resume grants ${RESUME_TOPUP_STEPS} more steps and asks the model to finish with what it has already read.`
         : "The model didn't return findings in the expected format. Re-run, or try a more capable model.",
+      errorReason: result.reason,
       schemaViolationRaw: stepCapped ? null : result.rawText,
       resumable: stepCapped ? resumableFrom(payload, outcome) : null,
     });
@@ -352,6 +358,8 @@ async function settleFailure(
     stage: null,
     status: aborted ? "cancelled" : "error",
     error: aborted ? null : errStr(e),
+    // A thrown failure is a provider/runtime error, never a parse outcome.
+    errorReason: null,
     resumable: payload ? resumableFrom(payload, outcome) : null,
   });
   if (cp && payload) await cp.writer.flush(payload);
@@ -474,6 +482,7 @@ function emptySlice(cwd: string, modelId: ModelId | null): CommitReviewSlice {
     busy: false,
     abort: null,
     error: null,
+    errorReason: null,
     schemaViolationRaw: null,
     runId: null,
     createdAt: null,
@@ -514,6 +523,15 @@ export const useCommitReview = create<State>((set, get) => ({
         if (row) {
           const findings = safeParseFindings(row.findings);
           const appliedPatches = safeParseApplied(row.appliedPatches);
+          // persistRow writes the raw reason token ("step_cap" / "empty" /
+          // "schema_violation") into the error column on parse failures —
+          // lift it back into the structural field the error card reads.
+          const rowReason =
+            row.error === "step_cap" ||
+            row.error === "empty" ||
+            row.error === "schema_violation"
+              ? row.error
+              : null;
           patch(set, tabId, {
             selectedShas: safeParseCommitShas(row.commits, row.commitSha),
             context: row.context ?? "",
@@ -523,6 +541,7 @@ export const useCommitReview = create<State>((set, get) => ({
             runId: row.runId,
             createdAt: row.createdAt,
             durationMs: row.durationMs,
+            errorReason: row.status === "error" ? rowReason : null,
             error:
               row.status === "error"
                 ? (row.error ?? "This review ended with an error.")
@@ -694,6 +713,7 @@ export const useCommitReview = create<State>((set, get) => ({
       activity: [],
       status: "idle",
       error: null,
+      errorReason: null,
       schemaViolationRaw: null,
       runId: null,
       durationMs: null,
@@ -721,6 +741,7 @@ export const useCommitReview = create<State>((set, get) => ({
       activity: [],
       status: "idle",
       error: null,
+      errorReason: null,
       schemaViolationRaw: null,
       runId: null,
       durationMs: null,
@@ -742,6 +763,7 @@ export const useCommitReview = create<State>((set, get) => ({
       activity: [],
       status: "idle",
       error: null,
+      errorReason: null,
       schemaViolationRaw: null,
       runId: null,
       durationMs: null,
@@ -936,6 +958,7 @@ export const useCommitReview = create<State>((set, get) => ({
         activity: [],
         findings: [],
         error: null,
+        errorReason: null,
         schemaViolationRaw: null,
         abort,
         runId,
@@ -1130,6 +1153,7 @@ export const useCommitReview = create<State>((set, get) => ({
         // had any on screen to clear.
         findings: payload.stage === "investigate" ? [] : curr.findings,
         error: null,
+        errorReason: null,
         schemaViolationRaw: null,
         abort,
         runId,
@@ -1222,6 +1246,13 @@ export const useCommitReview = create<State>((set, get) => ({
     } catch (e) {
       await settleFailure(set, tabId, { writer: w, buildPayload: build }, e);
     }
+  },
+
+  discardCheckpoint: (tabId) => {
+    const slice = get().byTab.get(tabId);
+    if (!slice || slice.busy || !slice.runId || !slice.resumable) return;
+    void deleteCheckpoint(slice.runId).catch(() => {});
+    patch(set, tabId, { resumable: null });
   },
 
   stop: (tabId) => {

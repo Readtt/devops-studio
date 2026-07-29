@@ -20,6 +20,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  AiBrain01Icon,
   AlertCircleIcon,
   ArrowDown01Icon,
   ArrowRight01Icon,
@@ -37,6 +38,13 @@ import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
 import { canOfferResume } from "@/modules/ai/lib/errorClass";
+import {
+  classifyProviderError,
+  RunErrorPanel,
+  unclassifiedError,
+  type ErrorClass,
+} from "@/modules/ai/components/RunErrorPanel";
+import { relativeTime, ResumeCard } from "@/modules/ai/components/ResumeCard";
 import {
   ContextGuardNotice,
   ContextMeter,
@@ -101,6 +109,7 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
   const setModel = useCommitReview((s) => s.setModel);
   const run = useCommitReview((s) => s.run);
   const resume = useCommitReview((s) => s.resume);
+  const discardCheckpoint = useCommitReview((s) => s.discardCheckpoint);
   const stop = useCommitReview((s) => s.stop);
   const applyFix = useCommitReview((s) => s.applyFix);
 
@@ -323,13 +332,11 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
                 </span>
               </button>
             </TooltipTrigger>
-            <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
-              {showDiff ? "Hide the diff." : "Show the diff."}{" "}
+            <TooltipContent side="bottom" className="text-[11px]">
+              {showDiff ? "Hide the diff." : "Show the diff."}
               {selectionCount > 1
-                ? `These ${selectionCount} changes are reviewed together as one combined diff.`
-                : "Only the selected change is reviewed."}{" "}
-              The model investigates its blast radius across your code with
-              read-only tools.
+                ? ` These ${selectionCount} changes review together as one.`
+                : ""}
             </TooltipContent>
           </Tooltip>
         ) : slice.diffLoading ? (
@@ -523,42 +530,26 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
       <ContextOverflowDialog guard={guard} modelLabel={guardModelLabel} />
       {!slice.busy && (slice.status === "interrupted" || slice.status === "cancelled") ? (
         resumable && offerResume ? (
-          <Banner tone="warn">
-            <span>
-              {`This review was ${slice.status === "interrupted" ? "interrupted" : "cancelled"} at the ${stageWord(resumable.stage)} stage — ~${resumable.stepsUsed} steps done${resumable.totalTokens != null ? `, ~${resumable.totalTokens.toLocaleString()} tokens spent` : ""}.`}
-            </span>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  onClick={() => guard.attempt(() => void resume(tabId))}
-                  className="shrink-0 rounded-sm border border-amber-500/40 px-1.5 py-px text-[10.5px] font-medium text-amber-700 hover:bg-amber-500/10 dark:text-amber-300"
-                >
-                  Resume
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="text-[11px]">
-                Continue this review from where it stopped — completed steps
-                aren't re-run, so resuming is usually much cheaper than
-                starting over. Uses the original run's model.
-              </TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  onClick={() => guard.attempt(() => void run(tabId))}
-                  className="shrink-0 rounded-sm border border-amber-500/40 px-1.5 py-px text-[10.5px] font-medium text-amber-700 hover:bg-amber-500/10 dark:text-amber-300"
-                >
-                  Re-run from scratch
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="text-[11px]">
-                Start over from the beginning with the current picker
-                settings.
-              </TooltipContent>
-            </Tooltip>
-          </Banner>
+          <div className="border-b border-border/45 px-3 py-2">
+            <ResumeCard
+              title={
+                slice.status === "cancelled"
+                  ? "You stopped this review"
+                  : "This review didn't finish"
+              }
+              detail={[
+                `Stopped during ${stageWord(resumable.stage)}`,
+                resumable.stepsUsed > 0
+                  ? `${resumable.stepsUsed} step${resumable.stepsUsed === 1 ? "" : "s"} in`
+                  : null,
+                relativeTime(resumable.updatedAt),
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+              onResume={() => guard.attempt(() => void resume(tabId))}
+              onDiscard={() => discardCheckpoint(tabId)}
+            />
+          </div>
         ) : (
           <Banner tone="warn">
             This review was {slice.status === "interrupted" ? "interrupted" : "cancelled"} before it finished. Re-run to complete it.
@@ -659,22 +650,51 @@ function Body({
   );
 }
 
-/** A live run's `slice.error` is already friendly text (set directly in
- *  settleResult). A REHYDRATED failed run instead surfaces the raw reason
- *  token persistRow wrote to the row's error column verbatim — map the three
- *  known tokens to the same friendly copy a live failure would have shown;
- *  anything else (including already-friendly live-run text) passes through. */
-function errorDisplayText(slice: CommitReviewSlice): string {
-  switch (slice.error) {
-    case "step_cap":
-      return `The review hit its step budget before it could write its findings. Resume grants ${RESUME_TOPUP_STEPS} more steps and asks the model to finish with what it has already read.`;
-    case "empty":
-      return "The model returned nothing usable. Re-run, or try a more capable model.";
-    case "schema_violation":
-      return "The model didn't return findings in the expected format. Re-run, or try a more capable model.";
-    default:
-      return slice.error ?? "The review failed.";
+/** Commit-review-specific error classification. The parse outcomes are keyed
+ *  on the STRUCTURAL errorReason (never sentence matching); everything thrown
+ *  by the provider routes through the shared classifier so this surface and
+ *  the Generator render identical remediation for the same failure. */
+function classifyReviewError(slice: CommitReviewSlice): ErrorClass {
+  if (slice.errorReason === "step_cap") {
+    return {
+      code: "REV/03 · STEP-CAP",
+      title: "Hit the step budget before writing findings",
+      icon: AiBrain01Icon,
+      tone: "config",
+      why: "The reviewer spent its entire step budget investigating the change — reading files, tracing callers — and never reached the point of writing its findings.",
+      steps: [
+        `Resume grants ${RESUME_TOPUP_STEPS} more steps and tells the model to finish with what it already read — usually enough to land the findings.`,
+        "If it caps again, review fewer commits at once, or turn off code search so there's less to read.",
+      ],
+    };
   }
+  if (slice.errorReason === "empty") {
+    return {
+      code: "REV/02 · EMPTY-RESULT",
+      title: "The model returned nothing usable",
+      icon: AiBrain01Icon,
+      tone: "config",
+      why: "The run completed but the model wrote no findings output at all. OpenAI-compatible or custom endpoints often need JSON mode (structured output) turned on before they return a usable answer.",
+      steps: [
+        "Re-run — transient truncation happens.",
+        "If it repeats, switch to a more capable model for this review.",
+      ],
+    };
+  }
+  if (slice.errorReason === "schema_violation") {
+    return {
+      code: "REV/01 · BAD-FORMAT",
+      title: "The model didn't return findings in the expected format",
+      icon: AiBrain01Icon,
+      tone: "config",
+      why: "The model answered, but its output couldn't be read as the structured findings this review expects. Common with models that don't reliably produce structured JSON.",
+      steps: [
+        "Open the raw output below to see exactly what it sent back.",
+        "Re-run, or switch to a more capable model for this review.",
+      ],
+    };
+  }
+  return classifyProviderError(slice.error ?? "") ?? unclassifiedError();
 }
 
 function BodyContent({
@@ -709,26 +729,34 @@ function BodyContent({
     );
   }
 
+  // A stopped run's frozen activity log — the where-it-was context under the
+  // resume card, so a reopened interrupted review shows what it had been
+  // doing instead of an empty "press Review" state.
+  if (
+    (slice.status === "interrupted" || slice.status === "cancelled") &&
+    slice.activity.length > 0
+  ) {
+    return (
+      <AnalyzeActivityLog entries={slice.activity} maxHeightClass="max-h-[60vh]" />
+    );
+  }
+
   if (slice.status === "error") {
     const resumable = slice.resumable;
     const offerResume =
       resumable != null && canOfferResume(resumable.outcome, slice.error);
+    const klass = classifyReviewError(slice);
     return (
-      <div className="rounded-md border border-destructive/40 bg-destructive/[0.05] p-4">
-        <p className="text-[12px] font-medium text-destructive">
-          {errorDisplayText(slice)}
-        </p>
-        {slice.schemaViolationRaw ? (
-          <details className="mt-2">
-            <summary className="cursor-pointer text-[10.5px] text-muted-foreground hover:text-foreground">
-              Show the model's raw output
-            </summary>
-            <pre className="mt-1 max-h-64 overflow-auto rounded-sm border border-border/40 bg-foreground/[0.04] p-2 text-[10.5px] leading-relaxed text-foreground/80">
-              {slice.schemaViolationRaw}
-            </pre>
-          </details>
-        ) : null}
-        <div className="mt-3 flex items-center gap-2">
+      <RunErrorPanel
+        klass={klass}
+        raw={slice.schemaViolationRaw ?? slice.error}
+        rawLabel={
+          slice.schemaViolationRaw
+            ? "show the model's raw output"
+            : "show raw error"
+        }
+      >
+        <div className="flex flex-wrap items-center gap-2 border-t border-border/40 pt-3">
           {resumable && offerResume ? (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -741,14 +769,21 @@ function BodyContent({
                   Resume
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="bottom" className="max-w-[260px] text-[11px]">
-                {`Continue from the ${stageWord(resumable.stage)} stage — ~${resumable.stepsUsed} steps already done aren't re-run, so resuming is usually much cheaper than starting over. Uses the original run's model.${
-                  resumable.outcome?.kind === "step_cap"
-                    ? ` Adds ${RESUME_TOPUP_STEPS} steps and asks the model to finish.`
-                    : ""
-                }`}
+              <TooltipContent side="bottom" className="max-w-[240px] text-[11px]">
+                Continues where it stopped with the original model — finished
+                steps aren't re-run.
               </TooltipContent>
             </Tooltip>
+          ) : null}
+          {klass.primary ? (
+            <button
+              type="button"
+              onClick={klass.primary.onClick}
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border/60 bg-card/60 px-2.5 text-[11.5px] font-medium hover:bg-foreground/[0.05]"
+            >
+              <HugeiconsIcon icon={klass.primary.icon} size={12} strokeWidth={2} />
+              {klass.primary.label}
+            </button>
           ) : null}
           <button
             type="button"
@@ -759,7 +794,7 @@ function BodyContent({
             Re-run
           </button>
         </div>
-      </div>
+      </RunErrorPanel>
     );
   }
 

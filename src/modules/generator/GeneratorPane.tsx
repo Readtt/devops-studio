@@ -65,14 +65,12 @@ import {
   CodeIcon,
   ExternalLink,
   GitBranchIcon,
-  Key01Icon,
   Loading03Icon,
   PlayIcon,
   RefreshIcon,
   RemoveCircleIcon,
   Settings01Icon,
   SparklesIcon,
-  WifiDisconnected01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
@@ -96,13 +94,17 @@ import { Attachment01Icon } from "@hugeicons/core-free-icons";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { useChatStore } from "@/modules/ai/store/chatStore";
-import { getModel, RESUME_TOPUP_STEPS, SURFACE_STEP_CAPS } from "@/modules/ai/config";
+import { getModel, RESUME_TOPUP_STEPS } from "@/modules/ai/config";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
-import {
-  canOfferResume as canOfferResumeShared,
-  matchErrorKind,
-} from "@/modules/ai/lib/errorClass";
+import { canOfferResume as canOfferResumeShared } from "@/modules/ai/lib/errorClass";
 import type { CheckpointOutcome } from "@/modules/ai/lib/checkpointApi";
+import {
+  classifyProviderError,
+  RunErrorPanel,
+  unclassifiedError,
+  type ErrorClass,
+} from "@/modules/ai/components/RunErrorPanel";
+import { relativeTime, ResumeCard } from "@/modules/ai/components/ResumeCard";
 import {
   ContextGuardNotice,
   ContextMeter,
@@ -850,42 +852,25 @@ function InputPhase() {
       <section className="flex min-w-0 flex-col gap-3">
         {resumable &&
         canOfferResume(resumable, resumable.outcome?.message ?? "") ? (
-          <InlineNotice
-            tone="warning"
-            role="status"
-            label={
+          <ResumeCard
+            title={
               resumable.outcome?.kind === "cancelled"
-                ? "run stopped"
-                : "run interrupted"
+                ? "You stopped this generation"
+                : "This generation didn't finish"
             }
-            onDismiss={discardCheckpoint}
-            dismissLabel="Discard saved progress"
-            hint="Resuming uses the original run's model and doesn't re-read your test plan."
-          >
-            {`A previous run ${
-              resumable.outcome?.kind === "cancelled" ? "was stopped" : "didn't finish"
-            } after ${resumable.stepsUsed} steps${
-              resumable.totalTokens != null
-                ? ` (~${resumable.totalTokens.toLocaleString()} tokens)`
-                : ""
-            }. Resume continues where it left off — or run again from scratch.`}{" "}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  onClick={() => void resumeAnalyze()}
-                  className="rounded-sm border border-amber-500/40 px-1.5 py-px text-[10.5px] font-medium text-amber-700 hover:bg-amber-500/10 dark:text-amber-300"
-                >
-                  Resume
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="text-[11px]">
-                Picks up the analyzer from step {resumable.stepsUsed} using the
-                saved transcript — steps already done aren't re-run, so
-                resuming is usually much cheaper than starting over.
-              </TooltipContent>
-            </Tooltip>
-          </InlineNotice>
+            detail={[
+              resumable.stepsUsed > 0
+                ? `${resumable.stepsUsed} step${
+                    resumable.stepsUsed === 1 ? "" : "s"
+                  } in`
+                : null,
+              relativeTime(resumable.updatedAt),
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+            onResume={() => void resumeAnalyze()}
+            onDiscard={discardCheckpoint}
+          />
         ) : null}
         <Field label="Requirements / feature spec">
           {planId !== null && suiteId !== null ? (
@@ -2905,32 +2890,10 @@ function DonePhase() {
 
 // --- Error phase ------------------------------------------------------------
 
-type ErrorClass = {
-  /** Short uppercase code rendered in the header — terminal-flavored
-   *  classification. Reads as a `grep`-able tag, not as casual copy. */
-  code: string;
-  /** Sentence-case title summarizing the failure. */
-  title: string;
-  /** Glyph in the left rail. Should map to the failure domain (key, plug,
-   *  wifi, brain) rather than a generic warning triangle. */
-  icon: typeof AlertCircleIcon;
-  /** Short paragraph explaining what likely happened. Two sentences max. */
-  why: string;
-  /** Concrete next steps, ordered. */
-  steps: string[];
-  /** Tone the surface should adopt. */
-  tone: "auth" | "config" | "network" | "validation" | "unknown";
-  /** Primary action (e.g. open the right settings tab). */
-  primary?: { label: string; icon: typeof Settings01Icon; onClick: () => void };
-};
-
-/** Map an error message to a structured remediation. Pattern-matches on the
- *  string contents because the underlying APIs throw plain Errors with
- *  human-readable messages — we lift those into something the user can act on
- *  instead of just dumping the text. Provider-bucket detection (rate limit,
- *  credits, overload, network, auth, context overflow) routes through the
- *  shared `matchErrorKind` classifier so this file and errorClass.ts can't
- *  drift on how the same message gets bucketed. */
+/** Map an error message to a structured remediation. The provider buckets
+ *  (missing key, auth, credits, rate limit, overload, network, context
+ *  overflow) live in the shared classifier so Commit Review renders the same
+ *  copy; only generator-specific failures are classified here. */
 function classifyError(
   message: string,
   errorPhase: SessionState["errorPhase"],
@@ -2954,51 +2917,13 @@ function classifyError(
     };
   }
 
-  const lower = message.toLowerCase();
-
-  if (
-    /configure an api key/.test(lower) ||
-    /no api key configured/.test(lower) ||
-    /missing.*api.?key/.test(lower) ||
-    /api key.*not.*set/.test(lower)
-  ) {
-    // Pull the provider's display label out of the message body. The
-    // new error format reads "...needs Anthropic access — add a key…"
-    // so we look for the brand label between "needs " and " access".
-    // Falls back to the legacy "no api key configured for X" form for
-    // any caller that hasn't been migrated to the new phrasing yet.
-    const newFormat = message.match(/needs\s+([\w-]+)\s+access/i)?.[1];
-    const legacyFormat = lower.match(/no api key configured for (\w+)/)?.[1];
-    const providerLabel = newFormat ?? (legacyFormat ? capitalize(legacyFormat) : null);
-    return {
-      code: "AUTH/01 · MISSING-KEY",
-      title: providerLabel
-        ? `No ${providerLabel} API key on file`
-        : "No API key on file for the selected model",
-      icon: Key01Icon,
-      tone: "auth",
-      why: providerLabel
-        ? `The model you have selected uses ${providerLabel}, but no ${providerLabel} key is stored in the keychain. You can either add the key, or switch to a model from a provider you've already configured — DevOps Studio works with any of them.`
-        : "The active model needs an API key, and the keychain doesn't have one stored for that provider.",
-      steps: [
-        "Open Settings → Models and paste a key for that provider — or switch the active model to a provider you've already set up.",
-        "Already added it? Check you saved it under the right provider: each provider (Anthropic, OpenAI, …) keeps its own separate key.",
-      ],
-      primary: {
-        label: "Open AI / Models",
-        icon: AiBrain01Icon,
-        onClick: () => void openSettingsWindow("models"),
-      },
-    };
-  }
-
-  switch (matchErrorKind(message)) {
-    case "context-overflow":
+  const provider = classifyProviderError(message);
+  if (provider) {
+    // Generator-specific enrichment: a context overflow here is usually the
+    // spec + code search, so the remediation names those knobs.
+    if (provider.code.startsWith("INPUT/02")) {
       return {
-        code: "INPUT/02 · CONTEXT-OVERFLOW",
-        title: "Too much input for this model's context window",
-        icon: AiBrain01Icon,
-        tone: "config",
+        ...provider,
         why: "The combined spec, attachments, and any files the analyzer read exceed the selected model's context window, so the provider rejected the request before generating anything. Different models have different limits.",
         steps: [
           "Trim the spec, or split a very large feature into separate runs.",
@@ -3006,91 +2931,12 @@ function classifyError(
           "Turn off code search for this run (it reads files into the prompt), or point the source dir at a narrower folder.",
           "Or switch to a larger-context model for this run (e.g. one with a 1M-token window).",
         ],
-        primary: {
-          label: "Open AI / Models",
-          icon: AiBrain01Icon,
-          onClick: () => void openSettingsWindow("models"),
-        },
       };
-
-    case "no-credits":
-      return {
-        code: "PROVIDER/02 · NO-CREDITS",
-        title: "Out of provider credits",
-        icon: WifiDisconnected01Icon,
-        tone: "network",
-        why: "The provider rejected the request for billing reasons (402 / insufficient credits). This is not a key problem — your key is valid.",
-        steps: [
-          "Top up credits or check billing in the provider's console.",
-          "Or switch to a model from a provider you have credit with.",
-        ],
-      };
-
-    case "overloaded":
-      return {
-        code: "PROVIDER/03 · OVERLOADED",
-        title: "The provider is temporarily overloaded",
-        icon: WifiDisconnected01Icon,
-        tone: "network",
-        why: "The provider is temporarily overloaded or unavailable (502 / 503 / 529). This is on their side, not your key — and you're usually not billed for it.",
-        steps: [
-          "Wait a moment and retry — your progress is checkpointed — Resume continues from where it stopped instead of re-paying the whole run.",
-          "If it keeps happening, try a different model or provider.",
-        ],
-      };
-
-    case "rate-limit":
-      return {
-        code: "PROVIDER/01 · RATE-LIMIT",
-        title: "Rate-limited by the provider",
-        icon: WifiDisconnected01Icon,
-        tone: "network",
-        why: "You hit the provider's rate limit (429) — too many requests in a short window. Your key is fine.",
-        steps: [
-          "Wait a little and retry (the provider may send a Retry-After hint).",
-          "Or switch to a less rate-limited model for this run.",
-        ],
-      };
-
-    case "network":
-      return {
-        code: "NET/01 · UNREACHABLE",
-        title: "Couldn't reach the model provider",
-        icon: WifiDisconnected01Icon,
-        tone: "network",
-        why: "The HTTP request to the model API failed before a response came back. Most often this is no internet connection, a corporate proxy or VPN blocking the provider, transient DNS, or a wrong base URL on a custom provider.",
-        steps: [
-          "Check that this machine can reach the internet right now.",
-          "On a VPN or proxy, confirm the provider's domain isn't blocked.",
-          "Using a custom (OpenAI-compatible) provider? Double-check its base URL is reachable in Settings → Models.",
-          "Retry — your progress is checkpointed — Resume continues from where it stopped instead of re-paying the whole run.",
-        ],
-      };
-
-    case "auth":
-      return {
-        code: "AUTH/03 · REJECTED",
-        title: "The provider rejected your credentials",
-        icon: Key01Icon,
-        tone: "auth",
-        why: "The provider returned a 401/403. Either the stored API key is wrong, the key has been revoked, or your PAT needs SSO authorization.",
-        steps: [
-          "Regenerate the API key (or PAT) in the provider's console.",
-          "Paste the new value into the relevant settings tab and retry.",
-        ],
-        primary: {
-          label: "Open AI / Models",
-          icon: AiBrain01Icon,
-          onClick: () => void openSettingsWindow("models"),
-        },
-      };
-
-    default:
-      // stall / abort / unknown — none of these had a dedicated bucket
-      // before this refactor either; they fall through to the checks below.
-      break;
+    }
+    return provider;
   }
 
+  const lower = message.toLowerCase();
   if (/no test cases generated/.test(lower)) {
     return {
       code: "GEN/02 · EMPTY-RESULT",
@@ -3146,65 +2992,11 @@ function classifyError(
   }
 
   return {
+    ...unclassifiedError(),
     code: "GEN/00 · UNCLASSIFIED",
-    title: "Something went wrong",
-    icon: AlertCircleIcon,
-    tone: "unknown",
-    why: "The run failed before we could route it into a specific recovery path. The raw message from the underlying SDK is below — paste it into an issue if it keeps happening.",
     steps: ["Use “Back to input” to return to the form — your spec is preserved — then run again."],
   };
 }
-
-function capitalize(s: string): string {
-  return s.length === 0 ? s : s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-const TONE_THEME: Record<
-  ErrorClass["tone"],
-  {
-    rail: string;
-    iconBg: string;
-    iconFg: string;
-    codeText: string;
-    dot: string;
-  }
-> = {
-  auth: {
-    rail: "border-amber-500/30 from-amber-500/[0.06]",
-    iconBg: "bg-amber-500/10 ring-amber-500/30",
-    iconFg: "text-amber-500 dark:text-amber-400",
-    codeText: "text-amber-600 dark:text-amber-300",
-    dot: "bg-amber-500",
-  },
-  config: {
-    rail: "border-sky-500/30 from-sky-500/[0.06]",
-    iconBg: "bg-sky-500/10 ring-sky-500/30",
-    iconFg: "text-sky-500 dark:text-sky-400",
-    codeText: "text-sky-600 dark:text-sky-300",
-    dot: "bg-sky-500",
-  },
-  network: {
-    rail: "border-orange-500/30 from-orange-500/[0.06]",
-    iconBg: "bg-orange-500/10 ring-orange-500/30",
-    iconFg: "text-orange-500 dark:text-orange-400",
-    codeText: "text-orange-600 dark:text-orange-300",
-    dot: "bg-orange-500",
-  },
-  validation: {
-    rail: "border-violet-500/30 from-violet-500/[0.06]",
-    iconBg: "bg-violet-500/10 ring-violet-500/30",
-    iconFg: "text-violet-500 dark:text-violet-400",
-    codeText: "text-violet-600 dark:text-violet-300",
-    dot: "bg-violet-500",
-  },
-  unknown: {
-    rail: "border-destructive/40 from-destructive/[0.06]",
-    iconBg: "bg-destructive/10 ring-destructive/30",
-    iconFg: "text-destructive",
-    codeText: "text-destructive",
-    dot: "bg-destructive",
-  },
-};
 
 function ErrorPhase() {
   const error = useGenerationSession((s) => s.error);
@@ -3212,7 +3004,6 @@ function ErrorPhase() {
   const tryAgain = useGenerationSession((s) => s.tryAgain);
   const startNew = useGenerationSession((s) => s.startNew);
   const resumable = useGenerationSession((s) => s.resumable);
-  const stepCap = useGenerationSession((s) => s.stepCap);
   const resumeAnalyze = useGenerationSession((s) => s.resumeAnalyze);
   // Is there anything in the form worth protecting from an accidental wipe?
   // Drives whether "Start over" confirms first — the user lost their spec to
@@ -3239,114 +3030,13 @@ function ErrorPhase() {
       }),
     [message, errorPhase, resumable?.outcome?.kind],
   );
-  const theme = TONE_THEME[klass.tone];
 
   return (
-    <div className="flex flex-col gap-3">
-      {/* Header band — terminal-flavored classification badge. Matches the
-          rest of the app's editor density: a dotted status indicator + a
-          monospace code + the human-readable title. */}
-      <div
-        className={cn(
-          "overflow-hidden rounded-md border bg-gradient-to-br to-transparent",
-          theme.rail,
-        )}
-      >
-        <div className="flex items-center gap-1.5 border-b border-border/40 bg-background/40 px-3 py-1.5 backdrop-blur-sm">
-          <span
-            className={cn(
-              "h-1.5 w-1.5 shrink-0 rounded-full shadow-[0_0_6px_-1px]",
-              theme.dot,
-            )}
-          />
-          <span
-            className={cn(
-              "font-mono text-[10px] font-medium tracking-wider uppercase",
-              theme.codeText,
-            )}
-          >
-            {klass.code}
-          </span>
-          <span className="ml-auto font-mono text-[10px] text-muted-foreground/60">
-            {errorPhase ? `phase: ${errorPhase}` : "phase: —"}
-          </span>
-        </div>
-
-        <div className="flex items-start gap-3 px-4 py-4">
-          <div
-            className={cn(
-              "flex size-9 shrink-0 items-center justify-center rounded-md ring-1",
-              theme.iconBg,
-            )}
-          >
-            <HugeiconsIcon
-              icon={klass.icon}
-              size={18}
-              strokeWidth={1.5}
-              className={theme.iconFg}
-            />
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-[13px] font-semibold leading-tight">
-              {klass.title}
-            </p>
-            <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">
-              {klass.why}
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* Steps — numbered, terminal-style list. Looks like a debug protocol,
-          which is what it is. */}
-      {klass.steps.length > 0 ? (
-        <div className="rounded-md border border-border/60 bg-card/40">
-          <div className="flex items-center gap-1.5 border-b border-border/40 bg-foreground/[0.02] px-3 py-1.5">
-            <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70">
-              next steps
-            </span>
-            <span className="ml-auto font-mono text-[10px] text-muted-foreground/60">
-              {klass.steps.length.toString().padStart(2, "0")} action
-              {klass.steps.length === 1 ? "" : "s"}
-            </span>
-          </div>
-          <ol className="flex flex-col">
-            {klass.steps.map((step, i) => (
-              <li
-                key={i}
-                className={cn(
-                  "grid grid-cols-[auto_1fr] items-start gap-2.5 px-3 py-2",
-                  i < klass.steps.length - 1 && "border-b border-border/30",
-                )}
-              >
-                <span className="mt-0.5 font-mono text-[10px] text-muted-foreground/70">
-                  {(i + 1).toString().padStart(2, "0")}
-                </span>
-                <span className="text-[11.5px] leading-relaxed text-foreground/85">
-                  {step}
-                </span>
-              </li>
-            ))}
-          </ol>
-        </div>
-      ) : null}
-
-      {/* Raw error excerpt — collapsed by default so the recovery panel
-          stays the focal point. Power users can still copy the original. */}
-      <details className="rounded-md border border-border/60 bg-card/40">
-        <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-1.5 text-[10.5px] font-mono uppercase tracking-wider text-muted-foreground/70 hover:text-foreground">
-          <HugeiconsIcon
-            icon={AlertCircleIcon}
-            size={10}
-            strokeWidth={1.75}
-          />
-          show raw error
-        </summary>
-        <pre className="max-h-40 overflow-auto whitespace-pre-wrap border-t border-border/30 bg-background/40 px-3 py-2 font-mono text-[10.5px] leading-relaxed text-muted-foreground">
-          {message}
-        </pre>
-      </details>
-
+    <RunErrorPanel
+      klass={klass}
+      metaLabel={errorPhase ? `phase: ${errorPhase}` : "phase: —"}
+      raw={message}
+    >
       {/* Action row — primary remediation on the left (when there is one)
           and the two recovery actions on the right. Retry preserves the
           form; Start over is the explicit "I'm done with this spec" path. */}
@@ -3360,14 +3050,9 @@ function ErrorPhase() {
                   Resume run
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="top" className="max-w-[260px] text-[11px]">
-                {`Continue from step ${resumable.stepsUsed} of ${
-                  stepCap ?? SURFACE_STEP_CAPS.generator
-                }${
-                  resumable.totalTokens != null
-                    ? `, ~${resumable.totalTokens.toLocaleString()} tokens already spent`
-                    : ""
-                } — completed work isn't re-run, so resuming is usually much cheaper than starting over. Uses the same model as the original run.`}
+              <TooltipContent side="top" className="max-w-[240px] text-[11px]">
+                Continues where it stopped with the original model — finished
+                steps aren't re-run.
               </TooltipContent>
             </Tooltip>
           ) : null}
@@ -3451,7 +3136,7 @@ function ErrorPhase() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </RunErrorPanel>
   );
 }
 

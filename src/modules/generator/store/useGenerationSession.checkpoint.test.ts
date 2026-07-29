@@ -7,11 +7,30 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...a: unknown[]) => invoke(...a),
 }));
 
+// The engine is mocked ONLY for the resume-replay test below — everything else
+// in the module (prepare, describeGeneration, …) stays real.
+const executeQaAnalystRun = vi.fn();
+vi.mock("../lib/qaAnalystRun", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/qaAnalystRun")>();
+  return {
+    ...actual,
+    executeQaAnalystRun: (...a: unknown[]) =>
+      (executeQaAnalystRun as (...x: unknown[]) => unknown)(...a),
+  };
+});
+
 import { createGenerationSessionStore } from "./useGenerationSession";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import type { GeneratorCheckpointV1 } from "@/modules/ai/lib/checkpointApi";
-import type { ModelId } from "@/modules/ai/config";
+import {
+  FINISH_NOW_NUDGE,
+  type GeneratorCheckpointV1,
+} from "@/modules/ai/lib/checkpointApi";
+import { RESUME_TOPUP_STEPS, type ModelId } from "@/modules/ai/config";
+import type {
+  ExecuteAnalystOptions,
+  PreparedAnalystRun,
+} from "../lib/qaAnalystRun";
 
 /** Commands the run actually issued, in order. */
 function invokedCommands(): string[] {
@@ -20,6 +39,8 @@ function invokedCommands(): string[] {
 
 beforeEach(() => {
   invoke.mockClear();
+  invoke.mockResolvedValue(undefined);
+  executeQaAnalystRun.mockReset();
   // Pre-hydrated keys so ensureApiKeys resolves without touching the keychain,
   // and no best-practice files so that loader short-circuits too — leaving the
   // prefetch as pure awaits with no IPC of their own.
@@ -90,6 +111,86 @@ function mkCheckpointPayload(
     ...partial,
   };
 }
+
+// The point of resume: the prior attempt's transcript rides along so its steps
+// are never re-run (and never re-billed as fresh tool-loop work). This pins the
+// store→engine handoff; taskRunner.test.ts pins engine→request.
+describe("useGenerationSession — resumeAnalyze replays the paid-for transcript", () => {
+  it("hands the engine the persisted transcript + top-up budget, with no ADO re-prefetch", async () => {
+    const store = createGenerationSessionStore();
+    const messages = [
+      { role: "assistant" as const, content: "I already read the relevant files." },
+    ];
+    const payload = mkCheckpointPayload({
+      transcript: { messages, stepsUsed: 5, usage: { totalTokens: 1234 } },
+    });
+    invoke.mockImplementation(async (cmd: unknown) =>
+      cmd === "ai_checkpoint_get"
+        ? {
+            runId: payload.runId,
+            surface: "generator",
+            cwd: null,
+            payload: JSON.stringify(payload),
+            createdAt: payload.createdAt,
+            updatedAt: "2026-06-11T00:05:00.000Z",
+          }
+        : undefined,
+    );
+    executeQaAnalystRun.mockResolvedValue({
+      batch: {
+        cases: [
+          {
+            title: "Reset password happy path",
+            description: "",
+            steps: [{ action: "a", expected: "b" }],
+            tags: [],
+            rationale: "",
+            sourceLinks: [],
+          },
+        ],
+        bugs: [],
+      },
+      rawText: "{}",
+      durationMs: 1,
+      ok: true,
+      stepsUsed: 1,
+      usage: {},
+    });
+    store.setState({
+      phase: "input",
+      runId: payload.runId,
+      resumable: {
+        stepsUsed: 5,
+        totalTokens: 1234,
+        updatedAt: "2026-06-11T00:05:00.000Z",
+        outcome: { at: "2026-06-11T00:05:00.000Z", kind: "step_cap" },
+      },
+    });
+
+    await store.getState().resumeAnalyze();
+
+    expect(executeQaAnalystRun).toHaveBeenCalledTimes(1);
+    const [prepared, opts] = executeQaAnalystRun.mock.calls[0] as [
+      PreparedAnalystRun,
+      ExecuteAnalystOptions,
+    ];
+    // The checkpointed prompt is reused verbatim — no re-assembly.
+    expect(prepared.userPrompt).toBe("prompt");
+    // The transcript IS the savings: prior steps ride along instead of
+    // being re-run. A step-cap resume also gets the smaller top-up budget
+    // and the explicit "finish now" user turn appended after the transcript.
+    const resume = opts.resumeMessages ?? [];
+    expect(resume[0]).toEqual(messages[0]);
+    expect(resume[resume.length - 1]).toEqual({
+      role: "user",
+      content: FINISH_NOW_NUDGE,
+    });
+    expect(opts.maxSteps).toBe(RESUME_TOPUP_STEPS);
+    // Resume never re-reads the suite — the paid-for prompt already has it.
+    expect(invokedCommands()).not.toContain("ado_list_suite_cases");
+    expect(store.getState().phase).toBe("review");
+  });
+});
 
 describe("useGenerationSession — resumeAnalyze against a retired model", () => {
   it("errors and clears resumable instead of leaving the Resume button looping, and keeps the checkpoint row", async () => {
