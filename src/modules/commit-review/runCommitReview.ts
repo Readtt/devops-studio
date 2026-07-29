@@ -2,9 +2,21 @@
 // Both stages funnel through the shared task runner with read-only tools at
 // temperature 0. See commitReviewPrompts.ts for the strategy rationale.
 
-import { SURFACE_STEP_CAPS, type ModelId } from "@/modules/ai/config";
+import {
+  RESUME_TOPUP_STEPS,
+  SURFACE_STEP_CAPS,
+  type ModelId,
+} from "@/modules/ai/config";
 import { type ProviderKeys } from "@/modules/ai/lib/keyring";
-import { runTask, streamTask } from "@/modules/ai/lib/taskRunner";
+import {
+  runTask,
+  streamTask,
+  type TaskCheckpoint,
+} from "@/modules/ai/lib/taskRunner";
+// The nudge text only — the engine never reads or writes a checkpoint itself;
+// it reports through callbacks and the store owns persistence.
+import { FINISH_NOW_NUDGE } from "@/modules/ai/lib/checkpointApi";
+import type { ModelMessage } from "ai";
 import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
 import {
@@ -19,6 +31,7 @@ import {
   Stage1Schema,
   Stage2Schema,
   compareFindings,
+  type CandidateFinding,
   type Finding,
 } from "./schema";
 import {
@@ -27,6 +40,18 @@ import {
 } from "./commitReviewPrompts";
 
 export type RunStage = "investigate" | "verify";
+
+/** Where a previous attempt died, and what it already bought. */
+export type CommitReviewResume = {
+  stage: RunStage;
+  /** Present ⇒ stage 1 already parsed: skip investigate entirely. */
+  stage1Candidates: CandidateFinding[] | null;
+  /** Transcript for the in-flight stage (null ⇒ restart that stage's call
+   *  from its rebuilt prompt alone). */
+  resumeMessages: ModelMessage[] | null;
+  /** Append FINISH_NOW_NUDGE and run the resumed stage with RESUME_TOPUP_STEPS. */
+  stepCapNudge?: boolean;
+};
 
 export type RunCommitReviewInput = {
   modelId: ModelId;
@@ -46,15 +71,24 @@ export type RunCommitReviewInput = {
   onToolEvent?: (e: ActivityEntry) => void;
   /** Fired as the engine moves between stages so the pane can label the wait. */
   onStage?: (stage: RunStage) => void;
+  /** Continue a run that died mid-pipeline instead of paying for it again. */
+  resume?: CommitReviewResume;
+  /** Fired after each completed agentic step, tagged with the stage it belongs
+   *  to so the store knows where a resume would pick up. */
+  onCheckpoint?: (stage: RunStage, cp: TaskCheckpoint) => void;
+  /** Fired the moment stage 1 parses, BEFORE verify starts. */
+  onStage1Candidates?: (candidates: CandidateFinding[]) => void;
   signal?: AbortSignal;
 };
 
 export type RunCommitReviewResult =
   | { ok: true; findings: Finding[]; durationMs: number }
   | {
-      /** Stage 1 didn't return parseable findings — surface the raw text. */
+      /** Stage 1 didn't return usable findings — surface the raw text.
+       *  `step_cap` means the loop never got to write them (resumable);
+       *  the other two mean it answered with something unusable. */
       ok: false;
-      reason: "schema_violation";
+      reason: "schema_violation" | "empty" | "step_cap";
       rawText: string;
       durationMs: number;
     };
@@ -84,39 +118,88 @@ export async function runCommitReview(
   const contextImages = collectContextImages(input.contextBlocks);
   const attachments = [...input.attachments, ...contextImages];
 
-  // --- Stage 1: investigate ------------------------------------------------
-  input.onStage?.("investigate");
-  const stage1 = await streamTask({
-    modelId: input.modelId,
-    keys: input.keys,
-    local: input.local ?? {},
-    systemPrompt: investigateSystemPrompt(input.diffs.length),
-    customInstructions: input.customInstructions,
-    prompt: buildInvestigatePrompt(input),
-    attachments,
-    tools: tools ?? null,
-    temperature: 0,
-    maxSteps: SURFACE_STEP_CAPS.commitReviewInvestigate,
-    schema: Stage1Schema,
-    onToolEvent: input.onToolEvent,
-    signal: input.signal,
-    // We don't render the streamed JSON; findings appear when the run resolves.
-    onText: () => {},
-  });
-
-  if (!stage1.ok) {
+  // A verify-stage resume is only meaningful with the candidates it was
+  // verifying: without them stage 1 has to run again, and its freshly-minted
+  // ids would never join back to the old transcript's verdicts.
+  const resume =
+    input.resume?.stage === "verify" && !input.resume.stage1Candidates
+      ? undefined
+      : input.resume;
+  /** Budget + continuation transcript for `stage`. Only the stage the resume
+   *  targets continues anything; the other one runs from scratch as always. */
+  const resumeArgs = (
+    stage: RunStage,
+    surfaceCap: number,
+  ): { maxSteps: number; resumeMessages: ModelMessage[] | undefined } => {
+    if (!resume || resume.stage !== stage) {
+      return { maxSteps: surfaceCap, resumeMessages: undefined };
+    }
+    const prior = resume.resumeMessages ?? undefined;
+    if (!resume.stepCapNudge) {
+      return { maxSteps: surfaceCap, resumeMessages: prior };
+    }
     return {
-      ok: false,
-      reason: "schema_violation",
-      rawText: stage1.text,
-      durationMs: stage1.durationMs,
+      maxSteps: RESUME_TOPUP_STEPS,
+      resumeMessages: [
+        ...(prior ?? []),
+        { role: "user", content: FINISH_NOW_NUDGE },
+      ],
     };
+  };
+
+  let candidates: CandidateFinding[];
+  // 0 on a resume that skips investigate — this call didn't pay for it.
+  let stage1Ms = 0;
+
+  if (resume?.stage === "verify" && resume.stage1Candidates) {
+    candidates = resume.stage1Candidates;
+  } else {
+    // --- Stage 1: investigate ----------------------------------------------
+    input.onStage?.("investigate");
+    const stage1Args = resumeArgs(
+      "investigate",
+      SURFACE_STEP_CAPS.commitReviewInvestigate,
+    );
+    const stage1 = await streamTask({
+      modelId: input.modelId,
+      keys: input.keys,
+      local: input.local ?? {},
+      systemPrompt: investigateSystemPrompt(input.diffs.length),
+      customInstructions: input.customInstructions,
+      prompt: buildInvestigatePrompt(input),
+      attachments,
+      tools: tools ?? null,
+      temperature: 0,
+      maxSteps: stage1Args.maxSteps,
+      resumeMessages: stage1Args.resumeMessages,
+      schema: Stage1Schema,
+      onToolEvent: input.onToolEvent,
+      onCheckpoint: (cp) => input.onCheckpoint?.("investigate", cp),
+      signal: input.signal,
+      // We don't render the streamed JSON; findings appear when the run resolves.
+      onText: () => {},
+    });
+
+    if (!stage1.ok) {
+      return {
+        ok: false,
+        reason: stage1.reason,
+        rawText: stage1.text,
+        durationMs: stage1.durationMs,
+      };
+    }
+
+    candidates = stage1.object.findings;
+    stage1Ms = stage1.durationMs;
+    // The one moment the expensive investigate pass becomes durable — fired
+    // before the (independently failable) verify pass, and before the
+    // clean-commit early return, because an empty parse is knowledge too.
+    input.onStage1Candidates?.(candidates);
   }
 
-  const candidates = stage1.object.findings;
   // Clean commit — skip the verify pass entirely (no false positives to filter).
   if (candidates.length === 0) {
-    return { ok: true, findings: [], durationMs: stage1.durationMs };
+    return { ok: true, findings: [], durationMs: stage1Ms };
   }
 
   // --- Stage 2: verify / filter -------------------------------------------
@@ -127,6 +210,7 @@ export async function runCommitReview(
   // investigate pass is the common case) — degrades to returning them
   // unverified instead of torching the whole run. Only a user abort propagates.
   let stage2;
+  const stage2Args = resumeArgs("verify", SURFACE_STEP_CAPS.commitReviewVerify);
   try {
     stage2 = await runTask({
       modelId: input.modelId,
@@ -138,9 +222,11 @@ export async function runCommitReview(
       attachments,
       tools: tools ?? null,
       temperature: 0,
-      maxSteps: SURFACE_STEP_CAPS.commitReviewVerify,
+      maxSteps: stage2Args.maxSteps,
+      resumeMessages: stage2Args.resumeMessages,
       schema: Stage2Schema,
       onToolEvent: input.onToolEvent,
+      onCheckpoint: (cp) => input.onCheckpoint?.("verify", cp),
       signal: input.signal,
     });
   } catch (e) {
@@ -149,10 +235,10 @@ export async function runCommitReview(
     const findings: Finding[] = candidates
       .map((c) => ({ ...c, verified: false }))
       .sort(compareFindings);
-    return { ok: true, findings, durationMs: stage1.durationMs };
+    return { ok: true, findings, durationMs: stage1Ms };
   }
 
-  const totalMs = stage1.durationMs + stage2.durationMs;
+  const totalMs = stage1Ms + stage2.durationMs;
 
   // Verify failed to parse → fall back to the unfiltered candidates rather
   // than dropping everything; the confidence filter in the UI still applies.

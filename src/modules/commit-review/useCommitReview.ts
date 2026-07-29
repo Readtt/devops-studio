@@ -4,7 +4,12 @@
 // explicit stop() or tab close aborts.
 
 import { create } from "zustand";
-import { isKnownModelId, supportsVision, type ModelId } from "@/modules/ai/config";
+import {
+  isKnownModelId,
+  RESUME_TOPUP_STEPS,
+  supportsVision,
+  type ModelId,
+} from "@/modules/ai/config";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import {
   localProviderConfig,
@@ -13,6 +18,19 @@ import {
 import { useTabsStore } from "@/modules/tabs/store/useTabsStore";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import { bugsToContextBlocks } from "@/modules/ado/lib/bugContextBlock";
+import {
+  createCheckpointWriter,
+  deleteCheckpoint,
+  getCheckpoint,
+  sanitizeTranscriptMessages,
+  type CheckpointOutcome,
+  type CheckpointWriter,
+  type CommitReviewCheckpointV1,
+  type TranscriptCheckpoint,
+} from "@/modules/ai/lib/checkpointApi";
+import { classifyForResume } from "@/modules/ai/lib/errorClass";
+import { sumUsage } from "@/modules/generator/lib/resumePolicy";
+import type { TaskCheckpoint } from "@/modules/ai/lib/taskRunner";
 import type { ContextBlock } from "@/modules/ai/lib/contextBlocks";
 import type { Attachment } from "@/components/chat/attachments";
 import type { WorkItemRef } from "@/modules/ado";
@@ -31,8 +49,12 @@ import {
   getCommitReview,
   type CommitReviewStatus,
 } from "./commitReviewApi";
-import { runCommitReview, type RunStage } from "./runCommitReview";
-import type { Finding } from "./schema";
+import {
+  runCommitReview,
+  type RunCommitReviewResult,
+  type RunStage,
+} from "./runCommitReview";
+import type { CandidateFinding, Finding } from "./schema";
 import type { AppliedPatchRecord, AppliedPatchesMap } from "./patchSchema";
 
 type Status = CommitReviewStatus | "idle";
@@ -79,6 +101,16 @@ export type CommitReviewSlice = {
   createdAt: string | null;
   durationMs: number | null;
   modelId: ModelId | null;
+  /** Set when a failed / cancelled run left a checkpoint worth continuing.
+   *  Null when there's nothing to resume (never ran, ran to completion, or the
+   *  model answered — badly — so a resume would just re-fail). */
+  resumable: {
+    stage: RunStage;
+    stepsUsed: number;
+    totalTokens: number | null;
+    updatedAt: string;
+    outcome: CheckpointOutcome | null;
+  } | null;
 };
 
 type State = {
@@ -112,6 +144,10 @@ type State = {
   removeWorkItem: (tabId: number, id: number) => void;
   setModel: (tabId: number, modelId: ModelId | null) => void;
   run: (tabId: number) => Promise<void>;
+  /** Continue the last run from its persisted checkpoint: same runId, the diffs
+   *  it was snapshotted with, and — when stage 1 already parsed — no second
+   *  investigate pass. */
+  resume: (tabId: number) => Promise<void>;
   stop: (tabId: number) => void;
   applyFix: (tabId: number, findingId: string, record: AppliedPatchRecord) => void;
   /** Abort any in-flight run and drop the per-tab slice. Called when the tab
@@ -151,8 +187,10 @@ export function orderShas(shas: string[], commits: CommitMeta[]): string[] {
   return [...new Set(shas)].sort((a, b) => rank(a) - rank(b));
 }
 
+type SetState = (fn: (s: State) => Partial<State>) => void;
+
 function patch(
-  set: (fn: (s: State) => Partial<State>) => void,
+  set: SetState,
   tabId: number,
   partial: Partial<CommitReviewSlice>,
 ) {
@@ -163,6 +201,164 @@ function patch(
     next.set(tabId, { ...curr, ...partial });
     return { byTab: next };
   });
+}
+
+/** Activity log that keeps a local mirror alongside the slice's copy: a run
+ *  whose tab was closed mid-flight (disposeTab drops the slice) still has to
+ *  write its log into the terminal checkpoint. */
+function activitySink(set: SetState, tabId: number, seed: ActivityEntry[]) {
+  let activity = seed;
+  return {
+    get current(): ActivityEntry[] {
+      return activity;
+    },
+    /** Append, or replace an earlier entry with the same id (a tool_use later
+     *  completed by its tool_result, carrying duration + output). */
+    onEvent(e: ActivityEntry): void {
+      const i = activity.findIndex((x) => x.id === e.id);
+      activity =
+        i >= 0
+          ? activity.map((x, n) => (n === i ? { ...x, ...e } : x))
+          : [...activity, e];
+      patch(set, tabId, { activity });
+    },
+  };
+}
+
+/** Fold one runner checkpoint into a persistable transcript, carrying the
+ *  totals earlier attempts already accrued. Null when the messages can't
+ *  survive a JSON round-trip — the caller then persists inputs-only rather
+ *  than a transcript that would fail to parse on the way back in. */
+function toTranscript(
+  cp: TaskCheckpoint,
+  base: TranscriptCheckpoint | null,
+): TranscriptCheckpoint | null {
+  const messages = sanitizeTranscriptMessages(cp.messages);
+  if (!messages) return null;
+  return {
+    messages,
+    stepsUsed: (base?.stepsUsed ?? 0) + cp.stepsUsed,
+    usage: sumUsage(base?.usage, cp.usage),
+  };
+}
+
+/** The resume affordance derived from the payload we just flushed, so what the
+ *  UI offers and what's actually on disk can't drift. */
+function resumableFrom(
+  payload: CommitReviewCheckpointV1,
+  outcome: CheckpointOutcome,
+): NonNullable<CommitReviewSlice["resumable"]> {
+  return {
+    stage: payload.stage,
+    stepsUsed: payload.transcript?.stepsUsed ?? 0,
+    totalTokens: payload.transcript?.usage?.totalTokens ?? null,
+    updatedAt: outcome.at,
+    outcome,
+  };
+}
+
+/** A step finishing after the run already settled — or after its tab closed —
+ *  must not queue a live payload on top of the terminal outcome just written. */
+function isLiveRun(get: () => State, tabId: number, runId: string): boolean {
+  const s = get().byTab.get(tabId);
+  return !!s && s.busy && s.runId === runId;
+}
+
+/** The checkpoint handles a live run carries around, so run() and resume() can
+ *  share one set of terminal paths. */
+type CheckpointCtx = {
+  writer: CheckpointWriter;
+  buildPayload: (outcome: CheckpointOutcome | null) => CommitReviewCheckpointV1;
+};
+
+/** Terminal handling for a run that RESOLVED — shared by run() and resume(). */
+async function settleResult(
+  set: SetState,
+  tabId: number,
+  cp: CheckpointCtx,
+  result: RunCommitReviewResult,
+): Promise<void> {
+  if (!result.ok) {
+    const at = new Date().toISOString();
+    // A loop that burned its whole budget still calling tools never reached the
+    // point of writing its findings — continuable, unlike a model that answered
+    // with something unusable (resuming that transcript just re-fails).
+    const stepCapped = result.reason === "step_cap";
+    const outcome: CheckpointOutcome = { at, kind: result.reason };
+    const payload = cp.buildPayload(outcome);
+    patch(set, tabId, {
+      busy: false,
+      abort: null,
+      stage: null,
+      status: "error",
+      durationMs: result.durationMs,
+      error: stepCapped
+        ? `The review hit its step budget before it could write its findings. Resume grants ${RESUME_TOPUP_STEPS} more steps and asks the model to finish with what it has already read.`
+        : "The model didn't return findings in the expected format. Re-run, or try a more capable model.",
+      schemaViolationRaw: stepCapped ? null : result.rawText,
+      resumable: stepCapped ? resumableFrom(payload, outcome) : null,
+    });
+    await cp.writer.flush(payload);
+    await persistRow(tabId, {
+      status: "error",
+      error: result.reason,
+    }).catch(() => {});
+    return;
+  }
+
+  patch(set, tabId, {
+    busy: false,
+    abort: null,
+    stage: null,
+    status: "done",
+    findings: result.findings,
+    durationMs: result.durationMs,
+    resumable: null,
+  });
+  await persistRow(tabId, { status: "done" }).catch(() => {});
+  // Only after the row landed: a crash between the two must leave the
+  // checkpoint standing, never a window where neither copy exists.
+  await cp.writer.delete();
+  window.dispatchEvent(new CustomEvent("devops-studio:commit-review-updated"));
+}
+
+/** Terminal handling for a run that THREW — a user abort or a real failure.
+ *  Both keep their checkpoint and offer a resume. `cp` is null only for a
+ *  failure before the run reached the provider (nothing was spent). */
+async function settleFailure(
+  set: SetState,
+  tabId: number,
+  cp: CheckpointCtx | null,
+  e: unknown,
+): Promise<void> {
+  const aborted = (e as { name?: string } | null)?.name === "AbortError";
+  if (!aborted) console.error("[commit-review] run failed:", e);
+  const at = new Date().toISOString();
+  const outcome: CheckpointOutcome = aborted
+    ? { at, kind: "cancelled" }
+    : {
+        at,
+        kind: "error",
+        errorKind: classifyForResume(e).kind,
+        message: errStr(e),
+      };
+  // Built BEFORE the flush and from the run's own scope, so a tab closed
+  // mid-run (disposeTab aborts, then drops the slice) still checkpoints.
+  const payload = cp?.buildPayload(outcome) ?? null;
+  patch(set, tabId, {
+    busy: false,
+    abort: null,
+    stage: null,
+    status: aborted ? "cancelled" : "error",
+    error: aborted ? null : errStr(e),
+    resumable: payload ? resumableFrom(payload, outcome) : null,
+  });
+  if (cp && payload) await cp.writer.flush(payload);
+  await persistRow(
+    tabId,
+    aborted ? { status: "cancelled" } : { status: "error", error: errStr(e) },
+  ).catch(() => {});
+  window.dispatchEvent(new CustomEvent("devops-studio:commit-review-updated"));
 }
 
 function emptySlice(cwd: string, modelId: ModelId | null): CommitReviewSlice {
@@ -193,6 +389,7 @@ function emptySlice(cwd: string, modelId: ModelId | null): CommitReviewSlice {
     createdAt: null,
     durationMs: null,
     modelId,
+    resumable: null,
   };
 }
 
@@ -246,6 +443,44 @@ export const useCommitReview = create<State>((set, get) => ({
         }
       } catch (e) {
         console.warn("[commit-review] rehydrate failed:", e);
+      }
+
+      // The row is a thin record of the RESULT; a run that died mid-flight also
+      // left a checkpoint holding the inputs it was working from, the activity
+      // log, and where to pick up. Restore what the row can't carry, and offer
+      // the resume. (A completed run deleted its checkpoint — nothing here.)
+      try {
+        const cp = await getCheckpoint(rehydrateRunId);
+        if (cp && cp.payload.surface === "commit-review") {
+          const p = cp.payload;
+          const curr = get().byTab.get(tabId);
+          const spent = p.lastOutcome?.kind;
+          patch(set, tabId, {
+            activity: curr?.activity.length ? curr.activity : p.activity,
+            context: curr?.context ? curr.context : p.inputs.context,
+            attachments: curr?.attachments.length
+              ? curr.attachments
+              : p.inputs.attachments,
+            workItems: curr?.workItems.length
+              ? curr.workItems
+              : p.inputs.workItems,
+            // A run that ANSWERED — badly — isn't worth resuming: continuing a
+            // transcript that ends in garbage just re-fails. Re-run is the
+            // right affordance there.
+            resumable:
+              spent === "schema_violation" || spent === "empty"
+                ? null
+                : {
+                    stage: p.stage,
+                    stepsUsed: p.transcript?.stepsUsed ?? 0,
+                    totalTokens: p.transcript?.usage?.totalTokens ?? null,
+                    updatedAt: cp.updatedAt,
+                    outcome: p.lastOutcome,
+                  },
+          });
+        }
+      } catch (e) {
+        console.warn("[commit-review] checkpoint probe failed:", e);
       }
     }
 
@@ -578,6 +813,8 @@ export const useCommitReview = create<State>((set, get) => ({
     const prefs = usePreferencesStore.getState();
     const chat = useChatStore.getState();
     const effectiveModelId = slice.modelId ?? prefs.defaultModelId;
+    // Read before the claim overwrites it: whatever this run supersedes.
+    const prevRunId = slice.runId;
 
     // Claim the run atomically: a second run() firing in the same tick (a fast
     // double-click before the button re-renders to Stop) must not overwrite the
@@ -602,28 +839,28 @@ export const useCommitReview = create<State>((set, get) => ({
         runId,
         createdAt,
         durationMs: null,
+        resumable: null,
       });
       return { byTab: next };
     });
     if (!started) return;
 
+    // The superseded run's resume point can never be reached again — nothing
+    // points at that runId once this one takes over, so don't orphan its row.
+    if (prevRunId && prevRunId !== runId) {
+      void deleteCheckpoint(prevRunId).catch(() => {});
+    }
+
     // Persist the running row BEFORE the model call so a crash/refresh leaves a
     // durable record (the startup sweep flips it to "interrupted").
     await persistRow(tabId, { status: "running" }).catch(() => {});
 
-    const mergeToolEvent = (e: ActivityEntry) => {
-      set((s) => {
-        const next = new Map(s.byTab);
-        const curr = next.get(tabId);
-        if (!curr) return s;
-        const prior = curr.activity;
-        const idx = prior.findIndex((x) => x.id === e.id);
-        const activity =
-          idx >= 0 ? prior.map((x, i) => (i === idx ? { ...x, ...e } : x)) : [...prior, e];
-        next.set(tabId, { ...curr, activity });
-        return { byTab: next };
-      });
-    };
+    const sink = activitySink(set, tabId, []);
+    // Out here so the catch can flush a terminal outcome: a failure BEFORE the
+    // provider was touched (best-practices, work items, keys) spent nothing, so
+    // it leaves no checkpoint and offers no resume.
+    let writer: CheckpointWriter | null = null;
+    let buildPayload: CheckpointCtx["buildPayload"] | null = null;
 
     try {
       const visionCapable = supportsVision(effectiveModelId);
@@ -649,75 +886,239 @@ export const useCommitReview = create<State>((set, get) => ({
       }
       contextBlocks.push(...bpBlocks);
 
+      // Everything above is recoverable input; from here on the run costs
+      // money, so the resume point goes to disk BEFORE the provider is touched.
+      const w = createCheckpointWriter({
+        runId,
+        surface: "commit-review",
+        cwd: slice.cwd,
+        createdAt,
+      });
+      writer = w;
+      const basePayload: CommitReviewCheckpointV1 = {
+        v: 1,
+        surface: "commit-review",
+        runId,
+        createdAt,
+        modelId: effectiveModelId,
+        cwd: slice.cwd,
+        sourceRoot: prefs.codeSearchEnabled ? slice.cwd : null,
+        customInstructions: prefs.customInstructions || undefined,
+        inputs: {
+          selectedShas: slice.selectedShas,
+          // The diffs captured above — including the freshly re-read working
+          // tree. A resume replays THESE, never the tree as it is by then.
+          diffs,
+          context: slice.context,
+          attachments: slice.attachments,
+          workItems: slice.workItems,
+          contextBlocks,
+        },
+        stage: "investigate",
+        stage1Candidates: null,
+        activity: [],
+        transcript: null,
+        lastOutcome: null,
+      };
+      let cpStage: RunStage = "investigate";
+      let cpCandidates: CandidateFinding[] | null = null;
+      let transcript: TranscriptCheckpoint | null = null;
+      const build = (
+        outcome: CheckpointOutcome | null,
+      ): CommitReviewCheckpointV1 => ({
+        ...basePayload,
+        stage: cpStage,
+        stage1Candidates: cpCandidates,
+        activity: sink.current,
+        transcript,
+        lastOutcome: outcome,
+      });
+      buildPayload = build;
+      await w.flush(basePayload);
+
       const result = await runCommitReview({
         modelId: effectiveModelId,
         keys: await chat.ensureApiKeys(),
         local: localProviderConfig(prefs),
-        sourceRoot: prefs.codeSearchEnabled ? slice.cwd : null,
+        sourceRoot: basePayload.sourceRoot,
         diffs,
         contextBlocks,
         attachments: slice.attachments,
         customInstructions: prefs.customInstructions || undefined,
-        onToolEvent: mergeToolEvent,
+        onToolEvent: sink.onEvent,
         onStage: (stage) => patch(set, tabId, { stage }),
+        onCheckpoint: (stage, checkpoint) => {
+          cpStage = stage;
+          transcript = toTranscript(checkpoint, null);
+          if (!isLiveRun(get, tabId, runId)) return;
+          w.save(build(null));
+        },
+        onStage1Candidates: (cands) => {
+          cpStage = "verify";
+          cpCandidates = cands;
+          // Verify starts from its own prompt, so the investigate transcript
+          // must not be handed to it on resume.
+          transcript = null;
+          // Flush, not save: this is the moment the investigate spend becomes
+          // durable, and the throttle could otherwise lose it to a crash.
+          void w.flush(build(null));
+        },
         signal: abort.signal,
       });
 
-      if (!result.ok) {
-        patch(set, tabId, {
-          busy: false,
-          abort: null,
-          stage: null,
-          status: "error",
-          durationMs: result.durationMs,
-          error:
-            "The model didn't return findings in the expected format. Re-run, or try a more capable model.",
-          schemaViolationRaw: result.rawText,
-        });
-        await persistRow(tabId, {
-          status: "error",
-          error: "schema_violation",
-        }).catch(() => {});
-        return;
-      }
-
-      patch(set, tabId, {
-        busy: false,
-        abort: null,
-        stage: null,
-        status: "done",
-        findings: result.findings,
-        durationMs: result.durationMs,
-      });
-      await persistRow(tabId, { status: "done" }).catch(() => {});
-      window.dispatchEvent(new CustomEvent("devops-studio:commit-review-updated"));
+      await settleResult(set, tabId, { writer: w, buildPayload: build }, result);
     } catch (e) {
-      const aborted = (e as { name?: string } | null)?.name === "AbortError";
-      if (aborted) {
-        patch(set, tabId, {
-          busy: false,
-          abort: null,
-          stage: null,
-          status: "cancelled",
-        });
-        await persistRow(tabId, { status: "cancelled" }).catch(() => {});
-        window.dispatchEvent(
-          new CustomEvent("devops-studio:commit-review-updated"),
-        );
-        return;
-      }
-      console.error("[commit-review] run failed:", e);
-      patch(set, tabId, {
-        busy: false,
-        abort: null,
-        stage: null,
-        status: "error",
-        error: errStr(e),
-      });
-      await persistRow(tabId, { status: "error", error: errStr(e) }).catch(
-        () => {},
+      await settleFailure(
+        set,
+        tabId,
+        writer && buildPayload ? { writer, buildPayload } : null,
+        e,
       );
-      window.dispatchEvent(new CustomEvent("devops-studio:commit-review-updated"));
+    }
+  },
+
+  resume: async (tabId) => {
+    const slice = get().byTab.get(tabId);
+    if (!slice || slice.busy || !slice.runId || !slice.resumable) return;
+    const runId = slice.runId;
+
+    let row: Awaited<ReturnType<typeof getCheckpoint>> = null;
+    try {
+      row = await getCheckpoint(runId);
+    } catch (e) {
+      console.warn("[commit-review] couldn't read the checkpoint:", e);
+    }
+    if (!row || row.payload.surface !== "commit-review") {
+      patch(set, tabId, { resumable: null });
+      return;
+    }
+    const payload = row.payload;
+    // The transcript is pinned to the model that produced it, so a retired id
+    // can't be resumed. Keep the checkpoint (its inputs are still good) but
+    // drop the affordance — clicking Resume could only ever fail.
+    if (!isKnownModelId(payload.modelId)) {
+      patch(set, tabId, {
+        error: "This run's model is no longer available — re-run from scratch.",
+        resumable: null,
+      });
+      return;
+    }
+
+    // Snapshotted diffs, keyed for the slice. Seeding these (and the selection)
+    // as part of the claim is what keeps a resume off the live working tree AND
+    // satisfies persistRow's no-diffs early return before the row goes running.
+    const snapshotDiffs: Record<string, CommitDiff> = {};
+    for (const d of payload.inputs.diffs) snapshotDiffs[d.sha] = d;
+
+    const abort = new AbortController();
+    let started = false;
+    set((s) => {
+      const next = new Map(s.byTab);
+      const curr = next.get(tabId);
+      if (!curr || curr.busy) return s;
+      started = true;
+      next.set(tabId, {
+        ...curr,
+        busy: true,
+        status: "running",
+        stage: payload.stage,
+        // Seed, don't wipe — the log reads as one continuous run.
+        activity: payload.activity,
+        // Only an investigate resume re-derives findings; a verify resume never
+        // had any on screen to clear.
+        findings: payload.stage === "investigate" ? [] : curr.findings,
+        error: null,
+        schemaViolationRaw: null,
+        abort,
+        runId,
+        createdAt: curr.createdAt ?? payload.createdAt,
+        durationMs: null,
+        resumable: null,
+        selectedShas: payload.inputs.selectedShas,
+        diffBySha: { ...curr.diffBySha, ...snapshotDiffs },
+        context: curr.context || payload.inputs.context,
+        attachments: curr.attachments.length
+          ? curr.attachments
+          : payload.inputs.attachments,
+        workItems: curr.workItems.length
+          ? curr.workItems
+          : payload.inputs.workItems,
+      });
+      return { byTab: next };
+    });
+    if (!started) return;
+
+    // Same runId, same row — a resume continues the run rather than orphaning
+    // the failed one behind a fresh id.
+    await persistRow(tabId, { status: "running" }).catch(() => {});
+
+    const sink = activitySink(set, tabId, payload.activity);
+    const w = createCheckpointWriter({
+      runId,
+      surface: "commit-review",
+      cwd: payload.cwd,
+      createdAt: payload.createdAt,
+    });
+    let cpStage: RunStage = payload.stage;
+    let cpCandidates: CandidateFinding[] | null = payload.stage1Candidates;
+    // The resumed stage's prior totals — cp.messages already carries the
+    // transcript prefix, so only the COUNTERS need the earlier run added in.
+    let transcriptBase: TranscriptCheckpoint | null = payload.transcript;
+    let transcript: TranscriptCheckpoint | null = payload.transcript;
+    const build = (
+      outcome: CheckpointOutcome | null,
+    ): CommitReviewCheckpointV1 => ({
+      ...payload,
+      stage: cpStage,
+      stage1Candidates: cpCandidates,
+      activity: sink.current,
+      transcript,
+      lastOutcome: outcome,
+    });
+
+    try {
+      const prefs = usePreferencesStore.getState();
+      const keys = await useChatStore.getState().ensureApiKeys();
+      const result = await runCommitReview({
+        modelId: payload.modelId,
+        keys,
+        local: localProviderConfig(prefs),
+        // Every input is frozen at what the run started with — re-reading the
+        // working tree here would review code the transcript never saw.
+        sourceRoot: payload.sourceRoot,
+        diffs: payload.inputs.diffs,
+        contextBlocks: payload.inputs.contextBlocks,
+        attachments: payload.inputs.attachments,
+        customInstructions: payload.customInstructions,
+        onToolEvent: sink.onEvent,
+        onStage: (stage) => patch(set, tabId, { stage }),
+        onCheckpoint: (stage, checkpoint) => {
+          cpStage = stage;
+          transcript = toTranscript(checkpoint, transcriptBase);
+          if (!isLiveRun(get, tabId, runId)) return;
+          w.save(build(null));
+        },
+        onStage1Candidates: (cands) => {
+          cpStage = "verify";
+          cpCandidates = cands;
+          // Crossing into verify starts a new transcript, so the investigate
+          // one (and its totals) stop applying.
+          transcript = null;
+          transcriptBase = null;
+          void w.flush(build(null));
+        },
+        resume: {
+          stage: payload.stage,
+          stage1Candidates: payload.stage1Candidates,
+          resumeMessages: payload.transcript?.messages ?? null,
+          stepCapNudge: payload.lastOutcome?.kind === "step_cap",
+        },
+        signal: abort.signal,
+      });
+
+      await settleResult(set, tabId, { writer: w, buildPayload: build }, result);
+    } catch (e) {
+      await settleFailure(set, tabId, { writer: w, buildPayload: build }, e);
     }
   },
 
