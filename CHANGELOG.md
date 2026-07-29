@@ -7,6 +7,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.16.0] - 2026-07-29
+
+### Added
+
+- Interrupted AI runs now resume instead of restarting. Generator analyzes and Commit Reviews checkpoint every agentic step to disk; a run stopped by a quit, crash, rate limit, dropped connection, closed tab, or the Stop button offers a one-click **Resume** that replays the saved transcript — the investigation steps you already paid for are never re-run.
+- Interrupted runs are impossible to lose. Reopening the app lands a Commit Review tab directly on its interrupted review (inputs, activity log, and Resume restored — no digging through History), a restarted Generator tab restores its run the same way, and runs whose tab was closed appear as **interrupted** rows in History with open-to-resume and discard actions.
+- Structured error panels on both AI surfaces: failures are classified (missing key, rejected credentials, out of credits, rate limit, provider overload, network, context overflow, step budget) with concrete next steps, a collapsed raw error for debugging, and Resume offered whenever it can actually help.
+- Busy runs show a quiet stall hint when the provider stops responding, so the automatic retry window (up to a couple of minutes on connection problems) no longer looks like a frozen run.
+
+### Fixed
+
+- Runs that succeeded could report "No test cases generated — the model produced no test cases for this spec." Schema validation ran against the entire multi-step stream instead of the final answer, so a JSON snippet the model quoted mid-investigation could shadow the real batch and "validate" as empty. The same bug could make Commit Review report a false **clean commit** with zero findings.
+- Commit Review History could show a dead run as "running" forever — the startup sweep raced the pane's first load, and closing a tab mid-run never persisted the cancellation at all.
+- Closing a Generator tab mid-analyze kept the model running (and billing) invisibly in the background; it now aborts immediately and checkpoints the run as cancelled so it's recoverable from History.
+- The activity log and the step counter disagreed ("14 steps" vs "step 5/26"): the log badge now counts **actions** (one budgeted step spans several tool calls), the counter shows the step in progress instead of sitting at 0, and resumed runs display a cumulative cap instead of nonsense like "step 27/8".
+
+### Changed
+
+- The resume affordance is one clean card — what happened, where it stopped, when, and Resume/Discard — replacing the stat-stuffed banner, and it looks identical on both AI surfaces. Tooltips across these flows are trimmed to a sentence.
+
 ## [0.15.2] - 2026-07-28
 
 ### Fixed
