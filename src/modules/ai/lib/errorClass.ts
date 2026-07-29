@@ -100,3 +100,34 @@ function errorText(e: unknown): string {
   if (cause && typeof cause.message === "string") parts.push(cause.message);
   return parts.length > 0 ? parts.join(" ") : String(e);
 }
+
+/** UI gate for offering a Resume affordance, shared by the generator and
+ *  commit-review panes. Structural param so this module doesn't import
+ *  checkpoint types (checkpointApi imports FROM errorClass — keep the
+ *  dependency one-way). Judges only the outcome it's handed: callers must
+ *  separately check that a checkpoint exists at all (a missing checkpoint and
+ *  a checkpoint with a null outcome — an unflushed crash — are different
+ *  things; only the latter defaults to resumable here). */
+export function canOfferResume(
+  outcome:
+    | { kind: string; errorKind?: ResumeErrorKind; message?: string }
+    | null
+    | undefined,
+  errorMessage?: string | null,
+): boolean {
+  if (!outcome) return true;
+  switch (outcome.kind) {
+    case "step_cap":
+    case "cancelled":
+      return true;
+    case "empty":
+    case "schema_violation":
+      return false;
+    case "error":
+      return isResumableKind(
+        outcome.errorKind ?? matchErrorKind(errorMessage ?? outcome.message ?? ""),
+      );
+    default:
+      return false;
+  }
+}

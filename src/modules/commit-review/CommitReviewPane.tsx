@@ -28,13 +28,15 @@ import {
   GitBranchIcon,
   Loading03Icon,
   PencilEdit01Icon,
+  PlayIcon,
   SparklesIcon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
-import { MODELS, type ModelId } from "@/modules/ai/config";
+import { MODELS, RESUME_TOPUP_STEPS, type ModelId } from "@/modules/ai/config";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
+import { canOfferResume } from "@/modules/ai/lib/errorClass";
 import {
   ContextGuardNotice,
   ContextMeter,
@@ -98,6 +100,7 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
   const removeWorkItem = useCommitReview((s) => s.removeWorkItem);
   const setModel = useCommitReview((s) => s.setModel);
   const run = useCommitReview((s) => s.run);
+  const resume = useCommitReview((s) => s.resume);
   const stop = useCommitReview((s) => s.stop);
   const applyFix = useCommitReview((s) => s.applyFix);
 
@@ -267,6 +270,12 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
     localDiff.files.length === 0;
   const canRun = allDiffsLoaded(slice) && !slice.diffLoading && !localOnlyEmpty;
   const hasRun = slice.status !== "idle" && slice.status !== "running";
+  // Gate for every Resume affordance below: judges whether the checkpoint left
+  // behind can plausibly continue, not just whether one exists (a local const,
+  // not a property access, so TS can narrow `resumable` in the branches below).
+  const resumable = slice.resumable;
+  const offerResume =
+    resumable != null && canOfferResume(resumable.outcome, slice.error);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -402,7 +411,8 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
                 </button>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="text-[11px]">
-                Cancel this review. Partial progress is saved.
+                Cancel this review. Progress is checkpointed — you can resume
+                it later.
               </TooltipContent>
             </Tooltip>
           ) : (
@@ -512,9 +522,47 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
       ) : null}
       <ContextOverflowDialog guard={guard} modelLabel={guardModelLabel} />
       {!slice.busy && (slice.status === "interrupted" || slice.status === "cancelled") ? (
-        <Banner tone="warn">
-          This review was {slice.status === "interrupted" ? "interrupted" : "cancelled"} before it finished. Re-run to complete it.
-        </Banner>
+        resumable && offerResume ? (
+          <Banner tone="warn">
+            <span>
+              {`This review was ${slice.status === "interrupted" ? "interrupted" : "cancelled"} at the ${stageWord(resumable.stage)} stage — ~${resumable.stepsUsed} steps done${resumable.totalTokens != null ? `, ~${resumable.totalTokens.toLocaleString()} tokens spent` : ""}.`}
+            </span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => guard.attempt(() => void resume(tabId))}
+                  className="shrink-0 rounded-sm border border-amber-500/40 px-1.5 py-px text-[10.5px] font-medium text-amber-700 hover:bg-amber-500/10 dark:text-amber-300"
+                >
+                  Resume
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-[11px]">
+                Continue this review from where it stopped — completed steps
+                aren't re-paid. Uses the original run's model.
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => guard.attempt(() => void run(tabId))}
+                  className="shrink-0 rounded-sm border border-amber-500/40 px-1.5 py-px text-[10.5px] font-medium text-amber-700 hover:bg-amber-500/10 dark:text-amber-300"
+                >
+                  Re-run from scratch
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-[11px]">
+                Start over from the beginning with the current picker
+                settings.
+              </TooltipContent>
+            </Tooltip>
+          </Banner>
+        ) : (
+          <Banner tone="warn">
+            This review was {slice.status === "interrupted" ? "interrupted" : "cancelled"} before it finished. Re-run to complete it.
+          </Banner>
+        )
       ) : null}
 
       {/* Add context (collapsed) */}
@@ -539,11 +587,18 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
           tabId={tabId}
           applyFix={applyFix}
           onRun={() => guard.attempt(() => void run(tabId))}
+          onResume={() => guard.attempt(() => void resume(tabId))}
           showDiff={showDiff}
         />
       </div>
     </div>
   );
+}
+
+/** Human phrasing for a checkpoint's stage — "investigate"/"verify" are the
+ *  wire enum, not what a QA tester reads in a banner. */
+function stageWord(stage: "investigate" | "verify"): string {
+  return stage === "verify" ? "verification" : "investigation";
 }
 
 function Banner({
@@ -578,21 +633,47 @@ function Body({
   tabId,
   applyFix,
   onRun,
+  onResume,
   showDiff,
 }: {
   slice: CommitReviewSlice;
   tabId: number;
   applyFix: (tabId: number, findingId: string, record: AppliedPatchRecord) => void;
   onRun: () => void;
+  onResume: () => void;
   showDiff: boolean;
 }) {
   const diffs = selectedDiffs(slice);
   return (
     <div className="flex flex-col gap-3">
       {showDiff && diffs.length > 0 ? <CommitDiffPanel diffs={diffs} /> : null}
-      <BodyContent slice={slice} tabId={tabId} applyFix={applyFix} onRun={onRun} />
+      <BodyContent
+        slice={slice}
+        tabId={tabId}
+        applyFix={applyFix}
+        onRun={onRun}
+        onResume={onResume}
+      />
     </div>
   );
+}
+
+/** A live run's `slice.error` is already friendly text (set directly in
+ *  settleResult). A REHYDRATED failed run instead surfaces the raw reason
+ *  token persistRow wrote to the row's error column verbatim — map the three
+ *  known tokens to the same friendly copy a live failure would have shown;
+ *  anything else (including already-friendly live-run text) passes through. */
+function errorDisplayText(slice: CommitReviewSlice): string {
+  switch (slice.error) {
+    case "step_cap":
+      return `The review hit its step budget before it could write its findings. Resume grants ${RESUME_TOPUP_STEPS} more steps and asks the model to finish with what it has already read.`;
+    case "empty":
+      return "The model returned nothing usable. Re-run, or try a more capable model.";
+    case "schema_violation":
+      return "The model didn't return findings in the expected format. Re-run, or try a more capable model.";
+    default:
+      return slice.error ?? "The review failed.";
+  }
 }
 
 function BodyContent({
@@ -600,11 +681,13 @@ function BodyContent({
   tabId,
   applyFix,
   onRun,
+  onResume,
 }: {
   slice: CommitReviewSlice;
   tabId: number;
   applyFix: (tabId: number, findingId: string, record: AppliedPatchRecord) => void;
   onRun: () => void;
+  onResume: () => void;
 }) {
   if (slice.busy) {
     return (
@@ -626,10 +709,13 @@ function BodyContent({
   }
 
   if (slice.status === "error") {
+    const resumable = slice.resumable;
+    const offerResume =
+      resumable != null && canOfferResume(resumable.outcome, slice.error);
     return (
       <div className="rounded-md border border-destructive/40 bg-destructive/[0.05] p-4">
         <p className="text-[12px] font-medium text-destructive">
-          {slice.error ?? "The review failed."}
+          {errorDisplayText(slice)}
         </p>
         {slice.schemaViolationRaw ? (
           <details className="mt-2">
@@ -641,14 +727,37 @@ function BodyContent({
             </pre>
           </details>
         ) : null}
-        <button
-          type="button"
-          onClick={onRun}
-          className="mt-3 inline-flex h-7 items-center gap-1.5 rounded-md border border-border/60 bg-card/60 px-2.5 text-[11.5px] font-medium hover:bg-foreground/[0.05]"
-        >
-          <HugeiconsIcon icon={SparklesIcon} size={12} strokeWidth={2} />
-          Re-run
-        </button>
+        <div className="mt-3 flex items-center gap-2">
+          {resumable && offerResume ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={onResume}
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md px-3 text-[11.5px] font-medium bg-primary text-primary-foreground hover:bg-primary/90"
+                >
+                  <HugeiconsIcon icon={PlayIcon} size={12} strokeWidth={2} />
+                  Resume
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[260px] text-[11px]">
+                {`Continue from the ${stageWord(resumable.stage)} stage — ~${resumable.stepsUsed} steps already done aren't re-paid. Uses the original run's model.${
+                  resumable.outcome?.kind === "step_cap"
+                    ? ` Adds ${RESUME_TOPUP_STEPS} steps and asks the model to finish.`
+                    : ""
+                }`}
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
+          <button
+            type="button"
+            onClick={onRun}
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border/60 bg-card/60 px-2.5 text-[11.5px] font-medium hover:bg-foreground/[0.05]"
+          >
+            <HugeiconsIcon icon={SparklesIcon} size={12} strokeWidth={2} />
+            Re-run
+          </button>
+        </div>
       </div>
     );
   }

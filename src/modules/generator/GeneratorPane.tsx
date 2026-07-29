@@ -98,7 +98,10 @@ import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { getModel, RESUME_TOPUP_STEPS, SURFACE_STEP_CAPS } from "@/modules/ai/config";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
-import { isResumableKind, matchErrorKind } from "@/modules/ai/lib/errorClass";
+import {
+  canOfferResume as canOfferResumeShared,
+  matchErrorKind,
+} from "@/modules/ai/lib/errorClass";
 import type { CheckpointOutcome } from "@/modules/ai/lib/checkpointApi";
 import {
   ContextGuardNotice,
@@ -231,33 +234,18 @@ function deriveTabLabelFromTarget(input: {
 }
 
 /** Gating rule for every Resume affordance (ErrorPhase button, InputPhase
- *  notice). `loadCheckpoint` restores `resumable` unconditionally — this is
- *  the one place that decides whether continuing can plausibly help:
- *  step_cap/cancelled are always worth continuing, empty/schema_violation
- *  mean the run already finished with nothing usable (re-run, not resume,
- *  is the fix), a missing outcome is exactly what an unflushed crash leaves
- *  (so it defaults to resumable), and a real error defers to the shared
- *  isResumableKind table — falling back to a fresh classification only if
- *  the checkpoint predates errorKind being recorded. */
+ *  notice). The outcome table itself lives in errorClass.ts's shared
+ *  `canOfferResume` (also used by CommitReviewPane, so the two surfaces can't
+ *  drift) — this wrapper only adds the check the shared fn deliberately
+ *  doesn't own: no `resumable` at all means there's no checkpoint to resume,
+ *  which is NOT the same as a checkpoint whose outcome is null (an unflushed
+ *  crash), which the shared table treats as resumable. */
 function canOfferResume(
   resumable: SessionState["resumable"],
   errorMessage: string,
 ): boolean {
   if (!resumable) return false;
-  const outcome = resumable.outcome;
-  if (!outcome) return true;
-  switch (outcome.kind) {
-    case "step_cap":
-    case "cancelled":
-      return true;
-    case "empty":
-    case "schema_violation":
-      return false;
-    case "error":
-      return isResumableKind(outcome.errorKind ?? matchErrorKind(errorMessage));
-    default:
-      return false;
-  }
+  return canOfferResumeShared(resumable.outcome, errorMessage);
 }
 
 const STEPS = [

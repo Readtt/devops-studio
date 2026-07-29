@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  canOfferResume,
   classifyForResume,
   isResumableKind,
   matchErrorKind,
@@ -160,5 +161,42 @@ describe("classifyForResume", () => {
     ]) {
       expect(classifyForResume(new Error(message)).resumable).toBe(true);
     }
+  });
+});
+
+// The UI gate GeneratorPane and CommitReviewPane both call before offering a
+// Resume button — one table so the two surfaces can't drift.
+describe("canOfferResume", () => {
+  it("is resumable when there's no outcome at all — an unflushed crash", () => {
+    expect(canOfferResume(null)).toBe(true);
+    expect(canOfferResume(undefined)).toBe(true);
+  });
+
+  it("is true for step_cap and cancelled — both left a continuable checkpoint", () => {
+    expect(canOfferResume({ kind: "step_cap" })).toBe(true);
+    expect(canOfferResume({ kind: "cancelled" })).toBe(true);
+  });
+
+  it("is false for empty and schema_violation — the model answered with nothing worth continuing", () => {
+    expect(canOfferResume({ kind: "empty" })).toBe(false);
+    expect(canOfferResume({ kind: "schema_violation" })).toBe(false);
+  });
+
+  it("for kind 'error', prefers the recorded errorKind over reclassifying", () => {
+    expect(canOfferResume({ kind: "error", errorKind: "context-overflow" })).toBe(
+      false,
+    );
+    expect(canOfferResume({ kind: "error", errorKind: "rate-limit" })).toBe(true);
+  });
+
+  it("falls back to matchErrorKind(errorMessage) when errorKind wasn't recorded", () => {
+    expect(
+      canOfferResume({ kind: "error" }, "maximum context length exceeded"),
+    ).toBe(false);
+    expect(canOfferResume({ kind: "error" }, "429 rate limit")).toBe(true);
+  });
+
+  it("is false for any other/unrecognised kind", () => {
+    expect(canOfferResume({ kind: "something-new" })).toBe(false);
   });
 });
