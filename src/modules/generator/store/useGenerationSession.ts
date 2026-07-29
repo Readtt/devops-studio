@@ -985,6 +985,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     // running (and billing) to completion behind the discarded result.
     const analyzeAc = new AbortController();
     analyzeAbort = analyzeAc;
+    // Only clear our own handle — a cancelled run's cleanup can land after the
+    // user already started a fresh run with a new controller.
+    const releaseAnalyzeClaim = () => {
+      if (analyzeAbort === analyzeAc) analyzeAbort = null;
+    };
     // No checkpoint exists until the prompt is assembled — a failure before
     // that point spent nothing, so there's nothing to resume.
     analyzeWriter = null;
@@ -1096,6 +1101,16 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       customInstructions,
     });
 
+    // A cancel during the prefetch flipped us back to input and found no
+    // writer to flush — so bail before creating one. Writing the row here
+    // would leave a cancelled run with an inputs-only checkpoint (lastOutcome
+    // null) that survives restart and reads as resumable, for a run that never
+    // reached the provider and spent nothing.
+    if (get().phase !== "analyzing") {
+      releaseAnalyzeClaim();
+      return;
+    }
+
     // Everything above is recoverable input; from here on the run costs money,
     // so the resume point goes to disk BEFORE the provider is touched.
     const createdAt = new Date().toISOString();
@@ -1206,9 +1221,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       });
       await writer.flush(payload);
     } finally {
-      // Only clear our own handles — a cancelled run's finally can land after
-      // the user already started a fresh run with new ones.
-      if (analyzeAbort === analyzeAc) analyzeAbort = null;
+      releaseAnalyzeClaim();
       if (analyzeWriter === writer) {
         analyzeWriter = null;
         analyzeCheckpointPayload = null;
