@@ -8,6 +8,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import {
+  checkpointIsNewer,
   createCheckpointWriter,
   deleteCheckpoint,
   getCheckpoint,
@@ -452,5 +453,35 @@ describe("createCheckpointWriter", () => {
     expect(activity).toHaveLength(100);
     expect(activity[0].id).toBe("a50");
     expect(activity[99].id).toBe("a149");
+  });
+});
+
+describe("checkpointIsNewer", () => {
+  it("returns true when the checkpoint's second is strictly after the history row's", () => {
+    expect(
+      checkpointIsNewer("2026-01-01T00:00:05.000Z", "2026-01-01T00:00:04.000Z"),
+    ).toBe(true);
+  });
+
+  it("returns false on a same-second tie, even when the checkpoint carries millis the history row stripped", () => {
+    // newTimestamp() strips millis, so a draft saved at 00:00:00.900 is
+    // persisted as 00:00:00Z — LATER in wall-clock time than a checkpoint
+    // written at 00:00:00.800Z. A millisecond compare would let the
+    // checkpoint win here and clobber the completed draft; the history row
+    // must win the tie instead.
+    expect(
+      checkpointIsNewer("2026-01-01T00:00:00.800Z", "2026-01-01T00:00:00Z"),
+    ).toBe(false);
+  });
+
+  it("returns false when the checkpoint is older than the history row", () => {
+    expect(
+      checkpointIsNewer("2026-01-01T00:00:03.000Z", "2026-01-01T00:00:04.000Z"),
+    ).toBe(false);
+  });
+
+  it("returns false when either date is unparseable", () => {
+    expect(checkpointIsNewer("not-a-date", "2026-01-01T00:00:04.000Z")).toBe(false);
+    expect(checkpointIsNewer("2026-01-01T00:00:04.000Z", "not-a-date")).toBe(false);
   });
 });

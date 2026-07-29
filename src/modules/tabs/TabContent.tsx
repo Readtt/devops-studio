@@ -8,7 +8,7 @@ import { GenerationSessionProvider } from "@/modules/generator/store/useGenerati
 import { useGeneratorStoresApi } from "@/modules/generator/storesContext";
 import { useGeneratorCallbacks } from "@/modules/generator/callbacksContext";
 import { getRun } from "@/modules/generator/lib/history";
-import { getCheckpoint } from "@/modules/ai/lib/checkpointApi";
+import { getCheckpoint, checkpointIsNewer } from "@/modules/ai/lib/checkpointApi";
 import { TerminalPane } from "@/modules/terminal/TerminalPane";
 import { CommitReviewPane } from "@/modules/commit-review/CommitReviewPane";
 import type { AppTab, GeneratorTab } from "./store/types";
@@ -130,15 +130,15 @@ function GeneratorTabContent({ tab }: { tab: GeneratorTab }) {
             ? { payload: cpPayload, updatedAt: checkpointRow.updatedAt }
             : null;
         if (!run && !cp) return;
-        // Numeric compare only, never lexicographic: a history row's
-        // timestamp comes from newTimestamp() (millis stripped) while a
-        // checkpoint's updatedAt is a full ISO string, so a same-second write
-        // can sort backwards as text. Date.parse orders them correctly, and
-        // an unparseable date on either side loses the `>` compare, which
-        // correctly defaults to the history row.
-        const checkpointIsNewer =
-          !!cp && !!run && Date.parse(cp.updatedAt) > Date.parse(run.timestamp);
-        if (cp && (!run || checkpointIsNewer)) {
+        // Second-granularity compare, not lexicographic and not millisecond:
+        // a history row's timestamp comes from newTimestamp() (millis
+        // stripped) while a checkpoint's updatedAt keeps them, so a
+        // millisecond Date.parse compare would let a checkpoint written just
+        // BEFORE a same-second draft save win. checkpointIsNewer ties at
+        // second granularity (history wins) and treats unparseable dates as
+        // "not newer", which correctly defaults to the history row.
+        const cpIsNewer = !!cp && !!run && checkpointIsNewer(cp.updatedAt, run.timestamp);
+        if (cp && (!run || cpIsNewer)) {
           latest.loadCheckpoint(cp.payload, cp.updatedAt);
         } else if (run) {
           if (run.status === "published") {

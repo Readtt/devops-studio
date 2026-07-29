@@ -881,8 +881,8 @@ function InputPhase() {
               </TooltipTrigger>
               <TooltipContent side="bottom" className="text-[11px]">
                 Picks up the analyzer from step {resumable.stepsUsed} using the
-                saved transcript — nothing already read gets re-fetched or
-                re-paid for.
+                saved transcript — steps already done aren't re-run, so
+                resuming is usually much cheaper than starting over.
               </TooltipContent>
             </Tooltip>
           </InlineNotice>
@@ -3363,7 +3363,7 @@ function ErrorPhase() {
                   resumable.totalTokens != null
                     ? `, ~${resumable.totalTokens.toLocaleString()} tokens already spent`
                     : ""
-                } — completed work isn't re-paid. Uses the same model as the original run.`}
+                } — completed work isn't re-run, so resuming is usually much cheaper than starting over. Uses the same model as the original run.`}
               </TooltipContent>
             </Tooltip>
           ) : null}

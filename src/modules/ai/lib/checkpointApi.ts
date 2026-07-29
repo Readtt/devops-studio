@@ -170,6 +170,17 @@ export async function listCheckpoints(
   });
 }
 
+/** Recency rule for checkpoint-vs-history rehydrate. Second granularity:
+ *  history timestamps strip millis, so a millisecond compare would let a
+ *  checkpoint written just BEFORE a same-second draft save win. Ties and
+ *  unparseable dates lose to the history row. */
+export function checkpointIsNewer(checkpointUpdatedAt: string, historyTimestamp: string): boolean {
+  const cp = Date.parse(checkpointUpdatedAt);
+  const hist = Date.parse(historyTimestamp);
+  if (Number.isNaN(cp) || Number.isNaN(hist)) return false;
+  return Math.floor(cp / 1000) > Math.floor(hist / 1000);
+}
+
 function isValidEnvelope(json: unknown): json is CheckpointPayload {
   if (!json || typeof json !== "object") return false;
   const obj = json as Record<string, unknown>;

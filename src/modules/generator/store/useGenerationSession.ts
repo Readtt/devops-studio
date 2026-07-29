@@ -1270,6 +1270,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         error: `This run used ${payload.modelId}, which is no longer available, so it can't be resumed. Run it again from scratch with a current model.`,
         errorPhase: "analyze",
         stepLabel: "",
+        resumable: null,
       });
       return;
     }

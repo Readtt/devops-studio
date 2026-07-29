@@ -539,7 +539,8 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
               </TooltipTrigger>
               <TooltipContent side="bottom" className="text-[11px]">
                 Continue this review from where it stopped — completed steps
-                aren't re-paid. Uses the original run's model.
+                aren't re-run, so resuming is usually much cheaper than
+                starting over. Uses the original run's model.
               </TooltipContent>
             </Tooltip>
             <Tooltip>
@@ -741,7 +742,7 @@ function BodyContent({
                 </button>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="max-w-[260px] text-[11px]">
-                {`Continue from the ${stageWord(resumable.stage)} stage — ~${resumable.stepsUsed} steps already done aren't re-paid. Uses the original run's model.${
+                {`Continue from the ${stageWord(resumable.stage)} stage — ~${resumable.stepsUsed} steps already done aren't re-run, so resuming is usually much cheaper than starting over. Uses the original run's model.${
                   resumable.outcome?.kind === "step_cap"
                     ? ` Adds ${RESUME_TOPUP_STEPS} steps and asks the model to finish.`
                     : ""
