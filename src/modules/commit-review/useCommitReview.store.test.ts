@@ -175,7 +175,7 @@ function checkpointRow(payload = checkpoint()) {
   };
 }
 
-function savedRow(): CommitReviewRow {
+function savedRow(status: CommitReviewRow["status"] = "cancelled"): CommitReviewRow {
   return {
     runId: "crun-1",
     cwd: "C:/repo",
@@ -183,7 +183,7 @@ function savedRow(): CommitReviewRow {
     commitShort: "aaa",
     commitSubject: "commit aaa",
     commits: JSON.stringify([{ sha: "aaa", short: "aaa", subject: "commit aaa" }]),
-    status: "cancelled",
+    status,
     modelId: DEFAULT_MODEL_ID,
     context: null,
     findings: "[]",
@@ -624,6 +624,35 @@ describe("ensure — checkpoint probe", () => {
     await useCommitReview.getState().ensure(8, "C:/repo", "crun-1");
 
     expect(slice(8).resumable).toBeNull();
+  });
+
+  it("offers no resume for a review that FINISHED, orphaned checkpoint or not", async () => {
+    // writer.delete() swallows IPC failures, so a done run can leave a payload
+    // behind whose lastOutcome is null — indistinguishable from a crash unless
+    // the row's status is what decides.
+    mockGetRow.mockResolvedValue(savedRow("done"));
+    mockGetCheckpoint.mockResolvedValue(
+      checkpointRow(checkpoint({ lastOutcome: null })),
+    );
+
+    await useCommitReview.getState().ensure(10, "C:/repo", "crun-1");
+
+    expect(slice(10).status).toBe("done");
+    expect(slice(10).resumable).toBeNull();
+  });
+
+  it("still offers a resume for a run interrupted before it wrote an outcome", async () => {
+    // The case the probe exists for: the app died mid-run, so nothing flushed a
+    // terminal outcome and the sweep flipped the row to "interrupted".
+    mockGetRow.mockResolvedValue(savedRow("interrupted"));
+    mockGetCheckpoint.mockResolvedValue(
+      checkpointRow(checkpoint({ lastOutcome: null })),
+    );
+
+    await useCommitReview.getState().ensure(11, "C:/repo", "crun-1");
+
+    expect(slice(11).resumable?.stage).toBe("verify");
+    expect(slice(11).resumable?.outcome).toBeNull();
   });
 
   it("skips the probe entirely on a fresh (non-rehydrate) mount", async () => {

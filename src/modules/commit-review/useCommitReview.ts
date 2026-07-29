@@ -455,6 +455,14 @@ export const useCommitReview = create<State>((set, get) => ({
           const p = cp.payload;
           const curr = get().byTab.get(tabId);
           const spent = p.lastOutcome?.kind;
+          // A FINISHED review's checkpoint is an orphan, not a resume point:
+          // writer.delete() swallows IPC failures by design, so a run that
+          // wrote status "done" can still leave a payload behind with
+          // lastOutcome null — which reads exactly like the crash-mid-run case
+          // this probe exists for. Gate on the hydrated ROW status, not the
+          // outcome, or reopening a finished review would offer a Resume that
+          // re-runs verify over its own findings.
+          const done = curr?.status === "done";
           patch(set, tabId, {
             activity: curr?.activity.length ? curr.activity : p.activity,
             context: curr?.context ? curr.context : p.inputs.context,
@@ -468,7 +476,7 @@ export const useCommitReview = create<State>((set, get) => ({
             // transcript that ends in garbage just re-fails. Re-run is the
             // right affordance there.
             resumable:
-              spent === "schema_violation" || spent === "empty"
+              done || spent === "schema_violation" || spent === "empty"
                 ? null
                 : {
                     stage: p.stage,
