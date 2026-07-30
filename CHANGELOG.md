@@ -7,6 +7,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.16.3] - 2026-07-30
+
+### Fixed
+
+- **A code search that filtered out every file looked identical to a search that
+  found nothing.** `grep`'s file count is taken after its glob filter is applied,
+  so a glob matching no files reported "0 matches" with nothing read — and the AI
+  would conclude the code didn't exist. It now says the glob excluded everything,
+  and explains the ways a glob silently matches nothing: a leading `./` or `/`,
+  case sensitivity, and directory prefixes that must exist at the top level of
+  the repo.
+- **The tool activity strip hid the glob a search was scoped to**, showing only
+  the pattern, which made an empty result impossible to explain. Searches now
+  show their filter.
+- **`run_command` rejected pipes and redirection with the wrong error.** There is
+  no shell behind it (deliberately — it's read-only), but shell syntax was passed
+  through to the program, which failed with its own confusing message: a piped
+  `git show` came back as "invalid object", so the AI would blame the commit hash
+  and retry against other commits instead of dropping the pipe. Pipes,
+  redirection and command substitution are now refused up front with the actual
+  reason. Regex alternations like `rg "class A|class B"` still work.
+
 ## [0.16.2] - 2026-07-30
 
 ### Fixed
