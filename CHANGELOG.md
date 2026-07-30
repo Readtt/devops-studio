@@ -7,6 +7,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.16.2] - 2026-07-30
+
+### Fixed
+
+- **The AI could not list files in your source directory.** The shared
+  `list_files` tool — used by Suite Chat, Commit Review, the Test Case
+  Generator, and Confidence — failed in three ways at once:
+  - A model that passed an empty-string sub-directory (which the tool's own
+    description invited) got `not a directory: <source root>""` back and
+    could never get a listing to work.
+  - Every successful listing was reported as **"0 entries"** in the tool
+    activity strip, no matter how many files came back, because the strip
+    read the wrong field off the result. Listings now show their real count
+    ("247 files", "120+ files" when capped) and the paths themselves.
+  - Each listing row was labelled `list_files list_files` instead of naming
+    the directory being listed.
+- `read_file` no longer fails when a model wraps the path in quotes.
+
 ## [0.16.1] - 2026-07-30
 
 ### Fixed
