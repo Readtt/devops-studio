@@ -30,8 +30,8 @@ import {
 import type { z } from "zod";
 import {
   getModel,
-  isReasoningModel,
   MAX_AGENT_STEPS,
+  supportsTemperature,
   supportsVision,
   type ModelId,
 } from "../config";
@@ -490,15 +490,90 @@ function visionSafe(input: {
   return (input.attachments ?? []).filter((a) => a.kind !== "image");
 }
 
-/** Omit `temperature` for reasoning models — DeepSeek's reasoner, xAI Grok
- *  reasoning, etc. reject or mishandle sampling params, and the
- *  openai-compatible / xai providers (unlike native OpenAI) pass them through
- *  unconditionally. Returns the caller's temperature for every other model. */
+/** Omit `temperature` for models that reject sampling params — reasoning models
+ *  plus the frontier Anthropic/OpenAI tiers that removed the param outright.
+ *  `supportsTemperature` owns the per-model call so it holds for every
+ *  transport, including the openai-compatible one that forwards our body
+ *  verbatim. Returns the caller's temperature for every other model. */
 function effectiveTemperature(input: {
   modelId: ModelId;
   temperature?: number;
 }): number | undefined {
-  return isReasoningModel(input.modelId) ? undefined : input.temperature;
+  return supportsTemperature(input.modelId) ? input.temperature : undefined;
+}
+
+/** Provider errors arrive wrapped (RetryError → APICallError), and the useful
+ *  string sits on `cause` or the raw `responseBody` as often as on the outer
+ *  error. Read all of them, cheaply. */
+function providerMessage(e: unknown): string {
+  if (e == null) return "";
+  if (typeof e === "string") return e;
+  const o = e as {
+    message?: unknown;
+    cause?: unknown;
+    responseBody?: unknown;
+    lastError?: unknown;
+  };
+  const parts: string[] = [];
+  if (typeof o.message === "string") parts.push(o.message);
+  for (const nested of [o.cause, o.lastError]) {
+    const n = nested as { message?: unknown } | null | undefined;
+    if (n && typeof n.message === "string") parts.push(n.message);
+  }
+  if (typeof o.responseBody === "string") parts.push(o.responseBody);
+  return parts.join(" ");
+}
+
+/** A provider 400 meaning "this model rejects the sampling params you sent":
+ *  Anthropic's "`temperature` is deprecated for this model", OpenAI's
+ *  "Unsupported value: 'temperature' does not support 0 with this model", and
+ *  whatever a gateway relays upstream. Requires BOTH a param name and a
+ *  rejection verb, so an unrelated failure that merely mentions temperature
+ *  can't trigger a pointless retry. */
+function isSamplingParamRejection(message: string): boolean {
+  const m = message.toLowerCase();
+  if (!/\btemperature\b|\btop[_ -]?p\b|\btop[_ -]?k\b/.test(m)) return false;
+  return /not support|unsupported|deprecated|not permitted|not allowed|invalid/.test(
+    m,
+  );
+}
+
+/** Whether to retry a failed request once with sampling params stripped.
+ *
+ *  The per-model table in config.ts catches every catalogued model, but it can't
+ *  know a user's custom OpenAI-compatible endpoint, a gateway route we haven't
+ *  curated, or a model released after this build. Those return a hard 400 that
+ *  is trivially recoverable — drop the param and ask again — so recover instead
+ *  of showing the user a dead run. Safe to reuse the step accumulator across the
+ *  two attempts: sampling params are identical on every step of a loop, so a
+ *  rejection can only land on the first request, before any step completed. */
+function shouldRetryWithoutSampling(
+  temperature: number | undefined,
+  e: unknown,
+  signal: AbortSignal | undefined,
+): boolean {
+  if (temperature === undefined || signal?.aborted) return false;
+  return isSamplingParamRejection(providerMessage(e));
+}
+
+/** AI SDK error names that mean the request never reached the point of producing
+ *  model output — a transport/HTTP failure, a missing key, or an exhausted retry
+ *  chain. Everything else a structured call can throw (NoObjectGenerated, JSON
+ *  parse, type validation) is a schema miss the repair loop may legitimately
+ *  retry. */
+const PROVIDER_FAILURE_NAMES = new Set([
+  "AI_APICallError",
+  "AI_LoadAPIKeyError",
+  "AI_RetryError",
+]);
+
+function isProviderFailure(e: unknown): boolean {
+  const o = e as { name?: unknown; statusCode?: unknown } | null | undefined;
+  if (typeof o?.name === "string" && PROVIDER_FAILURE_NAMES.has(o.name)) {
+    return true;
+  }
+  // Some endpoints surface an HTTP failure without an SDK wrapper.
+  return typeof o?.statusCode === "number" && o.statusCode >= 400;
 }
 
 /** Non-streaming run. Returns prose text and, in structured mode, a validated
@@ -524,6 +599,8 @@ export async function runTask<
   if (input.schema && !tools) {
     let attempt = 0;
     let lastText = "";
+    // Dropped (once) if the provider turns out to reject sampling params.
+    let temp = temperature;
     // generateObject already self-repairs once via experimental_repairText;
     // the outer loop is the circuit breaker for hard validation failures.
     while (attempt <= repairAttempts) {
@@ -547,7 +624,7 @@ export async function runTask<
               return null;
             }
           },
-          ...(temperature !== undefined ? { temperature } : {}),
+          ...(temp !== undefined ? { temperature: temp } : {}),
           ...(input.seed !== undefined ? { seed: input.seed } : {}),
           abortSignal: input.signal,
         });
@@ -562,6 +639,20 @@ export async function runTask<
         };
       } catch (e) {
         if (input.signal?.aborted) throw e;
+        // Recoverable without spending a repair attempt: ask again, minus the
+        // param the provider just refused.
+        if (shouldRetryWithoutSampling(temp, e, input.signal)) {
+          temp = undefined;
+          continue;
+        }
+        // A transport/config failure — bad key, no credits, a 400, an exhausted
+        // rate-limit retry chain — is NOT a schema miss. Repairing it can't
+        // help, and swallowing it reports "the model returned nothing" instead
+        // of the provider's real message, which is the single most confusing way
+        // for a BYOK run to fail. Let it out to the surface's catch, where the
+        // error panel and the resume affordance already live. (The tool-bearing
+        // path below has always thrown these; this keeps the two consistent.)
+        if (isProviderFailure(e)) throw e;
         lastText = extractTextFromError(e) || lastText;
         attempt++;
       }
@@ -581,17 +672,24 @@ export async function runTask<
   // --- Structured + tools, or prose: generateText --------------------------
   const prepareStep = tools ? anthropicStepCachePrepare(input.modelId) : undefined;
   const steps = makeStepAccumulator(start, input);
-  const r = await generateText({
+  const args = (temp: number | undefined) => ({
     model,
     ...buildResumableRequest(input.modelId, system, userTurn, input.resumeMessages),
     ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
     ...(prepareStep ? { prepareStep } : {}),
-    ...(temperature !== undefined ? { temperature } : {}),
+    ...(temp !== undefined ? { temperature: temp } : {}),
     ...(input.seed !== undefined ? { seed: input.seed } : {}),
     maxRetries: TASK_MAX_RETRIES,
     abortSignal: input.signal,
     onStepFinish: steps.onStepFinish,
   });
+  let r: Awaited<ReturnType<typeof generateText>>;
+  try {
+    r = await generateText(args(temperature));
+  } catch (e) {
+    if (!shouldRetryWithoutSampling(temperature, e, input.signal)) throw e;
+    r = await generateText(args(undefined));
+  }
 
   const scalars: TaskScalars = {
     stepsUsed: steps.stepsUsed,
@@ -663,7 +761,8 @@ export async function streamTask<
   const maxSteps = input.maxSteps ?? MAX_AGENT_STEPS;
   const temperature = effectiveTemperature(input);
 
-  const toolStart = new Map<string, number>();
+  const prepareStep = tools ? anthropicStepCachePrepare(input.modelId) : undefined;
+
   // streamText NEVER rejects: a provider/network failure mid-stream (429 on a
   // follow-up agentic step, overload, dropped connection) is reported via
   // `onError` and textStream simply ENDS. Without capturing it, a failed run
@@ -671,32 +770,50 @@ export async function streamTask<
   // then misreport as "the model didn't return findings in the expected
   // format". Capture the first error and rethrow it below so callers' existing
   // catch paths show the REAL provider message.
-  let streamError: unknown = null;
-  const prepareStep = tools ? anthropicStepCachePrepare(input.modelId) : undefined;
-  const steps = makeStepAccumulator(start, input);
-  const result = streamText({
-    model,
-    ...buildResumableRequest(input.modelId, system, userTurn, input.resumeMessages),
-    ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
-    ...(prepareStep ? { prepareStep } : {}),
-    ...(temperature !== undefined ? { temperature } : {}),
-    ...(input.seed !== undefined ? { seed: input.seed } : {}),
-    maxRetries: TASK_MAX_RETRIES,
-    abortSignal: input.signal,
-    // Live per-tool events (spinner → done) plus the step-finish sweep as a
-    // backstop; both key entries by toolCallId so they merge, not duplicate.
-    onChunk: liveToolOnChunk(start, toolStart, input.onToolEvent),
-    onStepFinish: steps.onStepFinish,
-    onError: ({ error }) => {
-      if (streamError == null) streamError = error;
-    },
-  });
+  //
+  // One attempt = one full stream, drained. Each gets a fresh accumulator so a
+  // retried attempt can't inherit the abandoned one's steps or checkpoints.
+  const attempt = async (temp: number | undefined) => {
+    const toolStart = new Map<string, number>();
+    let streamError: unknown = null;
+    const steps = makeStepAccumulator(start, input);
+    const result = streamText({
+      model,
+      ...buildResumableRequest(input.modelId, system, userTurn, input.resumeMessages),
+      ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
+      ...(prepareStep ? { prepareStep } : {}),
+      ...(temp !== undefined ? { temperature: temp } : {}),
+      ...(input.seed !== undefined ? { seed: input.seed } : {}),
+      maxRetries: TASK_MAX_RETRIES,
+      abortSignal: input.signal,
+      // Live per-tool events (spinner → done) plus the step-finish sweep as a
+      // backstop; both key entries by toolCallId so they merge, not duplicate.
+      onChunk: liveToolOnChunk(start, toolStart, input.onToolEvent),
+      onStepFinish: steps.onStepFinish,
+      onError: ({ error }) => {
+        if (streamError == null) streamError = error;
+      },
+    });
 
-  let acc = "";
-  for await (const chunk of result.textStream) {
-    acc += chunk;
-    input.onText(chunk);
+    let acc = "";
+    for await (const chunk of result.textStream) {
+      acc += chunk;
+      input.onText(chunk);
+    }
+    return { steps, acc, streamError };
+  };
+
+  let run = await attempt(temperature);
+  // Retry only while nothing has been emitted yet — a sampling-param rejection
+  // lands on the first request, so re-streaming can't duplicate the user's text.
+  if (
+    run.streamError != null &&
+    run.acc === "" &&
+    shouldRetryWithoutSampling(temperature, run.streamError, input.signal)
+  ) {
+    run = await attempt(undefined);
   }
+  const { steps, acc, streamError } = run;
 
   const scalars: TaskScalars = {
     stepsUsed: steps.stepsUsed,

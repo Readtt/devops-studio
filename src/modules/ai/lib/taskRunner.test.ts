@@ -892,3 +892,188 @@ describe("step_cap", () => {
     expect(r.stepsUsed).toBe(3);
   });
 });
+
+// Frontier tiers REMOVED sampling params: Anthropic's Claude 5 answers
+// "`temperature` is deprecated for this model" with a 400. Every surface asks
+// for temperature 0, and Claude Sonnet 5 is the default model — so sending it
+// broke the first run of every BYOK Anthropic user. These pin both halves of the
+// fix: the per-model table in front of every provider, and the one-shot retry
+// that covers models no table knows about.
+describe("sampling params (models that reject temperature)", () => {
+  /** The real Anthropic 400 that took down every surface. */
+  const REJECTION = "`temperature` is deprecated for this model.";
+
+  const hasTemperature = (call: number) =>
+    "temperature" in (generateText.mock.calls[call][0] as Record<string, unknown>);
+  const streamHasTemperature = (call: number) =>
+    "temperature" in (streamText.mock.calls[call][0] as Record<string, unknown>);
+
+  it("claude-sonnet-5 (the default model): temperature 0 is never sent", async () => {
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({
+      ...baseInput,
+      modelId: "claude-sonnet-5" as never,
+      temperature: 0,
+    });
+    expect(generateText).toHaveBeenCalledTimes(1);
+    expect(hasTemperature(0)).toBe(false);
+  });
+
+  it("claude-opus-5: temperature 0 is never sent", async () => {
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({
+      ...baseInput,
+      modelId: "claude-opus-5" as never,
+      temperature: 0,
+    });
+    expect(hasTemperature(0)).toBe(false);
+  });
+
+  it("the OpenRouter Claude 5 route drops it too — the gateway forwards our body verbatim", async () => {
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({
+      ...baseInput,
+      modelId: "anthropic/claude-sonnet-5" as never,
+      temperature: 0,
+    });
+    expect(hasTemperature(0)).toBe(false);
+  });
+
+  it("does NOT blanket-drop it for Anthropic — Haiku 4.5 still gets temperature 0", async () => {
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({
+      ...baseInput,
+      modelId: "claude-haiku-4-5" as never,
+      temperature: 0,
+    });
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.temperature).toBe(0);
+  });
+
+  it("runTask retries once without temperature when a provider rejects it", async () => {
+    // A model the table can't know: a custom endpoint or a post-build release.
+    generateText
+      .mockRejectedValueOnce(new Error(REJECTION))
+      .mockResolvedValueOnce({ text: "recovered" });
+    const r = await runTask({ ...baseInput, temperature: 0 });
+    expect(generateText).toHaveBeenCalledTimes(2);
+    expect(hasTemperature(0)).toBe(true);
+    expect(hasTemperature(1)).toBe(false);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.text).toBe("recovered");
+  });
+
+  it("streamTask retries too, and replays no text to the user", async () => {
+    const emitted: string[] = [];
+    streamText
+      .mockImplementationOnce((opts: { onError?: (e: { error: unknown }) => void }) => ({
+        // The 400 lands before any delta — nothing was shown, so re-streaming
+        // cannot duplicate output.
+        textStream: (async function* () {
+          opts.onError?.({ error: new Error(REJECTION) });
+        })(),
+      }))
+      .mockImplementationOnce(() => ({
+        textStream: (async function* () {
+          yield "recovered";
+        })(),
+      }));
+    const r = await streamTask({
+      ...baseInput,
+      temperature: 0,
+      onText: (d) => emitted.push(d),
+    });
+    expect(streamText).toHaveBeenCalledTimes(2);
+    expect(streamHasTemperature(0)).toBe(true);
+    expect(streamHasTemperature(1)).toBe(false);
+    expect(r.ok).toBe(true);
+    expect(emitted).toEqual(["recovered"]);
+  });
+
+  it("retries the structured tool-less path without spending a repair attempt", async () => {
+    const schema = z.object({ a: z.number() });
+    generateObject
+      .mockRejectedValueOnce(new Error(REJECTION))
+      .mockResolvedValueOnce({ object: { a: 1 } });
+    const r = await runTask({
+      ...baseInput,
+      schema,
+      temperature: 0,
+      repairAttempts: 0,
+    });
+    expect(generateObject).toHaveBeenCalledTimes(2);
+    expect(r.ok).toBe(true);
+  });
+
+  it("a mid-stream failure that merely mentions temperature is not retried", async () => {
+    // Rejection verb but no param name, or vice versa — neither is a sampling
+    // rejection, and a pointless retry burns a second billed request.
+    generateText.mockRejectedValue(
+      new Error("rate_limit_error: your temperature-controlled workload is throttled"),
+    );
+    await expect(runTask({ ...baseInput, temperature: 0 })).rejects.toThrow(
+      /rate_limit_error/,
+    );
+    expect(generateText).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry when the caller never sent a temperature", async () => {
+    generateText.mockRejectedValue(new Error(REJECTION));
+    await expect(runTask({ ...baseInput })).rejects.toThrow(/deprecated/);
+    expect(generateText).toHaveBeenCalledTimes(1);
+  });
+});
+
+// A structured tool-less run repairs its way through bad JSON, but a bad key /
+// no credits / a 400 is not bad JSON — repairing it can't help, and swallowing it
+// reported "the model returned nothing" instead of the provider's real message.
+// That was the hardest BYOK failure to diagnose: the user sees an empty result
+// and no reason. The tool-bearing path has always thrown these; so does this one.
+describe("provider failures on the structured tool-less path", () => {
+  const schema = z.object({ a: z.number() });
+
+  it("rethrows an API call error instead of reporting 'empty'", async () => {
+    generateObject.mockRejectedValue(
+      Object.assign(new Error("Your credit balance is too low"), {
+        name: "AI_APICallError",
+        statusCode: 400,
+      }),
+    );
+    await expect(runTask({ ...baseInput, schema })).rejects.toThrow(
+      /credit balance/,
+    );
+    // No repair attempts spent on an error repair cannot fix.
+    expect(generateObject).toHaveBeenCalledTimes(1);
+  });
+
+  it("rethrows a missing-key error", async () => {
+    generateObject.mockRejectedValue(
+      Object.assign(new Error("No API key configured"), {
+        name: "AI_LoadAPIKeyError",
+      }),
+    );
+    await expect(runTask({ ...baseInput, schema })).rejects.toThrow(/API key/);
+  });
+
+  it("rethrows a bare HTTP failure with no SDK wrapper", async () => {
+    generateObject.mockRejectedValue(
+      Object.assign(new Error("Unauthorized"), { statusCode: 401 }),
+    );
+    await expect(runTask({ ...baseInput, schema })).rejects.toThrow(
+      /Unauthorized/,
+    );
+  });
+
+  it("still repairs a genuine schema miss rather than throwing", async () => {
+    generateObject.mockRejectedValue(
+      Object.assign(new Error("no object generated"), {
+        name: "AI_NoObjectGeneratedError",
+        text: "garbage",
+      }),
+    );
+    const r = await runTask({ ...baseInput, schema, repairAttempts: 1 });
+    expect(generateObject).toHaveBeenCalledTimes(2);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("schema_violation");
+  });
+});

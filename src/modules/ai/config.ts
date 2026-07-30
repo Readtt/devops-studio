@@ -147,6 +147,12 @@ export type ModelInfo = {
   description: string;
   capabilities: ModelCapabilities;
   tags?: readonly ModelTag[];
+  /** Model rejects sampling params (`temperature`, `top_p`, `top_k`) outright:
+   *  the API removed them, so sending one is a hard 400 — not a field the
+   *  provider quietly ignores. Set it for frontier tiers even when a provider
+   *  SDK already strips the param; see `supportsTemperature` for why we don't
+   *  delegate that call. */
+  rejectsSamplingParams?: boolean;
 };
 
 export const MODELS = [
@@ -197,6 +203,7 @@ export const MODELS = [
     description: "Anthropic's flagship for deep reasoning and agentic work.",
     capabilities: { intelligence: 5, speed: 2, cost: 1 },
     tags: ["vision", "reasoning", "tools", "coding"],
+    rejectsSamplingParams: true,
   },
   {
     id: "claude-sonnet-5",
@@ -206,6 +213,11 @@ export const MODELS = [
     description: "Frontier Sonnet with a 1M-token context window.",
     capabilities: { intelligence: 5, speed: 4, cost: 3 },
     tags: ["vision", "tools", "coding"],
+    // Sonnet 5 is NOT a reasoning-tagged model, so before this flag existed the
+    // runner sent it `temperature: 0` and every Anthropic surface 400'd with
+    // "`temperature` is deprecated for this model" — and this is the default
+    // model, so BYOK Anthropic users hit it on their first run.
+    rejectsSamplingParams: true,
   },
   {
     id: "claude-haiku-4-5",
@@ -383,6 +395,11 @@ export const MODELS = [
   },
 
   // ── OpenRouter (gateway — curated cross-provider routes) ──────────────────
+  //
+  // Gateway routes ride @ai-sdk/openai-compatible, which forwards our request
+  // body verbatim — none of the per-model sampling-param stripping the native
+  // Anthropic/OpenAI SDKs do applies here. So every frontier route that drops
+  // `temperature` upstream must say so itself.
   {
     id: "anthropic/claude-sonnet-5",
     provider: "openrouter",
@@ -391,6 +408,7 @@ export const MODELS = [
     description: "Frontier Sonnet via OpenRouter.",
     capabilities: { intelligence: 5, speed: 4, cost: 3 },
     tags: ["vision", "tools", "coding"],
+    rejectsSamplingParams: true,
   },
   {
     id: "anthropic/claude-opus-5",
@@ -400,6 +418,7 @@ export const MODELS = [
     description: "Anthropic flagship via OpenRouter.",
     capabilities: { intelligence: 5, speed: 2, cost: 1 },
     tags: ["vision", "reasoning", "tools", "coding"],
+    rejectsSamplingParams: true,
   },
   {
     id: "openai/gpt-5.5",
@@ -409,6 +428,7 @@ export const MODELS = [
     description: "OpenAI flagship via OpenRouter.",
     capabilities: { intelligence: 5, speed: 3, cost: 1 },
     tags: ["vision", "reasoning", "tools", "coding"],
+    rejectsSamplingParams: true,
   },
   {
     id: "openai/gpt-5.4-mini",
@@ -418,6 +438,7 @@ export const MODELS = [
     description: "Snappy GPT via OpenRouter.",
     capabilities: { intelligence: 4, speed: 4, cost: 4 },
     tags: ["vision", "tools"],
+    rejectsSamplingParams: true,
   },
   {
     id: "google/gemini-3.1-pro-preview",
@@ -598,6 +619,34 @@ export function isReasoningModel(id: ModelId | string): boolean {
     return getModel(id as ModelId).tags?.includes("reasoning") ?? false;
   } catch {
     return false;
+  }
+}
+
+/** Whether it's safe to send `temperature` to a model.
+ *
+ *  Two families refuse it: reasoning models (above), and frontier tiers where
+ *  the API REMOVED sampling params — Anthropic's Claude 5 answers
+ *  "`temperature` is deprecated for this model" with a 400, OpenAI's GPT-5 tier
+ *  accepts only the default. Those carry `rejectsSamplingParams`.
+ *
+ *  This decision deliberately lives in front of every provider rather than being
+ *  delegated to the provider SDKs. Each SDK keeps its own per-model capability
+ *  table and strips the param for models it recognizes, but that table ships a
+ *  release behind every model launch — an @ai-sdk/anthropic that predated Claude
+ *  5 classified it as an unknown model and forwarded `temperature` straight
+ *  through, which is exactly how the default model came to 400 on every run. And
+ *  gateway/local routes (OpenRouter, custom OpenAI-compatible endpoints, LM
+ *  Studio) have no such table at all: they forward whatever we send.
+ *
+ *  Unknown ids (custom endpoint / local server) return true — they're
+ *  overwhelmingly plain chat models that want a temperature, and the runner's
+ *  one-shot retry covers the rare one that doesn't. */
+export function supportsTemperature(id: ModelId | string): boolean {
+  try {
+    const m = getModel(id as ModelId);
+    return !m.rejectsSamplingParams && !(m.tags?.includes("reasoning") ?? false);
+  } catch {
+    return true;
   }
 }
 
