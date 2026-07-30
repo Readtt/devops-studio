@@ -169,7 +169,7 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
       }),
       execute: async ({ pattern, glob, caseInsensitive, maxResults }) => {
         try {
-          const out = await invoke<unknown>("fs_grep", {
+          const out = await invoke<GrepResponse>("fs_grep", {
             pattern,
             root,
             glob: glob ?? null,
@@ -178,6 +178,13 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
             // workspace defaults to Local on the Rust side; we don't pass
             // one because the WorkspaceEnv shape is internal.
           });
+          // `files_scanned` counts files AFTER the glob filter, so 0 means
+          // nothing was ever read — which is NOT evidence the pattern is
+          // absent. Left unsaid, a model reads "0 matches" as "this code
+          // doesn't exist" and moves on with a wrong conclusion.
+          if (out.files_scanned === 0) {
+            return { ...out, hint: emptyScanHint(glob) };
+          }
           return out;
         } catch (e) {
           return { error: String(e), pattern };
@@ -212,6 +219,35 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
       },
     }),
   } as const;
+}
+
+/** Mirror of the Rust `GrepResponse`. Internal — the model gets it verbatim. */
+type GrepResponse = {
+  hits: Array<{ path: string; rel: string; line: number; text: string }>;
+  truncated: boolean;
+  files_scanned: number;
+};
+
+/** Why a grep read zero files. Globs are matched with globset against paths
+ *  relative to the source root, so the ways they silently match nothing are
+ *  narrow and worth spelling out: a leading `./` or `/` never matches, matching
+ *  is case-sensitive, and a directory prefix has to exist at the root (`src/**`
+ *  finds nothing in a repo whose top level is `iSyncKit2/`). */
+function emptyScanHint(glob: string[] | undefined): string {
+  if (glob && glob.length > 0) {
+    return (
+      "Your `glob` matched no files, so nothing was searched — this is NOT evidence " +
+      "the pattern is absent. Globs are matched against paths relative to the source " +
+      "root: they are case-sensitive, must not start with `./` or `/`, and any " +
+      "directory prefix must exist at the top level of the repo. Retry without " +
+      "`glob`, or widen it (e.g. `**/*.cs`), before concluding anything."
+    );
+  }
+  return (
+    "No files were searched — the source directory is empty, or everything in it is " +
+    "gitignored/hidden. This is NOT evidence the pattern is absent. Check the source " +
+    "directory with list_files before concluding anything."
+  );
 }
 
 /** Strip whitespace and surrounding quotes off a model-supplied path argument.

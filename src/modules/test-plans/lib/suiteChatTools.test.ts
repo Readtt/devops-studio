@@ -12,7 +12,10 @@ const ROOT = "C:\\Users\\mudas\\source\\repos\\iSyncKit";
 /** The AI SDK's `tool()` is an identity helper, so `execute` is directly
  *  callable — but its typed signature wants the SDK's call options, which the
  *  implementations ignore. Cast to the shape we actually exercise. */
-function callTool(name: "list_files" | "read_file", args: unknown) {
+function callTool(
+  name: "list_files" | "read_file" | "grep" | "run_command",
+  args: unknown,
+) {
   const tools = buildSuiteChatTools(ROOT);
   if (!tools) throw new Error("expected tools for a non-null source root");
   const t = tools[name] as unknown as {
@@ -78,6 +81,77 @@ describe("list_files · subpath sanitizing", () => {
     invoke.mockRejectedValue("not a directory: nope");
     const out = await callTool("list_files", { subpath: "nope" });
     expect(out).toEqual({ error: "not a directory: nope", subpath: "nope" });
+  });
+});
+
+// `files_scanned` counts files AFTER the glob filter, so 0 means the glob
+// excluded everything and nothing was ever read — not "this code doesn't
+// exist". Without saying so, the model treats it as a negative result.
+describe("grep · empty-scan hint", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+  });
+
+  it("explains that the glob matched nothing", async () => {
+    invoke.mockResolvedValue({ hits: [], truncated: false, files_scanned: 0 });
+    const out = (await callTool("grep", {
+      pattern: "comment",
+      glob: ["src/**/*.cs"],
+    })) as { hint?: string };
+    expect(out.hint).toBeTruthy();
+    expect(out.hint).toMatch(/glob/i);
+    expect(out.hint).toMatch(/case-sensitive/i);
+  });
+
+  it("explains an empty source directory when no glob was set", async () => {
+    invoke.mockResolvedValue({ hits: [], truncated: false, files_scanned: 0 });
+    const out = (await callTool("grep", { pattern: "comment" })) as {
+      hint?: string;
+    };
+    expect(out.hint).toBeTruthy();
+    expect(out.hint).not.toMatch(/glob/i);
+  });
+
+  it("adds no hint when files really were scanned", async () => {
+    invoke.mockResolvedValue({
+      hits: [],
+      truncated: false,
+      files_scanned: 1760,
+    });
+    const out = (await callTool("grep", {
+      pattern: "class SetProfile",
+      glob: ["**/*.cs"],
+    })) as { hint?: string };
+    expect(out.hint).toBeUndefined();
+  });
+
+  it("adds no hint when there were hits", async () => {
+    invoke.mockResolvedValue({
+      hits: [{ rel: "a.cs", line: 1, text: "x" }],
+      truncated: false,
+      files_scanned: 12,
+    });
+    const out = (await callTool("grep", { pattern: "x" })) as {
+      hint?: string;
+    };
+    expect(out.hint).toBeUndefined();
+  });
+
+  it("passes the search options through to Rust", async () => {
+    invoke.mockResolvedValue({ hits: [], truncated: false, files_scanned: 1 });
+    await callTool("grep", {
+      pattern: "x",
+      glob: ["**/*.cs"],
+      caseInsensitive: true,
+      maxResults: 25,
+    });
+    expect(lastPayload()).toEqual({
+      pattern: "x",
+      root: ROOT,
+      glob: ["**/*.cs"],
+      caseInsensitive: true,
+      maxResults: 25,
+    });
   });
 });
 

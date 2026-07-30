@@ -78,9 +78,16 @@ export function summarizeToolInput(
   }
   if (name === "grep") {
     const pattern = get("pattern") ?? "";
-    const path = get("path");
-    const glob = get("glob");
-    const suffix = glob ?? path;
+    // `glob` is a string[] in the suite-chat schema (a string in the Claude CLI
+    // one), and `get` only returns strings — so the array form was silently
+    // dropped and every row showed a bare pattern. That is what made a grep
+    // reporting "0 files scanned" impossible to diagnose: the filter that
+    // excluded every file was the one thing not on screen.
+    const globList = Array.isArray(input.glob)
+      ? (input.glob as unknown[]).filter((x): x is string => typeof x === "string")
+      : [];
+    const glob = globList.length > 0 ? globList.join(", ") : get("glob");
+    const suffix = glob ?? get("path");
     return suffix ? `${pattern} (${suffix})` : pattern || toolName;
   }
   // `subpath` isn't in the generic key list below, so this used to fall through
@@ -227,7 +234,13 @@ export function formatToolResult(
     const sum =
       `${hits.length}${truncated ? "+" : ""} match${hits.length === 1 ? "" : "es"}` +
       (files != null ? ` · ${files} file${files === 1 ? "" : "s"} scanned` : "");
-    return { summary: sum, text: lines.join("\n") || "(no matches)" };
+    // "0 files scanned" states the fact; the hint (set by the tool when the
+    // search never read anything) states the reason. Body, not summary — it's a
+    // sentence, and the expandable pane is where there's room for it.
+    return {
+      summary: sum,
+      text: lines.join("\n") || str("hint") || "(no matches)",
+    };
   }
 
   if (name === "glob") {

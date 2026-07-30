@@ -54,6 +54,17 @@ const GIT_READONLY_SUBCOMMANDS: &[&str] = &[
     "name-rev", "reflog", "grep", "whatchanged", "merge-base", "cherry",
 ];
 
+/// Shell syntax models write out of habit. There is no shell here (see the
+/// module docs), so these reach the program as literal arguments and it fails
+/// with its own error: `git show <sha>:<path> | sed -n 1,10p` comes back as git
+/// exit 128 "invalid object", which reads like a bad SHA. In the field that
+/// sent a run chasing three different refs before it thought to drop the pipe.
+/// Rejecting up front with the real reason costs one call instead of four.
+///
+/// Whole tokens only — `|` inside a quoted argument is a regex alternation
+/// (`rg "class A|class B"`), which is exactly what this tool is for.
+const SHELL_OPERATORS: &[&str] = &["|", "||", "&", "&&", ";", ">", ">>", "<", "<<"];
+
 /// `find` actions/flags that write to disk or execute — rejected so `find`
 /// stays a pure query.
 const FIND_DANGEROUS: &[&str] = &[
@@ -148,6 +159,20 @@ fn validate(tokens: &[String]) -> Result<(), String> {
     }
 
     let args = &tokens[1..];
+    // Before the path check, so `> /tmp/out.cs` reports the redirect rather
+    // than "use a relative path" — which is the wrong reason and invites a
+    // retry with `> out.cs` that fails just as opaquely.
+    for a in args {
+        if is_shell_operator(a) {
+            return Err(format!(
+                "`{a}` isn't supported — there's no shell here, so pipes, redirection and \
+                 chaining are handed to the program as literal arguments (which is why they \
+                 come back as a confusing non-zero exit rather than an error about the pipe). \
+                 Run one command on its own. To read part of a large file, use the read_file \
+                 tool with `offset`/`limit` instead of piping through sed/awk/head."
+            ));
+        }
+    }
     for a in args {
         if is_absolute_path(a) {
             return Err(format!(
@@ -184,6 +209,24 @@ fn validate(tokens: &[String]) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// True when a token IS shell syntax rather than data. Matches whole operator
+/// tokens plus the glued forms — `>out.txt`, `2>/dev/null`, `$(cmd)`, backticks
+/// — so a metacharacter inside a quoted argument is left alone.
+fn is_shell_operator(s: &str) -> bool {
+    if SHELL_OPERATORS.contains(&s) {
+        return true;
+    }
+    if s.starts_with('>') || s.starts_with('<') || s.starts_with("$(") {
+        return true;
+    }
+    if s.len() > 1 && s.starts_with('`') && s.ends_with('`') {
+        return true;
+    }
+    // File-descriptor redirection: `2>/dev/null`, `1>&2`.
+    let digits = s.chars().take_while(|c| c.is_ascii_digit()).count();
+    digits > 0 && s[digits..].starts_with('>')
 }
 
 /// True for paths that escape the project root: Unix `/…`, a UNC `\\…`, or a
@@ -315,6 +358,86 @@ mod tests {
     fn tokenizes_quotes() {
         assert_eq!(toks(r#"grep "foo bar" file"#), vec!["grep", "foo bar", "file"]);
         assert_eq!(toks("git log --grep='fix bug'"), vec!["git", "log", "--grep=fix bug"]);
+    }
+
+    /// The field failure: `git show <sha>:<path> | sed -n '4280,4540p'` passed
+    /// validation, ran, and came back as git exit 128 "invalid object" — which
+    /// reads as a bad SHA, so the model retried with *different refs* three
+    /// times instead of dropping the pipe. Name the real constraint up front.
+    #[test]
+    fn blocks_pipes_and_chaining() {
+        for cmd in [
+            "git show abc123:src/a.cs | sed -n 1,10p",
+            "git log --oneline | head -5",
+            "ls && cat foo",
+            "ls ; cat foo",
+            "cat a || cat b",
+        ] {
+            let err = validate(&toks(cmd)).expect_err(cmd);
+            assert!(
+                err.contains("no shell"),
+                "`{cmd}` should explain there's no shell, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn blocks_redirection() {
+        for cmd in [
+            "git show abc123:src/a.cs > out.cs",
+            "git show abc123:src/a.cs >out.cs",
+            "git show abc123:src/a.cs >> out.cs",
+            "cat foo < bar",
+        ] {
+            assert!(validate(&toks(cmd)).is_err(), "should reject: {cmd}");
+        }
+    }
+
+    /// `> /tmp/out.cs` used to be rejected as "Absolute path … use a path
+    /// relative to the source directory", which is the wrong reason and invites
+    /// a retry with `> out.cs` that fails just as confusingly.
+    #[test]
+    fn redirect_to_absolute_path_reports_the_redirect_not_the_path() {
+        let err = validate(&toks("git show abc123:src/a.cs > /tmp/out.cs")).unwrap_err();
+        assert!(err.contains("no shell"), "got: {err}");
+        assert!(!err.contains("Absolute path"), "got: {err}");
+    }
+
+    /// A command that breaks two rules at once reports the shell syntax first.
+    /// That ordering is deliberate — it's what makes `> /tmp/out.cs` say
+    /// "redirect" instead of the misleading "use a relative path" — and the
+    /// absolute path is still refused on the retry.
+    #[test]
+    fn reports_shell_syntax_before_the_absolute_path() {
+        let err = validate(&toks(r#"find / -iname "SharediSDK*.dll" 2>/dev/null | head -5"#))
+            .unwrap_err();
+        assert!(err.contains("no shell"), "got: {err}");
+
+        let err = validate(&toks(r#"find / -iname "SharediSDK*.dll""#)).unwrap_err();
+        assert!(err.contains("Absolute path"), "got: {err}");
+    }
+
+    #[test]
+    fn blocks_command_substitution() {
+        assert!(validate(&toks("git log $(whoami)")).is_err());
+        assert!(validate(&toks("cat `ls`")).is_err());
+    }
+
+    #[test]
+    fn blocks_fd_redirection() {
+        assert!(validate(&toks("find . -name x 2>/dev/null")).is_err());
+    }
+
+    /// A metacharacter INSIDE a quoted arg is ordinary data — a regex
+    /// alternation, a glob brace — not shell syntax. Rejecting these would
+    /// break the most common legitimate search.
+    #[test]
+    fn allows_metacharacters_inside_arguments() {
+        assert!(validate(&toks(r#"rg "class A|class B" src"#)).is_ok());
+        assert!(validate(&toks(r#"grep -n "foo|bar" src"#)).is_ok());
+        assert!(validate(&toks("git log --grep=fix|feat")).is_ok());
+        assert!(validate(&toks("git show abc123^:src/a.cs")).is_ok());
+        assert!(validate(&toks("git diff a..b -- src/a.cs")).is_ok());
     }
 
     fn toks(s: &str) -> Vec<String> {
