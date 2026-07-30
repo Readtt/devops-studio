@@ -7,6 +7,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.16.1] - 2026-07-30
+
+### Fixed
+
+- **BYOK runs failed on every AI surface with Anthropic keys.** Generator, Suite
+  Chat, Commit Review, and Confidence all returned a 400 —
+  ``​`temperature` is deprecated for this model`` — against Claude Sonnet 5 and
+  Claude Opus 5. Sonnet 5 is the default model, so a new user's very first run
+  died. The runner no longer sends `temperature` to models whose API removed it.
+- **Anthropic runs were capped at 4096 output tokens and used degraded
+  structured output.** The bundled Anthropic provider predated the Claude 5
+  models and treated them as unknown, falling back to a 4096-token ceiling — for
+  models that support 128k — which truncated long generations into "the model
+  returned nothing" and "no findings" results. Upgraded the provider so both
+  models are recognized.
+- **A bad key, an empty credit balance, or any provider 400 could be reported as
+  "the model returned nothing."** On structured runs with code search off, real
+  provider failures were mistaken for malformed model output and swallowed by
+  the schema-repair loop, hiding the actual message. The provider's own error now
+  reaches the error panel, with the Resume affordance intact.
+
+### Changed
+
+- Sampling-param support is now a per-model property in the model catalog,
+  applied in front of every provider rather than delegated to each provider SDK
+  — gateway and custom OpenAI-compatible endpoints forward requests verbatim and
+  have no such knowledge. Curated OpenRouter routes to frontier Anthropic and
+  OpenAI models carry the flag too.
+- As a fallback for custom endpoints and models newer than the app, a run that
+  is rejected specifically over a sampling parameter is now retried once without
+  it instead of failing outright.
+
 ## [0.16.0] - 2026-07-29
 
 ### Added
