@@ -83,6 +83,17 @@ export function summarizeToolInput(
     const suffix = glob ?? path;
     return suffix ? `${pattern} (${suffix})` : pattern || toolName;
   }
+  // `subpath` isn't in the generic key list below, so this used to fall through
+  // and render "list_files list_files". Quote-stripping mirrors cleanPathArg in
+  // test-plans/lib/suiteChatTools.ts so the label matches what actually got
+  // listed — kept inline to keep this module dependency-free.
+  if (name === "list_files") {
+    const sub = (get("subpath") ?? "")
+      .trim()
+      .replace(/^["'`]+|["'`]+$/g, "")
+      .trim();
+    return sub || "(root)";
+  }
   // Generic fallback — pick the first string-valued key that looks like a path
   // or query, otherwise just say the tool name.
   for (const k of ["file_path", "path", "pattern", "query", "command"]) {
@@ -230,7 +241,23 @@ export function formatToolResult(
     };
   }
 
-  if (name === "list_directory" || name === "list_files") {
+  // Two listing tools, two result shapes. `list_files` (suite-chat tools →
+  // Rust fs_list_files) returns a flat `files: string[]`; `list_directory`
+  // (ai/tools/fs) returns `entries: {name, kind}[]`. Reading `entries` for both
+  // is why every list_files call used to render "0 entries" no matter how many
+  // paths came back — which read as "the AI found nothing".
+  if (name === "list_files") {
+    const files = Array.isArray(o.files)
+      ? (o.files as unknown[]).filter((x): x is string => typeof x === "string")
+      : [];
+    const truncated = o.truncated === true;
+    return {
+      summary: `${files.length}${truncated ? "+" : ""} file${files.length === 1 ? "" : "s"}`,
+      text: files.join("\n") || "(no files)",
+    };
+  }
+
+  if (name === "list_directory") {
     const entries = Array.isArray(o.entries)
       ? (o.entries as Array<Record<string, unknown>>)
       : [];

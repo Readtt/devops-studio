@@ -24,7 +24,7 @@ const PRUNE_DIRS: &[&str] = &[
     "__pycache__",
 ];
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct ListFilesResult {
     pub files: Vec<String>,
     pub truncated: bool,
@@ -226,4 +226,67 @@ pub fn fs_resolve_source_path(
     }
 
     Ok(best.map(|(_, _, abs)| abs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn list(root: &std::path::Path, limit: Option<usize>) -> Result<ListFilesResult, String> {
+        fs_list_files(root.to_string_lossy().to_string(), limit, None, None, None)
+    }
+
+    /// Pins the wire contract the frontend depends on. `list_files` in
+    /// test-plans/lib/suiteChatTools.ts hands this straight to the model and
+    /// generator/lib/activityLog.ts formats it by reading `files` — renaming the
+    /// field here would silently turn every listing into "0 files" in the UI,
+    /// which is the exact bug these tests exist to prevent recurring.
+    #[test]
+    fn serializes_as_files_and_truncated() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("alpha.rs"), "fn main() {}").unwrap();
+        fs::write(dir.path().join("beta.rs"), "fn other() {}").unwrap();
+
+        let out = list(dir.path(), None).expect("listing a real directory should succeed");
+        assert_eq!(out.files, vec!["alpha.rs".to_string(), "beta.rs".to_string()]);
+        assert!(!out.truncated);
+
+        let json = serde_json::to_value(&out).unwrap();
+        assert!(json.get("files").is_some(), "frontend reads `files`");
+        assert!(json.get("paths").is_none(), "not `paths`");
+        assert!(json.get("entries").is_none(), "not `entries`");
+    }
+
+    /// What the model's `subpath: "\"\""` actually produced once joined.
+    #[test]
+    fn rejects_a_non_directory_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = list(&dir.path().join("\"\""), None)
+            .expect_err("a quoted-empty subpath is not a directory");
+        assert!(err.starts_with("not a directory:"), "got: {err}");
+    }
+
+    #[test]
+    fn honours_the_limit_and_flags_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..5 {
+            fs::write(dir.path().join(format!("f{i}.rs")), "x").unwrap();
+        }
+        let out = list(dir.path(), Some(2)).unwrap();
+        assert_eq!(out.files.len(), 2);
+        assert!(out.truncated);
+    }
+
+    /// A real listing is relative to the root — the model joins these back onto
+    /// the source dir, so absolute paths here would double up.
+    #[test]
+    fn returns_paths_relative_to_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src").join("app.ts"), "export {}").unwrap();
+
+        let out = list(dir.path(), None).unwrap();
+        assert_eq!(out.files, vec!["src/app.ts".to_string()]);
+    }
 }

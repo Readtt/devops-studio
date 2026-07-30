@@ -106,8 +106,12 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
         subpath: z
           .string()
           .optional()
+          // "Empty ... lists from the root" invited models to literally send
+          // `""`, which used to be joined onto the root as a directory named
+          // `""`. cleanPathArg now absorbs that either way; this just stops
+          // asking for it.
           .describe(
-            "Optional sub-directory of the source root to list. Empty / omitted lists from the root.",
+            "Optional sub-directory of the source root to list, e.g. `src/auth`. Omit it entirely to list from the root.",
           ),
         limit: z
           .number()
@@ -118,9 +122,10 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
           .describe("Cap on returned paths. Default 120."),
       }),
       execute: async ({ subpath, limit }) => {
+        const sub = cleanPathArg(subpath);
         try {
-          const base = subpath ? joinPath(root, subpath) : root;
-          const out = await invoke<{ paths: string[]; truncated: boolean }>(
+          const base = sub ? joinPath(root, sub) : root;
+          const out = await invoke<{ files: string[]; truncated: boolean }>(
             "fs_list_files",
             {
               root: base,
@@ -131,7 +136,7 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
           );
           return out;
         } catch (e) {
-          return { error: String(e), subpath: subpath ?? "" };
+          return { error: String(e), subpath: sub };
         }
       },
     }),
@@ -209,12 +214,29 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
   } as const;
 }
 
+/** Strip whitespace and surrounding quotes off a model-supplied path argument.
+ *  Models routinely write `""` to mean "no value" (our own schema says "Empty /
+ *  omitted lists from the root") and wrap real paths in quotes. Both used to be
+ *  joined verbatim, so `subpath: '""'` became `<root>\""` and the Rust side
+ *  answered `not a directory` — a listing the model could never get to work.
+ *  Quotes are illegal in Windows filenames and vanishingly rare elsewhere, and
+ *  we only touch the ends, so stripping them is safe.
+ *
+ *  Mirrored (deliberately, to keep that module dependency-free) by the
+ *  `list_files` label in generator/lib/activityLog.ts. */
+function cleanPathArg(raw: string | undefined): string {
+  return (raw ?? "")
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .trim();
+}
+
 /** Coerce a model-supplied path into something the Rust fs commands like:
  *  if it starts with the source root, pass through; otherwise treat it as
  *  relative and join against the root. We avoid full canonicalize here so
  *  the model gets predictable echoed paths in tool results. */
 function resolvePathHint(path: string, root: string): string {
-  const trimmed = path.trim();
+  const trimmed = cleanPathArg(path);
   if (!trimmed) return root;
   // Absolute-looking? Hand off — the Rust side will still enforce the
   // workspace boundary so it can't escape.
