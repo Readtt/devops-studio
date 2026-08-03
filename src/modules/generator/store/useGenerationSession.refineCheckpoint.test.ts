@@ -29,7 +29,11 @@ import {
   FINISH_NOW_NUDGE,
   type GeneratorRefineCheckpointV1,
 } from "@/modules/ai/lib/checkpointApi";
-import { RESUME_TOPUP_STEPS, type ModelId } from "@/modules/ai/config";
+import {
+  RESUME_TOPUP_TOKENS,
+  SURFACE_STEP_CAPS,
+  type ModelId,
+} from "@/modules/ai/config";
 import type {
   ExecuteAnalystOptions,
   PreparedAnalystRun,
@@ -224,7 +228,7 @@ describe("refine — checkpointing a follow-up", () => {
     expect(invokedCommands()).toContain("ai_checkpoint_delete");
   });
 
-  it("classifies an exhausted step budget as resumable instead of 'empty result'", async () => {
+  it("classifies an exhausted run budget as resumable instead of 'empty result'", async () => {
     const store = reviewStore();
     executeQaAnalystRun.mockResolvedValue({
       batch: { cases: [], bugs: [] },
@@ -232,13 +236,14 @@ describe("refine — checkpointing a follow-up", () => {
       durationMs: 1,
       ok: false,
       reason: "step_cap",
+      limit: "tokens",
       stepsUsed: 24,
     });
 
     await store.getState().refine("read every caller");
 
     const s = store.getState();
-    expect(s.refineError).toContain("step budget");
+    expect(s.refineError).toContain("token budget");
     expect(s.refineResumable).not.toBeNull();
     expect(last(savedPayloads())?.lastOutcome?.kind).toBe("step_cap");
   });
@@ -368,7 +373,7 @@ describe("resumeRefine — replaying the paid-for round", () => {
     );
   });
 
-  it("gives a step-capped round the top-up budget and an explicit finish-now turn", async () => {
+  it("gives a budget-stopped round the token top-up and an explicit finish-now turn", async () => {
     checkpointDisk();
     const store = reviewStore();
     executeQaAnalystRun.mockImplementationOnce(
@@ -396,7 +401,8 @@ describe("resumeRefine — replaying the paid-for round", () => {
       PreparedAnalystRun,
       ExecuteAnalystOptions,
     ];
-    expect(opts.maxSteps).toBe(RESUME_TOPUP_STEPS);
+    expect(opts.tokenBudget).toBe(RESUME_TOPUP_TOKENS);
+    expect(opts.maxSteps).toBe(SURFACE_STEP_CAPS.generator);
     expect(last(opts.resumeMessages ?? [])).toEqual({
       role: "user",
       content: FINISH_NOW_NUDGE,

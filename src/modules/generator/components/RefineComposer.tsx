@@ -56,7 +56,7 @@ import {
   useContextGuard,
 } from "@/modules/ai/components/ContextMeter";
 import { useContextBaseline } from "@/modules/ai/lib/useContextBaseline";
-import { estimateTokens } from "@/modules/ai/lib/contextEstimate";
+import { estimateTokens, formatTokens } from "@/modules/ai/lib/contextEstimate";
 import {
   MentionDropdown,
   WorkItemChips,
@@ -648,6 +648,11 @@ export function RefineComposer({ isRefining }: Props) {
               ? `${refineResumable.stepsUsed} step${
                   refineResumable.stepsUsed === 1 ? "" : "s"
                 } in`
+              : null,
+            // What the interrupted round already bought, in the unit the run is
+            // rationed by — same clause the analyze and review cards carry.
+            refineResumable.totalTokens
+              ? `~${formatTokens(refineResumable.totalTokens)} tokens spent`
               : null,
             relativeTime(refineResumable.updatedAt),
           ]

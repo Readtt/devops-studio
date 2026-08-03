@@ -17,6 +17,10 @@ vi.mock("@/modules/test-plans/lib/suiteChatTools", () => ({
 }));
 
 import {
+  SURFACE_STEP_CAPS,
+  SURFACE_TOKEN_BUDGETS,
+} from "@/modules/ai/config";
+import {
   executeQaAnalystRun,
   prepareQaAnalystRun,
   renderTargetContext,
@@ -211,7 +215,8 @@ describe("prepareQaAnalystRun / runQaAnalyst prompt assembly", () => {
     expect(arg.attachments).toEqual(prepared.attachments);
     expect(arg.customInstructions).toBe("Prefer short titles.");
     expect(arg.temperature).toBe(0);
-    expect(arg.maxSteps).toBe(24);
+    expect(arg.maxSteps).toBe(SURFACE_STEP_CAPS.generator);
+    expect(arg.tokenBudget).toBe(SURFACE_TOKEN_BUDGETS.generator);
     expect(arg.schema).toBeDefined();
     expect(arg.systemPrompt).toEqual(expect.stringContaining("QA"));
   });
@@ -366,11 +371,20 @@ describe("executeQaAnalystRun passthroughs", () => {
     expect(arg.onCheckpoint).toBe(onCheckpoint);
   });
 
-  it("defaults maxSteps to the generator surface cap", async () => {
+  it("defaults both budgets to the generator surface entries", async () => {
     await executeQaAnalystRun(prepareQaAnalystRun({ ...base, sourceRoot: null }), {
       keys: {} as never,
     });
-    expect(runnerArg().maxSteps).toBe(24);
+    expect(runnerArg().maxSteps).toBe(SURFACE_STEP_CAPS.generator);
+    expect(runnerArg().tokenBudget).toBe(SURFACE_TOKEN_BUDGETS.generator);
+  });
+
+  it("forwards a resume's token top-up as the call's budget", async () => {
+    await executeQaAnalystRun(prepareQaAnalystRun({ ...base, sourceRoot: null }), {
+      keys: {} as never,
+      tokenBudget: 500_000,
+    });
+    expect(runnerArg().tokenBudget).toBe(500_000);
   });
 });
 

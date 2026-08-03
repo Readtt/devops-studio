@@ -1464,6 +1464,104 @@ describe("step_cap", () => {
   });
 });
 
+// A step is a poor proxy for the constraint: one step can be a 200-token call or
+// a 60k-token file read. The token budget is the ration; the step ceiling is the
+// runaway guard behind it. These pin the classification, which is where getting
+// it wrong is expensive — a spend stop lands with steps to spare, so the old
+// `stepsUsed === maxSteps` test would have called it a schema_violation and told
+// the user the model returned bad output when it had simply been cut off.
+describe("token budget", () => {
+  const schema = z.object({ a: z.number() });
+  const spend = (n: number) => ({ inputTokens: n, outputTokens: 0 });
+  const budgeted = {
+    ...baseInput,
+    schema,
+    tools: { read_file: {} } as never,
+    // Deliberately far apart, so nothing here can pass because both guards
+    // happened to bind at once.
+    maxSteps: 20,
+    tokenBudget: 1_000,
+  };
+
+  it("a spend stop with steps to spare is step_cap, not schema_violation", async () => {
+    generateTextOverSteps(
+      [
+        step("s1", "tool-calls", spend(600)),
+        step("s2", "tool-calls", spend(600)),
+      ],
+      "still thinking about it",
+    );
+    const r = await runTask(budgeted);
+    expect(r.stepsUsed).toBe(2); // nowhere near maxSteps
+    expect(r.tokensUsed).toBe(1_200);
+    expect(r.limit).toBe("tokens");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("step_cap");
+  });
+
+  it("under both guards is still a plain schema_violation", async () => {
+    generateTextOverSteps([step("s1", "tool-calls", spend(100))], "garbage");
+    const r = await runTask(budgeted);
+    expect(r.limit).toBeUndefined();
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("schema_violation");
+  });
+
+  it("schema-valid text still wins as ok:true at the budget", async () => {
+    generateTextOverSteps(
+      [step("s1", "tool-calls", spend(5_000))],
+      JSON.stringify({ a: 7 }),
+    );
+    const r = await runTask(budgeted);
+    expect(r.limit).toBe("tokens");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.object).toEqual({ a: 7 });
+  });
+
+  it("a spend stop that finished on its own terms is NOT a budget failure", async () => {
+    // The model answered and stopped; it merely happened to cross the line on
+    // the way. Only a loop cut off mid-tool-call is worth resuming.
+    generateTextOverSteps([step("s1", "stop", spend(5_000))], "garbage");
+    const r = await runTask(budgeted);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("schema_violation");
+  });
+
+  it("installs BOTH stop conditions, so neither guard can be dropped by accident", async () => {
+    generateTextOverSteps([step("s1", "stop", spend(10))], JSON.stringify({ a: 1 }));
+    await runTask(budgeted);
+    const args = generateText.mock.calls[0][0] as { stopWhen?: unknown[] };
+    expect(args.stopWhen).toHaveLength(2);
+    // The SDK ORs the array, so the loop ends at whichever binds first.
+    expect(args.stopWhen?.[1]).toEqual({ __stepCountIs: 20 });
+  });
+
+  it("streamTask classifies a spend stop identically", async () => {
+    streamTextOverSteps(
+      [
+        step("s1", "tool-calls", spend(600)),
+        step("s2", "tool-calls", spend(600)),
+      ],
+      ["not", " json"],
+    );
+    const r = await streamTask({ ...budgeted, onText: () => {} });
+    expect(r.limit).toBe("tokens");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("step_cap");
+  });
+
+  it("an endpoint that reports no usage falls through to the step ceiling", async () => {
+    // Local servers routinely report nothing. The token budget is structurally
+    // blind there, which is the whole reason the step count was kept.
+    generateTextOverSteps([step("s1"), step("s2"), step("s3")], "");
+    const r = await runTask({ ...budgeted, maxSteps: 3 });
+    expect(r.tokensUsed).toBe(0);
+    expect(r.limit).toBe("steps");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("step_cap");
+  });
+});
+
 // Frontier tiers REMOVED sampling params: Anthropic's Claude 5 answers
 // "`temperature` is deprecated for this model" with a 400. Every surface asks
 // for temperature 0, and Claude Sonnet 5 is the default model — so sending it

@@ -2,7 +2,11 @@
 // store so they're directly unit-testable (the store is a factory over Tauri
 // IPC; these are arithmetic and a branch).
 
-import { RESUME_TOPUP_STEPS, SURFACE_STEP_CAPS } from "@/modules/ai/config";
+import {
+  RESUME_TOPUP_TOKENS,
+  SURFACE_STEP_CAPS,
+  SURFACE_TOKEN_BUDGETS,
+} from "@/modules/ai/config";
 import {
   FINISH_NOW_NUDGE,
   type CheckpointOutcome,
@@ -44,8 +48,10 @@ export function sumUsage(
 }
 
 export type ResumeBudget = {
-  /** Step cap for the resumed call. */
+  /** Runaway step ceiling for the resumed call. */
   cap: number;
+  /** Tokens the resumed call may spend — the budget that actually rations it. */
+  tokens: number;
   /** Continuation transcript to hand the runner, or undefined to start the
    *  loop fresh from the (still-persisted) prompt. */
   resumeMessages: ModelMessage[] | undefined;
@@ -71,6 +77,13 @@ export function diedOfContextOverflow(
  *  top-up plus an explicit "stop reading, answer now" turn, so a model stuck in
  *  a tool loop converges instead of spending another full budget the same way.
  *
+ *  What gets topped up is the TOKEN budget; the step ceiling goes back to the
+ *  full surface cap either way, because it is a runaway guard and a resume is no
+ *  more likely to run away than the attempt before it. Granting 8 extra STEPS
+ *  (what this replaces) rationed the wrong thing twice over: it let a resume
+ *  re-read a 150k-token transcript eight times over, and it cut off a model that
+ *  only needed a few cheap turns to write out what it already knew.
+ *
  *  The transcript is compacted on the way out. At the live budget that is a
  *  deliberate no-op for anything an ordinary run produced — a rate limit or a
  *  dropped socket left a transcript that fit, and evicting out of it would
@@ -91,12 +104,17 @@ export function resumeBudget(payload: {
     : undefined;
   if (payload.lastOutcome?.kind === "step_cap") {
     return {
-      cap: RESUME_TOPUP_STEPS,
+      cap: SURFACE_STEP_CAPS.generator,
+      tokens: RESUME_TOPUP_TOKENS,
       resumeMessages: [
         ...(prior ?? []),
         { role: "user", content: FINISH_NOW_NUDGE },
       ],
     };
   }
-  return { cap: SURFACE_STEP_CAPS.generator, resumeMessages: prior };
+  return {
+    cap: SURFACE_STEP_CAPS.generator,
+    tokens: SURFACE_TOKEN_BUDGETS.generator,
+    resumeMessages: prior,
+  };
 }

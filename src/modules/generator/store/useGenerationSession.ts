@@ -114,11 +114,18 @@ export type PublishLogEntry = {
 
 import {
   isKnownModelId,
-  RESUME_TOPUP_STEPS,
+  RESUME_TOPUP_TOKENS,
   SURFACE_STEP_CAPS,
+  SURFACE_TOKEN_BUDGETS,
   supportsVision,
   type ModelId,
 } from "@/modules/ai/config";
+import { formatTokens } from "@/modules/ai/lib/contextEstimate";
+import {
+  budgetSpentPhrase,
+  stepSpend,
+  type RunBudget,
+} from "@/modules/ai/lib/runBudget";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import { bugsToContextBlocks } from "@/modules/ado/lib/bugContextBlock";
 import type { WorkItemRef } from "@/modules/ado";
@@ -203,9 +210,22 @@ export type SessionState = {
   /** Agentic steps the current/last analyze has completed — cumulative across
    *  resumes, so it keeps counting up rather than restarting at 0. */
   stepsUsed: number | null;
-  /** Step budget in force for the current/last analyze: the full generator cap,
-   *  or the smaller top-up a step-cap resume runs under. */
+  /** Runaway step ceiling in force for the current/last analyze. Kept for the
+   *  activity readout's fallback on endpoints that report no token usage — the
+   *  budget below is what the run is actually rationed by. */
   stepCap: number | null;
+  /** Tokens the current/last analyze has spent — cumulative across resumes, so
+   *  it keeps climbing rather than restarting at 0. */
+  tokensUsed: number | null;
+  /** The ceiling `tokensUsed` is shown against. On a resume this is the PRIOR
+   *  total plus this call's top-up, for the same reason `stepCap` is: both
+   *  counters are cumulative, so a raw budget here would read "~1.2M / 500k". */
+  tokenBudget: number | null;
+  /** How many of `tokensUsed` were cache reads. Carried only so the live
+   *  readout can price the run honestly: cached input bills at ~10% and an
+   *  agentic loop is mostly cache hits, so costing the whole total at the fresh
+   *  rate would overstate a Sonnet run several-fold. */
+  tokensCached: number | null;
   /** Date.now() when the current/last analyze started, for the elapsed timer. */
   analyzeStartedAt: number | null;
   /** Set when a failed / cancelled analyze left a checkpoint worth continuing.
@@ -351,7 +371,7 @@ export type SessionState = {
    *  draft row so it survives a window close. */
   refineRounds: RefineRound[];
   /** Set when a follow-up died with paid-for work worth continuing — stopped
-   *  by the user, killed by a provider/network error, or out of step budget.
+   *  by the user, killed by a provider/network error, or out of run budget.
    *  Null when there's nothing to resume. Deliberately separate from
    *  `resumable` (which belongs to analyze): a draft outlives its analyze
    *  checkpoint, so the two can be live at different times and must not
@@ -706,6 +726,9 @@ const initialState: Omit<
   runId: null,
   stepsUsed: null,
   stepCap: null,
+  tokensUsed: null,
+  tokenBudget: null,
+  tokensCached: null,
   analyzeStartedAt: null,
   resumable: null,
   cases: [],
@@ -727,6 +750,15 @@ const initialState: Omit<
 };
 
 const REFINE_HISTORY_MAX = 12;
+
+/** What a FULL generator attempt runs on — analyze and review-phase follow-ups
+ *  alike, since they drive the same engine over the same tools. A resume builds
+ *  its own from `resumeBudget`, which is why this is a value rather than being
+ *  read from the tables at each use site. */
+const GENERATOR_BUDGET: RunBudget = {
+  tokens: SURFACE_TOKEN_BUDGETS.generator,
+  steps: SURFACE_STEP_CAPS.generator,
+};
 
 /** Debounce window for auto-persisting draft edits.
  *
@@ -887,7 +919,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       existingCaseTitles: { id: number; title: string }[];
       planName: string | null;
       suiteName: string | null;
-      stepCap: number;
+      /** The budget this attempt actually ran under — the surface's, or the
+       *  smaller grant a resume runs on. Named in the failure copy, so it has to
+       *  be the live one rather than the table's. */
+      budget: RunBudget;
       writer: CheckpointWriter;
       buildPayload: (outcome: CheckpointOutcome | null) => GeneratorCheckpointV1;
     }): Promise<void> => {
@@ -914,11 +949,12 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         const outcome: CheckpointOutcome = {
           at: new Date().toISOString(),
           kind: "step_cap",
+          ...(result.limit ? { limit: result.limit } : {}),
         };
         const payload = buildPayload(outcome);
         set({
           phase: "error",
-          error: `The run hit its ${args.stepCap}-step budget before it could write the final test-case batch. Resume grants ${RESUME_TOPUP_STEPS} more steps and asks the model to finish with what it has already read.`,
+          error: `The run spent ${budgetSpentPhrase(result.limit, args.budget, formatTokens)} reading the codebase before it could write the final test-case batch. Resume adds ~${formatTokens(RESUME_TOPUP_TOKENS)} more tokens and asks the model to finish with what it has already read.`,
           errorPhase: "analyze",
           stepLabel: "",
           resumable: resumableFrom(payload, outcome),
@@ -1090,7 +1126,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
        *  the basis for carrying similarity / verdicts / update-bindings
        *  forward onto the revised batch. */
       snapshot: { cases: ReviewedCase[]; bugs: ReviewedBug[]; rawText: string };
-      stepCap: number;
+      /** The budget this attempt ran under — see settleAnalyzeRun. */
+      budget: RunBudget;
       /** Null only when the round couldn't be checkpointed (no session runId to
        *  tie a row to) — it then behaves exactly as follow-ups did before
        *  checkpointing existed: no resume offered, draft handling unchanged. */
@@ -1109,14 +1146,16 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         const outcome: CheckpointOutcome = {
           at: new Date().toISOString(),
           kind: "step_cap",
+          ...(result.limit ? { limit: result.limit } : {}),
         };
+        const spent = budgetSpentPhrase(result.limit, args.budget, formatTokens);
         const payload = cp?.buildPayload(outcome) ?? null;
         set((curr) => ({
           isRefining: false,
           stepLabel: "",
           refineError: payload
-            ? `This follow-up hit its ${args.stepCap}-step budget before it could write the revised draft. Your draft is unchanged — resuming grants ${RESUME_TOPUP_STEPS} more steps and asks the model to finish with what it has already read.`
-            : `This follow-up hit its ${args.stepCap}-step budget before it could write the revised draft. Your draft is unchanged — try again with a narrower instruction.`,
+            ? `This follow-up spent ${spent} before it could write the revised draft. Your draft is unchanged — resuming adds ~${formatTokens(RESUME_TOPUP_TOKENS)} more tokens and asks the model to finish with what it has already read.`
+            : `This follow-up spent ${spent} before it could write the revised draft. Your draft is unchanged — try again with a narrower instruction.`,
           refineResumable: payload ? refineResumableFrom(payload, outcome) : null,
           refineRounds: recordRound(
             curr.refineRounds,
@@ -1429,6 +1468,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       runId,
       stepsUsed: 0,
       stepCap: SURFACE_STEP_CAPS.generator,
+      tokensUsed: 0,
+      tokenBudget: SURFACE_TOKEN_BUDGETS.generator,
+      tokensCached: 0,
       analyzeStartedAt: Date.now(),
       resumable: null,
       // Clean-slate the prior run's RESULT state (mirrors tryAgain). When
@@ -1681,7 +1723,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           // otherwise queue a live-run payload on top of the terminal outcome
           // they just wrote. Same phase signal the catch below guards on.
           if (get().phase !== "analyzing") return;
-          set({ stepsUsed: cp.stepsUsed });
+          set({
+            stepsUsed: cp.stepsUsed,
+            tokensUsed: stepSpend(cp.usage),
+            tokensCached: cp.usage.cacheReadTokens ?? 0,
+          });
           transcript = toTranscript(cp, null);
           writer.save(buildPayload(null));
         },
@@ -1697,7 +1743,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         existingCaseTitles,
         planName: targetContext?.planName ?? null,
         suiteName: targetContext?.suiteName ?? null,
-        stepCap: SURFACE_STEP_CAPS.generator,
+        budget: GENERATOR_BUDGET,
         writer,
         buildPayload,
       });
@@ -1790,9 +1836,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       return;
     }
 
-    const { cap, resumeMessages } = resumeBudget(payload);
+    const { cap, tokens, resumeMessages } = resumeBudget(payload);
     const base = payload.transcript;
     const baseSteps = base?.stepsUsed ?? 0;
+    const baseTokens = stepSpend(base?.usage);
 
     // Same reasoning as analyze(): the resumed run re-derives the whole draft,
     // so a follow-up against the previous one is unreachable from here.
@@ -1807,12 +1854,17 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       // Seeded from the checkpoint so the log reads as one continuous run.
       activityLog: payload.activity,
       analyzeStartedAt: Date.now(),
-      // Displayed ceiling, not the runner's budget: stepsUsed keeps counting
-      // cumulatively across resumes, so the readout's cap must be the prior
-      // total plus this call's budget — otherwise a step-cap resume shows
-      // "step 27/8" (26 done + an 8-step top-up).
+      // Displayed ceilings, not the runner's budgets. Both counters keep
+      // climbing cumulatively across resumes, so each readout's ceiling has to
+      // be the prior total plus this call's grant. Showing the raw grant is what
+      // once made a topped-up resume read "step 27/8"; in the unit that now
+      // rations the run it would read "~1.2M / 500k tokens" on a run with plenty
+      // of room left.
       stepCap: baseSteps + cap,
       stepsUsed: baseSteps,
+      tokenBudget: baseTokens + tokens,
+      tokensUsed: baseTokens,
+      tokensCached: base?.usage?.cacheReadTokens ?? 0,
       error: null,
       errorPhase: null,
       resumable: null,
@@ -1861,6 +1913,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         keys,
         local: localProviderConfig(prefs),
         maxSteps: cap,
+        tokenBudget: tokens,
         resumeMessages,
         onActivity: onRunActivity,
         onCheckpoint: (cp) => {
@@ -1868,7 +1921,12 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           // cp.messages already carries the resumed prefix (the runner
           // prepends it), so only the COUNTERS need the earlier totals added.
           transcript = toTranscript(cp, base);
-          set({ stepsUsed: baseSteps + cp.stepsUsed });
+          set({
+            stepsUsed: baseSteps + cp.stepsUsed,
+            tokensUsed: baseTokens + stepSpend(cp.usage),
+            tokensCached:
+              (base?.usage?.cacheReadTokens ?? 0) + (cp.usage.cacheReadTokens ?? 0),
+          });
           writer.save(buildPayload(null));
         },
         onText: (delta) => {
@@ -1885,7 +1943,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         existingCaseTitles: [],
         planName: payload.form.planName,
         suiteName: payload.form.suiteName,
-        stepCap: cap,
+        budget: { tokens, steps: cap },
         writer,
         buildPayload,
       });
@@ -2824,7 +2882,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         result,
         round,
         snapshot,
-        stepCap: SURFACE_STEP_CAPS.generator,
+        budget: GENERATOR_BUDGET,
         cp,
       });
     } catch (e) {
@@ -2916,7 +2974,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       return;
     }
 
-    const { cap, resumeMessages } = resumeBudget(payload);
+    const { cap, tokens, resumeMessages } = resumeBudget(payload);
     const base = payload.transcript;
     // Re-read: the draft is what the user sees NOW, which is the undo point a
     // completed resume should restore, and the basis for carrying verdicts /
@@ -2964,6 +3022,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         keys,
         local: localProviderConfig(prefs),
         maxSteps: cap,
+        tokenBudget: tokens,
         resumeMessages,
         onActivity: onRunActivity,
         onCheckpoint: (checkpoint) => {
@@ -2982,7 +3041,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         result,
         round: payload.round,
         snapshot,
-        stepCap: cap,
+        budget: { tokens, steps: cap },
         cp,
       });
     } catch (e) {

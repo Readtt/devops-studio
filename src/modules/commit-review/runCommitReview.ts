@@ -3,11 +3,13 @@
 // temperature 0. See commitReviewPrompts.ts for the strategy rationale.
 
 import {
-  RESUME_TOPUP_STEPS,
+  RESUME_TOPUP_TOKENS,
   SURFACE_STEP_CAPS,
+  SURFACE_TOKEN_BUDGETS,
   type ModelId,
 } from "@/modules/ai/config";
 import { type ProviderKeys } from "@/modules/ai/lib/keyring";
+import type { BudgetLimit } from "@/modules/ai/lib/runBudget";
 import {
   runTask,
   streamTask,
@@ -51,7 +53,8 @@ export type CommitReviewResume = {
   /** Transcript for the in-flight stage (null ⇒ restart that stage's call
    *  from its rebuilt prompt alone). */
   resumeMessages: ModelMessage[] | null;
-  /** Append FINISH_NOW_NUDGE and run the resumed stage with RESUME_TOPUP_STEPS. */
+  /** Append FINISH_NOW_NUDGE and run the resumed stage on RESUME_TOPUP_TOKENS
+   *  instead of the stage's full budget. */
   stepCapNudge?: boolean;
   /** The previous attempt died because the request didn't fit. Replays the
    *  transcript at a much tighter eviction budget so the resumed request is a
@@ -91,10 +94,13 @@ export type RunCommitReviewResult =
   | { ok: true; findings: Finding[]; durationMs: number }
   | {
       /** Stage 1 didn't return usable findings — surface the raw text.
-       *  `step_cap` means the loop never got to write them (resumable);
-       *  the other two mean it answered with something unusable. */
+       *  `step_cap` means the loop ran into a run budget before it got to write
+       *  them (resumable); the other two mean it answered with something
+       *  unusable. */
       ok: false;
       reason: "schema_violation" | "empty" | "step_cap";
+      /** Which budget guard bound the loop, when one did. */
+      limit?: BudgetLimit;
       rawText: string;
       durationMs: number;
     };
@@ -103,7 +109,7 @@ export type RunCommitReviewResult =
  *  Each commit's patch is capped at 30 KiB (PATCH_MAX_BYTES in git.rs), sized
  *  so a single diff plus the system prompt fits the cheaper BYOK models. A
  *  multi-commit review concatenates them unbounded, so past this combined size
- *  the prompt risks overflowing the model's context or exhausting the step caps
+ *  the prompt risks overflowing the model's context or exhausting the run budget
  *  and degrading (or failing) silently. Advisory only — the pane warns, the run
  *  still proceeds. */
 export const COMBINED_DIFF_WARN_BYTES = 96 * 1024;
@@ -145,22 +151,34 @@ export async function runCommitReview(
    *
    *  The transcript is compacted on the way in — a no-op at the live budget for
    *  anything a healthy run produced, and an aggressive squeeze when the reason
-   *  we're here is that the request didn't fit. */
+   *  we're here is that the request didn't fit.
+   *
+   *  A budget-exhausted resume tops up TOKENS and keeps the full step ceiling:
+   *  the ceiling is a runaway guard, and cutting it to a top-up (which is what
+   *  this did) starved a model that only needed a handful of cheap turns to
+   *  write out findings it had already investigated. */
   const resumeArgs = (
     stage: RunStage,
     surfaceCap: number,
-  ): { maxSteps: number; resumeMessages: ModelMessage[] | undefined } => {
+    surfaceTokens: number,
+  ): {
+    maxSteps: number;
+    tokenBudget: number;
+    resumeMessages: ModelMessage[] | undefined;
+  } => {
+    const full = { maxSteps: surfaceCap, tokenBudget: surfaceTokens };
     if (!resume || resume.stage !== stage) {
-      return { maxSteps: surfaceCap, resumeMessages: undefined };
+      return { ...full, resumeMessages: undefined };
     }
     const prior = resume.resumeMessages
       ? compactForResume(resume.resumeMessages, resume.afterOverflow === true)
       : undefined;
     if (!resume.stepCapNudge) {
-      return { maxSteps: surfaceCap, resumeMessages: prior };
+      return { ...full, resumeMessages: prior };
     }
     return {
-      maxSteps: RESUME_TOPUP_STEPS,
+      maxSteps: surfaceCap,
+      tokenBudget: RESUME_TOPUP_TOKENS,
       resumeMessages: [
         ...(prior ?? []),
         { role: "user", content: FINISH_NOW_NUDGE },
@@ -180,6 +198,7 @@ export async function runCommitReview(
     const stage1Args = resumeArgs(
       "investigate",
       SURFACE_STEP_CAPS.commitReviewInvestigate,
+      SURFACE_TOKEN_BUDGETS.commitReviewInvestigate,
     );
     const stage1 = await streamTask({
       modelId: input.modelId,
@@ -192,6 +211,7 @@ export async function runCommitReview(
       tools: tools ?? null,
       temperature: 0,
       maxSteps: stage1Args.maxSteps,
+      tokenBudget: stage1Args.tokenBudget,
       resumeMessages: stage1Args.resumeMessages,
       schema: Stage1Schema,
       onToolEvent: input.onToolEvent,
@@ -205,6 +225,7 @@ export async function runCommitReview(
       return {
         ok: false,
         reason: stage1.reason,
+        ...(stage1.limit ? { limit: stage1.limit } : {}),
         rawText: stage1.text,
         durationMs: stage1.durationMs,
       };
@@ -231,7 +252,11 @@ export async function runCommitReview(
   // investigate pass is the common case) — degrades to returning them
   // unverified instead of torching the whole run. Only a user abort propagates.
   let stage2;
-  const stage2Args = resumeArgs("verify", SURFACE_STEP_CAPS.commitReviewVerify);
+  const stage2Args = resumeArgs(
+    "verify",
+    SURFACE_STEP_CAPS.commitReviewVerify,
+    SURFACE_TOKEN_BUDGETS.commitReviewVerify,
+  );
   try {
     stage2 = await runTask({
       modelId: input.modelId,
@@ -244,6 +269,7 @@ export async function runCommitReview(
       tools: tools ?? null,
       temperature: 0,
       maxSteps: stage2Args.maxSteps,
+      tokenBudget: stage2Args.tokenBudget,
       resumeMessages: stage2Args.resumeMessages,
       schema: Stage2Schema,
       onToolEvent: input.onToolEvent,

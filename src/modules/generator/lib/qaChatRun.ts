@@ -1,7 +1,11 @@
 // Free-text Q&A about the current draft. Distinct from refine() — the chat
 // path returns markdown the user reads inline; it never rewrites the draft.
 
-import { type ModelId } from "@/modules/ai/config";
+import {
+  SURFACE_STEP_CAPS,
+  SURFACE_TOKEN_BUDGETS,
+  type ModelId,
+} from "@/modules/ai/config";
 import { type LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { streamTask } from "@/modules/ai/lib/taskRunner";
 import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
@@ -140,6 +144,12 @@ export async function streamChatTask(
       ...collectContextImages(input.contextBlocks ?? []),
     ],
     tools: tools ?? null,
+    // Explicit, not inherited. This surface used to name neither, so it silently
+    // ran on the runner's MAX_AGENT_STEPS fallback with no entry in either
+    // surface table — a budget by accident. It reads the same code with the same
+    // tools as Suite Chat, so it gets Suite Chat's numbers.
+    maxSteps: SURFACE_STEP_CAPS.draftChat,
+    tokenBudget: SURFACE_TOKEN_BUDGETS.draftChat,
     onText: input.onText,
     onToolEvent: input.onToolEvent,
     signal: input.signal,

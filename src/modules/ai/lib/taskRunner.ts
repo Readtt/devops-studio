@@ -21,7 +21,6 @@
 import {
   generateObject,
   generateText,
-  stepCountIs,
   streamText,
   type FinishReason,
   type ModelMessage,
@@ -29,12 +28,20 @@ import {
 } from "ai";
 import type { z } from "zod";
 import {
+  DEFAULT_TOKEN_BUDGET,
   getModel,
   MAX_AGENT_STEPS,
   supportsTemperature,
   supportsVision,
   type ModelId,
 } from "../config";
+import {
+  limitReached,
+  runStopConditions,
+  stepSpend,
+  type BudgetLimit,
+  type RunBudget,
+} from "./runBudget";
 import {
   buildConfiguredLanguageModel,
   buildStableSystem,
@@ -113,8 +120,13 @@ export type TaskInput<S extends z.ZodTypeAny | undefined = undefined> = {
   /** Explicit per call. Omit ⇒ provider default (no hidden global). */
   temperature?: number;
   seed?: number;
-  /** Step cap for the agentic loop (only meaningful with tools). */
+  /** Runaway step ceiling for the agentic loop (only meaningful with tools).
+   *  Not the budget — see `tokenBudget`. */
   maxSteps?: number;
+  /** Tokens this call may spend across all its steps before the loop is stopped
+   *  — the PRIMARY budget (runBudget.ts). Omit ⇒ {@link DEFAULT_TOKEN_BUDGET};
+   *  every live surface passes its own from `SURFACE_TOKEN_BUDGETS`. */
+  tokenBudget?: number;
   /** Present ⇒ structured mode (the result carries a validated `object`). */
   schema?: S;
   /** Optional blocks layered below the base prompt. Surfaces that don't pass
@@ -160,10 +172,18 @@ type TaskScalars = {
   /** Agentic steps completed in this call. 0 on the tool-less generateObject
    *  path (single-shot) and on any path where the provider reported no steps. */
   stepsUsed: number;
+  /** Tokens this call spent, summed across its steps (runBudget.ts). 0 when the
+   *  provider reported no usage — indistinguishable from a free run, which is
+   *  exactly why the step ceiling is kept. */
+  tokensUsed: number;
   finishReason?: FinishReason;
   usage?: TaskUsage;
   /** Window pressure on the last measured step. See {@link RequestContextSignal}. */
   context?: RequestContextSignal;
+  /** Which guard the loop ran into, when it ran into one. Present even on a
+   *  SUCCESSFUL run that answered on its last allowed step — the reason field
+   *  is what says the run failed; this only says what bound it. */
+  limit?: BudgetLimit;
 };
 
 export type TaskResult<S extends z.ZodTypeAny | undefined = undefined> =
@@ -176,9 +196,12 @@ export type TaskResult<S extends z.ZodTypeAny | undefined = undefined> =
   | ({
       ok: false;
       /** schema_violation ⇒ repair budget exhausted; empty ⇒ no usable text;
-       *  step_cap ⇒ the loop burned its whole step budget still calling tools,
-       *  so the model never got to write its answer (retryable with a bigger
-       *  budget or a resume — not a model that returned garbage). */
+       *  step_cap ⇒ the loop ran into a RUN BUDGET (tokens, or the step ceiling
+       *  — `limit` says which) still calling tools, so the model never got to
+       *  write its answer. Retryable with a topped-up budget or a resume, unlike
+       *  a model that returned garbage. The name predates the token budget and
+       *  is kept because it is persisted in every existing checkpoint's
+       *  `lastOutcome.kind`. */
       reason: "schema_violation" | "empty" | "step_cap";
       text: string;
       durationMs: number;
@@ -554,6 +577,7 @@ function makeStepAccumulator(
   const stepTexts: string[] = [];
   const usage: TaskUsage = {};
   let stepsUsed = 0;
+  let tokensUsed = 0;
   let finishReason: FinishReason | undefined;
   let context: RequestContextSignal | undefined;
 
@@ -562,6 +586,13 @@ function makeStepAccumulator(
   return {
     get stepsUsed() {
       return stepsUsed;
+    },
+    /** Tokens spent across this call's completed steps. Accumulated with the
+     *  same {@link stepSpend} the `stopWhen` condition sums with, so the
+     *  after-the-fact verdict from `limitReached` can't disagree with the stop
+     *  the SDK actually made. */
+    get tokensUsed() {
+      return tokensUsed;
     },
     get finishReason() {
       return finishReason;
@@ -596,6 +627,7 @@ function makeStepAccumulator(
           if (v !== undefined) usage[k] = (usage[k] ?? 0) + v;
         }
       }
+      tokensUsed += stepSpend(stepUsage);
       // Measured off THIS step's usage, never the running sum: `usage` counts
       // the re-sent transcript once per step (that's what was billed), which
       // says nothing about how full the window is.
@@ -620,16 +652,53 @@ function makeStepAccumulator(
   };
 }
 
-/** A run that burned its whole step budget and stopped still calling tools never
+/** The budget one call runs under: the caller's, or the conservative defaults.
+ *  Both halves are always present — a surface that names a token budget still
+ *  gets a runaway ceiling, and one that names neither still gets both. */
+function runBudgetOf(input: TaskInput<z.ZodTypeAny | undefined>): RunBudget {
+  return {
+    tokens: input.tokenBudget ?? DEFAULT_TOKEN_BUDGET,
+    steps: input.maxSteps ?? MAX_AGENT_STEPS,
+  };
+}
+
+/** The per-run scalars both result arms carry, read off the accumulator once so
+ *  the two paths can't drift on what they report. */
+function scalarsOf(
+  steps: ReturnType<typeof makeStepAccumulator>,
+  budget: RunBudget,
+): TaskScalars {
+  const limit = limitReached({
+    tokensUsed: steps.tokensUsed,
+    stepsUsed: steps.stepsUsed,
+    budget,
+  });
+  return {
+    stepsUsed: steps.stepsUsed,
+    tokensUsed: steps.tokensUsed,
+    finishReason: steps.finishReason,
+    usage: steps.usage,
+    ...(steps.context ? { context: steps.context } : {}),
+    ...(limit ? { limit } : {}),
+  };
+}
+
+/** A run that ran into a budget guard and stopped still calling tools never
  *  reached the point of writing its answer — that's a cut-off loop, not a model
  *  that returned garbage, and only the former is worth resuming with more
- *  budget. Schema-valid text always wins as a success, whatever the step count. */
-function stepCapReason<R extends "empty" | "schema_violation">(
+ *  budget. Schema-valid text always wins as a success, whatever it spent.
+ *
+ *  Reads `scalars.limit`, which covers BOTH guards. The equality test this
+ *  replaces (`stepsUsed === maxSteps`) is exactly wrong for the token budget:
+ *  that stop lands with steps to spare, so a run cut off mid-loop by spend would
+ *  have been reported as `schema_violation` — the same "the model returned bad
+ *  output" lie about a model that was simply interrupted that the step-cap
+ *  reason was introduced to end. */
+function budgetReason<R extends "empty" | "schema_violation">(
   fallback: R,
   scalars: TaskScalars,
-  maxSteps: number,
 ): R | "step_cap" {
-  return scalars.stepsUsed === maxSteps && scalars.finishReason === "tool-calls"
+  return scalars.limit && scalars.finishReason === "tool-calls"
     ? "step_cap"
     : fallback;
 }
@@ -803,7 +872,7 @@ export async function runTask<
   const system = assembleSystem(input);
   const userTurn = buildUserTurn(input.prompt, visionSafe(input));
   const tools = input.tools ?? undefined;
-  const maxSteps = input.maxSteps ?? MAX_AGENT_STEPS;
+  const budget = runBudgetOf(input);
   const repairAttempts = input.repairAttempts ?? DEFAULT_REPAIR_ATTEMPTS;
   const temperature = effectiveTemperature(input);
 
@@ -849,6 +918,7 @@ export async function runTask<
           durationMs: Date.now() - start,
           // Single-shot: no agentic loop, so nothing to resume from.
           stepsUsed: 0,
+          tokensUsed: stepSpend(usage),
           usage,
           ...(context ? { context } : {}),
         };
@@ -881,6 +951,7 @@ export async function runTask<
       text: lastText,
       durationMs: Date.now() - start,
       stepsUsed: 0,
+      tokensUsed: 0,
     };
   }
 
@@ -899,7 +970,7 @@ export async function runTask<
   const args = (temp: number | undefined) => ({
     model,
     ...buildResumableRequest(input.modelId, system, userTurn, input.resumeMessages),
-    ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
+    ...(tools ? { tools, stopWhen: runStopConditions(budget) } : {}),
     ...(prepareStep ? { prepareStep } : {}),
     ...(temp !== undefined ? { temperature: temp } : {}),
     ...(input.seed !== undefined ? { seed: input.seed } : {}),
@@ -915,12 +986,7 @@ export async function runTask<
     r = await generateText(args(undefined));
   }
 
-  const scalars: TaskScalars = {
-    stepsUsed: steps.stepsUsed,
-    finishReason: steps.finishReason,
-    usage: steps.usage,
-    ...(steps.context ? { context: steps.context } : {}),
-  };
+  const scalars = scalarsOf(steps, budget);
   const text = r.text ?? "";
   if (input.schema) {
     // The model ran its tool loop and emitted the object as its final text;
@@ -932,7 +998,7 @@ export async function runTask<
       // violation so the surface can show "model returned nothing" guidance.
       return {
         ok: false,
-        reason: stepCapReason("empty", scalars, maxSteps),
+        reason: budgetReason("empty", scalars),
         text: "",
         durationMs: Date.now() - start,
         ...scalars,
@@ -942,7 +1008,7 @@ export async function runTask<
     if (!parsed.ok) {
       return {
         ok: false,
-        reason: stepCapReason("schema_violation", scalars, maxSteps),
+        reason: budgetReason("schema_violation", scalars),
         text,
         durationMs: Date.now() - start,
         ...scalars,
@@ -983,7 +1049,7 @@ export async function streamTask<
   const system = assembleSystem(input);
   const userTurn = buildUserTurn(input.prompt, visionSafe(input));
   const tools = input.tools ?? undefined;
-  const maxSteps = input.maxSteps ?? MAX_AGENT_STEPS;
+  const budget = runBudgetOf(input);
   const temperature = effectiveTemperature(input);
 
   // streamText NEVER rejects: a provider/network failure mid-stream (429 on a
@@ -1012,7 +1078,7 @@ export async function streamTask<
     const result = streamText({
       model,
       ...buildResumableRequest(input.modelId, system, userTurn, input.resumeMessages),
-      ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
+      ...(tools ? { tools, stopWhen: runStopConditions(budget) } : {}),
       ...(prepareStep ? { prepareStep } : {}),
       ...(temp !== undefined ? { temperature: temp } : {}),
       ...(input.seed !== undefined ? { seed: input.seed } : {}),
@@ -1047,12 +1113,7 @@ export async function streamTask<
   }
   const { steps, acc, streamError } = run;
 
-  const scalars: TaskScalars = {
-    stepsUsed: steps.stepsUsed,
-    finishReason: steps.finishReason,
-    usage: steps.usage,
-    ...(steps.context ? { context: steps.context } : {}),
-  };
+  const scalars = scalarsOf(steps, budget);
 
   // `acc` is EVERY step's text concatenated (the SDK's textStream spans the
   // whole agentic loop), but the answer is only the LAST step's text —
@@ -1101,7 +1162,7 @@ export async function streamTask<
       // the schema. `text` keeps the narration for display/salvage.
       return {
         ok: false,
-        reason: stepCapReason("empty", scalars, maxSteps),
+        reason: budgetReason("empty", scalars),
         text: acc,
         durationMs: Date.now() - start,
         ...scalars,
@@ -1111,7 +1172,7 @@ export async function streamTask<
     if (!parsed.ok) {
       return {
         ok: false,
-        reason: stepCapReason("schema_violation", scalars, maxSteps),
+        reason: budgetReason("schema_violation", scalars),
         text: finalText,
         durationMs: Date.now() - start,
         ...scalars,

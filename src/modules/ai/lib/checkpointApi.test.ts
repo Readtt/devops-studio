@@ -210,6 +210,40 @@ describe("parseCheckpointRow", () => {
     expect(parseCheckpointRow("{not json")).toBeNull();
   });
 
+  // Every checkpoint on disk was written before the run budget was denominated
+  // in tokens, so its step_cap outcome carries no `limit`. CHECKPOINT_PAYLOAD_
+  // VERSION stayed at 1 precisely because that field is additive — these pin
+  // that a v1 row without it still loads, resumes, and keeps its outcome intact
+  // rather than being dropped as unparseable (which would strand the resume
+  // point the whole feature exists to protect).
+  it("loads a pre-token-budget step_cap outcome with no `limit` field", () => {
+    const payload = makeGeneratorPayload({
+      lastOutcome: { at: "2026-06-11T00:00:00.000Z", kind: "step_cap" },
+      transcript: {
+        messages: [{ role: "assistant", content: "read files" }],
+        stepsUsed: 24,
+        usage: { totalTokens: 900_000 },
+      },
+    });
+    const parsed = parseCheckpointRow(JSON.stringify(payload));
+    expect(parsed).toEqual(payload);
+    expect(parsed?.lastOutcome?.kind).toBe("step_cap");
+    expect(parsed?.lastOutcome?.limit).toBeUndefined();
+  });
+
+  it("round-trips a `limit` when a newer run recorded one", () => {
+    const payload = makeGeneratorPayload({
+      lastOutcome: {
+        at: "2026-06-11T00:00:00.000Z",
+        kind: "step_cap",
+        limit: "tokens",
+      },
+    });
+    expect(parseCheckpointRow(JSON.stringify(payload))?.lastOutcome?.limit).toBe(
+      "tokens",
+    );
+  });
+
   it("degrades to transcript: null when the stored transcript fails validation", () => {
     const payload = makeGeneratorPayload({
       transcript: {

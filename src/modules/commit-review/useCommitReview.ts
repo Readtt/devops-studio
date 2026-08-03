@@ -6,10 +6,26 @@
 import { create } from "zustand";
 import {
   isKnownModelId,
-  RESUME_TOPUP_STEPS,
+  RESUME_TOPUP_TOKENS,
+  SURFACE_STEP_CAPS,
+  SURFACE_TOKEN_BUDGETS,
   supportsVision,
   type ModelId,
 } from "@/modules/ai/config";
+import { formatTokens } from "@/modules/ai/lib/contextEstimate";
+import {
+  budgetSpentPhrase,
+  type BudgetLimit,
+  type RunBudget,
+} from "@/modules/ai/lib/runBudget";
+
+/** What Commit Review's investigate pass runs on. Only that stage can surface a
+ *  budget failure to the user — a verify-stage one degrades to unverified
+ *  findings — so this is the budget the failure copy names. */
+const INVESTIGATE_BUDGET: RunBudget = {
+  tokens: SURFACE_TOKEN_BUDGETS.commitReviewInvestigate,
+  steps: SURFACE_STEP_CAPS.commitReviewInvestigate,
+};
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import {
   localProviderConfig,
@@ -109,6 +125,9 @@ export type CommitReviewSlice = {
   /** Structural failure reason when the run RESOLVED unusable (vs threw) —
    *  what the error card classifies on, so copy never string-matches. */
   errorReason: "step_cap" | "empty" | "schema_violation" | null;
+  /** Which budget guard bound a `step_cap` failure, so the card names the one
+   *  that actually stopped the run rather than always blaming steps. */
+  errorLimit: BudgetLimit | null;
   /** Raw model text when stage 1 didn't return parseable findings. */
   schemaViolationRaw: string | null;
   runId: string | null;
@@ -293,6 +312,10 @@ async function settleResult(
   tabId: number,
   cp: CheckpointCtx,
   result: RunCommitReviewResult,
+  /** The budget the failing stage actually ran under — the investigate pass's,
+   *  or the smaller grant a resume runs on. Named in the failure copy, so it has
+   *  to be the live one rather than the table's. */
+  budget: RunBudget,
 ): Promise<void> {
   if (!result.ok) {
     const at = new Date().toISOString();
@@ -300,7 +323,11 @@ async function settleResult(
     // point of writing its findings — continuable, unlike a model that answered
     // with something unusable (resuming that transcript just re-fails).
     const stepCapped = result.reason === "step_cap";
-    const outcome: CheckpointOutcome = { at, kind: result.reason };
+    const outcome: CheckpointOutcome = {
+      at,
+      kind: result.reason,
+      ...(result.limit ? { limit: result.limit } : {}),
+    };
     const payload = cp.buildPayload(outcome);
     patch(set, tabId, {
       busy: false,
@@ -309,9 +336,10 @@ async function settleResult(
       status: "error",
       durationMs: result.durationMs,
       error: stepCapped
-        ? `The review hit its step budget before it could write its findings. Resume grants ${RESUME_TOPUP_STEPS} more steps and asks the model to finish with what it has already read.`
+        ? `The review spent ${budgetSpentPhrase(result.limit, budget, formatTokens)} before it could write its findings. Resume adds ~${formatTokens(RESUME_TOPUP_TOKENS)} more tokens and asks the model to finish with what it has already read.`
         : "The model didn't return findings in the expected format. Re-run, or try a more capable model.",
       errorReason: result.reason,
+      errorLimit: stepCapped ? (result.limit ?? null) : null,
       schemaViolationRaw: stepCapped ? null : result.rawText,
       resumable: stepCapped ? resumableFrom(payload, outcome) : null,
     });
@@ -373,6 +401,7 @@ async function settleFailure(
     error: aborted ? null : errStr(e),
     // A thrown failure is a provider/runtime error, never a parse outcome.
     errorReason: null,
+    errorLimit: null,
     resumable: payload ? resumableFrom(payload, outcome) : null,
   });
   if (cp && payload) await cp.writer.flush(payload);
@@ -465,11 +494,15 @@ async function adoptInterruptedRun(
             row?.error === "schema_violation"
           ? row.error
           : null;
+    // Undefined on a checkpoint written before budgets were denominated in
+    // tokens; the panel then falls back to budget-neutral copy.
+    const limit = p.lastOutcome?.limit ?? null;
     patch(set, tabId, {
       runId: p.runId,
       createdAt: p.createdAt,
       status,
       errorReason: status === "error" ? reason : null,
+      errorLimit: status === "error" ? limit : null,
       error:
         status === "error"
           ? (p.lastOutcome?.message ??
@@ -525,6 +558,7 @@ function emptySlice(cwd: string, modelId: ModelId | null): CommitReviewSlice {
     abort: null,
     error: null,
     errorReason: null,
+    errorLimit: null,
     schemaViolationRaw: null,
     runId: null,
     createdAt: null,
@@ -574,6 +608,10 @@ export const useCommitReview = create<State>((set, get) => ({
             row.error === "schema_violation"
               ? row.error
               : null;
+          // The saved row keeps only the reason token, never which guard bound
+          // the loop — a reopened history entry gets budget-neutral copy rather
+          // than a guess.
+          const rowLimit = null;
           patch(set, tabId, {
             selectedShas: safeParseCommitShas(row.commits, row.commitSha),
             context: row.context ?? "",
@@ -584,6 +622,7 @@ export const useCommitReview = create<State>((set, get) => ({
             createdAt: row.createdAt,
             durationMs: row.durationMs,
             errorReason: row.status === "error" ? rowReason : null,
+            errorLimit: row.status === "error" ? rowLimit : null,
             error:
               row.status === "error"
                 ? (row.error ?? "This review ended with an error.")
@@ -761,6 +800,7 @@ export const useCommitReview = create<State>((set, get) => ({
       status: "idle",
       error: null,
       errorReason: null,
+      errorLimit: null,
       schemaViolationRaw: null,
       runId: null,
       durationMs: null,
@@ -794,6 +834,7 @@ export const useCommitReview = create<State>((set, get) => ({
       status: "idle",
       error: null,
       errorReason: null,
+      errorLimit: null,
       schemaViolationRaw: null,
       runId: null,
       durationMs: null,
@@ -821,6 +862,7 @@ export const useCommitReview = create<State>((set, get) => ({
       status: "idle",
       error: null,
       errorReason: null,
+      errorLimit: null,
       schemaViolationRaw: null,
       runId: null,
       durationMs: null,
@@ -1021,6 +1063,7 @@ export const useCommitReview = create<State>((set, get) => ({
         stage1Candidates: null,
         error: null,
         errorReason: null,
+        errorLimit: null,
         schemaViolationRaw: null,
         abort,
         runId,
@@ -1155,7 +1198,13 @@ export const useCommitReview = create<State>((set, get) => ({
         signal: abort.signal,
       });
 
-      await settleResult(set, tabId, { writer: w, buildPayload: build }, result);
+      await settleResult(
+        set,
+        tabId,
+        { writer: w, buildPayload: build },
+        result,
+        INVESTIGATE_BUDGET,
+      );
     } catch (e) {
       await settleFailure(
         set,
@@ -1220,6 +1269,7 @@ export const useCommitReview = create<State>((set, get) => ({
           payload.stage === "investigate" ? null : payload.stage1Candidates,
         error: null,
         errorReason: null,
+        errorLimit: null,
         schemaViolationRaw: null,
         abort,
         runId,
@@ -1312,7 +1362,17 @@ export const useCommitReview = create<State>((set, get) => ({
         signal: abort.signal,
       });
 
-      await settleResult(set, tabId, { writer: w, buildPayload: build }, result);
+      await settleResult(
+        set,
+        tabId,
+        { writer: w, buildPayload: build },
+        result,
+        // A budget-exhausted resume runs on the top-up, not the full pass — see
+        // runCommitReview's resumeArgs.
+        payload.lastOutcome?.kind === "step_cap"
+          ? { ...INVESTIGATE_BUDGET, tokens: RESUME_TOPUP_TOKENS }
+          : INVESTIGATE_BUDGET,
+      );
     } catch (e) {
       await settleFailure(set, tabId, { writer: w, buildPayload: build }, e);
     }

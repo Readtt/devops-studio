@@ -26,7 +26,11 @@ import {
   FINISH_NOW_NUDGE,
   type GeneratorCheckpointV1,
 } from "@/modules/ai/lib/checkpointApi";
-import { RESUME_TOPUP_STEPS, type ModelId } from "@/modules/ai/config";
+import {
+  RESUME_TOPUP_TOKENS,
+  SURFACE_STEP_CAPS,
+  type ModelId,
+} from "@/modules/ai/config";
 import type {
   ExecuteAnalystOptions,
   PreparedAnalystRun,
@@ -177,7 +181,7 @@ describe("useGenerationSession — resumeAnalyze replays the paid-for transcript
     // The checkpointed prompt is reused verbatim — no re-assembly.
     expect(prepared.userPrompt).toBe("prompt");
     // The transcript IS the savings: prior steps ride along instead of
-    // being re-run. A step-cap resume also gets the smaller top-up budget
+    // being re-run. A budget-stopped resume also gets the smaller TOKEN top-up
     // and the explicit "finish now" user turn appended after the transcript.
     const resume = opts.resumeMessages ?? [];
     expect(resume[0]).toEqual(messages[0]);
@@ -185,10 +189,92 @@ describe("useGenerationSession — resumeAnalyze replays the paid-for transcript
       role: "user",
       content: FINISH_NOW_NUDGE,
     });
-    expect(opts.maxSteps).toBe(RESUME_TOPUP_STEPS);
+    expect(opts.tokenBudget).toBe(RESUME_TOPUP_TOKENS);
+    expect(opts.maxSteps).toBe(SURFACE_STEP_CAPS.generator);
     // Resume never re-reads the suite — the paid-for prompt already has it.
     expect(invokedCommands()).not.toContain("ado_list_suite_cases");
     expect(store.getState().phase).toBe("review");
+  });
+
+  // The "step 27/8" class of bug, in the unit that now rations the run. Both
+  // counters keep climbing cumulatively across resumes, so the readout's ceiling
+  // has to be the prior total plus this call's grant — hand it the raw grant and
+  // a run with plenty of room left renders as 240% of budget.
+  it("a resumed run's budget readout stays coherent (prior spend + top-up)", async () => {
+    const store = createGenerationSessionStore();
+    const spentBefore = 1_200_000; // more than this call's whole top-up
+    const payload = mkCheckpointPayload({
+      transcript: {
+        messages: [{ role: "assistant" as const, content: "read a lot" }],
+        stepsUsed: 26,
+        usage: { inputTokens: spentBefore, outputTokens: 0 },
+      },
+    });
+    invoke.mockImplementation(async (cmd: unknown) =>
+      cmd === "ai_checkpoint_get"
+        ? {
+            runId: payload.runId,
+            surface: "generator",
+            cwd: null,
+            payload: JSON.stringify(payload),
+            createdAt: payload.createdAt,
+            updatedAt: "2026-06-11T00:05:00.000Z",
+          }
+        : undefined,
+    );
+
+    const seen: { used: number | null; budget: number | null }[] = [];
+    executeQaAnalystRun.mockImplementation(
+      async (_p: unknown, opts: ExecuteAnalystOptions) => {
+        seen.push({
+          used: store.getState().tokensUsed,
+          budget: store.getState().tokenBudget,
+        });
+        opts.onCheckpoint?.({
+          messages: [],
+          stepsUsed: 1,
+          usage: { inputTokens: 90_000, outputTokens: 1_000 },
+        });
+        seen.push({
+          used: store.getState().tokensUsed,
+          budget: store.getState().tokenBudget,
+        });
+        return {
+          batch: { cases: [], bugs: [] },
+          rawText: "{}",
+          durationMs: 1,
+          ok: false,
+          reason: "empty" as const,
+          stepsUsed: 1,
+          usage: {},
+        };
+      },
+    );
+    store.setState({
+      phase: "input",
+      runId: payload.runId,
+      resumable: {
+        stepsUsed: 26,
+        totalTokens: spentBefore,
+        updatedAt: "2026-06-11T00:05:00.000Z",
+        outcome: { at: "2026-06-11T00:05:00.000Z", kind: "step_cap" },
+      },
+    });
+
+    await store.getState().resumeAnalyze();
+
+    // At the moment the resumed call starts: everything the earlier attempts
+    // spent, against that plus the top-up.
+    expect(seen[0]).toEqual({
+      used: spentBefore,
+      budget: spentBefore + RESUME_TOPUP_TOKENS,
+    });
+    // And after a step of the resumed call, still under its own ceiling.
+    expect(seen[1]).toEqual({
+      used: spentBefore + 91_000,
+      budget: spentBefore + RESUME_TOPUP_TOKENS,
+    });
+    for (const s of seen) expect(s.used!).toBeLessThan(s.budget!);
   });
 });
 

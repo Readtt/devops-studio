@@ -95,7 +95,15 @@ import { Attachment01Icon } from "@hugeicons/core-free-icons";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { useChatStore } from "@/modules/ai/store/chatStore";
-import { getModel, RESUME_TOPUP_STEPS } from "@/modules/ai/config";
+import {
+  estimateCost,
+  getModel,
+  RESUME_TOPUP_TOKENS,
+  SURFACE_STEP_CAPS,
+  SURFACE_TOKEN_BUDGETS,
+  type ModelId,
+} from "@/modules/ai/config";
+import { budgetSpentPhrase, type BudgetLimit } from "@/modules/ai/lib/runBudget";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
 import {
   canOfferResume as canOfferResumeShared,
@@ -118,7 +126,11 @@ import {
   useContextGuard,
 } from "@/modules/ai/components/ContextMeter";
 import { useContextBaseline } from "@/modules/ai/lib/useContextBaseline";
-import { estimateTokens } from "@/modules/ai/lib/contextEstimate";
+import {
+  estimateTokens,
+  formatCostUsd,
+  formatTokens,
+} from "@/modules/ai/lib/contextEstimate";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { ArrowDown01Icon, ArrowRight01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 
@@ -902,6 +914,10 @@ function InputPhase() {
                     resumable.stepsUsed === 1 ? "" : "s"
                   } in`
                 : null,
+              // What the interrupted attempt already bought, in the unit the
+              // run is rationed by — resuming replays it instead of paying for
+              // it twice, which is the whole pitch of the button below.
+              resumable.totalTokens ? `~${formatTokens(resumable.totalTokens)} tokens spent` : null,
               relativeTime(resumable.updatedAt),
             ]
               .filter(Boolean)
@@ -1495,6 +1511,88 @@ function InputPhase() {
 
 // --- Analyzing phase --------------------------------------------------------
 
+/** The live "how much has this run spent" line in the analyzing header.
+ *
+ *  Leads with the TOKEN budget because that is what actually rations the run:
+ *  the step ceiling behind it is a runaway guard now, and counting up to a
+ *  ceiling nobody is meant to reach reads as a deadline that isn't one. The
+ *  dollar figure in the tooltip is the number a QA tester can act on, but it is
+ *  computed from real usage rather than by projecting the budget forward — a
+ *  "$1.60 of budget remaining" would be a fabricated precision, since what it
+ *  costs depends on how much of the next request the prompt cache absorbs.
+ *
+ *  Falls back to the step count when the provider reported no usage at all
+ *  (local servers routinely don't). A budget readout stuck at "~0" for a run
+ *  that is plainly working reads as broken, and on exactly those endpoints the
+ *  step ceiling IS the live guard — so showing it is also the honest thing. */
+function RunBudgetReadout(props: {
+  tokensUsed: number | null;
+  tokenBudget: number | null;
+  tokensCached: number | null;
+  stepsUsed: number | null;
+  stepCap: number | null;
+  modelId: ModelId;
+  elapsed: string;
+}) {
+  const { tokensUsed, tokenBudget, stepsUsed, stepCap, elapsed } = props;
+  // The step IN PROGRESS, not the completed count — "step 1" while the first
+  // model turn runs, instead of a "0" that reads as stuck. stepsUsed only ticks
+  // when a turn completes.
+  const stepNow = Math.min((stepsUsed ?? 0) + 1, stepCap ?? Infinity);
+  // Fall back only once a step has completed and STILL reported nothing — that
+  // is what tells us the endpoint doesn't count. Testing `tokensUsed > 0` alone
+  // would show the step line for the first ten seconds of every run and then
+  // flip units mid-run, which reads as a glitch.
+  const measured =
+    tokenBudget != null && !((stepsUsed ?? 0) > 0 && (tokensUsed ?? 0) === 0);
+  if (tokenBudget == null && stepCap == null) return null;
+
+  // Priced off the real cache split: an agentic loop re-sends its transcript
+  // every step and Anthropic bills those reads at ~10%, so charging the whole
+  // total at the fresh rate overstates a Sonnet run several-fold. Output tokens
+  // ride at the input rate — a few hundred per step against tens of thousands
+  // of input is inside the "roughly" the label already claims.
+  const spentUsd = measured
+    ? estimateCost(props.modelId, {
+        inputTokens: tokensUsed ?? 0,
+        outputTokens: 0,
+        cachedInputTokens: props.tokensCached ?? 0,
+      })
+    : null;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="cursor-default text-[11px] tabular-nums text-muted-foreground">
+          {measured
+            ? `~${formatTokens(tokensUsed ?? 0)}/${formatTokens(tokenBudget)}`
+            : `step ${stepNow}${stepCap != null ? `/${stepCap}` : ""}`}{" "}
+          · {elapsed}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
+        {measured ? (
+          <>
+            This run has spent ~{formatTokens(tokensUsed ?? 0)} of the{" "}
+            {formatTokens(tokenBudget)} tokens it's allowed
+            {spentUsd != null ? ` (roughly ${formatCostUsd(spentUsd)} so far)` : ""}
+            . Every step re-sends the whole conversation, so it climbs faster
+            than it looks. If it runs out, the run stops with everything it read
+            kept, and you can top it up and resume — nothing is lost.
+            {stepCap != null ? ` Step ${stepNow} of ${stepCap}.` : ""}
+          </>
+        ) : (
+          <>
+            This model's endpoint doesn't report token usage, so the run is
+            bounded by its {stepCap} reading steps instead. If it runs out, the
+            run stops with everything it read kept and you can resume it.
+          </>
+        )}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function AnalyzingPhase() {
   const stepLabel = useGenerationSession((s) => s.stepLabel);
   const cancel = useGenerationSession((s) => s.cancel);
@@ -1505,6 +1603,11 @@ function AnalyzingPhase() {
   const attachments = useGenerationSession((s) => s.attachments);
   const stepsUsed = useGenerationSession((s) => s.stepsUsed);
   const stepCap = useGenerationSession((s) => s.stepCap);
+  const tokensUsed = useGenerationSession((s) => s.tokensUsed);
+  const tokenBudget = useGenerationSession((s) => s.tokenBudget);
+  const tokensCached = useGenerationSession((s) => s.tokensCached);
+  const overrideModelId = useGenerationSession((s) => s.overrideModelId);
+  const defaultModelId = useChatStore((s) => s.selectedModelId);
   const analyzeStartedAt = useGenerationSession((s) => s.analyzeStartedAt);
   // Long specs dominate the analyzing view — collapse anything past ~12
   // lines / 800 chars by default so the focus stays on the streaming log.
@@ -1555,15 +1658,15 @@ function AnalyzingPhase() {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-3">
-          {stepCap != null ? (
-            // The step IN PROGRESS, not the completed count — "step 1/26"
-            // while the first model turn runs, instead of a "0/26" that reads
-            // as stuck. stepsUsed only ticks when a turn completes.
-            <span className="text-[11px] tabular-nums text-muted-foreground">
-              step {Math.min((stepsUsed ?? 0) + 1, stepCap)}/{stepCap} ·{" "}
-              {elapsed}
-            </span>
-          ) : null}
+          <RunBudgetReadout
+            tokensUsed={tokensUsed}
+            tokenBudget={tokenBudget}
+            tokensCached={tokensCached}
+            stepsUsed={stepsUsed}
+            stepCap={stepCap}
+            modelId={overrideModelId ?? defaultModelId}
+            elapsed={elapsed}
+          />
           <Tooltip>
             <TooltipTrigger asChild>
               <Button size="sm" variant="outline" onClick={cancel} className="shrink-0">
@@ -2965,22 +3068,35 @@ function DonePhase() {
 function classifyError(
   message: string,
   errorPhase: SessionState["errorPhase"],
-  opts?: { outcomeKind?: CheckpointOutcome["kind"] | null },
+  opts?: {
+    outcomeKind?: CheckpointOutcome["kind"] | null;
+    /** Which budget guard bound the run. Absent on a checkpoint written before
+     *  budgets were denominated in tokens — the copy then names neither. */
+    outcomeLimit?: BudgetLimit | null;
+  },
 ): ErrorClass {
   // Structural signal, not string matching — the store already knows this
   // was a step-cap failure (CheckpointOutcome.kind), so checking it first
   // means the copy below can never be confused with a provider error that
   // happens to mention "steps" or "budget".
   if (opts?.outcomeKind === "step_cap") {
+    const spent = budgetSpentPhrase(
+      opts.outcomeLimit ?? undefined,
+      {
+        tokens: SURFACE_TOKEN_BUDGETS.generator,
+        steps: SURFACE_STEP_CAPS.generator,
+      },
+      formatTokens,
+    );
     return {
-      code: "GEN/03 · STEP-CAP",
-      title: "Hit the step budget before writing the batch",
+      code: "GEN/03 · BUDGET",
+      title: "Ran out of budget before writing the batch",
       icon: AiBrain01Icon,
       tone: "config",
-      why: "The analyzer spent its entire step budget reading the codebase — files, greps, related cases — and never reached the point of writing the final test-case batch.",
+      why: `The analyzer spent ${spent} reading the codebase — files, greps, related cases — and never reached the point of writing the final test-case batch. A run is rationed by the tokens it reads rather than by how many turns it takes, because one turn can read an entire file.`,
       steps: [
-        `Resume grants ${RESUME_TOPUP_STEPS} more steps and tells the model to finish with what it already read — usually enough to land the batch.`,
-        "If it caps again, trim the spec or attachments, or turn off code search for this run so there's less to read.",
+        `Resume adds ~${formatTokens(RESUME_TOPUP_TOKENS)} more tokens and tells the model to finish with what it already read — usually enough to land the batch. Nothing it already read is thrown away.`,
+        "If it runs out again, trim the spec or attachments, or turn off code search for this run so there's less to read.",
       ],
     };
   }
@@ -3096,8 +3212,9 @@ function ErrorPhase() {
     () =>
       classifyError(message, errorPhase, {
         outcomeKind: resumable?.outcome?.kind ?? null,
+        outcomeLimit: resumable?.outcome?.limit ?? null,
       }),
-    [message, errorPhase, resumable?.outcome?.kind],
+    [message, errorPhase, resumable?.outcome?.kind, resumable?.outcome?.limit],
   );
 
   return (

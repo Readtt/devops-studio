@@ -33,7 +33,15 @@ import {
   SparklesIcon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
-import { MODELS, RESUME_TOPUP_STEPS, type ModelId } from "@/modules/ai/config";
+import {
+  MODELS,
+  RESUME_TOPUP_TOKENS,
+  SURFACE_STEP_CAPS,
+  SURFACE_TOKEN_BUDGETS,
+  type ModelId,
+} from "@/modules/ai/config";
+import { formatTokens } from "@/modules/ai/lib/contextEstimate";
+import { budgetSpentPhrase } from "@/modules/ai/lib/runBudget";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
@@ -556,6 +564,12 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
                 resumable.stepsUsed > 0
                   ? `${resumable.stepsUsed} step${resumable.stepsUsed === 1 ? "" : "s"} in`
                   : null,
+                // What the interrupted attempt already bought, in the unit the
+                // run is rationed by — resuming replays it rather than paying
+                // for it twice.
+                resumable.totalTokens
+                  ? `~${formatTokens(resumable.totalTokens)} tokens spent`
+                  : null,
                 relativeTime(resumable.updatedAt),
               ]
                 .filter(Boolean)
@@ -755,15 +769,23 @@ function PartialFindings({
  *  the Generator render identical remediation for the same failure. */
 function classifyReviewError(slice: CommitReviewSlice): ErrorClass {
   if (slice.errorReason === "step_cap") {
+    const spent = budgetSpentPhrase(
+      slice.errorLimit ?? undefined,
+      {
+        tokens: SURFACE_TOKEN_BUDGETS.commitReviewInvestigate,
+        steps: SURFACE_STEP_CAPS.commitReviewInvestigate,
+      },
+      formatTokens,
+    );
     return {
-      code: "REV/03 · STEP-CAP",
-      title: "Hit the step budget before writing findings",
+      code: "REV/03 · BUDGET",
+      title: "Ran out of budget before writing findings",
       icon: AiBrain01Icon,
       tone: "config",
-      why: "The reviewer spent its entire step budget investigating the change — reading files, tracing callers — and never reached the point of writing its findings.",
+      why: `The reviewer spent ${spent} investigating the change — reading files, tracing callers — and never reached the point of writing its findings. A review is rationed by the tokens it reads, not by how many turns it takes, because one turn can read a whole file.`,
       steps: [
-        `Resume grants ${RESUME_TOPUP_STEPS} more steps and tells the model to finish with what it already read — usually enough to land the findings.`,
-        "If it caps again, review fewer commits at once, or turn off code search so there's less to read.",
+        `Resume adds ~${formatTokens(RESUME_TOPUP_TOKENS)} more tokens and tells the model to finish with what it already read — usually enough to land the findings. Nothing it investigated is thrown away.`,
+        "If it runs out again, review fewer commits at once, or turn off code search so there's less to read.",
       ],
     };
   }

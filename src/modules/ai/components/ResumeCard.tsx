@@ -1,8 +1,8 @@
 // The one resume affordance, shared by the Generator and Commit Review so an
 // interrupted run looks identical wherever it resurfaces. Deliberately quiet:
-// a title that says what happened, ONE fact line (where it stopped · when),
-// and two actions. No token totals, no step budgets, no paragraph of copy —
-// that stuffing is what made the first version unreadable.
+// a title that says what happened, ONE fact line (how far it got · what it
+// already spent · when), and two actions. No budget ratios, no progress bars, no
+// paragraph of copy — that stuffing is what made the first version unreadable.
 //
 // It has a SECOND mode, and the reason is a real bug: Discard used to live only
 // inside this card, and every render site gated the whole card on

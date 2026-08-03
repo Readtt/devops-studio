@@ -7,7 +7,11 @@
 // The file-system tools let the model validate test cases against the real
 // codebase via Read/Glob/Grep.
 
-import { SURFACE_STEP_CAPS, type ModelId } from "@/modules/ai/config";
+import {
+  SURFACE_STEP_CAPS,
+  SURFACE_TOKEN_BUDGETS,
+  type ModelId,
+} from "@/modules/ai/config";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import { streamTask } from "@/modules/ai/lib/taskRunner";
 import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
@@ -413,6 +417,7 @@ export async function streamSuiteChatTask(
     tools: tools ?? null,
     temperature: 0,
     maxSteps: SURFACE_STEP_CAPS.suiteChat,
+    tokenBudget: SURFACE_TOKEN_BUDGETS.suiteChat,
     onToolEvent: input.onToolEvent,
     onText: input.onText,
     signal: input.signal,

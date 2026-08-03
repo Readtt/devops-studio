@@ -1,5 +1,10 @@
-import { SURFACE_STEP_CAPS, type ModelId } from "@/modules/ai/config";
+import {
+  SURFACE_STEP_CAPS,
+  SURFACE_TOKEN_BUDGETS,
+  type ModelId,
+} from "@/modules/ai/config";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
+import type { BudgetLimit } from "@/modules/ai/lib/runBudget";
 import {
   runTask,
   streamTask,
@@ -185,10 +190,14 @@ export type RunResult = {
   /** When `ok` is false: `empty` ⇒ the provider returned no usable text (common
    *  with OpenAI-compatible endpoints lacking JSON mode); `schema_violation` ⇒
    *  text came back but didn't match the expected shape; `step_cap` ⇒ the
-   *  agentic loop ran out of steps before writing its answer. */
+   *  agentic loop ran into a run budget before writing its answer. */
   reason?: "schema_violation" | "empty" | "step_cap";
+  /** Which budget guard bound the loop, when one did — tokens (the ration) or
+   *  steps (the runaway ceiling). Lets the error panel name the right one
+   *  instead of always blaming steps. */
+  limit?: BudgetLimit;
   /** Agentic steps this call completed. Drives the checkpoint's cumulative
-   *  step count and the "n / cap steps" readout. */
+   *  step count. */
   stepsUsed?: number;
   /** Token usage this call accrued, when the provider reported it. */
   usage?: TaskUsage;
@@ -233,8 +242,11 @@ export type ExecuteAnalystOptions = {
   /** Provider keys hydrated from the OS keychain. Never persisted. */
   keys: ProviderKeys;
   local?: LocalProviderConfig;
-  /** Defaults to SURFACE_STEP_CAPS.generator; a resume passes a smaller top-up. */
+  /** Runaway step ceiling. Defaults to SURFACE_STEP_CAPS.generator. */
   maxSteps?: number;
+  /** Tokens this call may spend — the primary budget. Defaults to
+   *  SURFACE_TOKEN_BUDGETS.generator; a resume passes a smaller top-up. */
+  tokenBudget?: number;
   onActivity?: (e: ActivityEntry) => void;
   /** Fired after each completed agentic step so the caller can persist a
    *  resume point. Tool-bearing path only (tool-less runs are single-shot). */
@@ -276,6 +288,7 @@ export async function executeQaAnalystRun(
     tools: tools ?? null,
     temperature: 0,
     maxSteps: opts.maxSteps ?? SURFACE_STEP_CAPS.generator,
+    tokenBudget: opts.tokenBudget ?? SURFACE_TOKEN_BUDGETS.generator,
     schema: DraftBatchLLMSchema,
     onToolEvent: opts.onActivity,
     onCheckpoint: opts.onCheckpoint,
@@ -302,6 +315,7 @@ export async function executeQaAnalystRun(
     durationMs: Date.now() - start,
     ok: r.ok,
     reason: r.ok ? undefined : r.reason,
+    limit: r.limit,
     stepsUsed: r.stepsUsed,
     usage: r.usage,
   };

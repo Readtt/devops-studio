@@ -5,7 +5,11 @@ import type { ModelMessage } from "ai";
 // calls it, but the module still has to load.
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
-import { RESUME_TOPUP_STEPS, SURFACE_STEP_CAPS } from "@/modules/ai/config";
+import {
+  RESUME_TOPUP_TOKENS,
+  SURFACE_STEP_CAPS,
+  SURFACE_TOKEN_BUDGETS,
+} from "@/modules/ai/config";
 import { FINISH_NOW_NUDGE } from "@/modules/ai/lib/checkpointApi";
 import { resumeBudget, sumUsage } from "./resumePolicy";
 
@@ -20,27 +24,34 @@ describe("resumeBudget", () => {
       transcript: { messages, stepsUsed: 6, usage: {} },
     });
     expect(out.cap).toBe(SURFACE_STEP_CAPS.generator);
+    expect(out.tokens).toBe(SURFACE_TOKEN_BUDGETS.generator);
     expect(out.resumeMessages).toEqual(messages);
   });
 
-  it("grants only a top-up plus a finish-now turn after a step cap", () => {
+  // What gets topped up is TOKENS. The step ceiling goes back to the full
+  // surface cap because it is a runaway guard, not a ration — cutting it to a
+  // top-up starved a model that only needed a few cheap turns to write out an
+  // answer it had already investigated.
+  it("tops up tokens (not steps) plus a finish-now turn after a budget stop", () => {
     const out = resumeBudget({
       lastOutcome: { at: "2026-01-01T00:00:00.000Z", kind: "step_cap" },
       transcript: { messages, stepsUsed: 24, usage: {} },
     });
-    expect(out.cap).toBe(RESUME_TOPUP_STEPS);
+    expect(out.tokens).toBe(RESUME_TOPUP_TOKENS);
+    expect(out.tokens).toBeLessThan(SURFACE_TOKEN_BUDGETS.generator);
+    expect(out.cap).toBe(SURFACE_STEP_CAPS.generator);
     expect(out.resumeMessages).toEqual([
       ...messages,
       { role: "user", content: FINISH_NOW_NUDGE },
     ]);
   });
 
-  it("still nudges when the step-capped run has no usable transcript", () => {
+  it("still nudges when the budget-stopped run has no usable transcript", () => {
     const out = resumeBudget({
       lastOutcome: { at: "2026-01-01T00:00:00.000Z", kind: "step_cap" },
       transcript: null,
     });
-    expect(out.cap).toBe(RESUME_TOPUP_STEPS);
+    expect(out.tokens).toBe(RESUME_TOPUP_TOKENS);
     expect(out.resumeMessages).toEqual([
       { role: "user", content: FINISH_NOW_NUDGE },
     ]);
@@ -49,6 +60,7 @@ describe("resumeBudget", () => {
   it("sends no continuation transcript when there is none to send", () => {
     const out = resumeBudget({ lastOutcome: null, transcript: null });
     expect(out.cap).toBe(SURFACE_STEP_CAPS.generator);
+    expect(out.tokens).toBe(SURFACE_TOKEN_BUDGETS.generator);
     expect(out.resumeMessages).toBeUndefined();
   });
 });
@@ -154,7 +166,7 @@ describe("resumeBudget — compacting replay", () => {
       lastOutcome: { at: "2026-01-01T00:00:00.000Z", kind: "step_cap" },
       transcript: { messages, stepsUsed: 24, usage: {} },
     });
-    expect(capped.cap).toBe(RESUME_TOPUP_STEPS);
+    expect(capped.tokens).toBe(RESUME_TOPUP_TOKENS);
     const tail = capped.resumeMessages ?? [];
     expect(tail[tail.length - 1]).toEqual({
       role: "user",

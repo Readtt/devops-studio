@@ -18,7 +18,11 @@ import {
   type RunCommitReviewInput,
 } from "./runCommitReview";
 import { runTask, streamTask } from "@/modules/ai/lib/taskRunner";
-import { RESUME_TOPUP_STEPS, SURFACE_STEP_CAPS } from "@/modules/ai/config";
+import {
+  RESUME_TOPUP_TOKENS,
+  SURFACE_STEP_CAPS,
+  SURFACE_TOKEN_BUDGETS,
+} from "@/modules/ai/config";
 import { FINISH_NOW_NUDGE } from "@/modules/ai/lib/checkpointApi";
 import type { CandidateFinding } from "./schema";
 import type { CommitDiff } from "./gitCommitApi";
@@ -252,7 +256,7 @@ describe("runCommitReview — resume", () => {
     expect(args.maxSteps).toBe(SURFACE_STEP_CAPS.commitReviewInvestigate);
   });
 
-  it("a step-cap resume tops the budget up and tells the resumed stage to finish", async () => {
+  it("a budget-stopped resume tops up TOKENS and tells the resumed stage to finish", async () => {
     mockStreamTask.mockResolvedValue(stage1Ok([]));
 
     await runCommitReview(
@@ -268,7 +272,11 @@ describe("runCommitReview — resume", () => {
 
     const args = mockStreamTask.mock.calls[0][0];
     const resumed = args.resumeMessages ?? [];
-    expect(args.maxSteps).toBe(RESUME_TOPUP_STEPS);
+    expect(args.tokenBudget).toBe(RESUME_TOPUP_TOKENS);
+    // The step ceiling is a runaway guard, not the ration — it goes back to the
+    // full surface cap so a model that only needs a few cheap turns to write out
+    // findings it already investigated isn't starved a second time.
+    expect(args.maxSteps).toBe(SURFACE_STEP_CAPS.commitReviewInvestigate);
     expect(resumed[resumed.length - 1]).toEqual({
       role: "user",
       content: FINISH_NOW_NUDGE,
@@ -292,7 +300,8 @@ describe("runCommitReview — resume", () => {
     );
 
     const args = mockRunTask.mock.calls[0][0];
-    expect(args.maxSteps).toBe(RESUME_TOPUP_STEPS);
+    expect(args.tokenBudget).toBe(RESUME_TOPUP_TOKENS);
+    expect(args.maxSteps).toBe(SURFACE_STEP_CAPS.commitReviewVerify);
     expect(args.resumeMessages).toEqual([
       { role: "user", content: FINISH_NOW_NUDGE },
     ]);
@@ -308,9 +317,15 @@ describe("runCommitReview — resume", () => {
     expect(mockStreamTask.mock.calls[0][0].maxSteps).toBe(
       SURFACE_STEP_CAPS.commitReviewInvestigate,
     );
+    expect(mockStreamTask.mock.calls[0][0].tokenBudget).toBe(
+      SURFACE_TOKEN_BUDGETS.commitReviewInvestigate,
+    );
     expect(mockRunTask.mock.calls[0][0].resumeMessages).toBeUndefined();
     expect(mockRunTask.mock.calls[0][0].maxSteps).toBe(
       SURFACE_STEP_CAPS.commitReviewVerify,
+    );
+    expect(mockRunTask.mock.calls[0][0].tokenBudget).toBe(
+      SURFACE_TOKEN_BUDGETS.commitReviewVerify,
     );
   });
 

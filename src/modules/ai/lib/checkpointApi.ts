@@ -20,6 +20,7 @@ import {
   REPLAY_MIN_EVICTABLE_CHARS,
 } from "./compactTranscript";
 import type { ResumeErrorKind } from "./errorClass";
+import type { BudgetLimit } from "./runBudget";
 import type { ContextBlock } from "./contextBlocks";
 import type { Attachment } from "@/components/chat/attachments";
 import type { SuiteType, WorkItemRef } from "@/modules/ado";
@@ -46,8 +47,16 @@ export type TranscriptCheckpoint = {
 
 export type CheckpointOutcome = {
   at: string; // ISO timestamp
+  /** `step_cap` predates the token budget and is kept verbatim because it is
+   *  written into every checkpoint on disk; it means "ran into a run budget",
+   *  and `limit` says which one. */
   kind: "error" | "cancelled" | "step_cap" | "schema_violation" | "empty";
   errorKind?: ResumeErrorKind; // when kind === "error"
+  /** Which guard bound the loop, when kind === "step_cap". OPTIONAL because a
+   *  checkpoint written before budgets were denominated in tokens has no such
+   *  field — those still load, and their panel falls back to budget-neutral
+   *  copy rather than asserting a limit nobody recorded. */
+  limit?: BudgetLimit;
   message?: string;
 };
 
@@ -168,8 +177,8 @@ const CHECKPOINT_SURFACES = [
   "commit-review",
 ] as const;
 
-/** Appended as a user message after the transcript when resuming a run that
- *  hit its step cap. */
+/** Appended as a user message after the transcript when resuming a run that ran
+ *  out of budget. */
 export const FINISH_NOW_NUDGE =
   "You have exhausted your investigation budget. Do not call any more tools. Using only what you have already read, produce the final answer now, in exactly the output format the instructions require.";
 

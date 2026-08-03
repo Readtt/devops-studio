@@ -4,7 +4,11 @@
 // Reliability lever: `runs` > 1 evaluates N times and only allows a high final
 // confidence when the runs agree (self-consistency).
 
-import { SURFACE_STEP_CAPS, type ModelId } from "@/modules/ai/config";
+import {
+  SURFACE_STEP_CAPS,
+  SURFACE_TOKEN_BUDGETS,
+  type ModelId,
+} from "@/modules/ai/config";
 import { type ProviderKeys } from "@/modules/ai/lib/keyring";
 import { runTask } from "@/modules/ai/lib/taskRunner";
 import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
@@ -239,6 +243,7 @@ async function runConfidenceOnce(
     prompt,
     temperature: 0,
     maxSteps: SURFACE_STEP_CAPS.confidence,
+    tokenBudget: SURFACE_TOKEN_BUDGETS.confidence,
     schema: ConfidenceVerdictLLMSchema,
     tools: tools ?? null,
     signal: input.signal,
