@@ -97,9 +97,24 @@ describe("matchErrorKind", () => {
 });
 
 describe("isResumableKind", () => {
-  it("is false only for context-overflow", () => {
-    expect(isResumableKind("context-overflow")).toBe(false);
-    for (const kind of ["rate-limit", "no-credits", "stall", "abort", "unknown"] as ResumeErrorKind[]) {
+  // context-overflow used to be the one hard no, because resume replayed the
+  // transcript verbatim and a replay of a request that didn't fit cannot fit.
+  // resumeBudget / resumeArgs now compact before replaying — at a tightened
+  // budget precisely when the previous attempt overflowed — so the resumed
+  // request is a subset, and the carve-out that cost users their whole
+  // transcript is gone.
+  it("is true for every kind, overflow included", () => {
+    for (const kind of [
+      "rate-limit",
+      "overloaded",
+      "no-credits",
+      "network",
+      "stall",
+      "auth",
+      "context-overflow",
+      "abort",
+      "unknown",
+    ] as ResumeErrorKind[]) {
       expect(isResumableKind(kind)).toBe(true);
     }
   });
@@ -143,14 +158,9 @@ describe("classifyForResume", () => {
     expect(classifyForResume({}).kind).toBe("unknown");
   });
 
-  // A resumed request replays the transcript on top of the same prompt, so it is
-  // a strict superset of the one that already didn't fit — guaranteed to fail
-  // again. Every other kind clears once the user waits / tops up / fixes the key.
-  it("marks only context-overflow as non-resumable", () => {
-    expect(classifyForResume(new Error("maximum context length")).resumable).toBe(
-      false,
-    );
+  it("marks every classified failure resumable, overflow included", () => {
     for (const message of [
+      "maximum context length",
       "429",
       "529 overloaded",
       "402 insufficient credits",
@@ -183,17 +193,24 @@ describe("canOfferResume", () => {
   });
 
   it("for kind 'error', prefers the recorded errorKind over reclassifying", () => {
-    expect(canOfferResume({ kind: "error", errorKind: "context-overflow" })).toBe(
-      false,
-    );
     expect(canOfferResume({ kind: "error", errorKind: "rate-limit" })).toBe(true);
   });
 
-  it("falls back to matchErrorKind(errorMessage) when errorKind wasn't recorded", () => {
+  // The reported data loss, as a test: 24 steps of paid work, a run that
+  // overflowed, and a Resume button that never rendered.
+  it("offers a resume after a context overflow — the resumed request is compacted, not replayed verbatim", () => {
+    expect(canOfferResume({ kind: "error", errorKind: "context-overflow" })).toBe(
+      true,
+    );
     expect(
       canOfferResume({ kind: "error" }, "maximum context length exceeded"),
-    ).toBe(false);
+    ).toBe(true);
+  });
+
+  it("falls back to matchErrorKind(errorMessage) when errorKind wasn't recorded", () => {
     expect(canOfferResume({ kind: "error" }, "429 rate limit")).toBe(true);
+    // Still gated on the OUTCOME kind, which the message can't override.
+    expect(canOfferResume({ kind: "empty" }, "429 rate limit")).toBe(false);
   });
 
   it("is false for any other/unrecognised kind", () => {

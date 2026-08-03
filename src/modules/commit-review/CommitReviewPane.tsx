@@ -37,7 +37,10 @@ import { MODELS, RESUME_TOPUP_STEPS, type ModelId } from "@/modules/ai/config";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
-import { canOfferResume } from "@/modules/ai/lib/errorClass";
+import {
+  canOfferResume,
+  resumeUnavailableReason,
+} from "@/modules/ai/lib/errorClass";
 import {
   classifyProviderError,
   RunErrorPanel,
@@ -81,11 +84,15 @@ import {
   allDiffsLoaded,
   type CommitReviewSlice,
 } from "./useCommitReview";
-import { combinedPatchBytes, COMBINED_DIFF_WARN_BYTES } from "./runCommitReview";
+import {
+  combinedPatchBytes,
+  COMBINED_DIFF_WARN_BYTES,
+  unverifiedFindings,
+} from "./runCommitReview";
 import { CommitDiffPanel } from "./CommitDiffView";
 import { FindingCard } from "./FindingCard";
 import { LOCAL_CHANGES_SHA, type CommitMeta } from "./gitCommitApi";
-import type { Finding } from "./schema";
+import type { CandidateFinding, Finding } from "./schema";
 import type { AppliedPatchRecord, AppliedPatchesMap } from "./patchSchema";
 import type { WorkItemRef } from "@/modules/ado";
 import type { Attachment } from "@/components/chat/attachments";
@@ -533,8 +540,11 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
       ) : null}
       <ContextOverflowDialog guard={guard} modelLabel={guardModelLabel} />
       {!slice.busy && (slice.status === "interrupted" || slice.status === "cancelled") ? (
-        resumable && offerResume ? (
+        resumable ? (
           <div className="border-b border-border/45 px-3 py-2">
+            {/* The card renders either way. Discard lives inside it, so gating
+                the whole thing on `offerResume` is what made an unresumable
+                checkpoint undeletable as well as unreachable. */}
             <ResumeCard
               title={
                 slice.status === "cancelled"
@@ -550,7 +560,16 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
               ]
                 .filter(Boolean)
                 .join(" · ")}
-              onResume={() => guard.attempt(() => void resume(tabId))}
+              onResume={
+                offerResume
+                  ? () => guard.attempt(() => void resume(tabId))
+                  : undefined
+              }
+              unresumableReason={
+                offerResume
+                  ? undefined
+                  : resumeUnavailableReason(resumable.outcome)
+              }
               onDiscard={() => discardCheckpoint(tabId)}
             />
           </div>
@@ -584,6 +603,7 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
           applyFix={applyFix}
           onRun={() => guard.attempt(() => void run(tabId))}
           onResume={() => guard.attempt(() => void resume(tabId))}
+          onDiscard={() => discardCheckpoint(tabId)}
           showDiff={showDiff}
         />
       </div>
@@ -630,6 +650,7 @@ function Body({
   applyFix,
   onRun,
   onResume,
+  onDiscard,
   showDiff,
 }: {
   slice: CommitReviewSlice;
@@ -637,19 +658,93 @@ function Body({
   applyFix: (tabId: number, findingId: string, record: AppliedPatchRecord) => void;
   onRun: () => void;
   onResume: () => void;
+  onDiscard: () => void;
   showDiff: boolean;
 }) {
   const diffs = selectedDiffs(slice);
+  // Stage 1's output, rendered wherever the run didn't get as far as merged
+  // findings — mid-verify, stopped, crashed, or errored. One insertion point
+  // rather than a copy in each of BodyContent's branches, so the partial
+  // results can't quietly go missing from whichever branch nobody updated.
+  const partial =
+    slice.status !== "done" &&
+    slice.findings.length === 0 &&
+    slice.stage1Candidates &&
+    slice.stage1Candidates.length > 0
+      ? slice.stage1Candidates
+      : null;
   return (
     <div className="flex flex-col gap-3">
       {showDiff && diffs.length > 0 ? <CommitDiffPanel diffs={diffs} /> : null}
+      {partial ? (
+        <PartialFindings
+          candidates={partial}
+          verifying={slice.busy}
+          appliedPatches={slice.appliedPatches}
+          onApply={(findingId, record) => applyFix(tabId, findingId, record)}
+        />
+      ) : null}
       <BodyContent
         slice={slice}
         tabId={tabId}
         applyFix={applyFix}
         onRun={onRun}
         onResume={onResume}
+        onDiscard={onDiscard}
       />
+    </div>
+  );
+}
+
+/** Stage 1's findings when stage 2 never delivered a verdict on them.
+ *
+ *  They are real, already-paid-for results — the investigate pass is the
+ *  expensive one — and before this they existed only inside the checkpoint blob.
+ *  A review the user stopped (or that died) during verification rendered an
+ *  activity log and nothing else, so the whole spend read as lost. Framed
+ *  honestly as UNVERIFIED: the pass that kills false positives didn't run, so
+ *  these carry the first pass's own confidence and nothing more. */
+function PartialFindings({
+  candidates,
+  verifying,
+  appliedPatches,
+  onApply,
+}: {
+  candidates: CandidateFinding[];
+  /** The verify pass is still running — this is a live preview, not a remnant. */
+  verifying: boolean;
+  appliedPatches: AppliedPatchesMap;
+  onApply: (findingId: string, record: AppliedPatchRecord) => void;
+}) {
+  return (
+    <div className="overflow-hidden rounded-md border border-amber-500/30 bg-amber-500/[0.04]">
+      <div className="flex items-center gap-1.5 border-b border-amber-500/25 px-3 py-1.5">
+        <HugeiconsIcon
+          icon={AlertCircleIcon}
+          size={11}
+          strokeWidth={1.75}
+          className="shrink-0 text-amber-600 dark:text-amber-400"
+        />
+        <span className="font-mono text-[10px] uppercase tracking-wider text-amber-700 dark:text-amber-300">
+          unverified · first pass
+        </span>
+        <span className="ml-auto font-mono text-[10px] text-muted-foreground/70">
+          {candidates.length.toString().padStart(2, "0")}
+        </span>
+      </div>
+      <p className="px-3 pt-2 text-[11px] leading-relaxed text-muted-foreground">
+        {verifying
+          ? "The investigation found these. The verification pass is still trying to refute each one, so some may disappear."
+          : "The investigation found these and the verification pass never ran, so nothing has tried to refute them yet — expect some false positives. Resume to verify them without paying for the investigation again."}
+      </p>
+      <div className="px-3 pb-3 pt-2">
+        <FindingsList
+          findings={unverifiedFindings(candidates)}
+          appliedPatches={appliedPatches}
+          durationMs={null}
+          onApply={onApply}
+        />
+      </div>
     </div>
   );
 }
@@ -707,12 +802,14 @@ function BodyContent({
   applyFix,
   onRun,
   onResume,
+  onDiscard,
 }: {
   slice: CommitReviewSlice;
   tabId: number;
   applyFix: (tabId: number, findingId: string, record: AppliedPatchRecord) => void;
   onRun: () => void;
   onResume: () => void;
+  onDiscard: () => void;
 }) {
   if (slice.busy) {
     return (
@@ -798,6 +895,26 @@ function BodyContent({
             <HugeiconsIcon icon={SparklesIcon} size={12} strokeWidth={2} />
             Re-run
           </button>
+          {/* A checkpoint we can't continue is still a checkpoint on disk.
+              Discard used to ride inside the Resume affordance, so hiding
+              Resume hid the only way to delete it. */}
+          {resumable && !offerResume ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={onDiscard}
+                  className="ml-auto h-7 rounded-md px-2 text-[11.5px] font-medium text-muted-foreground transition-colors hover:bg-foreground/[0.05] hover:text-foreground"
+                >
+                  Discard saved progress
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[260px] text-[11px]">
+                {resumeUnavailableReason(resumable.outcome)} This deletes the
+                stored transcript for that attempt.
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
         </div>
       </RunErrorPanel>
     );

@@ -9,9 +9,11 @@ vi.mock("@/modules/ai/lib/taskRunner", () => ({
 
 import {
   buildInvestigatePrompt,
+  buildVerifyPrompt,
   combinedPatchBytes,
   isOldCommit,
   runCommitReview,
+  unverifiedFindings,
   COMBINED_DIFF_WARN_BYTES,
   type RunCommitReviewInput,
 } from "./runCommitReview";
@@ -435,5 +437,97 @@ describe("buildInvestigatePrompt", () => {
     ]);
     expect(out).toContain("predate the working tree");
     expect(out).toContain("**Commit:**");
+  });
+});
+
+// Item 7 of the phase, as a measurement rather than a claim. The engine already
+// had the SHAPE of a sub-agent split — two loops, two clean transcripts — but
+// verify re-inlined every raw patch alongside the candidate JSON, so every byte
+// of every diff was paid for twice per review and re-sent on each of verify's
+// agentic steps.
+describe("unverifiedFindings", () => {
+  it("flags every candidate unverified and sorts them by severity", () => {
+    const out = unverifiedFindings([
+      { ...cand("low"), severity: "low" },
+      { ...cand("crit"), severity: "critical" },
+    ]);
+    expect(out.map((f) => f.id)).toEqual(["crit", "low"]);
+    expect(out.every((f) => f.verified === false)).toBe(true);
+  });
+});
+
+describe("buildVerifyPrompt — the verify stage's window", () => {
+  const hunk = (path: string, bytes: number) =>
+    [
+      `diff --git a/${path} b/${path}`,
+      "index 1111111..2222222 100644",
+      `--- a/${path}`,
+      `+++ b/${path}`,
+      "@@ -1,3 +1,3 @@",
+      `+${"x".repeat(bytes)}`,
+    ].join("\n");
+
+  const bigDiff = () =>
+    diff(
+      [
+        hunk("src/a.ts", 20_000),
+        hunk("src/b.ts", 20_000),
+        hunk("src/c.ts", 20_000),
+        hunk("src/d.ts", 20_000),
+      ].join("\n"),
+      { shortSha: "abc1234", headSha: "abc1234" },
+    );
+
+  const verify = (diffs: CommitDiff[], candidates: CandidateFinding[]) =>
+    buildVerifyPrompt(
+      {
+        diffs,
+        contextBlocks: [],
+        sourceRoot: "C:/repo",
+      } as unknown as RunCommitReviewInput,
+      candidates,
+    );
+
+  it("is strictly smaller than the investigate prompt it would otherwise repeat", () => {
+    const diffs = [bigDiff()];
+    const before = investigate(diffs);
+    const after = verify(diffs, [{ ...cand("f1"), file: "src/b.ts" }]);
+    expect(after.length).toBeLessThan(before.length);
+    // Three of four files' hunks are gone; the candidate's own file stays.
+    expect(after).toContain("diff --git a/src/b.ts");
+    expect(after).not.toContain("diff --git a/src/a.ts");
+  });
+
+  it("still shows the full file list and names what it dropped", () => {
+    const files = [
+      { path: "src/a.ts", additions: 1, deletions: 0, status: "modified" },
+      { path: "src/b.ts", additions: 1, deletions: 0, status: "modified" },
+    ];
+    const out = verify(
+      [{ ...bigDiff(), files }],
+      [{ ...cand("f1"), file: "src/b.ts" }],
+    );
+    // The blast radius is still legible even where the hunks aren't.
+    expect(out).toContain("src/a.ts");
+    expect(out).toContain("**Files changed:** 2");
+    // …and the exact command that fetches an omitted file back.
+    expect(out).toContain("git show abc1234 -- <path>");
+  });
+
+  it("leaves a small diff exactly as the investigate stage saw it", () => {
+    const diffs = [diff("@@ -1 +1 @@\n+small change")];
+    const out = verify(diffs, [{ ...cand("f1"), file: "src/b.ts" }]);
+    expect(out).toContain("RAW PATCH (this commit's own change):");
+    expect(out).toContain("+small change");
+  });
+
+  it("never narrows away the evidence when candidates cite code outside the diff", () => {
+    // A finding about a caller the commit never touched is legitimate — and a
+    // verifier handed an empty patch would refute it for the wrong reason.
+    const diffs = [bigDiff()];
+    const out = verify(diffs, [{ ...cand("f1"), file: "src/elsewhere.ts" }]);
+    for (const p of ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"]) {
+      expect(out).toContain(`diff --git a/${p}`);
+    }
   });
 });

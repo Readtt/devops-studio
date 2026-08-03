@@ -938,17 +938,26 @@ export function createGenerationSessionStore(): GenerationSessionStore {
             ? "The model returned an empty response — no test cases came back. OpenAI-compatible or custom endpoints often need JSON mode (structured output) turned on before they return a usable batch."
             : "The model's response couldn't be read as the structured format the generator expects, and nothing usable could be salvaged from it. This is common with OpenAI-compatible or custom endpoints that don't fully support structured JSON output."
           : "The model ran but produced no test cases or bugs for this spec.";
+        // The run COMPLETED — there's no partial work to continue, so no
+        // resume is offered. `resumable` is still set, because it means "a
+        // checkpoint exists", not "a resume is on offer": the render sites
+        // ask `canOfferResume` for that, and gating this field on it instead
+        // is what made a checkpoint nobody could resume also one nobody could
+        // DELETE. It's the handle Discard hangs off, and the handle the next
+        // run supersedes the row by.
+        const emptyOutcome: CheckpointOutcome = {
+          at: new Date().toISOString(),
+          kind: "empty",
+        };
+        const emptyPayload = buildPayload(emptyOutcome);
         set({
           phase: "error",
           error: `No test cases generated. ${why}`,
           errorPhase: "analyze",
           stepLabel: "",
+          resumable: resumableFrom(emptyPayload, emptyOutcome),
         });
-        // The run COMPLETED — there's no partial work to continue, so the
-        // inputs stay on disk for a fresh attempt but no resume is offered.
-        await writer.flush(
-          buildPayload({ at: new Date().toISOString(), kind: "empty" }),
-        );
+        await writer.flush(emptyPayload);
         notifyHistoryUpdated(args.runId);
         return;
       }

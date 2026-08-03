@@ -50,6 +50,14 @@ import {
   compactTranscript,
   CONTEXT_COMPACTION_ENABLED,
 } from "./compactTranscript";
+import {
+  CONTEXT_SUMMARIZATION_ENABLED,
+  pickSummarizerModel,
+  planSummarization,
+  summaryMessage,
+  SUMMARIZER_SYSTEM_PROMPT,
+  SUMMARY_MAX_OUTPUT_TOKENS,
+} from "./summarizeTranscript";
 import { buildUserTurn } from "./visionMessage";
 import {
   clampOutputFull,
@@ -134,6 +142,11 @@ export type TaskInput<S extends z.ZodTypeAny | undefined = undefined> = {
    *  once a step's measured prompt lands inside the compaction buffer, so an
    *  ordinary run never reaches it. */
   compactContext?: boolean;
+  /** Per-call override of the summarization kill switch
+   *  ({@link CONTEXT_SUMMARIZATION_ENABLED}). This is the one control that costs
+   *  a model call, so it sits behind eviction: it fires only after eviction has
+   *  run and freed nothing, and then at most once per attempt. */
+  summarizeContext?: boolean;
   signal?: AbortSignal;
 };
 
@@ -240,6 +253,14 @@ function anthropicStepCachePrepare(
  *  changes at most once for arming, and after that only when the eviction
  *  boundary itself advances.
  *
+ *  SUMMARIZATION IS THE RUNG BELOW EVICTION, not an alternative to it. It fires
+ *  only when eviction runs and frees NOTHING — every result outside the hot tail
+ *  is already a stub, so the cheap mechanism has nothing left to take — and then
+ *  at most once, because it costs a model call. Once a summary is installed it is
+ *  re-applied byte-identically on every later step from the same cut index; the
+ *  prefix therefore changes exactly once more, which is the same bargain the
+ *  arming latch makes.
+ *
  *  Returning `undefined` when nothing changed is deliberate: a run that never
  *  trips the budget sends byte-identical requests to what it sent before this
  *  existed. */
@@ -247,18 +268,124 @@ function buildStepPrepare(
   modelId: ModelId,
   compactionEnabled: boolean,
   contextOf: () => RequestContextSignal | undefined,
+  summarize?: (messages: ModelMessage[]) => Promise<InstalledSummary | null>,
 ):
-  | (({ messages }: { messages: ModelMessage[] }) => { messages: ModelMessage[] } | undefined)
+  | (({
+      messages,
+    }: {
+      messages: ModelMessage[];
+    }) =>
+      | { messages: ModelMessage[] }
+      | undefined
+      | Promise<{ messages: ModelMessage[] } | undefined>)
   | undefined {
   const cache = anthropicStepCachePrepare(modelId);
   if (!compactionEnabled) return cache;
   let armed = false;
+  let summaryTried = false;
+  // The installed summary. The SDK hands us the FULL history every step (it
+  // never writes the override back), so re-applying it means slicing that
+  // history at the same index again — hence an index, not a message reference.
+  let summary: InstalledSummary | null = null;
+
+  const finish = (
+    original: ModelMessage[],
+    next: ModelMessage[],
+  ): { messages: ModelMessage[] } | undefined => {
+    const tagged = cache?.({ messages: next });
+    if (tagged) return tagged;
+    return next === original ? undefined : { messages: next };
+  };
+
   return ({ messages }) => {
     if (!armed && contextOf()?.shouldCompact === true) armed = true;
-    const compacted = armed ? compactTranscript(messages).messages : messages;
-    const tagged = cache?.({ messages: compacted });
-    if (tagged) return tagged;
-    return compacted === messages ? undefined : { messages: compacted };
+    const base = summary ? applyInstalledSummary(summary, messages) : messages;
+    if (!armed) return finish(messages, base);
+
+    const compacted = compactTranscript(base).messages;
+    // Deliberately NOT an async function: every step of every agentic run goes
+    // through here, and only the one step that actually summarizes should hand
+    // the SDK a promise to await. The common path stays exactly as synchronous
+    // as it was before summarization existed.
+    if (summarize && !summaryTried && compacted === base) {
+      // Eviction ran and freed nothing: everything outside the hot tail is
+      // already a stub. This is the only state summarization is for.
+      summaryTried = true;
+      return summarize(base).then((installed) => {
+        summary = installed;
+        if (!installed) return finish(messages, compacted);
+        return finish(
+          messages,
+          compactTranscript(applyInstalledSummary(installed, messages)).messages,
+        );
+      });
+    }
+    return finish(messages, compacted);
+  };
+}
+
+/** A summary that has been installed for the rest of this attempt: the messages
+ *  that go in front, and the offset in the SDK's (still full) history they
+ *  replace up to. */
+type InstalledSummary = { prefix: ModelMessage[]; cutIndex: number };
+
+function applyInstalledSummary(
+  summary: InstalledSummary,
+  messages: ModelMessage[],
+): ModelMessage[] {
+  return [...summary.prefix, ...messages.slice(summary.cutIndex)];
+}
+
+/** The summarization callback `buildStepPrepare` calls, or undefined when the
+ *  fallback is off. Lives here rather than in summarizeTranscript.ts so the pure
+ *  module never has to import the runner back (and so the one place in the app
+ *  that talks to a provider stays this file).
+ *
+ *  Everything is swallowed. A summarizer that throws — no key for the cheap
+ *  provider, its own overload, an abort — must degrade to "no summary" and let
+ *  the step go out as it would have anyway. It is a recovery attempt on a run
+ *  that is already in trouble, not a new failure mode for it. */
+function makeSummarizer(
+  input: TaskInput<z.ZodTypeAny | undefined>,
+): ((messages: ModelMessage[]) => Promise<InstalledSummary | null>) | undefined {
+  if (!(input.summarizeContext ?? CONTEXT_SUMMARIZATION_ENABLED)) return undefined;
+  return async (messages) => {
+    try {
+      const plan = planSummarization(messages);
+      if (!plan) return null;
+      const summarizerId = pickSummarizerModel(
+        input.modelId,
+        input.keys,
+        plan.sourceTokens,
+      );
+      const model = await buildConfiguredLanguageModel(
+        summarizerId,
+        input.keys,
+        input.local ?? {},
+      );
+      const { text } = await generateText({
+        model,
+        system: SUMMARIZER_SYSTEM_PROMPT,
+        prompt: plan.source,
+        ...(supportsTemperature(summarizerId) ? { temperature: 0 } : {}),
+        maxOutputTokens: SUMMARY_MAX_OUTPUT_TOKENS,
+        // One attempt, not TASK_MAX_RETRIES: the run is inside its compaction
+        // buffer and waiting out a rate-limit window here just moves the
+        // failure. No summary is a survivable outcome; a two-minute stall
+        // inside prepareStep is not.
+        maxRetries: 1,
+        abortSignal: input.signal,
+      });
+      const summary = text?.trim();
+      if (!summary) return null;
+      return {
+        prefix: [...messages.slice(0, plan.protectedCount), summaryMessage(summary)],
+        cutIndex: plan.cutIndex,
+      };
+    } catch (e) {
+      console.warn("[taskRunner] context summarization failed — continuing without it", e);
+      return null;
+    }
   };
 }
 
@@ -766,6 +893,7 @@ export async function runTask<
         input.modelId,
         input.compactContext ?? CONTEXT_COMPACTION_ENABLED,
         () => steps.context,
+        makeSummarizer(input),
       )
     : undefined;
   const args = (temp: number | undefined) => ({
@@ -878,6 +1006,7 @@ export async function streamTask<
           input.modelId,
           input.compactContext ?? CONTEXT_COMPACTION_ENABLED,
           () => steps.context,
+          makeSummarizer(input),
         )
       : undefined;
     const result = streamText({

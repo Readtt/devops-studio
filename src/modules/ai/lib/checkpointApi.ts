@@ -14,6 +14,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
 import { modelMessageSchema, type ModelMessage } from "ai";
 import type { ModelId } from "../config";
+import {
+  compactTranscript,
+  CHECKPOINT_REPLAY_TOKEN_BUDGET,
+  REPLAY_MIN_EVICTABLE_CHARS,
+} from "./compactTranscript";
 import type { ResumeErrorKind } from "./errorClass";
 import type { ContextBlock } from "./contextBlocks";
 import type { Attachment } from "@/components/chat/attachments";
@@ -336,14 +341,46 @@ const WRITE_THROTTLE_MS = 500;
 /** Degrade an oversize payload before it goes over IPC rather than fail the
  *  write outright — losing the resume point entirely is worse than losing
  *  the transcript, since inputs-only still lets the run restart from
- *  scratch instead of vanishing. */
+ *  scratch instead of vanishing.
+ *
+ *  The ladder is `full → compacted → null`, and the middle rung is the whole
+ *  point. A 1M-token context is roughly 4 MB of JSON, so the run this ladder
+ *  exists for — one that filled its window and died — is EXACTLY the one that
+ *  lands over the cap. Going straight from full to null meant the only failure
+ *  that could ever produce an unresumable-by-size checkpoint was the failure
+ *  resume was built to recover from: all 24 steps of paid work, nulled by the
+ *  writer, before the UI ever got to ask whether it was resumable. Evicting old
+ *  tool-result content instead keeps the transcript — and the resume — alive at
+ *  a fraction of the bytes. */
 function capPayloadSize(payload: CheckpointPayload): CheckpointPayload {
   if (JSON.stringify(payload).length <= MAX_PAYLOAD_BYTES) return payload;
-  return {
+
+  // Both lower rungs trim the activity log: it's the UI's scrollback, not the
+  // resume point, and it's the cheapest thing here to give up.
+  const trimmed = {
     ...payload,
-    transcript: null,
     activity: payload.activity.slice(-100),
-  };
+  } as CheckpointPayload;
+
+  const messages = trimmed.transcript?.messages;
+  if (messages && messages.length > 0) {
+    const compacted = compactTranscript(messages, {
+      toolResultTokenBudget: CHECKPOINT_REPLAY_TOKEN_BUDGET,
+      minEvictableChars: REPLAY_MIN_EVICTABLE_CHARS,
+    });
+    // Same array back ⇒ there was nothing evictable, so the bulk is elsewhere
+    // (inputs, attachments) and re-measuring would only cost a second
+    // stringify of a multi-megabyte object.
+    if (compacted.messages !== messages) {
+      const next = {
+        ...trimmed,
+        transcript: { ...trimmed.transcript, messages: compacted.messages },
+      } as CheckpointPayload;
+      if (JSON.stringify(next).length <= MAX_PAYLOAD_BYTES) return next;
+    }
+  }
+
+  return { ...trimmed, transcript: null } as CheckpointPayload;
 }
 
 export function createCheckpointWriter(args: {

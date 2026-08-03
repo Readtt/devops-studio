@@ -540,6 +540,9 @@ describe("resume", () => {
       stage1Candidates: [cand("f1")],
       resumeMessages: [],
       stepCapNudge: false,
+      // Not an overflow, so the replay runs at the live eviction budget —
+      // which is a no-op for a transcript that fit fine.
+      afterOverflow: false,
     });
   });
 
@@ -683,6 +686,85 @@ describe("run — checkpoint lifecycle", () => {
     expect(candidatesFlush.stage).toBe("verify");
     expect(candidatesFlush.stage1Candidates).toEqual([cand("f1")]);
     expect(candidatesFlush.transcript).toBeNull();
+  });
+
+  // The candidates were already on disk; nothing ever put them on screen. A
+  // review stopped or killed during the verify pass rendered an activity log
+  // and read as a total loss of the investigate spend.
+  describe("stranded stage-1 findings", () => {
+    it("puts them in the slice as soon as they parse, before verify runs", async () => {
+      seedRunnable(1);
+      let seen: CandidateFinding[] | null = null;
+      mockRun.mockImplementation(async ({ onStage1Candidates }) => {
+        onStage1Candidates?.([cand("f1")]);
+        seen = slice(1).stage1Candidates;
+        return { ok: true, findings: [], durationMs: 4 };
+      });
+
+      await useCommitReview.getState().run(1);
+      expect(seen).toEqual([cand("f1")]);
+    });
+
+    it("keeps them when the run is cancelled mid-verify", async () => {
+      seedRunnable(1);
+      let reachedVerify!: () => void;
+      const atVerify = new Promise<void>((r) => (reachedVerify = r));
+      mockRun.mockImplementation(
+        ({ onStage1Candidates, signal }) =>
+          new Promise((_resolve, reject) => {
+            onStage1Candidates?.([cand("f1")]);
+            signal?.addEventListener("abort", () => reject(abortError()));
+            reachedVerify();
+          }),
+      );
+
+      const running = useCommitReview.getState().run(1);
+      await atVerify;
+      useCommitReview.getState().stop(1);
+      await running;
+
+      expect(slice(1).status).toBe("cancelled");
+      expect(slice(1).findings).toEqual([]);
+      expect(slice(1).stage1Candidates).toEqual([cand("f1")]);
+    });
+
+    it("clears them once the run produces real findings — they'd render twice", async () => {
+      seedRunnable(1);
+      mockRun.mockImplementation(async ({ onStage1Candidates }) => {
+        onStage1Candidates?.([cand("f1")]);
+        return {
+          ok: true,
+          findings: [{ ...cand("f1"), verified: true }],
+          durationMs: 4,
+        };
+      });
+      await useCommitReview.getState().run(1);
+      expect(slice(1).stage1Candidates).toBeNull();
+      expect(slice(1).findings).toHaveLength(1);
+    });
+
+    it("restores them when an interrupted run is adopted on a fresh mount", async () => {
+      mockListCheckpoints.mockResolvedValue([
+        {
+          runId: "crun-1",
+          cwd: "C:/repo",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:02:00.000Z",
+        },
+      ]);
+      mockGetCheckpoint.mockResolvedValue(checkpointRow());
+      mockGetRow.mockResolvedValue(null);
+
+      await useCommitReview.getState().ensure(1, "C:/repo");
+      expect(slice(1).stage1Candidates).toEqual([cand("f1")]);
+    });
+
+    it("drops them when the reviewed set changes — they were about other code", async () => {
+      seedRunnable(1);
+      seed(1, { stage1Candidates: [cand("f1")] });
+      await useCommitReview.getState().toggleCommit(1, "bbb");
+      expect(slice(1).stage1Candidates).toBeNull();
+    });
   });
 
   it("a step-capped run is resumable; a badly-formatted answer is not", async () => {

@@ -30,7 +30,10 @@ import {
   type TranscriptCheckpoint,
 } from "@/modules/ai/lib/checkpointApi";
 import { canOfferResume, classifyForResume } from "@/modules/ai/lib/errorClass";
-import { sumUsage } from "@/modules/generator/lib/resumePolicy";
+import {
+  diedOfContextOverflow,
+  sumUsage,
+} from "@/modules/generator/lib/resumePolicy";
 import type { TaskCheckpoint } from "@/modules/ai/lib/taskRunner";
 import type { ContextBlock } from "@/modules/ai/lib/contextBlocks";
 import type { Attachment } from "@/components/chat/attachments";
@@ -92,6 +95,13 @@ export type CommitReviewSlice = {
   stage: RunStage | null;
   activity: ActivityEntry[];
   findings: Finding[];
+  /** Stage 1's raw output, kept alongside `findings` from the moment it parses.
+   *  These are real, paid-for results that used to exist only inside the
+   *  checkpoint blob: a run stopped, crashed or rate-limited during the VERIFY
+   *  pass had them on disk and rendered nothing, so the pane showed an activity
+   *  log and the spend read as a total loss. Cleared once a run produces real
+   *  `findings` (which supersede them) or the reviewed set changes. */
+  stage1Candidates: CandidateFinding[] | null;
   appliedPatches: AppliedPatchesMap;
   busy: boolean;
   abort: AbortController | null;
@@ -319,6 +329,9 @@ async function settleResult(
     stage: null,
     status: "done",
     findings: result.findings,
+    // The merged findings ARE the candidates, verified — keeping both would
+    // render the same issues twice, once as a partial-result warning.
+    stage1Candidates: null,
     durationMs: result.durationMs,
     resumable: null,
   });
@@ -472,6 +485,9 @@ async function adoptInterruptedRun(
       // immutable, and a fresh run() re-reads the live working tree anyway —
       // only resume() deliberately replays this snapshot.
       diffBySha: snapshotDiffs,
+      // The verify-stage spend that was stranded: stage 1 parsed, its findings
+      // went to disk, and the run died before anything rendered them.
+      stage1Candidates: p.stage1Candidates,
       resumable: {
         stage: p.stage,
         stepsUsed: p.transcript?.stepsUsed ?? 0,
@@ -503,6 +519,7 @@ function emptySlice(cwd: string, modelId: ModelId | null): CommitReviewSlice {
     stage: null,
     activity: [],
     findings: [],
+    stage1Candidates: null,
     appliedPatches: {},
     busy: false,
     abort: null,
@@ -606,6 +623,10 @@ export const useCommitReview = create<State>((set, get) => ({
             workItems: curr?.workItems.length
               ? curr.workItems
               : p.inputs.workItems,
+            // Only when the row carried no findings of its own: a completed
+            // review's merged findings supersede the candidates they came from.
+            stage1Candidates:
+              done || curr?.findings.length ? null : p.stage1Candidates,
             // A run that ANSWERED — badly — isn't worth resuming: continuing a
             // transcript that ends in garbage just re-fails. Re-run is the
             // right affordance there.
@@ -735,6 +756,7 @@ export const useCommitReview = create<State>((set, get) => ({
     patch(set, tabId, {
       selectedShas: nextShas,
       findings: [],
+      stage1Candidates: null,
       activity: [],
       status: "idle",
       error: null,
@@ -767,6 +789,7 @@ export const useCommitReview = create<State>((set, get) => ({
       selectedShas: nextShas,
       diffBySha: nextDiffs,
       findings: [],
+      stage1Candidates: null,
       activity: [],
       status: "idle",
       error: null,
@@ -793,6 +816,7 @@ export const useCommitReview = create<State>((set, get) => ({
       diffLoading: false,
       diffError: null,
       findings: [],
+      stage1Candidates: null,
       activity: [],
       status: "idle",
       error: null,
@@ -994,6 +1018,7 @@ export const useCommitReview = create<State>((set, get) => ({
         stage: "investigate",
         activity: [],
         findings: [],
+        stage1Candidates: null,
         error: null,
         errorReason: null,
         schemaViolationRaw: null,
@@ -1115,6 +1140,11 @@ export const useCommitReview = create<State>((set, get) => ({
         onStage1Candidates: (cands) => {
           cpStage = "verify";
           cpCandidates = cands;
+          // Render them NOW, before the (independently failable) verify pass —
+          // this is the moment they stop being hypothetical spend.
+          if (isLiveRun(get, tabId, runId)) {
+            patch(set, tabId, { stage1Candidates: cands });
+          }
           // Verify starts from its own prompt, so the investigate transcript
           // must not be handed to it on resume.
           transcript = null;
@@ -1186,6 +1216,8 @@ export const useCommitReview = create<State>((set, get) => ({
         // Only an investigate resume re-derives findings; a verify resume never
         // had any on screen to clear.
         findings: payload.stage === "investigate" ? [] : curr.findings,
+        stage1Candidates:
+          payload.stage === "investigate" ? null : payload.stage1Candidates,
         error: null,
         errorReason: null,
         schemaViolationRaw: null,
@@ -1261,6 +1293,9 @@ export const useCommitReview = create<State>((set, get) => ({
         onStage1Candidates: (cands) => {
           cpStage = "verify";
           cpCandidates = cands;
+          if (isLiveRun(get, tabId, runId)) {
+            patch(set, tabId, { stage1Candidates: cands });
+          }
           // Crossing into verify starts a new transcript, so the investigate
           // one (and its totals) stop applying.
           transcript = null;
@@ -1272,6 +1307,7 @@ export const useCommitReview = create<State>((set, get) => ({
           stage1Candidates: payload.stage1Candidates,
           resumeMessages: payload.transcript?.messages ?? null,
           stepCapNudge: payload.lastOutcome?.kind === "step_cap",
+          afterOverflow: diedOfContextOverflow(payload.lastOutcome),
         },
         signal: abort.signal,
       });

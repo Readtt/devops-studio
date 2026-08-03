@@ -3,8 +3,19 @@
 // Long agentic runs die for a small, recurring set of reasons: a per-minute rate
 // limit outlasting the retry budget, a 402, the Rust proxy's 120s idle timeout, a
 // dropped socket, a revoked key, a user abort. All of those leave the accumulated
-// transcript intact and worth continuing from — a context overflow does not, since
-// a resumed request is a strict SUPERSET of the one that already didn't fit.
+// transcript intact and worth continuing from.
+//
+// `context-overflow` used to be carved out as the one hard no, on the grounds
+// that "a resumed request is a strict SUPERSET of the one that already didn't
+// fit". That was true of the implementation it described and is no longer true
+// of this one: `resumePolicy.resumeBudget` and `runCommitReview.resumeArgs` now
+// run the stored transcript through `compactForResume` before replaying it, at a
+// budget tightened specifically when the previous attempt overflowed — so the
+// resumed request is a SUBSET. Keeping the carve-out cost the user everything it
+// was meant to protect: the checkpoint was written with the full transcript and
+// then hidden at every render site, which (because Discard lived inside
+// ResumeCard) also made it undiscardable. Overflow is now resumable like any
+// other transport failure.
 //
 // GeneratorPane's classifyError stays the place that writes user-facing
 // remediation copy (title / why / steps); this file answers only the narrower
@@ -32,11 +43,13 @@ export const STALL_MESSAGE =
  *  Two orderings are deliberate. Billing (402 / credit balance) is tested before
  *  the generic 4xx bucket so "insufficient credits" isn't reported as a rate
  *  limit, and `context-overflow` is tested AFTER the provider-load kinds even
- *  though GeneratorPane checks it first: overflow is the only NON-resumable kind,
- *  so a false positive is the one mistake that costs the user their transcript —
- *  and 429 bodies routinely quote token counts ("would exceed … 400,000 input
- *  tokens per minute"). `network` is last because `timeout` / `connection reset`
- *  are the broadest strings here. */
+ *  though GeneratorPane checks it first: 429 bodies routinely quote token counts
+ *  ("would exceed … 400,000 input tokens per minute"), and a rate limit
+ *  misfiled as an overflow would resume at the aggressive eviction budget and
+ *  throw away tool results the run still needed. (Before Phase 4 the same
+ *  ordering existed for a sharper reason — overflow was non-resumable, so the
+ *  false positive cost the user their whole transcript.) `network` is last
+ *  because `timeout` / `connection reset` are the broadest strings here. */
 const PATTERNS: ReadonlyArray<readonly [ResumeErrorKind, RegExp]> = [
   // Substring, not exact: the Rust message may gain a suffix (retry hint, url).
   ["stall", /ai stream stalled/],
@@ -72,10 +85,14 @@ export function matchErrorKind(message: string): ResumeErrorKind {
 }
 
 /** Whether a resume attempt can plausibly succeed for this error kind.
- *  context-overflow is the only hard no — a resumed request is a superset
- *  of the one that overflowed. */
-export function isResumableKind(kind: ResumeErrorKind): boolean {
-  return kind !== "context-overflow";
+ *
+ *  Every kind qualifies. The parameter stays because this is the seam the whole
+ *  app asks the question through, and a future kind that genuinely cannot be
+ *  continued (a provider retiring a model mid-run, say) belongs here rather than
+ *  re-litigated at five render sites. See the file header for why
+ *  `context-overflow` stopped being the exception. */
+export function isResumableKind(_kind: ResumeErrorKind): boolean {
+  return true;
 }
 
 export function classifyForResume(e: unknown): ResumeClass {
@@ -108,6 +125,25 @@ function errorText(e: unknown): string {
  *  separately check that a checkpoint exists at all (a missing checkpoint and
  *  a checkpoint with a null outcome — an unflushed crash — are different
  *  things; only the latter defaults to resumable here). */
+/** One clause explaining why Resume isn't on offer, for the surfaces that still
+ *  have a checkpoint to show (and to DISCARD — see ResumeCard's second mode). A
+ *  card that just quietly loses its main button reads as broken, and the two
+ *  reasons are genuinely different: one says the model gave us nothing, the
+ *  other that it gave us nonsense. Only ever called when
+ *  {@link canOfferResume} already said no. */
+export function resumeUnavailableReason(
+  outcome: { kind: string } | null | undefined,
+): string {
+  switch (outcome?.kind) {
+    case "empty":
+      return "The model returned nothing to continue from, so a resume would replay an empty transcript and fail the same way. Re-run instead.";
+    case "schema_violation":
+      return "The model answered with output this run couldn't read, so continuing that transcript would only reproduce it. Re-run instead — a more capable model usually fixes it.";
+    default:
+      return "This saved progress can't be continued. Re-run instead.";
+  }
+}
+
 export function canOfferResume(
   outcome:
     | { kind: string; errorKind?: ResumeErrorKind; message?: string }

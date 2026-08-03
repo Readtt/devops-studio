@@ -67,6 +67,52 @@ export const MIN_EVICTABLE_CHARS = 1_000;
  *  `TaskInput.compactContext`. */
 export const CONTEXT_COMPACTION_ENABLED = true;
 
+/** Budget for a transcript being REPLAYED after a context overflow. Far tighter
+ *  than the live one because we already know the fact that matters: the request
+ *  carrying this transcript did not fit. Replaying it at the live budget could
+ *  legitimately be a no-op, and a resume that re-sends what already 413'd is the
+ *  bug this exists to fix. */
+export const OVERFLOW_REPLAY_TOKEN_BUDGET = 8_000;
+
+/** Budget for a transcript being squeezed into a checkpoint ROW. Sized against
+ *  `MAX_PAYLOAD_BYTES` (4 MB) rather than a context window: 20,000 tokens of
+ *  tool results is ~80 KB of JSON, which leaves the inputs, the attachments and
+ *  the activity log room to fit alongside it. */
+export const CHECKPOINT_REPLAY_TOKEN_BUDGET = 20_000;
+
+/** Eviction floor for the replay paths. The live floor (1,000 chars) exists
+ *  because evicting a small result frees less than its own stub costs; on a
+ *  replay path we are already past the point where that trade matters and want
+ *  every byte, so it drops to roughly one stub's worth. */
+export const REPLAY_MIN_EVICTABLE_CHARS = 400;
+
+/** Compact a transcript that is about to be REPLAYED (resumed) rather than
+ *  continued in place.
+ *
+ *  This is what turns a resumed request from a strict SUPERSET of the one that
+ *  failed into a SUBSET — the premise `errorClass.isResumableKind` used to rest
+ *  on when it refused to resume a context overflow at all.
+ *
+ *  With `afterOverflow` false it runs at the live budget, which is a deliberate
+ *  no-op for every ordinary transcript: a rate limit or a dropped socket left a
+ *  transcript that fit perfectly well, and evicting tool results out of it would
+ *  degrade a resume that was going to succeed. Only a resume that follows an
+ *  actual overflow pays for the tighter budget. */
+export function compactForResume(
+  messages: ModelMessage[],
+  afterOverflow: boolean,
+): ModelMessage[] {
+  return compactTranscript(
+    messages,
+    afterOverflow
+      ? {
+          toolResultTokenBudget: OVERFLOW_REPLAY_TOKEN_BUDGET,
+          minEvictableChars: REPLAY_MIN_EVICTABLE_CHARS,
+        }
+      : {},
+  ).messages;
+}
+
 /** Leading marker on every stub. Load-bearing twice over: it is how a re-run
  *  recognises its own output (a stub of a stub would hash differently and break
  *  idempotence), and it is what makes the eviction legible in a transcript dump. */

@@ -142,9 +142,10 @@ export function classifyProviderError(message: string): ErrorClass | null {
         title: "Too much input for this model's context window",
         icon: AiBrain01Icon,
         tone: "config",
-        why: "The combined input exceeds the selected model's context window, so the provider rejected the request before generating anything. Different models have different limits.",
+        why: "The request outgrew the selected model's context window, so the provider rejected it before generating anything. Everything the run had already read is checkpointed and still recoverable.",
         steps: [
-          "Trim the pasted text, or split a very large job into separate runs.",
+          "Resume — the work already done isn't re-run, and the transcript is compacted first so the request comes back smaller than the one that didn't fit.",
+          "If it overflows again, trim the pasted text or split a very large job into separate runs.",
           "Remove large attachments — paste only the relevant excerpts.",
           "Or switch to a larger-context model for this run (e.g. one with a 1M-token window).",
         ],

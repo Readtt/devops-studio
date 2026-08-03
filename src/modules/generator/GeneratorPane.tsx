@@ -97,7 +97,10 @@ import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { getModel, RESUME_TOPUP_STEPS } from "@/modules/ai/config";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
-import { canOfferResume as canOfferResumeShared } from "@/modules/ai/lib/errorClass";
+import {
+  canOfferResume as canOfferResumeShared,
+  resumeUnavailableReason,
+} from "@/modules/ai/lib/errorClass";
 import type { CheckpointOutcome } from "@/modules/ai/lib/checkpointApi";
 import {
   classifyProviderError,
@@ -883,8 +886,10 @@ function InputPhase() {
     // full pane width.
     <div className="grid grid-cols-1 gap-4 @3xl:grid-cols-[1fr_280px]">
       <section className="flex min-w-0 flex-col gap-3">
-        {resumable &&
-        canOfferResume(resumable, resumable.outcome?.message ?? "") ? (
+        {/* The card renders for ANY checkpoint, resumable or not: Discard lives
+            inside it, so gating the whole card on canOfferResume left an
+            unresumable row both unreachable and undeletable. */}
+        {resumable ? (
           <ResumeCard
             title={
               resumable.outcome?.kind === "cancelled"
@@ -901,7 +906,16 @@ function InputPhase() {
             ]
               .filter(Boolean)
               .join(" · ")}
-            onResume={() => void resumeAnalyze()}
+            onResume={
+              canOfferResume(resumable, resumable.outcome?.message ?? "")
+                ? () => void resumeAnalyze()
+                : undefined
+            }
+            unresumableReason={
+              canOfferResume(resumable, resumable.outcome?.message ?? "")
+                ? undefined
+                : resumeUnavailableReason(resumable.outcome)
+            }
             onDiscard={discardCheckpoint}
           />
         ) : null}
@@ -3059,6 +3073,7 @@ function ErrorPhase() {
   const startNew = useGenerationSession((s) => s.startNew);
   const resumable = useGenerationSession((s) => s.resumable);
   const resumeAnalyze = useGenerationSession((s) => s.resumeAnalyze);
+  const discardCheckpoint = useGenerationSession((s) => s.discardCheckpoint);
   // Is there anything in the form worth protecting from an accidental wipe?
   // Drives whether "Start over" confirms first — the user lost their spec to
   // an unguarded click here once, so a non-empty form gets a confirm step.
@@ -3107,6 +3122,20 @@ function ErrorPhase() {
               <TooltipContent side="top" className="max-w-[240px] text-[11px]">
                 Continues where it stopped with the original model — finished
                 steps aren't re-run.
+              </TooltipContent>
+            </Tooltip>
+          ) : resumable ? (
+            /* Unresumable, but the checkpoint is still on disk — and Discard
+               used to be reachable only through the Resume affordance. */
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button size="sm" variant="outline" onClick={discardCheckpoint}>
+                  Discard saved progress
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-[260px] text-[11px]">
+                {resumeUnavailableReason(resumable.outcome)} This deletes the
+                stored transcript for that attempt.
               </TooltipContent>
             </Tooltip>
           ) : null}

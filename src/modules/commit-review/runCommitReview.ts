@@ -16,6 +16,8 @@ import {
 // The nudge text only — the engine never reads or writes a checkpoint itself;
 // it reports through callbacks and the store owns persistence.
 import { FINISH_NOW_NUDGE } from "@/modules/ai/lib/checkpointApi";
+import { compactForResume } from "@/modules/ai/lib/compactTranscript";
+import { focusPathsFromCandidates, focusPatchOnFiles } from "./verifyFocus";
 import type { ModelMessage } from "ai";
 import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
@@ -51,6 +53,10 @@ export type CommitReviewResume = {
   resumeMessages: ModelMessage[] | null;
   /** Append FINISH_NOW_NUDGE and run the resumed stage with RESUME_TOPUP_STEPS. */
   stepCapNudge?: boolean;
+  /** The previous attempt died because the request didn't fit. Replays the
+   *  transcript at a much tighter eviction budget so the resumed request is a
+   *  SUBSET of the one that overflowed rather than a superset of it. */
+  afterOverflow?: boolean;
 };
 
 export type RunCommitReviewInput = {
@@ -111,6 +117,15 @@ export function combinedPatchBytes(diffs: CommitDiff[]): number {
   );
 }
 
+/** Stage 1's candidates as renderable findings, flagged unverified. The engine
+ *  degrades to this whenever the verify pass fails; the pane renders the same
+ *  thing when the run never reached a verify pass at all (the user stopped it,
+ *  the app quit, the provider died). One function so "unverified" means the
+ *  same shape and the same order in both places. */
+export function unverifiedFindings(candidates: CandidateFinding[]): Finding[] {
+  return candidates.map((c) => ({ ...c, verified: false })).sort(compareFindings);
+}
+
 export async function runCommitReview(
   input: RunCommitReviewInput,
 ): Promise<RunCommitReviewResult> {
@@ -126,7 +141,11 @@ export async function runCommitReview(
       ? undefined
       : input.resume;
   /** Budget + continuation transcript for `stage`. Only the stage the resume
-   *  targets continues anything; the other one runs from scratch as always. */
+   *  targets continues anything; the other one runs from scratch as always.
+   *
+   *  The transcript is compacted on the way in — a no-op at the live budget for
+   *  anything a healthy run produced, and an aggressive squeeze when the reason
+   *  we're here is that the request didn't fit. */
   const resumeArgs = (
     stage: RunStage,
     surfaceCap: number,
@@ -134,7 +153,9 @@ export async function runCommitReview(
     if (!resume || resume.stage !== stage) {
       return { maxSteps: surfaceCap, resumeMessages: undefined };
     }
-    const prior = resume.resumeMessages ?? undefined;
+    const prior = resume.resumeMessages
+      ? compactForResume(resume.resumeMessages, resume.afterOverflow === true)
+      : undefined;
     if (!resume.stepCapNudge) {
       return { maxSteps: surfaceCap, resumeMessages: prior };
     }
@@ -232,10 +253,7 @@ export async function runCommitReview(
   } catch (e) {
     if ((e as { name?: string } | null)?.name === "AbortError") throw e;
     console.warn("[commit-review] verify pass failed, returning unverified:", e);
-    const findings: Finding[] = candidates
-      .map((c) => ({ ...c, verified: false }))
-      .sort(compareFindings);
-    return { ok: true, findings, durationMs: stage1Ms };
+    return { ok: true, findings: unverifiedFindings(candidates), durationMs: stage1Ms };
   }
 
   const totalMs = stage1Ms + stage2.durationMs;
@@ -243,10 +261,7 @@ export async function runCommitReview(
   // Verify failed to parse → fall back to the unfiltered candidates rather
   // than dropping everything; the confidence filter in the UI still applies.
   if (!stage2.ok) {
-    const findings: Finding[] = candidates
-      .map((c) => ({ ...c, verified: false }))
-      .sort(compareFindings);
-    return { ok: true, findings, durationMs: totalMs };
+    return { ok: true, findings: unverifiedFindings(candidates), durationMs: totalMs };
   }
 
   const verdicts = new Map(stage2.object.verdicts.map((v) => [v.id, v]));
@@ -311,33 +326,62 @@ export function isOldCommit(diff: CommitDiff): boolean {
   );
 }
 
+/** The patch body for one commit plus the label above it. `focusPaths` (the
+ *  verify stage only) narrows it to the files the candidate findings cite — see
+ *  verifyFocus.ts for why that's a deterministic slice rather than a summary
+ *  call, and for the guards that make it a no-op whenever narrowing wouldn't
+ *  help or would leave the verifier blind. */
+function patchBlock(
+  d: CommitDiff,
+  focusPaths: readonly string[] | undefined,
+): { label: string; body: string } {
+  const scope = d.isLocal ? "all uncommitted changes" : "this commit's own change";
+  const focused = focusPaths ? focusPatchOnFiles(d.rawPatch, focusPaths) : null;
+  if (!focused) {
+    return { label: `RAW PATCH (${scope}):`, body: d.rawPatch || "(empty)" };
+  }
+  const n = focused.omitted.length;
+  const where = d.isLocal
+    ? "read_file (they're uncommitted, so the working tree is their content)"
+    : `\`git show ${d.shortSha} -- <path>\` via run_command`;
+  return {
+    label:
+      `RAW PATCH (${scope}) — only the hunks for files the candidate findings cite. ` +
+      `${n} other changed file${n === 1 ? "" : "s"} omitted (${focused.omitted.join(", ")}); ` +
+      `read ${n === 1 ? "it" : "them"} with ${where} if a verdict needs it.`,
+    body: focused.text,
+  };
+}
+
 /** Each commit's metadata + raw patch, as one labelled section per commit. */
-function commitSections(diffs: CommitDiff[]): string {
+function commitSections(
+  diffs: CommitDiff[],
+  focusPaths?: readonly string[],
+): string {
   if (diffs.length === 1) {
     const d = diffs[0];
-    const patchLabel = d.isLocal
-      ? "RAW PATCH (all uncommitted changes):"
-      : "RAW PATCH (this commit's own change):";
+    const { label, body } = patchBlock(d, focusPaths);
     return `${diffHeader(d)}
 
 ---
-${patchLabel}
+${label}
 
 \`\`\`diff
-${d.rawPatch || "(empty)"}
+${body}
 \`\`\``;
   }
   return diffs
-    .map(
-      (d, i) => `### COMMIT ${i + 1} of ${diffs.length}
+    .map((d, i) => {
+      const { label, body } = patchBlock(d, focusPaths);
+      return `### COMMIT ${i + 1} of ${diffs.length}
 ${diffHeader(d)}
 
-RAW PATCH (this commit's own change):
+${label}
 
 \`\`\`diff
-${d.rawPatch || "(empty)"}
-\`\`\``,
-    )
+${body}
+\`\`\``;
+    })
     .join("\n\n---\n\n");
 }
 
@@ -365,16 +409,20 @@ export function buildInvestigatePrompt(input: RunCommitReviewInput): string {
 Investigate ${diffs.length > 1 ? "these commits'" : "this commit's"} change and its blast radius, then return the findings JSON.`;
 }
 
-function buildVerifyPrompt(
+/** Verify's user turn. The candidates ARE the task here, so the diff is scoped
+ *  to the files they cite instead of re-sent whole: the change was already paid
+ *  for once by the investigate pass, and verify re-sends its prompt on every one
+ *  of its agentic steps. */
+export function buildVerifyPrompt(
   input: RunCommitReviewInput,
-  candidates: unknown,
+  candidates: CandidateFinding[],
 ): string {
   const { diffs } = input;
   const contextText = formatContextBlocks(input.contextBlocks);
   const contextSection = contextText
     ? `\n\n---\nDEVELOPER CONTEXT (ticket / requirements):\n${contextText}`
     : "";
-  return `${commitSections(diffs)}${contextSection}
+  return `${commitSections(diffs, focusPathsFromCandidates(candidates))}${contextSection}
 
 ---
 CANDIDATE FINDINGS from the first pass — verify each by trying to refute it, then return verdicts keyed by id:

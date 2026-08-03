@@ -934,6 +934,243 @@ describe("context compaction (tool-result eviction)", () => {
   });
 });
 
+// Summarization is the rung BELOW eviction and the only control in the phase
+// that spends money, so what's under test is mostly restraint: it must not fire
+// while the free mechanism still has something to give, and it must never fire
+// twice.
+describe("context summarization (the last resort)", () => {
+  type Msg = Record<string, unknown>;
+  type Prepared = { messages: Msg[] } | undefined;
+
+  let seq = 0;
+
+  /** A turn whose result is already an eviction stub — nothing left to evict —
+   *  wrapped in enough narration for a summary to be worth a request. */
+  function spentTurn(): Msg[] {
+    const toolCallId = `s${++seq}`;
+    return [
+      {
+        role: "assistant",
+        content: `Reasoning about the auth module in detail. ${"Considered the caller graph. ".repeat(120)}`,
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId,
+            toolName: "read_file",
+            input: { path: `src/f${toolCallId}.ts` },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId,
+            toolName: "read_file",
+            output: {
+              type: "text",
+              value: "[evicted-tool-result #deadbeef] 120000 characters dropped",
+            },
+          },
+        ],
+      },
+    ];
+  }
+
+  /** A turn whose result is fat enough that eviction still has work to do. */
+  function liveTurn(): Msg[] {
+    const toolCallId = `l${++seq}`;
+    return [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId,
+            toolName: "read_file",
+            input: { path: `src/g${toolCallId}.ts` },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId,
+            toolName: "read_file",
+            output: { type: "text", value: "z".repeat(120_000) },
+          },
+        ],
+      },
+    ];
+  }
+
+  function spentTranscript(turns: number): Msg[] {
+    const out: Msg[] = [
+      { role: "system", content: "SYS" },
+      { role: "user", content: "hello" },
+    ];
+    for (let i = 0; i < turns; i++) out.push(...spentTurn());
+    return out;
+  }
+
+  /** Splits the one `generateText` mock between the agentic loop (which passes
+   *  onStepFinish) and the summarizer (which doesn't). */
+  function loopWithSummarizer(
+    steps: FakeStep[],
+    transcripts: Msg[][],
+    summary: string | Error = "HANDOVER NOTE",
+  ) {
+    const prepared: Prepared[] = [];
+    const summarizerCalls: Record<string, unknown>[] = [];
+    generateText.mockImplementation(
+      async (opts: {
+        prepareStep?: (i: {
+          messages: Msg[];
+          stepNumber: number;
+        }) => Prepared | Promise<Prepared>;
+        onStepFinish?: (s: FakeStep) => void;
+      }) => {
+        if (!opts.onStepFinish) {
+          summarizerCalls.push(opts as Record<string, unknown>);
+          if (summary instanceof Error) throw summary;
+          return { text: summary };
+        }
+        for (let i = 0; i < steps.length; i++) {
+          prepared.push(
+            await opts.prepareStep?.({ messages: transcripts[i], stepNumber: i }),
+          );
+          opts.onStepFinish?.(steps[i]);
+        }
+        return { text: "done" };
+      },
+    );
+    return { prepared, summarizerCalls };
+  }
+
+  const haiku = {
+    ...baseInput,
+    modelId: "claude-haiku-4-5" as never,
+    keys: { anthropic: "k", openai: "k" } as never,
+    tools: { read_file: {} } as never,
+  };
+  const CALM = { inputTokens: 40_000 };
+  const TIGHT = { inputTokens: 190_000 };
+  const summaryCount = (messages: Msg[]) =>
+    JSON.stringify(messages).split("[context-summary]").length - 1;
+
+  it("does not fire while eviction still has something to take", async () => {
+    // The free mechanism first, always. Two fat results blow the tool-result
+    // budget, so eviction has work — no model call may be made here.
+    const t: Msg[] = [
+      { role: "system", content: "SYS" },
+      { role: "user", content: "hello" },
+      ...liveTurn(),
+      ...liveTurn(),
+      ...liveTurn(),
+    ];
+    const { prepared, summarizerCalls } = loopWithSummarizer(
+      [step("s1", "tool-calls", TIGHT), step("s2", "stop", TIGHT)],
+      [t, t],
+    );
+    await runTask(haiku);
+    expect(summarizerCalls).toHaveLength(0);
+    expect(summaryCount(prepared[1]!.messages)).toBe(0);
+  });
+
+  it("does not fire while the run is nowhere near the window", async () => {
+    const t = spentTranscript(6);
+    const { summarizerCalls } = loopWithSummarizer(
+      [step("s1", "tool-calls", CALM), step("s2", "stop", CALM)],
+      [t, t],
+    );
+    await runTask(haiku);
+    expect(summarizerCalls).toHaveLength(0);
+  });
+
+  it("fires once when eviction is armed and freed nothing, then reuses the result", async () => {
+    const t = spentTranscript(6);
+    const { prepared, summarizerCalls } = loopWithSummarizer(
+      [
+        step("s1", "tool-calls", TIGHT),
+        step("s2", "tool-calls", TIGHT),
+        step("s3", "stop", TIGHT),
+      ],
+      [t, t, t],
+    );
+    await runTask(haiku);
+
+    // Exactly one extra request, ever.
+    expect(summarizerCalls).toHaveLength(1);
+    expect(String(summarizerCalls[0].system)).toContain("compacting the middle");
+    expect(summarizerCalls[0].maxOutputTokens).toBe(3_000);
+    // …on a model chosen for price, not the run's model.
+    expect(summarizerCalls[0].maxRetries).toBe(1);
+
+    // Step 0 had no reading yet, so it isn't armed. Steps 1 and 2 carry the
+    // summary, and byte-identically — that is what keeps the prompt cache.
+    expect(summaryCount(prepared[0]?.messages ?? [])).toBe(0);
+    expect(summaryCount(prepared[1]!.messages)).toBe(1);
+    expect(JSON.stringify(prepared[2]!.messages)).toBe(
+      JSON.stringify(prepared[1]!.messages),
+    );
+    expect(JSON.stringify(prepared[1]!.messages)).toContain("HANDOVER NOTE");
+    // The spec is never summarized away.
+    expect(prepared[1]!.messages[1]).toEqual({ role: "user", content: "hello" });
+    expect(prepared[1]!.messages.length).toBeLessThan(t.length);
+  });
+
+  it("summarizeContext: false turns it off (the bisect switch)", async () => {
+    const t = spentTranscript(6);
+    const { prepared, summarizerCalls } = loopWithSummarizer(
+      [step("s1", "tool-calls", TIGHT), step("s2", "stop", TIGHT)],
+      [t, t],
+    );
+    await runTask({ ...haiku, summarizeContext: false });
+    expect(summarizerCalls).toHaveLength(0);
+    expect(summaryCount(prepared[1]!.messages)).toBe(0);
+  });
+
+  it("a summarizer that throws degrades to no summary, never to a failed run", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const t = spentTranscript(6);
+    const { prepared, summarizerCalls } = loopWithSummarizer(
+      [step("s1", "tool-calls", TIGHT), step("s2", "stop", TIGHT)],
+      [t, t],
+      new Error("529 overloaded"),
+    );
+    const r = await runTask(haiku);
+    expect(r.ok).toBe(true);
+    expect(summarizerCalls).toHaveLength(1);
+    expect(summaryCount(prepared[1]!.messages)).toBe(0);
+    warn.mockRestore();
+  });
+
+  it("does not re-summarize a transcript that already carries one", async () => {
+    const t: Msg[] = [
+      { role: "system", content: "SYS" },
+      {
+        role: "user",
+        content: "[context-summary] earlier work, summarized. ".repeat(50),
+      },
+      ...spentTurn(),
+      ...spentTurn(),
+      ...spentTurn(),
+    ];
+    const { summarizerCalls } = loopWithSummarizer(
+      [step("s1", "tool-calls", TIGHT), step("s2", "stop", TIGHT)],
+      [t, t],
+    );
+    await runTask(haiku);
+    expect(summarizerCalls).toHaveLength(0);
+  });
+});
+
 describe("resume", () => {
   const resumeMessages = [
     { role: "assistant", content: "prior turn" },

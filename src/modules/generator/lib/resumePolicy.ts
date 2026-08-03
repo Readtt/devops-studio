@@ -9,6 +9,8 @@ import {
   type CheckpointUsage,
   type TranscriptCheckpoint,
 } from "@/modules/ai/lib/checkpointApi";
+import { compactForResume } from "@/modules/ai/lib/compactTranscript";
+import { matchErrorKind } from "@/modules/ai/lib/errorClass";
 import type { ModelMessage } from "ai";
 
 const USAGE_FIELDS = [
@@ -49,12 +51,32 @@ export type ResumeBudget = {
   resumeMessages: ModelMessage[] | undefined;
 };
 
+/** Whether the failure being resumed from was the request not fitting. Prefers
+ *  the recorded `errorKind` and falls back to re-bucketing the message, matching
+ *  what `canOfferResume` does with the same two fields. */
+export function diedOfContextOverflow(
+  outcome: CheckpointOutcome | null | undefined,
+): boolean {
+  if (!outcome || outcome.kind !== "error") return false;
+  return (
+    (outcome.errorKind ?? matchErrorKind(outcome.message ?? "")) ===
+    "context-overflow"
+  );
+}
+
 /** How much budget a resume gets, and what transcript it continues from.
  *
  *  A run that died mid-loop (error / cancel) gets its full budget back — it
  *  never got to finish investigating. A run that BURNED its budget gets only a
  *  top-up plus an explicit "stop reading, answer now" turn, so a model stuck in
  *  a tool loop converges instead of spending another full budget the same way.
+ *
+ *  The transcript is compacted on the way out. At the live budget that is a
+ *  deliberate no-op for anything an ordinary run produced — a rate limit or a
+ *  dropped socket left a transcript that fit, and evicting out of it would
+ *  degrade a resume that was going to work. A resume that follows an actual
+ *  OVERFLOW runs at a much tighter budget, which is what makes the resumed
+ *  request a subset of the one that didn't fit rather than a superset of it.
  *
  *  Structurally typed rather than tied to one payload: analyze and review-phase
  *  follow-ups run the same engine under the same cap, so they must not drift on
@@ -63,7 +85,10 @@ export function resumeBudget(payload: {
   lastOutcome: CheckpointOutcome | null;
   transcript: TranscriptCheckpoint | null;
 }): ResumeBudget {
-  const prior = payload.transcript?.messages;
+  const stored = payload.transcript?.messages;
+  const prior = stored
+    ? compactForResume(stored, diedOfContextOverflow(payload.lastOutcome))
+    : undefined;
   if (payload.lastOutcome?.kind === "step_cap") {
     return {
       cap: RESUME_TOPUP_STEPS,

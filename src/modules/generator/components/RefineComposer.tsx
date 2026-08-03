@@ -41,7 +41,10 @@ import {
 import { AnalyzeActivityLog } from "./AnalyzeActivityLog";
 import { InlineNotice } from "./InlineNotice";
 import { relativeTime, ResumeCard } from "@/modules/ai/components/ResumeCard";
-import { canOfferResume } from "@/modules/ai/lib/errorClass";
+import {
+  canOfferResume,
+  resumeUnavailableReason,
+} from "@/modules/ai/lib/errorClass";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { getModel } from "@/modules/ai/config";
@@ -605,12 +608,33 @@ export function RefineComposer({ isRefining }: Props) {
                   </TooltipContent>
                 </Tooltip>
               </>
+            ) : refineResumable ? (
+              /* Not continuable, but the round still wrote a checkpoint —
+                 and discard used to hang off the resume affordance only. */
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    onClick={discardRefineCheckpoint}
+                  >
+                    discard
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="top"
+                  className="max-w-[260px] text-[11px]"
+                >
+                  {resumeUnavailableReason(refineResumable.outcome)} This
+                  deletes the saved progress for that attempt.
+                </TooltipContent>
+              </Tooltip>
             ) : undefined
           }
         >
           {refineError}
         </InlineNotice>
-      ) : offerRefineResume && refineResumable ? (
+      ) : refineResumable ? (
         <ResumeCard
           className="mb-2"
           title={
@@ -629,7 +653,12 @@ export function RefineComposer({ isRefining }: Props) {
           ]
             .filter(Boolean)
             .join(" · ")}
-          onResume={() => void resumeRefine()}
+          onResume={offerRefineResume ? () => void resumeRefine() : undefined}
+          unresumableReason={
+            offerRefineResume
+              ? undefined
+              : resumeUnavailableReason(refineResumable.outcome)
+          }
           onDiscard={discardRefineCheckpoint}
         />
       ) : null}

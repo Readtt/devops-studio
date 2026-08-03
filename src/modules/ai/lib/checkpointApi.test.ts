@@ -456,6 +456,119 @@ describe("createCheckpointWriter", () => {
     warn.mockRestore();
   });
 
+  // The reported data loss, at its source. A 1M-token context is roughly 4 MB
+  // of JSON, so the run that has the most to lose is exactly the one this cap
+  // fires on — and it used to go straight from the full transcript to null,
+  // silently, inside the writer, before any UI got to ask whether the run was
+  // resumable. The ladder now has a middle rung.
+  describe("the 4 MB cliff", () => {
+    /** A transcript whose bulk is evictable tool-result content, the way a real
+     *  long agentic run's is. Sized well past MAX_PAYLOAD_BYTES. */
+    function fatTranscript(bytes: number): ModelMessage[] {
+      const per = 200_000;
+      const turns = Math.ceil(bytes / per);
+      const messages: ModelMessage[] = [
+        { role: "assistant", content: "starting the investigation" },
+      ];
+      for (let i = 0; i < turns; i++) {
+        messages.push({
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: `c${i}`,
+              toolName: "read_file",
+              input: { path: `src/f${i}.ts` },
+            },
+          ],
+        } as ModelMessage);
+        messages.push({
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: `c${i}`,
+              toolName: "read_file",
+              output: { type: "text", value: `${i}`.repeat(per) },
+            },
+          ],
+        } as ModelMessage);
+      }
+      return messages;
+    }
+
+    it("keeps a >4 MB transcript RESUMABLE by compacting it instead of nulling it", async () => {
+      const messages = fatTranscript(MAX_PAYLOAD_BYTES * 2);
+      const payload = makeGeneratorPayload({
+        transcript: { messages, stepsUsed: 24, usage: { totalTokens: 900_000 } },
+      });
+      expect(JSON.stringify(payload).length).toBeGreaterThan(MAX_PAYLOAD_BYTES);
+
+      const w = writer();
+      await w.flush(payload);
+
+      const saved = savedPayloads();
+      expect(saved).toHaveLength(1);
+      const transcript = saved[0].transcript as {
+        messages: ModelMessage[];
+        stepsUsed: number;
+      } | null;
+
+      // The whole point: the resume point survived.
+      expect(transcript).not.toBeNull();
+      expect(transcript!.messages.length).toBe(messages.length);
+      expect(transcript!.stepsUsed).toBe(24);
+      // …and it fits.
+      expect(JSON.stringify(saved[0]).length).toBeLessThanOrEqual(
+        MAX_PAYLOAD_BYTES,
+      );
+      // …because the tool-result content was stubbed, not because messages
+      // were dropped. Every stub names the call that would fetch it back.
+      const json = JSON.stringify(transcript);
+      expect(json).toContain("[evicted-tool-result #");
+      expect(json).toContain("call `read_file` again");
+    });
+
+    it("still falls to transcript: null when compacting can't get it under", async () => {
+      // Nothing evictable in the transcript and the bulk is elsewhere — the
+      // middle rung has nothing to give, so the bottom rung still exists.
+      const payload = makeGeneratorPayload({
+        customInstructions: "x".repeat(MAX_PAYLOAD_BYTES + 1024),
+        transcript: {
+          messages: [{ role: "assistant", content: "short" }],
+          stepsUsed: 3,
+          usage: {},
+        },
+      });
+
+      const w = writer();
+      await w.flush(payload);
+
+      expect(savedPayloads()[0].transcript).toBeNull();
+    });
+
+    it("leaves a payload under the cap completely untouched", async () => {
+      const payload = makeGeneratorPayload({
+        transcript: {
+          messages: [{ role: "assistant", content: "y".repeat(50_000) }],
+          stepsUsed: 2,
+          usage: {},
+        },
+        activity: Array.from(
+          { length: 150 },
+          (_, i): ActivityEntry => ({ id: `a${i}`, ts: i, kind: "output" }),
+        ),
+      });
+
+      const w = writer();
+      await w.flush(payload);
+
+      const saved = savedPayloads()[0];
+      expect(saved.transcript).toEqual(payload.transcript);
+      expect((saved.activity as ActivityEntry[]).length).toBe(150);
+    });
+  });
+
   it("degrades an oversize payload to transcript: null + last-100 activity before sending", async () => {
     const bigActivity: ActivityEntry[] = Array.from(
       { length: 150 },
