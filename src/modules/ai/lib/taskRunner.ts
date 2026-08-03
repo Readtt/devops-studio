@@ -42,6 +42,10 @@ import {
 } from "./agent";
 import type { ProviderKeys } from "./keyring";
 import { extractJsonBlock } from "./extractJson";
+import {
+  measureRequestContext,
+  type RequestContextSignal,
+} from "./contextEstimate";
 import { buildUserTurn } from "./visionMessage";
 import {
   clampOutputFull,
@@ -76,6 +80,9 @@ export type TaskCheckpoint = {
   usage: TaskUsage;
   /** finishReason of the most recent completed step. */
   finishReason?: FinishReason;
+  /** How full the window was on the most recent step, from the provider's own
+   *  count. Absent when no step reported an input count. */
+  context?: RequestContextSignal;
 };
 
 export type TaskInput<S extends z.ZodTypeAny | undefined = undefined> = {
@@ -110,6 +117,9 @@ export type TaskInput<S extends z.ZodTypeAny | undefined = undefined> = {
    *  Only fires on the tool-bearing generateText/streamText paths; the
    *  tool-less generateObject path ignores it (single-shot, no steps). */
   onCheckpoint?: (cp: TaskCheckpoint) => void;
+  /** Fired after each step whose usage carried an input count, with how full
+   *  the window was for THAT request. */
+  onContextSignal?: (signal: RequestContextSignal) => void;
   /** Continuation transcript from a previous call. When set, the request is
    *  [rebuilt system + user turn, ...resumeMessages]. The user turn is rebuilt
    *  fresh from prompt/attachments (images stay Uint8Array — they never come
@@ -130,6 +140,8 @@ type TaskScalars = {
   stepsUsed: number;
   finishReason?: FinishReason;
   usage?: TaskUsage;
+  /** Window pressure on the last measured step. See {@link RequestContextSignal}. */
+  context?: RequestContextSignal;
 };
 
 export type TaskResult<S extends z.ZodTypeAny | undefined = undefined> =
@@ -355,7 +367,7 @@ function makeStepAccumulator(
   start: number,
   input: Pick<
     TaskInput<z.ZodTypeAny | undefined>,
-    "onToolEvent" | "onCheckpoint" | "resumeMessages"
+    "modelId" | "onToolEvent" | "onCheckpoint" | "onContextSignal" | "resumeMessages"
   >,
 ) {
   const messages: ModelMessage[] = [];
@@ -363,6 +375,7 @@ function makeStepAccumulator(
   const usage: TaskUsage = {};
   let stepsUsed = 0;
   let finishReason: FinishReason | undefined;
+  let context: RequestContextSignal | undefined;
 
   const snapshotUsage = (): TaskUsage => ({ ...usage });
 
@@ -375,6 +388,13 @@ function makeStepAccumulator(
     },
     get usage() {
       return snapshotUsage();
+    },
+    /** Window pressure on the last step that reported an input count. Lags the
+     *  live request by one step — it describes the prompt the provider has
+     *  already answered, and the next one is bigger by whatever this step
+     *  added. Phase 3's eviction decision has to allow for that. */
+    get context() {
+      return context;
     },
     /** Each completed step's text, in order — what streamTask needs to tell
      *  the FINAL answer apart from the all-steps textStream concatenation. */
@@ -396,6 +416,17 @@ function makeStepAccumulator(
           if (v !== undefined) usage[k] = (usage[k] ?? 0) + v;
         }
       }
+      // Measured off THIS step's usage, never the running sum: `usage` counts
+      // the re-sent transcript once per step (that's what was billed), which
+      // says nothing about how full the window is.
+      const signal = measureRequestContext({
+        modelId: input.modelId,
+        usage: stepUsage,
+      });
+      if (signal) {
+        context = signal;
+        input.onContextSignal?.(signal);
+      }
       // Snapshot, don't alias: a caller persisting the checkpoint must not see
       // it mutate underneath them when the next step lands.
       input.onCheckpoint?.({
@@ -403,6 +434,7 @@ function makeStepAccumulator(
         stepsUsed,
         usage: snapshotUsage(),
         finishReason,
+        ...(context ? { context } : {}),
       });
     },
   };
@@ -628,6 +660,8 @@ export async function runTask<
           ...(input.seed !== undefined ? { seed: input.seed } : {}),
           abortSignal: input.signal,
         });
+        const usage = toTaskUsage(r.usage);
+        const context = measureRequestContext({ modelId: input.modelId, usage });
         return {
           ok: true,
           text: JSON.stringify(r.object),
@@ -635,7 +669,8 @@ export async function runTask<
           durationMs: Date.now() - start,
           // Single-shot: no agentic loop, so nothing to resume from.
           stepsUsed: 0,
-          usage: toTaskUsage(r.usage),
+          usage,
+          ...(context ? { context } : {}),
         };
       } catch (e) {
         if (input.signal?.aborted) throw e;
@@ -695,6 +730,7 @@ export async function runTask<
     stepsUsed: steps.stepsUsed,
     finishReason: steps.finishReason,
     usage: steps.usage,
+    ...(steps.context ? { context: steps.context } : {}),
   };
   const text = r.text ?? "";
   if (input.schema) {
@@ -819,6 +855,7 @@ export async function streamTask<
     stepsUsed: steps.stepsUsed,
     finishReason: steps.finishReason,
     usage: steps.usage,
+    ...(steps.context ? { context: steps.context } : {}),
   };
 
   // `acc` is EVERY step's text concatenated (the SDK's textStream spans the

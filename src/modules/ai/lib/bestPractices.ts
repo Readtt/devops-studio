@@ -5,10 +5,14 @@
 //
 // Never throws: an unreadable / offline / oversized file is skipped and
 // recorded in `warnings`, so a missing network share can't break a generation.
+// Those warnings are also published to the shared store every AI surface shows
+// (ai/store/bestPracticeWarnings) — silently ignoring half a standards file is
+// invisible from the run's output, so it has to be visible from the composer.
 
 import { invoke } from "@tauri-apps/api/core";
 import { clipPromptText, type ContextBlock } from "./contextBlocks";
 import { newAttachmentId, type Attachment } from "@/components/chat/attachments";
+import { useBestPracticeWarnings } from "@/modules/ai/store/bestPracticeWarnings";
 import type { BestPracticeFile } from "@/modules/settings/store";
 
 /** Mirror of the Rust `fs_read_file` ReadResult (tag = "kind"). */
@@ -54,8 +58,22 @@ export type BestPracticeLoadResult = {
 
 /** Read the enabled best-practices files live and fold them into one context
  *  block. Images are lifted into multimodal attachments only when the active
- *  model is `visionCapable`; otherwise they degrade to a text reference. */
+ *  model is `visionCapable`; otherwise they degrade to a text reference.
+ *
+ *  Whatever went wrong is published to {@link useBestPracticeWarnings} on the
+ *  way out, so every AI surface shows it without each of the six call sites
+ *  having to remember to. `warnings` stays on the result for callers that want
+ *  it inline. */
 export async function loadBestPracticeBlocks(
+  files: BestPracticeFile[],
+  opts?: { visionCapable?: boolean },
+): Promise<BestPracticeLoadResult> {
+  const result = await collectBestPracticeBlocks(files, opts);
+  useBestPracticeWarnings.getState().report(result.warnings);
+  return result;
+}
+
+async function collectBestPracticeBlocks(
   files: BestPracticeFile[],
   opts?: { visionCapable?: boolean },
 ): Promise<BestPracticeLoadResult> {

@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   CHARS_PER_TOKEN,
+  COMPACTION_BUFFER_TOKENS,
   DEFAULT_OUTPUT_RESERVE,
-  QUALITY_BUDGET_FRONTIER,
+  QUALITY_BUDGET_CEILING,
+  QUALITY_BUDGET_FLOOR,
+  QUALITY_BUDGET_FRACTION,
   QUALITY_SEVERE_MULTIPLE,
   TOKENS_PER_IMAGE,
   computeContextUsage,
@@ -10,6 +13,9 @@ import {
   estimateTokensFromBytes,
   formatCostUsd,
   formatTokens,
+  measureRequestContext,
+  qualityBudgetFor,
+  showsContextAdvisory,
 } from "./contextEstimate";
 
 describe("estimateTokens", () => {
@@ -45,24 +51,25 @@ describe("computeContextUsage", () => {
     });
     expect(usage.windowTokens).toBe(1_000_000);
     expect(usage.usedTokens).toBe(2_000);
-    expect(usage.qualityBudget).toBe(QUALITY_BUDGET_FRONTIER);
+    expect(usage.qualityBudget).toBe(QUALITY_BUDGET_CEILING);
     expect(usage.tier).toBe("comfortable");
     expect(usage.mayNotFit).toBe(false);
     expect(usage.outputReserve).toBe(DEFAULT_OUTPUT_RESERVE);
   });
 
   it("turns amber the moment the payload crosses the quality budget, not the window", () => {
-    // A frontier 1M model thins at ~50k working tokens — only ~2% of the window,
-    // which is the whole point: colour tracks quality, not window occupancy.
+    // Colour tracks quality, not window occupancy — but the budget it tracks
+    // scales with the window, so a 1M model's green zone is far past a 128k
+    // model's rather than pinned to the same flat number.
     const green = computeContextUsage({
       modelId: "claude-sonnet-5",
-      segments: [{ label: "spec", tokens: QUALITY_BUDGET_FRONTIER - 5_000 }],
+      segments: [{ label: "spec", tokens: QUALITY_BUDGET_CEILING - 5_000 }],
     });
     expect(green.tier).toBe("comfortable");
 
     const amber = computeContextUsage({
       modelId: "claude-sonnet-5",
-      segments: [{ label: "spec", tokens: QUALITY_BUDGET_FRONTIER + 5_000 }],
+      segments: [{ label: "spec", tokens: QUALITY_BUDGET_CEILING + 5_000 }],
     });
     expect(amber.tier).toBe("heavy");
     expect(amber.mayNotFit).toBe(false); // nowhere near physically full
@@ -74,7 +81,7 @@ describe("computeContextUsage", () => {
       segments: [
         {
           label: "spec",
-          tokens: QUALITY_BUDGET_FRONTIER * QUALITY_SEVERE_MULTIPLE + 10_000,
+          tokens: QUALITY_BUDGET_CEILING * QUALITY_SEVERE_MULTIPLE + 10_000,
         },
       ],
     });
@@ -137,6 +144,150 @@ describe("computeContextUsage", () => {
       segments: [{ label: "spec", tokens: 10_000 }],
     });
     expect(local.estCostUsd).toBeNull();
+  });
+});
+
+// The quality budget used to be a flat 50,000 for any window >= 400k, so on a
+// 1M-window model the amber advisory fired at 5% window occupancy — on work
+// that was in no trouble at all — and, worded as a limit warning, read as
+// "you can't send this". These pin the recalibration.
+describe("quality budget · window-aware", () => {
+  it("does NOT fire the advisory for a payload that is small for a 1M window", () => {
+    // 60k tokens: over the old flat 50,000 ceiling (amber), comfortably inside
+    // a 1M model's green zone.
+    const usage = computeContextUsage({
+      modelId: "claude-sonnet-5",
+      segments: [{ label: "spec", tokens: 60_000 }],
+    });
+    expect(usage.tier).toBe("comfortable");
+    expect(showsContextAdvisory(usage, true)).toBe(false);
+  });
+
+  it("still fires when the payload is genuinely heavy for that same model", () => {
+    const usage = computeContextUsage({
+      modelId: "claude-sonnet-5",
+      segments: [{ label: "spec", tokens: 200_000 }],
+    });
+    expect(usage.tier).toBe("heavy");
+    expect(showsContextAdvisory(usage, true)).toBe(true);
+    // Advisory, not a limit warning: it still physically fits, so the
+    // interrupting confirm stays shut.
+    expect(usage.mayNotFit).toBe(false);
+  });
+
+  it("fires that same payload on a small-window model, where it IS heavy", () => {
+    const usage = computeContextUsage({
+      modelId: "deepseek-reasoner", // 128k
+      segments: [{ label: "spec", tokens: 60_000 }],
+    });
+    expect(showsContextAdvisory(usage, true)).toBe(true);
+  });
+
+  it("scales with the window between the floor and the ceiling", () => {
+    expect(qualityBudgetFor(128_000)).toBe(128_000 * QUALITY_BUDGET_FRACTION);
+    expect(qualityBudgetFor(200_000)).toBe(200_000 * QUALITY_BUDGET_FRACTION);
+    // Ceiling: past here the reasoning regime binds, not the window, so a 2M
+    // model gets no more green than a 1M one.
+    expect(qualityBudgetFor(1_000_000)).toBe(QUALITY_BUDGET_CEILING);
+    expect(qualityBudgetFor(2_000_000)).toBe(QUALITY_BUDGET_CEILING);
+    // Floor: a tiny local window still gets a workable green zone.
+    expect(qualityBudgetFor(8_000)).toBe(QUALITY_BUDGET_FLOOR);
+    expect(qualityBudgetFor(0)).toBe(QUALITY_BUDGET_FLOOR);
+  });
+
+  it("has no cliff — a hair more window never means a lot more budget", () => {
+    // The step ladder handed 399,999 → 30,000 and 400,000 → 50,000, so an
+    // unmapped model id (which falls back to a 128k window) landed on a
+    // different rung than the model the user actually picked.
+    for (const w of [63_999, 64_000, 127_999, 128_000, 399_999, 400_000]) {
+      expect(qualityBudgetFor(w + 1) - qualityBudgetFor(w)).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("respects the guard preference — off means no advisory at any tier", () => {
+    const usage = computeContextUsage({
+      modelId: "claude-sonnet-5",
+      segments: [{ label: "spec", tokens: 900_000 }],
+    });
+    expect(usage.tier).toBe("overflow");
+    expect(showsContextAdvisory(usage, false)).toBe(false);
+  });
+});
+
+// Everything above estimates what we're about to send. This is the real thing:
+// the provider's own count for a request it already answered.
+describe("measureRequestContext", () => {
+  it("returns null when the provider reported no input count", () => {
+    expect(
+      measureRequestContext({ modelId: "claude-sonnet-5", usage: undefined }),
+    ).toBeNull();
+    expect(
+      measureRequestContext({ modelId: "claude-sonnet-5", usage: {} }),
+    ).toBeNull();
+    expect(
+      measureRequestContext({
+        modelId: "claude-sonnet-5",
+        usage: { inputTokens: 0 },
+      }),
+    ).toBeNull();
+  });
+
+  it("measures the prompt against the window less the output reserve", () => {
+    const s = measureRequestContext({
+      modelId: "claude-haiku-4-5", // 200k
+      usage: { inputTokens: 50_000 },
+    })!;
+    expect(s.windowTokens).toBe(200_000);
+    expect(s.usableBudget).toBe(200_000 - DEFAULT_OUTPUT_RESERVE);
+    expect(s.promptTokens).toBe(50_000);
+    expect(s.headroomTokens).toBe(200_000 - DEFAULT_OUTPUT_RESERVE - 50_000);
+    expect(s.ratio).toBeCloseTo(50_000 / (200_000 - DEFAULT_OUTPUT_RESERVE));
+    expect(s.shouldCompact).toBe(false);
+  });
+
+  it("flags shouldCompact only inside the buffer (the Phase 3 seam)", () => {
+    const usable = 200_000 - DEFAULT_OUTPUT_RESERVE;
+    const outside = measureRequestContext({
+      modelId: "claude-haiku-4-5",
+      usage: { inputTokens: usable - COMPACTION_BUFFER_TOKENS - 1 },
+    })!;
+    expect(outside.shouldCompact).toBe(false);
+
+    const inside = measureRequestContext({
+      modelId: "claude-haiku-4-5",
+      usage: { inputTokens: usable - COMPACTION_BUFFER_TOKENS },
+    })!;
+    expect(inside.shouldCompact).toBe(true);
+  });
+
+  // The AI SDK's `usage.inputTokens` is `inputTokens.total` — noCache +
+  // cacheRead + cacheWrite. So a cached token is already IN the prompt size
+  // (cheaper, not smaller), and the hit ratio divides by it rather than adding
+  // the cache reads on a second time.
+  it("reads the cache hit ratio out of a prompt size that already includes it", () => {
+    const s = measureRequestContext({
+      modelId: "claude-sonnet-5",
+      usage: { inputTokens: 100_000, cacheReadTokens: 90_000 },
+    })!;
+    expect(s.promptTokens).toBe(100_000);
+    expect(s.cacheHitRatio).toBeCloseTo(0.9);
+  });
+
+  it("leaves the hit ratio null when the provider reported no cache detail", () => {
+    const s = measureRequestContext({
+      modelId: "claude-sonnet-5",
+      usage: { inputTokens: 100_000 },
+    })!;
+    expect(s.cacheHitRatio).toBeNull();
+  });
+
+  it("honours the openai-compatible window override", () => {
+    const s = measureRequestContext({
+      modelId: "openai-compatible-custom",
+      usage: { inputTokens: 10_000 },
+      compatOverride: 32_000,
+    })!;
+    expect(s.windowTokens).toBe(32_000);
   });
 });
 

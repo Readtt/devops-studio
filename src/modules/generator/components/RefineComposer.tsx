@@ -45,6 +45,7 @@ import { canOfferResume } from "@/modules/ai/lib/errorClass";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { getModel } from "@/modules/ai/config";
+import { BestPracticeNotice } from "@/modules/ai/components/BestPracticeNotice";
 import {
   ContextGuardNotice,
   ContextMeter,
@@ -730,6 +731,8 @@ export function RefineComposer({ isRefining }: Props) {
           <WorkItemChips items={bugCtx.selected} onRemove={bugCtx.remove} />
         </div>
       ) : null}
+
+      <BestPracticeNotice className="mb-2" />
 
       <ContextGuardNotice
         usage={guard.usage}

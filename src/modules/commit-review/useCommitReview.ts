@@ -1026,13 +1026,10 @@ export const useCommitReview = create<State>((set, get) => ({
 
     try {
       const visionCapable = supportsVision(effectiveModelId);
-      const { blocks: bpBlocks, warnings } = await loadBestPracticeBlocks(
+      const { blocks: bpBlocks } = await loadBestPracticeBlocks(
         prefs.bestPracticeFiles,
         { visionCapable },
       );
-      if (warnings.length > 0) {
-        console.warn("[commit-review] best-practices skipped:", warnings);
-      }
       const contextBlocks: ContextBlock[] = [];
       if (slice.context.trim()) {
         contextBlocks.push({

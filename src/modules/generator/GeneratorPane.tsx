@@ -107,6 +107,7 @@ import {
 } from "@/modules/ai/components/RunErrorPanel";
 import { relativeTime, ResumeCard } from "@/modules/ai/components/ResumeCard";
 import { StallHint } from "@/modules/ai/components/StallHint";
+import { BestPracticeNotice } from "@/modules/ai/components/BestPracticeNotice";
 import {
   ContextGuardNotice,
   ContextMeter,
@@ -1200,6 +1201,8 @@ function InputPhase() {
             </div>
           </label>
         ) : null}
+
+        <BestPracticeNotice />
 
         <ContextGuardNotice
           usage={guard.usage}

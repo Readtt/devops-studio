@@ -34,6 +34,14 @@ export const TOOL_RESULT_CAP = 50_000;
 /** What survives when a result blows the cap. */
 const TOOL_RESULT_PREVIEW = 2_000;
 
+/** Ceiling on the COMBINED size of every tool result attached to one message.
+ *  Claude Code's figure, and the second line of defence behind
+ *  {@link TOOL_RESULT_CAP}: a model that fans out four parallel greps hands
+ *  back 4 × 50,000 in a single turn, which a per-result cap is blind to.
+ *  Results are served in the order they resolve, so the first ones in a turn
+ *  get their full allowance and later ones shrink to whatever is left. */
+export const MESSAGE_RESULT_CAP = 200_000;
+
 /** Per-hit line clip for grep display. Rust already clips to 2 KB centred on
  *  the match; 80 of those is 160 KB, which is why this second, tighter clip
  *  exists. */
@@ -281,24 +289,46 @@ const GENERIC_RECOVERY = "Call the tool again with narrower arguments.";
 /** Last-resort ceiling on a single tool result. Each tool above has its own,
  *  tighter caps; this catches the shapes they miss. Oversized results are
  *  replaced with a preview rather than clipped in place, because a JSON
- *  structure cut mid-object reads as corrupt — Claude Code does the same. */
-export function capToolResult(result: unknown, recovery: string): unknown {
+ *  structure cut mid-object reads as corrupt — Claude Code does the same.
+ *
+ *  `allowance` is what's left of the message-wide budget; the effective cap is
+ *  the tighter of the two. The preview shrinks with it, so a turn that has
+ *  already spent its budget can't get N × 2 KB of previews back. */
+export function capToolResult(
+  result: unknown,
+  recovery: string,
+  allowance: number = TOOL_RESULT_CAP,
+): unknown {
+  const cap = Math.min(TOOL_RESULT_CAP, Math.max(0, allowance));
   const serialized = safeStringify(result);
-  if (serialized.length <= TOOL_RESULT_CAP) return result;
+  if (serialized.length <= cap) return result;
+  const previewLen = Math.min(TOOL_RESULT_PREVIEW, cap);
   return {
-    error: `result too large: ${serialized.length} characters (cap ${TOOL_RESULT_CAP})`,
-    preview: serialized.slice(0, TOOL_RESULT_PREVIEW),
+    error: `result too large: ${serialized.length} characters (cap ${cap})`,
+    ...(previewLen > 0 ? { preview: serialized.slice(0, previewLen) } : {}),
     hint:
-      `Only the first ${TOOL_RESULT_PREVIEW} characters of the raw result are above, ` +
-      `cut mid-structure. ${recovery}`,
+      (previewLen > 0
+        ? `Only the first ${previewLen} characters of the raw result are above, cut mid-structure. `
+        : `This turn's tool results have already filled the ${MESSAGE_RESULT_CAP}-character message budget, so none of this one is shown. `) +
+      recovery,
   };
 }
 
-/** Apply {@link capToolResult} to EVERY tool in the map. Done here, once,
- *  rather than at each `execute`'s return sites, so a tool added later can't
- *  quietly ship uncapped — which is the exact failure this cap exists for.
- *  suiteChatTools.test.ts enumerates the live map and fails if one escapes. */
+/** Apply {@link capToolResult} to EVERY tool in the map, and hold them to a
+ *  shared per-message budget. Done here, once, rather than at each `execute`'s
+ *  return sites, so a tool added later can't quietly ship uncapped — which is
+ *  the exact failure this cap exists for. suiteChatTools.test.ts enumerates the
+ *  live map and fails if one escapes. */
 function withResultCaps<T extends Record<string, unknown>>(tools: T): T {
+  // The SDK hands every tool call of a step the same `stepInputMessages` array
+  // it built that step's request from, and rebuilds it fresh next step — so the
+  // array's IDENTITY is the message key: shared by the parallel calls of one
+  // turn, different on the next, and never colliding across runs the way a
+  // length or a counter would. A caller that passes no options (direct calls in
+  // tests) simply gets the per-result cap.
+  let messageRef: unknown;
+  let spent = 0;
+
   const out: Record<string, unknown> = {};
   for (const [name, spec] of Object.entries(tools)) {
     const t = spec as { execute?: (...args: unknown[]) => Promise<unknown> };
@@ -310,11 +340,32 @@ function withResultCaps<T extends Record<string, unknown>>(tools: T): T {
     const recovery = RECOVERY_HINTS[name] ?? GENERIC_RECOVERY;
     out[name] = {
       ...t,
-      execute: async (...args: unknown[]) =>
-        capToolResult(await inner(...args), recovery),
+      execute: async (...args: unknown[]) => {
+        const raw = await inner(...args);
+        // Charge the budget AFTER the await. Reading it up front would hand
+        // every concurrent call of a turn the full allowance, which is exactly
+        // the case this cap exists to bound.
+        const ref = messageRefOf(args[1]);
+        if (ref !== messageRef) {
+          messageRef = ref;
+          spent = 0;
+        }
+        const capped = capToolResult(raw, recovery, MESSAGE_RESULT_CAP - spent);
+        spent += safeStringify(capped).length;
+        return capped;
+      },
     };
   }
   return out as T;
+}
+
+/** The step's message array from the SDK's tool-call options, or a fresh
+ *  sentinel when there isn't one (never equal to the previous key, so the
+ *  budget resets and only the per-result cap applies). */
+function messageRefOf(options: unknown): unknown {
+  const messages = (options as { messages?: unknown } | null | undefined)
+    ?.messages;
+  return Array.isArray(messages) ? messages : {};
 }
 
 function safeStringify(v: unknown): string {

@@ -9,6 +9,7 @@ import {
   buildSuiteChatTools,
   capToolResult,
   clipAroundMatch,
+  MESSAGE_RESULT_CAP,
   TOOL_RESULT_CAP,
 } from "./suiteChatTools";
 
@@ -269,6 +270,83 @@ describe("every tool is capped", () => {
         size,
         `tool \`${name}\` returned ${size} chars — it bypasses capToolResult`,
       ).toBeLessThanOrEqual(TOOL_RESULT_CAP);
+    }
+  });
+});
+
+// Per-result capping is blind to fan-out: a model that fires four parallel
+// greps in one turn gets 4 x 50,000 chars back, all appended to a single
+// message. This is the second line of defence Claude Code puts behind it.
+describe("per-message aggregate cap", () => {
+  /** One run's tool map, called the way the SDK calls it: every tool call of a
+   *  step receives that step's `messages` array, and a new array next step. */
+  function session() {
+    const tools = buildSuiteChatTools(ROOT);
+    if (!tools) throw new Error("expected tools for a non-null source root");
+    return (name: string, args: unknown, messages: unknown[]) => {
+      const t = (tools as Record<string, unknown>)[name] as {
+        execute: (a: unknown, o: unknown) => Promise<unknown>;
+      };
+      return t.execute(args, { toolCallId: "t", messages });
+    };
+  }
+
+  /** Just under the per-result cap, so nothing trips it on its own — the
+   *  aggregate is the only thing that can bound this. */
+  const CHUNK = "y".repeat(40_000);
+
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue({ returncode: 0, output: CHUNK, truncated: false });
+  });
+
+  it("bounds the combined size of one turn's results", async () => {
+    const call = session();
+    const step1: unknown[] = [];
+    let total = 0;
+    for (let i = 0; i < 10; i++) {
+      const out = await call("run_command", { command: `git log -${i}` }, step1);
+      total += JSON.stringify(out).length;
+    }
+    // 10 x ~40k would be ~400k without the aggregate cap.
+    expect(total).toBeLessThanOrEqual(MESSAGE_RESULT_CAP + 10 * 2_500);
+    expect(total).toBeGreaterThan(MESSAGE_RESULT_CAP / 2);
+  });
+
+  it("gives the next turn a fresh budget", async () => {
+    const call = session();
+    const step1: unknown[] = [];
+    for (let i = 0; i < 10; i++) {
+      await call("run_command", { command: `git log -${i}` }, step1);
+    }
+    // A new step = a new messages array, so the budget resets and the first
+    // result of the turn comes back whole.
+    const step2: unknown[] = [{ role: "assistant" }];
+    const out = (await call("run_command", { command: "git diff" }, step2)) as {
+      output?: string;
+    };
+    expect(out.output).toBe(CHUNK);
+  });
+
+  it("still hands the model something it can act on once the budget is gone", async () => {
+    const call = session();
+    const step: unknown[] = [];
+    let last: { hint?: string; preview?: string } = {};
+    for (let i = 0; i < 10; i++) {
+      last = (await call("run_command", { command: `git log -${i}` }, step)) as {
+        hint?: string;
+      };
+    }
+    expect(last.hint).toContain("narrower command");
+  });
+
+  it("leaves each result alone when the turn is nowhere near the budget", async () => {
+    invoke.mockResolvedValue({ returncode: 0, output: "ok", truncated: false });
+    const call = session();
+    const step: unknown[] = [];
+    for (let i = 0; i < 5; i++) {
+      const out = await call("run_command", { command: "git status" }, step);
+      expect(out).toEqual({ returncode: 0, output: "ok", truncated: false });
     }
   });
 });

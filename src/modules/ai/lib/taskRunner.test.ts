@@ -600,6 +600,95 @@ describe("checkpoints (transcript capture)", () => {
   });
 });
 
+// The provider already tells us the true size of every request it answers;
+// before this it was accumulated for billing and never compared to the window.
+// This is the measurement Phase 3's eviction decision hangs off.
+describe("in-run context signal", () => {
+  // claude-haiku-4-5 → a 200k window, so the arithmetic below is legible.
+  const toolInput = {
+    ...baseInput,
+    modelId: "claude-haiku-4-5" as never,
+    tools: { read_file: {} } as never,
+  };
+
+  it("measures each step's OWN request, not the running billed sum", async () => {
+    generateTextOverSteps(
+      [
+        step("s1", "tool-calls", { inputTokens: 40_000 }),
+        step("s2", "stop", { inputTokens: 55_000 }),
+      ],
+      "done",
+    );
+    const seen: Array<{ promptTokens: number }> = [];
+    const r = await runTask({
+      ...toolInput,
+      onContextSignal: (s) => seen.push(s),
+    });
+    // Summing would report 95k — what was billed, not what has to fit.
+    expect(seen.map((s) => s.promptTokens)).toEqual([40_000, 55_000]);
+    expect(r.usage?.inputTokens).toBe(95_000);
+    expect(r.context?.promptTokens).toBe(55_000);
+    expect(r.context?.windowTokens).toBe(200_000);
+    expect(r.context?.shouldCompact).toBe(false);
+  });
+
+  it("rides along on every checkpoint so a resumed run knows where it was", async () => {
+    generateTextOverSteps(
+      [step("s1", "tool-calls", { inputTokens: 40_000 })],
+      "done",
+    );
+    const seen: TaskCheckpoint[] = [];
+    await runTask({ ...toolInput, onCheckpoint: (cp) => seen.push(cp) });
+    expect(seen[0].context?.promptTokens).toBe(40_000);
+  });
+
+  it("raises shouldCompact once the request is inside the buffer", async () => {
+    generateTextOverSteps(
+      [step("s1", "stop", { inputTokens: 190_000 })],
+      "done",
+    );
+    const r = await runTask(toolInput);
+    expect(r.context?.shouldCompact).toBe(true);
+    expect(r.context?.headroomTokens).toBeLessThan(13_000);
+  });
+
+  it("stays absent when the provider reports no input count", async () => {
+    generateTextOverSteps([step("s1", "stop", { outputTokens: 12 })], "done");
+    const onContextSignal = vi.fn();
+    const r = await runTask({ ...toolInput, onContextSignal });
+    expect(onContextSignal).not.toHaveBeenCalled();
+    expect(r.context).toBeUndefined();
+  });
+
+  it("keeps the last real reading when a later step reports nothing", async () => {
+    generateTextOverSteps(
+      [
+        step("s1", "tool-calls", { inputTokens: 40_000 }),
+        step("s2", "stop", { outputTokens: 9 }),
+      ],
+      "done",
+    );
+    const r = await runTask(toolInput);
+    expect(r.context?.promptTokens).toBe(40_000);
+  });
+
+  it("streamTask measures the same way", async () => {
+    streamTextOverSteps(
+      [
+        step("s1", "tool-calls", { inputTokens: 40_000 }),
+        step("s2", "stop", {
+          inputTokens: 60_000,
+          inputTokenDetails: { cacheReadTokens: 48_000 },
+        }),
+      ],
+      ["a", "b"],
+    );
+    const r = await streamTask({ ...toolInput, onText: () => {} });
+    expect(r.context?.promptTokens).toBe(60_000);
+    expect(r.context?.cacheHitRatio).toBeCloseTo(0.8);
+  });
+});
+
 describe("resume", () => {
   const resumeMessages = [
     { role: "assistant", content: "prior turn" },

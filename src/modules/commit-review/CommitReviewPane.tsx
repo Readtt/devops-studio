@@ -46,6 +46,7 @@ import {
 } from "@/modules/ai/components/RunErrorPanel";
 import { relativeTime, ResumeCard } from "@/modules/ai/components/ResumeCard";
 import { StallHint } from "@/modules/ai/components/StallHint";
+import { BestPracticeNotice } from "@/modules/ai/components/BestPracticeNotice";
 import {
   ContextGuardNotice,
   ContextMeter,
@@ -56,6 +57,7 @@ import { useContextBaseline } from "@/modules/ai/lib/useContextBaseline";
 import {
   estimateTokens,
   estimateTokensFromBytes,
+  showsContextAdvisory,
 } from "@/modules/ai/lib/contextEstimate";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
@@ -519,7 +521,8 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
           budget and yield thinner findings — consider reviewing fewer at a time.
         </Banner>
       ) : null}
-      {guard.guardEnabled && guard.usage.tier !== "comfortable" ? (
+      <BestPracticeNotice className="mx-3 my-1.5" />
+      {showsContextAdvisory(guard.usage, guard.guardEnabled) ? (
         <div className="px-3 py-1.5">
           <ContextGuardNotice
             usage={guard.usage}

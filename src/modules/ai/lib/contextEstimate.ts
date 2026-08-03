@@ -32,17 +32,25 @@ export const DEFAULT_OUTPUT_RESERVE = 8_000;
  *  (role framing, tool schemas, formatting rules) before any user content. */
 export const SYSTEM_BASE_TOKENS = 1_500;
 
-/** Working-token budget at which integration-heavy work — generating exhaustive
- *  test cases, reviewing a diff against its surrounding code — starts to thin.
+/** Share of the context window treated as the green quality ceiling — "keep it
+ *  under a third of the window".
  *
- *  This is deliberately NOT a fraction of the context window. Quality degrades
- *  because of the *reasoning regime* (the model has to hold and cross-reference
- *  everything at once), not because it ran out of window, so the green ceiling is
- *  roughly constant across frontier models and does NOT grow with a 1M window.
- *  Needle-in-a-haystack retrieval survives far longer than this; our tasks don't.
- *  The amber tier is defined to begin right here, so the only rule a user needs
- *  is "keep it green." */
-export const QUALITY_BUDGET_FRONTIER = 50_000;
+ *  Quality degrades from the *reasoning regime* (the model has to hold and
+ *  cross-reference everything at once), not from running out of window, so the
+ *  ceiling is clamped at both ends rather than tracking the window all the way
+ *  up. But it is not constant either, which is what the flat 50,000 this
+ *  replaces got wrong: on a 1M-window model that put the advisory at 5% of the
+ *  window, so ordinary work tripped a banner that reads like a limit warning. */
+export const QUALITY_BUDGET_FRACTION = 0.3;
+
+/** Green zone a tiny local window still gets, so a one-paragraph prompt on a
+ *  32k model isn't immediately "heavy". */
+export const QUALITY_BUDGET_FLOOR = 6_000;
+
+/** Where the green zone stops growing. Past this the reasoning regime — not the
+ *  window — is the binding constraint, so a 2M-window model gets no more room
+ *  than a 1M one. */
+export const QUALITY_BUDGET_CEILING = 150_000;
 
 /** Multiple of the quality budget past which degradation is severe enough to
  *  paint red rather than amber (still advisory — quality, not a hard failure). */
@@ -54,13 +62,21 @@ export const QUALITY_SEVERE_MULTIPLE = 3;
 export const OVERFLOW_RATIO = 0.92;
 
 /** The green ceiling, in working tokens, for a model with the given window.
- *  Frontier (≥400k) models get the full budget; smaller models degrade earlier,
- *  so it's clamped down. On tiny local windows the fit guard usually binds first. */
+ *  A clamped fraction rather than a step ladder: the ladder cliffed (a 399k
+ *  model got 30k, a 400k one got 50k) and an unmapped model id, which falls back
+ *  to a 128k window, silently landed on a different rung than the model the user
+ *  actually picked. On tiny local windows the fit guard usually binds first. */
 export function qualityBudgetFor(windowTokens: number): number {
-  if (windowTokens >= 400_000) return QUALITY_BUDGET_FRONTIER;
-  if (windowTokens >= 128_000) return 30_000;
-  if (windowTokens >= 64_000) return 18_000;
-  return Math.max(6_000, Math.round(windowTokens * 0.35));
+  if (!Number.isFinite(windowTokens) || windowTokens <= 0) {
+    return QUALITY_BUDGET_FLOOR;
+  }
+  return Math.min(
+    QUALITY_BUDGET_CEILING,
+    Math.max(
+      QUALITY_BUDGET_FLOOR,
+      Math.round(windowTokens * QUALITY_BUDGET_FRACTION),
+    ),
+  );
 }
 
 export type ContextTier = "comfortable" | "heavy" | "overflow";
@@ -176,6 +192,93 @@ export function computeContextUsage(input: ComputeUsageInput): ContextUsage {
     estCostUsd,
     segments: nonZero,
     outputReserve,
+  };
+}
+
+/** Whether the inline advisory renders at all. It is ADVISORY — it says results
+ *  thin out past here, never that the run will fail — so it is gated on the
+ *  quality tier only. The interrupting confirm is gated separately on
+ *  {@link ContextUsage.mayNotFit}, which is the physical won't-fit case. */
+export function showsContextAdvisory(
+  usage: ContextUsage,
+  guardEnabled: boolean,
+): boolean {
+  return guardEnabled && usage.tier !== "comfortable";
+}
+
+// --- In-run measurement (true counts, not the char heuristic) ---------------
+//
+// Everything above is pre-flight: it estimates what we're ABOUT to send. Once a
+// run is in flight the provider reports the real prompt size per step, which is
+// both exact and inclusive of the tool results the pre-flight estimate can't
+// see. That's the number an eviction decision has to be made on.
+
+/** Headroom held back from the window before the transcript should be
+ *  compacted — Claude Code's figure. Only {@link RequestContextSignal.shouldCompact}
+ *  reads it today; acting on it is Phase 3's job. */
+export const COMPACTION_BUFFER_TOKENS = 13_000;
+
+/** What one completed step's provider-reported usage says about how full the
+ *  window is. Measured, not estimated. */
+export type RequestContextSignal = {
+  /** True prompt size of the request that produced the step. Cache reads are
+   *  INCLUDED — a cached token is cheaper, not smaller, and still occupies the
+   *  window. (The AI SDK's `usage.inputTokens` is already the total: v6 maps it
+   *  from `inputTokens.total` = noCache + cacheRead + cacheWrite.) */
+  promptTokens: number;
+  windowTokens: number;
+  /** window − output reserve: what the prompt may occupy and still leave the
+   *  model room to answer. */
+  usableBudget: number;
+  /** promptTokens / usableBudget. Can exceed 1 — the provider accepted this
+   *  request, so the reserve, not the window, is what's been eaten into. */
+  ratio: number;
+  headroomTokens: number;
+  /** Within {@link COMPACTION_BUFFER_TOKENS} of the usable budget. The seam
+   *  Phase 3's eviction hangs off; nothing consumes it yet. */
+  shouldCompact: boolean;
+  /** cacheReadTokens / promptTokens, or null when the provider reported no
+   *  cache detail. Worth watching alongside the token count: a request that
+   *  gets smaller while this falls is a COST regression, not a win. */
+  cacheHitRatio: number | null;
+};
+
+/** Fold one step's usage into a context-pressure reading. Returns null when the
+ *  provider reported no input count (local endpoints often don't), so callers
+ *  keep the last real reading rather than treating "unknown" as "empty". */
+export function measureRequestContext(input: {
+  modelId: string | undefined;
+  /** ONE step's usage, never a sum across steps: `inputTokens` is the size of
+   *  the request that produced that step, which is the quantity that has to fit
+   *  the window. Summed across steps it measures spend, not occupancy. */
+  usage: { inputTokens?: number; cacheReadTokens?: number } | undefined;
+  compatOverride?: number;
+  outputReserve?: number;
+}): RequestContextSignal | null {
+  const promptTokens = input.usage?.inputTokens;
+  if (
+    typeof promptTokens !== "number" ||
+    !Number.isFinite(promptTokens) ||
+    promptTokens <= 0
+  ) {
+    return null;
+  }
+  const windowTokens = getModelContextLimit(input.modelId, input.compatOverride);
+  const outputReserve = input.outputReserve ?? DEFAULT_OUTPUT_RESERVE;
+  const usableBudget = Math.max(1_000, windowTokens - outputReserve);
+  const headroomTokens = usableBudget - promptTokens;
+  const cacheRead = input.usage?.cacheReadTokens;
+  return {
+    promptTokens,
+    windowTokens,
+    usableBudget,
+    ratio: promptTokens / usableBudget,
+    headroomTokens,
+    shouldCompact: headroomTokens <= COMPACTION_BUFFER_TOKENS,
+    cacheHitRatio:
+      typeof cacheRead === "number" && Number.isFinite(cacheRead)
+        ? Math.min(1, Math.max(0, cacheRead) / promptTokens)
+        : null,
   };
 }
 

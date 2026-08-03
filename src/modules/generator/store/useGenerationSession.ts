@@ -1561,13 +1561,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     // user explicitly picks a model again.
     const modelId = overrideModelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
-    const { blocks: bpBlocks, warnings: bpWarnings } =
-      await loadBestPracticeBlocks(prefs.bestPracticeFiles, {
-        visionCapable: supportsVision(modelId),
-      });
-    if (bpWarnings.length > 0) {
-      console.warn("[generator] best-practices skipped:", bpWarnings);
-    }
+    const { blocks: bpBlocks } = await loadBestPracticeBlocks(
+      prefs.bestPracticeFiles,
+      { visionCapable: supportsVision(modelId) },
+    );
     // #mentioned work items → read-only context blocks, merged with
     // best-practices. Fetched here (at analyze time) so the chips only hold
     // lightweight refs until they're actually needed.
@@ -2710,13 +2707,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       const keys = await chat.ensureApiKeys();
       const modelId = s.overrideModelId ?? chat.selectedModelId;
       const prefs = usePreferencesStore.getState();
-      const { blocks: bpBlocks, warnings: bpWarnings } =
-        await loadBestPracticeBlocks(prefs.bestPracticeFiles, {
-          visionCapable: supportsVision(modelId),
-        });
-      if (bpWarnings.length > 0) {
-        console.warn("[generator] best-practices skipped:", bpWarnings);
-      }
+      const { blocks: bpBlocks } = await loadBestPracticeBlocks(
+        prefs.bestPracticeFiles,
+        { visionCapable: supportsVision(modelId) },
+      );
       // Attach any #id-mentioned work items as read-only grounding context.
       const bugBlocks =
         workItemIds && workItemIds.length > 0
@@ -3131,13 +3125,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     const keys = await chat.ensureApiKeys();
     const modelId = s.overrideModelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
-    const { blocks: bpBlocks, warnings: bpWarnings } =
-      await loadBestPracticeBlocks(prefs.bestPracticeFiles, {
-        visionCapable: supportsVision(modelId),
-      });
-    if (bpWarnings.length > 0) {
-      console.warn("[generator] best-practices skipped:", bpWarnings);
-    }
+    const { blocks: bpBlocks } = await loadBestPracticeBlocks(
+      prefs.bestPracticeFiles,
+      { visionCapable: supportsVision(modelId) },
+    );
     const bugBlocks =
       bugIds && bugIds.length > 0 ? await bugsToContextBlocks(bugIds) : [];
     const chatContextBlocks = [...bpBlocks, ...bugBlocks];
