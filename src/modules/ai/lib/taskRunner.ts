@@ -46,6 +46,10 @@ import {
   measureRequestContext,
   type RequestContextSignal,
 } from "./contextEstimate";
+import {
+  compactTranscript,
+  CONTEXT_COMPACTION_ENABLED,
+} from "./compactTranscript";
 import { buildUserTurn } from "./visionMessage";
 import {
   clampOutputFull,
@@ -125,6 +129,11 @@ export type TaskInput<S extends z.ZodTypeAny | undefined = undefined> = {
    *  fresh from prompt/attachments (images stay Uint8Array — they never come
    *  from persisted state; callers rebuild them from stored attachments). */
   resumeMessages?: ModelMessage[];
+  /** Per-call override of the eviction kill switch
+   *  ({@link CONTEXT_COMPACTION_ENABLED}). Even when on, eviction only fires
+   *  once a step's measured prompt lands inside the compaction buffer, so an
+   *  ordinary run never reaches it. */
+  compactContext?: boolean;
   signal?: AbortSignal;
 };
 
@@ -192,7 +201,10 @@ const TASK_MAX_RETRIES = 6;
  *  two breakpoints (system + last message), well under Anthropic's cap of 4;
  *  the untag sweep is belt-and-braces should that internal ever change.
  *  Non-Anthropic providers return undefined: their automatic prefix caching
- *  needs no explicit breakpoints, and their requests must stay byte-identical. */
+ *  needs no explicit breakpoints, and their requests must stay byte-identical.
+ *  (They may still get a `prepareStep` from {@link buildStepPrepare}, which
+ *  wraps this one — but it only overrides messages when eviction actually
+ *  rewrote something.) */
 function anthropicStepCachePrepare(
   modelId: ModelId,
 ): (({ messages }: { messages: ModelMessage[] }) => { messages: ModelMessage[] } | undefined) | undefined {
@@ -206,6 +218,47 @@ function anthropicStepCachePrepare(
     );
     next[next.length - 1] = tagAnthropicCache(next[next.length - 1]);
     return { messages: next };
+  };
+}
+
+/** The `prepareStep` the agentic paths actually install: tool-result eviction
+ *  composed with the Anthropic cache breakpoint.
+ *
+ *  COMPOSE, don't replace. Compaction is provider-agnostic (every provider has a
+ *  context window); the tagging stays Anthropic-only. The tagger's return value
+ *  is what gets sent, so it has to be computed over the COMPACTED list — hand it
+ *  the raw one and its output silently throws the eviction away, which is the
+ *  easy way to write this and does nothing at all on the only provider where
+ *  running out of window costs the most.
+ *
+ *  ARMED ONCE, NEVER DISARMED. `shouldCompact` is derived from the last
+ *  completed step's measured prompt, and eviction makes the next request
+ *  smaller — so a naive `if (shouldCompact)` would compact, drop back under the
+ *  buffer, un-compact, cross it again, and rewrite the prefix on every single
+ *  step. That is the sliding-window cache-invalidation failure wearing a
+ *  different hat, and it costs more than it saves. The latch means the prefix
+ *  changes at most once for arming, and after that only when the eviction
+ *  boundary itself advances.
+ *
+ *  Returning `undefined` when nothing changed is deliberate: a run that never
+ *  trips the budget sends byte-identical requests to what it sent before this
+ *  existed. */
+function buildStepPrepare(
+  modelId: ModelId,
+  compactionEnabled: boolean,
+  contextOf: () => RequestContextSignal | undefined,
+):
+  | (({ messages }: { messages: ModelMessage[] }) => { messages: ModelMessage[] } | undefined)
+  | undefined {
+  const cache = anthropicStepCachePrepare(modelId);
+  if (!compactionEnabled) return cache;
+  let armed = false;
+  return ({ messages }) => {
+    if (!armed && contextOf()?.shouldCompact === true) armed = true;
+    const compacted = armed ? compactTranscript(messages).messages : messages;
+    const tagged = cache?.({ messages: compacted });
+    if (tagged) return tagged;
+    return compacted === messages ? undefined : { messages: compacted };
   };
 }
 
@@ -705,8 +758,16 @@ export async function runTask<
   }
 
   // --- Structured + tools, or prose: generateText --------------------------
-  const prepareStep = tools ? anthropicStepCachePrepare(input.modelId) : undefined;
   const steps = makeStepAccumulator(start, input);
+  // Tool-less runs are a single request: no step loop to prepare, and no tool
+  // results to evict.
+  const prepareStep = tools
+    ? buildStepPrepare(
+        input.modelId,
+        input.compactContext ?? CONTEXT_COMPACTION_ENABLED,
+        () => steps.context,
+      )
+    : undefined;
   const args = (temp: number | undefined) => ({
     model,
     ...buildResumableRequest(input.modelId, system, userTurn, input.resumeMessages),
@@ -797,8 +858,6 @@ export async function streamTask<
   const maxSteps = input.maxSteps ?? MAX_AGENT_STEPS;
   const temperature = effectiveTemperature(input);
 
-  const prepareStep = tools ? anthropicStepCachePrepare(input.modelId) : undefined;
-
   // streamText NEVER rejects: a provider/network failure mid-stream (429 on a
   // follow-up agentic step, overload, dropped connection) is reported via
   // `onError` and textStream simply ENDS. Without capturing it, a failed run
@@ -807,12 +866,20 @@ export async function streamTask<
   // format". Capture the first error and rethrow it below so callers' existing
   // catch paths show the REAL provider message.
   //
-  // One attempt = one full stream, drained. Each gets a fresh accumulator so a
-  // retried attempt can't inherit the abandoned one's steps or checkpoints.
+  // One attempt = one full stream, drained. Each gets a fresh accumulator — and
+  // therefore a fresh compaction latch — so a retried attempt can't inherit the
+  // abandoned one's steps, checkpoints, or eviction state.
   const attempt = async (temp: number | undefined) => {
     const toolStart = new Map<string, number>();
     let streamError: unknown = null;
     const steps = makeStepAccumulator(start, input);
+    const prepareStep = tools
+      ? buildStepPrepare(
+          input.modelId,
+          input.compactContext ?? CONTEXT_COMPACTION_ENABLED,
+          () => steps.context,
+        )
+      : undefined;
     const result = streamText({
       model,
       ...buildResumableRequest(input.modelId, system, userTurn, input.resumeMessages),

@@ -391,7 +391,11 @@ describe("rate-limit resilience", () => {
     ).toBe(6);
   });
 
-  it("Anthropic + tools gets a per-step cache prepareStep; other providers don't", async () => {
+  it("every tool-bearing run gets a prepareStep; tool-less runs never do", async () => {
+    // Compaction has to run for EVERY provider (they all have a window), so
+    // prepareStep is no longer Anthropic-only. For a non-Anthropic run with
+    // nothing to evict it returns undefined, which leaves the request exactly
+    // as it was — see "leaves a non-Anthropic request untouched" below.
     generateText.mockResolvedValue({ text: "ok" });
     await runTask({ ...anthropic, tools: { read_file: {} } as never });
     const anthropicArg = generateText.mock.calls[0][0] as {
@@ -405,9 +409,10 @@ describe("rate-limit resilience", () => {
     const openaiArg = generateText.mock.calls[0][0] as {
       prepareStep?: PrepareStep;
     };
-    expect(openaiArg.prepareStep).toBeUndefined();
+    expect(typeof openaiArg.prepareStep).toBe("function");
 
-    // Tool-less runs are single-request — no step loop, no prepareStep.
+    // Tool-less runs are single-request — no step loop, no tool results to
+    // evict, no prepareStep.
     generateText.mockClear();
     generateText.mockResolvedValue({ text: "ok" });
     await runTask({ ...anthropic });
@@ -686,6 +691,246 @@ describe("in-run context signal", () => {
     const r = await streamTask({ ...toolInput, onText: () => {} });
     expect(r.context?.promptTokens).toBe(60_000);
     expect(r.context?.cacheHitRatio).toBeCloseTo(0.8);
+  });
+});
+
+// Phase 3: tool-result eviction. compactTranscript.test.ts owns the eviction
+// RULE; this owns the wiring — when it arms, that it composes with the Anthropic
+// cache breakpoint rather than replacing it, and that a run which never fills
+// the window keeps sending exactly the bytes it sent before eviction existed.
+describe("context compaction (tool-result eviction)", () => {
+  type Msg = Record<string, unknown>;
+  type Prepared = { messages: Msg[] } | undefined;
+
+  /** 120,000 chars ⇒ 30,000 tokens: two of them blow the 50,000-token
+   *  tool-result budget, so a three-turn transcript evicts its two oldest. */
+  const HUGE = 120_000;
+  let seq = 0;
+  function bigTurn(tool: string, input: Record<string, unknown>, tag: string): Msg[] {
+    const toolCallId = `c${++seq}`;
+    return [
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId, toolName: tool, input }],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId,
+            toolName: tool,
+            output: { type: "text", value: `// ${tag}\n${"y".repeat(HUGE)}` },
+          },
+        ],
+      },
+    ];
+  }
+
+  /** A turn whose result is far too small to move the eviction boundary. */
+  function smallTurn(tool: string, input: Record<string, unknown>, out: string): Msg[] {
+    const toolCallId = `c${++seq}`;
+    return [
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId, toolName: tool, input }],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId,
+            toolName: tool,
+            output: { type: "text", value: out },
+          },
+        ],
+      },
+    ];
+  }
+
+  const promptMessages: Msg[] = [
+    { role: "system", content: "SYS" },
+    { role: "user", content: "hello" },
+  ];
+
+  function transcript(turns: number): Msg[] {
+    const out = [...promptMessages];
+    for (let i = 0; i < turns; i++) {
+      out.push(...bigTurn("read_file", { path: `src/f${i}.ts` }, `f${i}`));
+    }
+    return out;
+  }
+
+  const stubCount = (messages: Msg[]) =>
+    JSON.stringify(messages).split("[evicted-tool-result #").length - 1;
+
+  /** generateText that drives the loop the way the SDK does: prepareStep runs
+   *  BEFORE each request, onStepFinish after it. `transcripts[i]` stands in for
+   *  the `[...initialMessages, ...responseMessages]` the SDK rebuilds each step. */
+  function loopWithPrepare(steps: FakeStep[], transcripts: Msg[][]) {
+    const prepared: Prepared[] = [];
+    generateText.mockImplementation(
+      async (opts: {
+        prepareStep?: (i: { messages: Msg[]; stepNumber: number }) => Prepared;
+        onStepFinish?: (s: FakeStep) => void;
+      }) => {
+        for (let i = 0; i < steps.length; i++) {
+          prepared.push(opts.prepareStep?.({ messages: transcripts[i], stepNumber: i }));
+          opts.onStepFinish?.(steps[i]);
+        }
+        return { text: "done" };
+      },
+    );
+    return prepared;
+  }
+
+  // claude-haiku-4-5 → 200k window ⇒ 192k usable ⇒ shouldCompact past 179k.
+  const haiku = {
+    ...baseInput,
+    modelId: "claude-haiku-4-5" as never,
+    tools: { read_file: {} } as never,
+  };
+  const CALM = { inputTokens: 40_000 };
+  const TIGHT = { inputTokens: 190_000 };
+
+  it("stays dormant until a step's MEASURED prompt lands inside the compaction buffer", async () => {
+    // This is the property that makes eviction safe by construction: after the
+    // Phase 1 caps an ordinary run never gets within 13,000 tokens of the
+    // window, so an ordinary run's transcript is never touched at all.
+    const t = transcript(3);
+    const prepared = loopWithPrepare(
+      [step("s1", "tool-calls", CALM), step("s2", "tool-calls", CALM), step("s3", "stop", CALM)],
+      [t, t, t],
+    );
+    await runTask(haiku);
+    for (const p of prepared) expect(stubCount(p?.messages ?? [])).toBe(0);
+  });
+
+  it("evicts from the step AFTER the one that reported the pressure", async () => {
+    const t = transcript(3);
+    const prepared = loopWithPrepare(
+      [step("s1", "tool-calls", CALM), step("s2", "tool-calls", TIGHT), step("s3", "stop", TIGHT)],
+      [t, t, t],
+    );
+    await runTask(haiku);
+    // step 0: no reading yet. step 1: last reading was 40k. step 2: 190k → armed.
+    expect(stubCount(prepared[0]?.messages ?? [])).toBe(0);
+    expect(stubCount(prepared[1]?.messages ?? [])).toBe(0);
+    expect(stubCount(prepared[2]!.messages)).toBe(2);
+  });
+
+  it("stays armed once it fires — a smaller follow-up request must not un-evict", async () => {
+    // Eviction shrinks the next request, which drops it back under the buffer.
+    // Without the latch that un-compacts, re-compacts, and rewrites the prefix
+    // on EVERY step — the cache-invalidation failure this phase exists to avoid.
+    const t = transcript(3);
+    const prepared = loopWithPrepare(
+      [step("s1", "tool-calls", TIGHT), step("s2", "tool-calls", CALM), step("s3", "stop", CALM)],
+      [t, t, t],
+    );
+    await runTask(haiku);
+    expect(stubCount(prepared[0]?.messages ?? [])).toBe(0);
+    expect(stubCount(prepared[1]!.messages)).toBe(2);
+    expect(stubCount(prepared[2]!.messages)).toBe(2);
+    expect(JSON.stringify(prepared[2]!.messages)).toBe(
+      JSON.stringify(prepared[1]!.messages),
+    );
+  });
+
+  it("compactContext: false turns it off entirely (the bisect switch)", async () => {
+    const t = transcript(3);
+    const prepared = loopWithPrepare(
+      [step("s1", "tool-calls", TIGHT), step("s2", "stop", TIGHT)],
+      [t, t],
+    );
+    await runTask({ ...haiku, compactContext: false });
+    for (const p of prepared) expect(stubCount(p?.messages ?? [])).toBe(0);
+  });
+
+  it("composes with the Anthropic breakpoint rather than being replaced by it", async () => {
+    // buildRequestPrompt hands Anthropic an already-tagged system message; the
+    // fixture mirrors that so the sweep has something real to preserve.
+    const t = transcript(3);
+    t[0] = {
+      ...t[0],
+      providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+    };
+    const prepared = loopWithPrepare(
+      [step("s1", "tool-calls", TIGHT), step("s2", "stop", TIGHT)],
+      [t, t],
+    );
+    await runTask(haiku);
+    const out = prepared[1]!.messages;
+    expect(stubCount(out)).toBe(2);
+    // System breakpoint kept, breakpoint on the LAST message — and that last
+    // message is the compacted one, not a pre-compaction copy.
+    expect(out[0].providerOptions).toMatchObject({
+      anthropic: { cacheControl: { type: "ephemeral" } },
+    });
+    expect(out[out.length - 1].providerOptions).toMatchObject({
+      anthropic: { cacheControl: { type: "ephemeral" } },
+    });
+    expect(out[1].providerOptions).toBeUndefined();
+    // The tagged tail is the newest tool result, kept verbatim — a breakpoint
+    // over a message whose bytes changed after tagging would cache the wrong thing.
+    expect(JSON.stringify(out[out.length - 1])).toContain("y".repeat(1_000));
+  });
+
+  it("leaves a non-Anthropic request untouched when nothing was evicted", async () => {
+    // Providers other than Anthropic cache on a byte-identical prefix, so an
+    // override that changes nothing must not be sent at all.
+    const t = transcript(1);
+    const prepared = loopWithPrepare([step("s1", "stop", { inputTokens: 390_000 })], [t]);
+    await runTask({ ...baseInput, tools: { read_file: {} } as never }); // gpt-5.4-mini
+    expect(prepared[0]).toBeUndefined();
+  });
+
+  it("keeps the prefix byte-identical across steps once armed (the cache-hit property)", async () => {
+    // gpt-5.4-mini → 400k window ⇒ 392k usable ⇒ shouldCompact past 379k. No
+    // cache tagging on this path, so what comes back is pure compaction.
+    const stepN = transcript(3);
+    const stepN1 = [
+      ...stepN,
+      { role: "assistant", content: "One more check." },
+      ...smallTurn("run_command", { command: "git status" }, "clean"),
+    ];
+    const armed = { inputTokens: 390_000 };
+    const prepared = loopWithPrepare(
+      [step("s1", "tool-calls", armed), step("s2", "tool-calls", armed), step("s3", "stop", armed)],
+      [stepN, stepN, stepN1],
+    );
+    await runTask({ ...baseInput, tools: { read_file: {} } as never });
+
+    const atN = prepared[1]!.messages;
+    const atN1 = prepared[2]!.messages;
+    expect(stubCount(atN)).toBe(2);
+    // The whole previously-sent prefix survives byte for byte; only the newly
+    // appended messages are new. This is the assertion that fails the moment
+    // eviction is rewritten as a sliding window.
+    expect(JSON.stringify(atN1.slice(0, atN.length))).toBe(JSON.stringify(atN));
+  });
+
+  it("streamTask compacts the same way, with a fresh latch per attempt", async () => {
+    const t = transcript(3);
+    const prepared: Prepared[] = [];
+    streamText.mockImplementation(
+      (opts: {
+        prepareStep?: (i: { messages: Msg[]; stepNumber: number }) => Prepared;
+        onStepFinish?: (s: FakeStep) => void;
+      }) => ({
+        textStream: (async function* () {
+          for (let i = 0; i < 2; i++) {
+            prepared.push(opts.prepareStep?.({ messages: t, stepNumber: i }));
+            opts.onStepFinish?.(step(`s${i}`, i === 1 ? "stop" : "tool-calls", TIGHT));
+          }
+          yield "ok";
+        })(),
+      }),
+    );
+    await streamTask({ ...haiku, onText: () => {} });
+    expect(stubCount(prepared[0]?.messages ?? [])).toBe(0);
+    expect(stubCount(prepared[1]!.messages)).toBe(2);
   });
 });
 
