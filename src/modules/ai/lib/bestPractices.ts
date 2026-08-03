@@ -7,7 +7,7 @@
 // recorded in `warnings`, so a missing network share can't break a generation.
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ContextBlock } from "./contextBlocks";
+import { clipPromptText, type ContextBlock } from "./contextBlocks";
 import { newAttachmentId, type Attachment } from "@/components/chat/attachments";
 import type { BestPracticeFile } from "@/modules/settings/store";
 
@@ -21,6 +21,19 @@ type ReadResult =
 type FileBase64 = { mediaType: string; dataBase64: string; size: number };
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);
+
+/** Generous per-file ceiling on an injected standards file, in characters.
+ *
+ *  These are the user's OWN curated rules and they ride on EVERY request, so
+ *  quietly dropping part of one is an invisible quality regression — the AI
+ *  simply stops following a house rule and nobody can tell why. So this is a
+ *  last-resort backstop against a single file that would blow the window on
+ *  its own, never a routine trim: when it bites we say so IN the block (with
+ *  the path, so the model can read the rest), record it in `warnings`, and
+ *  Settings flags the file before any run so the user trims it deliberately.
+ *
+ *  128 KB is roughly 32k tokens — larger than any real standards document. */
+export const BEST_PRACTICE_FILE_CAP = 128 * 1024;
 
 function extOf(path: string): string {
   const m = /\.([a-z0-9]+)$/i.exec(path.trim());
@@ -82,11 +95,24 @@ export async function loadBestPracticeBlocks(
       } else {
         const res = await invoke<ReadResult>("fs_read_file", { path: f.path });
         if (res.kind === "text") {
-          if (res.content.trim().length === 0) {
+          const body = res.content.trim();
+          if (body.length === 0) {
             warnings.push(`${label}: file is empty — skipped.`);
             continue;
           }
-          sections.push(`## ${label}\n${res.content.trim()}`);
+          if (body.length > BEST_PRACTICE_FILE_CAP) {
+            sections.push(
+              `## ${label}\n${clipPromptText(body, BEST_PRACTICE_FILE_CAP)}\n\n` +
+                `[TRUNCATED — this standards file is ${body.length} characters and only the ` +
+                `first ${BEST_PRACTICE_FILE_CAP} are shown. The full file is at "${f.path}"; ` +
+                `read it if you need a rule that isn't above.]`,
+            );
+            warnings.push(
+              `${label}: ${body.length} characters — only the first ${BEST_PRACTICE_FILE_CAP} were injected. Trim or split the file.`,
+            );
+          } else {
+            sections.push(`## ${label}\n${body}`);
+          }
         } else if (res.kind === "toolarge") {
           warnings.push(
             `${label}: file too large (${res.size} bytes) — skipped.`,

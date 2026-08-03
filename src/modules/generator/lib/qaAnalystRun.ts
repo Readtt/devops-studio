@@ -26,6 +26,7 @@ import {
 import type { ActivityEntry } from "./activityLog";
 import { renderRelatedCases, type RelatedCase } from "./relatedCases";
 import {
+  clipPromptText,
   collectContextImages,
   formatContextBlocks,
   type ContextBlock,
@@ -330,7 +331,7 @@ function buildUserPrompt(input: RunInput): string {
     input.attachments.length === 0
       ? ""
       : "\n\nSource code attached for grounding:\n\n" +
-        input.attachments.map(formatAttachmentBlock).join("\n\n");
+        renderAttachmentBlocks(input.attachments);
 
   const targetBlock = renderTargetContext(input.targetContext);
   const relatedBlock = renderRelatedCases(input.relatedCases ?? []);
@@ -525,4 +526,40 @@ export function formatAttachmentBlock(a: RunAttachment): string {
     return `--- ${a.path} ---\n[user-attached binary: ${mime}${bytes}]`;
   }
   return `--- ${a.path} ---\n${a.content}`;
+}
+
+/** Generous ceiling on the TOTAL text inlined from attachments in one run.
+ *
+ *  Dragging files in is the app's core workflow, so a dropped file that gets
+ *  silently shortened means generating tests against code we never showed the
+ *  model — invisible, and exactly the failure the feature exists to prevent.
+ *  Ingest already caps each file at 200 KB but nothing caps the COUNT, so ~20
+ *  files is a megabyte before a single tool runs. 400 KB is ~100k tokens, well
+ *  past any normal drop, and the pre-run ContextMeter itemises attachments so
+ *  the weight is visible before the request goes out.
+ *
+ *  When it does bite, no attachment is dropped: every one keeps its header and
+ *  a truncated file says so by name, so the model knows what it is missing. */
+export const ATTACHMENT_TEXT_BUDGET = 400 * 1024;
+
+/** Render every attachment for the user prompt, spending a shared text budget
+ *  in order. */
+export function renderAttachmentBlocks(attachments: RunAttachment[]): string {
+  let remaining = ATTACHMENT_TEXT_BUDGET;
+  return attachments
+    .map((a) => {
+      if ((a.kind ?? "text") !== "text") return formatAttachmentBlock(a);
+      const budget = Math.max(0, remaining);
+      remaining -= a.content.length;
+      if (a.content.length <= budget) return formatAttachmentBlock(a);
+      const kept = clipPromptText(a.content, budget);
+      const cut = a.content.length - kept.length;
+      return (
+        `--- ${a.path} ---\n${kept}\n` +
+        `[TRUNCATED — ${cut} more characters of "${a.path}" were not included; this run's ` +
+        `attachment budget of ${ATTACHMENT_TEXT_BUDGET} characters ran out. Read the file ` +
+        `from the source directory if it lives there, or say what you're missing.]`
+      );
+    })
+    .join("\n\n");
 }

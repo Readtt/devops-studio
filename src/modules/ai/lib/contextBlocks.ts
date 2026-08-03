@@ -38,3 +38,14 @@ export function formatContextBlocks(blocks: ContextBlock[]): string {
 export function collectContextImages(blocks: ContextBlock[]): Attachment[] {
   return blocks.flatMap((b) => b.images ?? []);
 }
+
+/** Take the first `cap` characters without splitting a surrogate pair — a lone
+ *  surrogate reaches the provider as invalid UTF-8. Shared by the two places
+ *  that back-stop user-supplied prompt content (best-practices files and
+ *  attachments); neither ever truncates silently, so see their callers for the
+ *  marker that tells the model what was cut. */
+export function clipPromptText(text: string, cap: number): string {
+  if (text.length <= cap) return text;
+  const c = text.charCodeAt(cap);
+  return text.slice(0, c >= 0xdc00 && c <= 0xdfff ? cap - 1 : cap);
+}

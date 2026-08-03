@@ -14,7 +14,7 @@ import type { ReviewedBug, ReviewedCase } from "./draftBatchSchema";
 import {
   renderChangesetsBlock,
   renderTargetContext,
-  formatAttachmentBlock,
+  renderAttachmentBlocks,
   type Coverage,
   type RunAttachment,
   type TargetContext,
@@ -78,7 +78,7 @@ export function buildRefineUserPrompt(input: RefinePromptInput): string {
     input.attachments.length === 0
       ? ""
       : "\n\nSource code attached for grounding:\n\n" +
-        input.attachments.map(formatAttachmentBlock).join("\n\n");
+        renderAttachmentBlocks(input.attachments);
 
   return [
     coverageLine,

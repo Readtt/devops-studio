@@ -217,9 +217,24 @@ export function formatToolResult(
   }
 
   if (name === "grep") {
-    const hits = Array.isArray(o.hits) ? (o.hits as Array<Record<string, unknown>>) : [];
     const files = num("files_scanned");
     const truncated = o.truncated === true;
+    // `filesOnly: true` returns per-file counts instead of line text.
+    if (Array.isArray(o.files)) {
+      const rows = o.files as Array<Record<string, unknown>>;
+      return {
+        summary:
+          `${rows.length}${truncated ? "+" : ""} file${rows.length === 1 ? "" : "s"} matched` +
+          (files != null ? ` · ${files} scanned` : ""),
+        text:
+          rows
+            .map((f) => `${String(f.rel ?? "")} (${String(f.matches ?? "?")} matches)`)
+            .join("\n") ||
+          str("hint") ||
+          "(no matches)",
+      };
+    }
+    const hits = Array.isArray(o.hits) ? (o.hits as Array<Record<string, unknown>>) : [];
     const lines = hits.map((h) => {
       const rel =
         typeof h.rel === "string"

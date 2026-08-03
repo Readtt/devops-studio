@@ -25,6 +25,20 @@ type RawReadResult =
 const READ_LINE_CAP = 1500;
 const READ_BYTE_CAP = 24 * 1024;
 
+/** Ceiling on any single tool result, in characters of serialized JSON.
+ *  Claude Code's figure. Nothing gets past it: once `execute` returns an
+ *  oversized result the SDK has already appended it to the transcript, so the
+ *  NEXT request 400s and no amount of later compaction can undo it. The cap
+ *  has to be here, at the tool boundary. */
+export const TOOL_RESULT_CAP = 50_000;
+/** What survives when a result blows the cap. */
+const TOOL_RESULT_PREVIEW = 2_000;
+
+/** Per-hit line clip for grep display. Rust already clips to 2 KB centred on
+ *  the match; 80 of those is 160 KB, which is why this second, tighter clip
+ *  exists. */
+const GREP_LINE_CAP = 160;
+
 /** Build the set of read-only fs tools the BYOK suite-chat runner can
  *  hand to the model. Returns `undefined` when no source dir is set — the
  *  caller should fall back to a tools-less run in that case. */
@@ -32,7 +46,7 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
   if (!sourceRoot) return undefined;
   const root = sourceRoot;
 
-  return {
+  return withResultCaps({
     read_file: tool({
       description:
         "Read a UTF-8 text file from the user's source directory. Returns up to 1500 lines / 24 KB by default; use `offset` and `limit` to window large files. Refuses binary files. Use this to verify whether a test case's steps match how the code actually behaves — quote the exact lines back to the user with file:line refs.",
@@ -143,7 +157,7 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
 
     grep: tool({
       description:
-        "Regex search across files in the user's source directory. Use this to find references to a function, a constant, an endpoint, an HTTP status code — anything you'd reach for grep to find. Returns matching lines with file:line refs.",
+        "Regex search across files in the user's source directory. Use this to find references to a function, a constant, an endpoint, an HTTP status code — anything you'd reach for grep to find. Returns matching lines with file:line refs. Long lines are clipped around the match — read_file that file:line to see the rest.",
       inputSchema: z.object({
         pattern: z
           .string()
@@ -166,8 +180,14 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
           .max(200)
           .optional()
           .describe("Cap on returned matches. Default 80."),
+        filesOnly: z
+          .boolean()
+          .optional()
+          .describe(
+            "Return only which files matched (path + match count), no line text. Use for a broad 'where does this live' scan; then grep again narrowed, or read_file. Still bounded by `maxResults`, so raise it when scanning wide. Default false.",
+          ),
       }),
-      execute: async ({ pattern, glob, caseInsensitive, maxResults }) => {
+      execute: async ({ pattern, glob, caseInsensitive, maxResults, filesOnly }) => {
         try {
           const out = await invoke<GrepResponse>("fs_grep", {
             pattern,
@@ -178,14 +198,30 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
             // workspace defaults to Local on the Rust side; we don't pass
             // one because the WorkspaceEnv shape is internal.
           });
-          // `files_scanned` counts files AFTER the glob filter, so 0 means
-          // nothing was ever read — which is NOT evidence the pattern is
-          // absent. Left unsaid, a model reads "0 matches" as "this code
-          // doesn't exist" and moves on with a wrong conclusion.
-          if (out.files_scanned === 0) {
-            return { ...out, hint: emptyScanHint(glob) };
+          const base = {
+            truncated: out.truncated,
+            files_scanned: out.files_scanned,
+            // `files_scanned` counts files AFTER the glob filter, so 0 means
+            // nothing was ever read — which is NOT evidence the pattern is
+            // absent. Left unsaid, a model reads "0 matches" as "this code
+            // doesn't exist" and moves on with a wrong conclusion.
+            ...(out.files_scanned === 0 ? { hint: emptyScanHint(glob) } : {}),
+          };
+          if (filesOnly) {
+            return { ...base, files: summariseByFile(out.hits) };
           }
-          return out;
+          const re = displayMatcher(pattern, caseInsensitive ?? false);
+          return {
+            ...base,
+            // `path` is dropped: it duplicates `rel` on every hit, and
+            // read_file resolves a relative path against the source root
+            // (see resolvePathHint), so `rel` is enough to act on.
+            hits: out.hits.map((h) => ({
+              rel: h.rel,
+              line: h.line,
+              text: clipAroundMatch(h.text, re, GREP_LINE_CAP),
+            })),
+          };
         } catch (e) {
           return { error: String(e), pattern };
         }
@@ -218,15 +254,138 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
         }
       },
     }),
-  } as const;
+  } as const);
 }
 
-/** Mirror of the Rust `GrepResponse`. Internal — the model gets it verbatim. */
+/** Mirror of the Rust `GrepResponse`. */
 type GrepResponse = {
   hits: Array<{ path: string; rel: string; line: number; text: string }>;
   truncated: boolean;
   files_scanned: number;
 };
+
+/** Recovery hint attached when a result blows TOOL_RESULT_CAP — it names the
+ *  argument that would narrow THIS call. A stub the model can't act on is lost
+ *  information; one it can re-fetch is a cheap retry. */
+const RECOVERY_HINTS: Record<string, string> = {
+  read_file:
+    "Call read_file again with `offset` and a smaller `limit` to page through the file.",
+  list_files: "Call list_files again with a `subpath` or a smaller `limit`.",
+  grep: "Call grep again with `filesOnly: true`, a narrower `glob`, a smaller `maxResults`, or a more specific pattern.",
+  run_command:
+    "Run a narrower command — add a path, an `-n` limit, or a smaller commit range.",
+};
+
+const GENERIC_RECOVERY = "Call the tool again with narrower arguments.";
+
+/** Last-resort ceiling on a single tool result. Each tool above has its own,
+ *  tighter caps; this catches the shapes they miss. Oversized results are
+ *  replaced with a preview rather than clipped in place, because a JSON
+ *  structure cut mid-object reads as corrupt — Claude Code does the same. */
+export function capToolResult(result: unknown, recovery: string): unknown {
+  const serialized = safeStringify(result);
+  if (serialized.length <= TOOL_RESULT_CAP) return result;
+  return {
+    error: `result too large: ${serialized.length} characters (cap ${TOOL_RESULT_CAP})`,
+    preview: serialized.slice(0, TOOL_RESULT_PREVIEW),
+    hint:
+      `Only the first ${TOOL_RESULT_PREVIEW} characters of the raw result are above, ` +
+      `cut mid-structure. ${recovery}`,
+  };
+}
+
+/** Apply {@link capToolResult} to EVERY tool in the map. Done here, once,
+ *  rather than at each `execute`'s return sites, so a tool added later can't
+ *  quietly ship uncapped — which is the exact failure this cap exists for.
+ *  suiteChatTools.test.ts enumerates the live map and fails if one escapes. */
+function withResultCaps<T extends Record<string, unknown>>(tools: T): T {
+  const out: Record<string, unknown> = {};
+  for (const [name, spec] of Object.entries(tools)) {
+    const t = spec as { execute?: (...args: unknown[]) => Promise<unknown> };
+    if (typeof t.execute !== "function") {
+      out[name] = spec;
+      continue;
+    }
+    const inner = t.execute;
+    const recovery = RECOVERY_HINTS[name] ?? GENERIC_RECOVERY;
+    out[name] = {
+      ...t,
+      execute: async (...args: unknown[]) =>
+        capToolResult(await inner(...args), recovery),
+    };
+  }
+  return out as T;
+}
+
+function safeStringify(v: unknown): string {
+  try {
+    return JSON.stringify(v) ?? "";
+  } catch {
+    return String(v);
+  }
+}
+
+/** Compile the model's pattern for DISPLAY clipping only. Rust runs the real
+ *  search with the `regex` crate, so a pattern using syntax JavaScript lacks
+ *  must never change which hits come back — a failure here just falls back to
+ *  the head of a line Rust has already centred on the match. */
+function displayMatcher(pattern: string, caseInsensitive: boolean): RegExp | null {
+  try {
+    return new RegExp(pattern, caseInsensitive ? "i" : "");
+  } catch {
+    return null;
+  }
+}
+
+/** Clip a matched line to `cap`, centred on the match. Head-clipping is what
+ *  makes a hit useless: the model is handed a line it was told matched and
+ *  can't find the term anywhere in it. */
+export function clipAroundMatch(
+  text: string,
+  re: RegExp | null,
+  cap: number,
+): string {
+  if (text.length <= cap) return text;
+  const m = re ? re.exec(text) : null;
+  const at = m ? m.index : 0;
+  const len = m ? m[0].length : 0;
+
+  let start = Math.max(0, at - Math.floor(Math.max(0, cap - len) / 2));
+  start = Math.min(start, text.length - cap);
+  let end = start + cap;
+  // Never split a surrogate pair — a lone surrogate survives JSON.stringify
+  // and reaches the provider as a malformed string.
+  if (start > 0 && isLowSurrogate(text, start)) start -= 1;
+  if (end > start && isLowSurrogate(text, end)) end -= 1;
+
+  return (
+    (start > 0 ? `…[+${start} chars]` : "") +
+    text.slice(start, end) +
+    (end < text.length ? `…[+${text.length - end} chars]` : "")
+  );
+}
+
+function isLowSurrogate(text: string, i: number): boolean {
+  const c = text.charCodeAt(i);
+  return c >= 0xdc00 && c <= 0xdfff;
+}
+
+/** Collapse hits into one row per file for `filesOnly` scans. */
+function summariseByFile(
+  hits: GrepResponse["hits"],
+): Array<{ rel: string; matches: number; firstLine: number }> {
+  const byFile = new Map<string, { rel: string; matches: number; firstLine: number }>();
+  for (const h of hits) {
+    const seen = byFile.get(h.rel);
+    if (seen) {
+      seen.matches += 1;
+      seen.firstLine = Math.min(seen.firstLine, h.line);
+    } else {
+      byFile.set(h.rel, { rel: h.rel, matches: 1, firstLine: h.line });
+    }
+  }
+  return [...byFile.values()];
+}
 
 /** Why a grep read zero files. Globs are matched with globset against paths
  *  relative to the source root, so the ways they silently match nothing are

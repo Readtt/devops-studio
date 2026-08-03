@@ -8,7 +8,7 @@ import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import type { ReviewedBug, ReviewedCase } from "./draftBatchSchema";
 import {
-  formatAttachmentBlock,
+  renderAttachmentBlocks,
   renderChangesetsBlock,
   renderTargetContext,
   type RunAttachment,
@@ -158,8 +158,7 @@ function buildChatUserPrompt(input: ChatRunInput): string {
   const attached =
     input.attachments.length === 0
       ? ""
-      : "\n\nAttachments:\n\n" +
-        input.attachments.map(formatAttachmentBlock).join("\n\n");
+      : "\n\nAttachments:\n\n" + renderAttachmentBlocks(input.attachments);
 
   return [
     targetBlock,
