@@ -34,20 +34,21 @@ import {
   type RunAttachment,
   type RunResult,
   type TargetContext,
-  runQaAnalyst,
 } from "../lib/qaAnalystRun";
 import { resumeBudget, sumUsage } from "../lib/resumePolicy";
 import {
   createCheckpointWriter,
   deleteCheckpoint,
   getCheckpoint,
+  listCheckpoints,
   sanitizeTranscriptMessages,
   type CheckpointOutcome,
   type CheckpointWriter,
   type GeneratorCheckpointV1,
+  type GeneratorRefineCheckpointV1,
   type TranscriptCheckpoint,
 } from "@/modules/ai/lib/checkpointApi";
-import { classifyForResume } from "@/modules/ai/lib/errorClass";
+import { canOfferResume, classifyForResume } from "@/modules/ai/lib/errorClass";
 import type { TaskCheckpoint } from "@/modules/ai/lib/taskRunner";
 import { CURRENT_BRANCH_SENTINEL, resolveTrackingBranch } from "@/modules/git";
 import {
@@ -325,10 +326,37 @@ export type SessionState = {
    *  process behind why a draft is in its current shape. Persisted on the
    *  draft row so it survives a window close. */
   refineRounds: RefineRound[];
+  /** Set when a follow-up died with paid-for work worth continuing — stopped
+   *  by the user, killed by a provider/network error, or out of step budget.
+   *  Null when there's nothing to resume. Deliberately separate from
+   *  `resumable` (which belongs to analyze): a draft outlives its analyze
+   *  checkpoint, so the two can be live at different times and must not
+   *  overwrite each other's affordance. */
+  refineResumable: {
+    /** The checkpoint row's id — per follow-up round, not the session runId. */
+    runId: string;
+    /** What the user asked, so the affordance can name the follow-up. */
+    instruction: string;
+    stepsUsed: number;
+    totalTokens: number | null;
+    updatedAt: string;
+    outcome: CheckpointOutcome | null;
+  } | null;
   /** Re-prompt the model with the current draft + a follow-up instruction.
    *  Replaces cases/bugs on success and stashes the previous state for
    *  undoRefine(). Errors are surfaced via refineError without leaving review. */
   refine: (instruction: string, workItemIds?: number[]) => Promise<void>;
+  /** Continue the last follow-up from its persisted checkpoint instead of
+   *  paying for its tool loop again. Replays the assembled prompt plus
+   *  everything the round had already read; makes NO ADO calls. */
+  resumeRefine: () => Promise<void>;
+  /** Throw away the resume point (and its persisted row) for the last
+   *  interrupted follow-up. */
+  discardRefineCheckpoint: () => void;
+  /** Look for an interrupted follow-up belonging to this draft and surface it.
+   *  Called by the review pane on mount — that's how a follow-up interrupted by
+   *  an app quit resurfaces after the draft is rehydrated from history. */
+  probeRefineCheckpoint: () => Promise<void>;
   /** Kill the in-flight refine subprocess and return the UI to the composer.
    *  ESC during refine wires here. Tolerated when nothing is running. */
   cancelRefine: () => void;
@@ -461,6 +489,93 @@ function resumableFrom(
   };
 }
 
+/** Same idea for a follow-up round, keyed by the row it was flushed to. */
+function refineResumableFrom(
+  payload: GeneratorRefineCheckpointV1,
+  outcome: CheckpointOutcome,
+): NonNullable<SessionState["refineResumable"]> {
+  return {
+    runId: payload.runId,
+    instruction: payload.round.instruction,
+    stepsUsed: payload.transcript?.stepsUsed ?? 0,
+    totalTokens: payload.transcript?.usage?.totalTokens ?? null,
+    updatedAt: outcome.at,
+    outcome,
+  };
+}
+
+/** The checkpoint handles a live follow-up round carries around, so refine()
+ *  and resumeRefine() can share one set of terminal paths. */
+type RefineCheckpointCtx = {
+  writer: CheckpointWriter;
+  buildPayload: (
+    outcome: CheckpointOutcome | null,
+  ) => GeneratorRefineCheckpointV1;
+};
+
+/** The bookkeeping one follow-up round is recorded under. Lives in the round's
+ *  checkpoint so a round finished by a resume still lands in history as the
+ *  round the user started — same timestamp, same before-counts — rather than a
+ *  second round dated at resume time. */
+type RefineRoundMeta = GeneratorRefineCheckpointV1["round"];
+
+/** Add this round's outcome to the thinking history.
+ *
+ *  A RESUME replaces the entry its earlier attempt left behind: it continues
+ *  one follow-up, so the history should show how that follow-up ended — two
+ *  rows sharing an instruction and a timestamp (one "failed", one "ok") read as
+ *  two separate asks that never happened.
+ *
+ *  A fresh round always appends, even when it matches. The match key is
+ *  second-granular (newTimestamp strips millis), so re-sending the same preset
+ *  twice inside one second would otherwise silently swallow the first attempt.
+ *  A resume is already pinned to one stored round, so it has no such ambiguity. */
+function recordRound(
+  rounds: RefineRound[],
+  next: RefineRound,
+  resumed: boolean,
+): RefineRound[] {
+  const i = resumed
+    ? rounds.findIndex(
+        (r) =>
+          r.timestamp === next.timestamp && r.instruction === next.instruction,
+      )
+    : -1;
+  if (i < 0) return [...rounds, next];
+  const merged = rounds.slice();
+  merged[i] = next;
+  return merged;
+}
+
+/** The RefineRound for an attempt that left the draft untouched (cancelled,
+ *  failed, empty, out of steps). before/after counts are equal by definition. */
+function unchangedRound(
+  round: RefineRoundMeta,
+  activityLog: ActivityEntry[],
+  outcome: RefineRound["outcome"],
+  error: string | null,
+): RefineRound {
+  return {
+    timestamp: round.startedAt,
+    instruction: round.instruction,
+    activityLog,
+    beforeCases: round.beforeCases,
+    afterCases: round.beforeCases,
+    beforeBugs: round.beforeBugs,
+    afterBugs: round.beforeBugs,
+    outcome,
+    error,
+  };
+}
+
+/** Checkpoint id for one follow-up round. Deliberately NOT the session's runId:
+ *  a round the user cancelled is still unwinding (its throttled write can land
+ *  up to ~500ms later) when the next round starts, and a shared row would let
+ *  that stale write clobber the new round's resume point. */
+function newRefineRunId(): string {
+  return `rfn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 /** Nudge the History pane (and anything else listening) that a run's durable
  *  state changed — a terminal checkpoint flush, a draft save, the checkpoint
  *  getting deleted. Without this an interrupted run only appeared in History
@@ -535,6 +650,9 @@ const initialState: Omit<
   | "loadDraft"
   | "loadPublishedRun"
   | "refine"
+  | "resumeRefine"
+  | "discardRefineCheckpoint"
+  | "probeRefineCheckpoint"
   | "cancelRefine"
   | "undoRefine"
   | "dismissRefineError"
@@ -574,6 +692,7 @@ const initialState: Omit<
   refineError: null,
   refineHistory: [],
   refineRounds: [],
+  refineResumable: null,
   chatMessages: [],
   chatBusy: false,
   chatStreamingId: null,
@@ -705,12 +824,18 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     /** Final answer streamed so far, kept so a run that dies mid-answer can
      *  persist what it had written. */
     let analyzePartialText = "";
+    /** Which follow-up round owns the terminal path. cancelRefine() frees the
+     *  UI immediately, so the user can send a new follow-up while the aborted
+     *  one's promise is still unwinding — only the newest round may write
+     *  terminal state or touch a checkpoint. */
+    let refineSeq = 0;
 
     /** Each activity entry either appends (new id) or replaces an earlier entry
      *  (same id — used when a tool_use is later completed by its tool_result,
      *  carrying duration and output). The most recent entry doubles as the
-     *  transient stepLabel for compact displays. */
-    const onAnalyzeActivity = (entry: ActivityEntry) => {
+     *  transient stepLabel for compact displays. Shared by analyze and refine:
+     *  both stream into the same activityLog, one run at a time. */
+    const onRunActivity = (entry: ActivityEntry) => {
       set((s) => {
         const i = s.activityLog.findIndex((e) => e.id === entry.id);
         const next = s.activityLog.slice();
@@ -873,6 +998,268 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       notifyHistoryUpdated(args.runId);
     };
 
+    /** May this round still apply its result?
+     *
+     *  `refineSeq` alone isn't enough. It only covers a NEWER round taking the
+     *  slot; it says nothing about the user walking away from the draft while
+     *  this one was still unwinding — New session, Back to input, re-analyze,
+     *  Publish. Without the phase + runId checks a late round drops the old
+     *  draft's cases, refine history and undo snapshot into whatever session is
+     *  on screen now (a re-analyze even reuses the runId, so runId alone
+     *  wouldn't catch it either). settleAnalyzeRun guards on phase for exactly
+     *  this reason. */
+    const refineRoundIsCurrent = (
+      seq: number,
+      sessionRunId: string | null,
+    ): boolean => {
+      if (seq !== refineSeq) return false;
+      const s = get();
+      return s.phase === "review" && s.runId === sessionRunId;
+    };
+
+    /** A round that can't apply its result must not leave a resume point
+     *  behind either. Nothing points at its row once it loses the slot, and
+     *  probeRefineCheckpoint treats a row with no terminal outcome as an
+     *  interrupted round — so an orphan would resurface later offering to
+     *  overwrite a newer draft with a two-generations-old one. Per-round row
+     *  ids are what make this safe: deleting here can only ever touch this
+     *  round's own row, never the live one's. */
+    const abandonRefineRound = async (
+      cp: RefineCheckpointCtx | null,
+    ): Promise<void> => {
+      await cp?.writer.delete();
+    };
+
+    /** Terminal handling for a follow-up that RESOLVED — shared by refine()
+     *  and resumeRefine(). Mirrors settleAnalyzeRun: branch on the two "nothing
+     *  usable came back" shapes, and on success swap the draft, then drop the
+     *  checkpoint. */
+    const settleRefineRun = async (args: {
+      seq: number;
+      /** The draft this round belongs to; null when it couldn't be
+       *  checkpointed. Compared against the live runId, see above. */
+      sessionRunId: string | null;
+      /** True when this attempt continued an earlier one, so its history entry
+       *  replaces that attempt's rather than stacking beside it. */
+      resumed: boolean;
+      result: RunResult;
+      round: RefineRoundMeta;
+      /** The draft as it stood when this attempt started: the undo point, and
+       *  the basis for carrying similarity / verdicts / update-bindings
+       *  forward onto the revised batch. */
+      snapshot: { cases: ReviewedCase[]; bugs: ReviewedBug[]; rawText: string };
+      stepCap: number;
+      /** Null only when the round couldn't be checkpointed (no session runId to
+       *  tie a row to) — it then behaves exactly as follow-ups did before
+       *  checkpointing existed: no resume offered, draft handling unchanged. */
+      cp: RefineCheckpointCtx | null;
+    }): Promise<void> => {
+      const { result, round, snapshot, cp } = args;
+      if (!refineRoundIsCurrent(args.seq, args.sessionRunId)) {
+        await abandonRefineRound(cp);
+        return;
+      }
+
+      // Budget burned mid-tool-loop: the model never reached the point of
+      // writing the revised draft, so this is continuable — unlike an answer
+      // that came back unusable, where resuming the transcript just re-fails.
+      if (!result.ok && result.reason === "step_cap") {
+        const outcome: CheckpointOutcome = {
+          at: new Date().toISOString(),
+          kind: "step_cap",
+        };
+        const payload = cp?.buildPayload(outcome) ?? null;
+        set((curr) => ({
+          isRefining: false,
+          stepLabel: "",
+          refineError: payload
+            ? `This follow-up hit its ${args.stepCap}-step budget before it could write the revised draft. Your draft is unchanged — resuming grants ${RESUME_TOPUP_STEPS} more steps and asks the model to finish with what it has already read.`
+            : `This follow-up hit its ${args.stepCap}-step budget before it could write the revised draft. Your draft is unchanged — try again with a narrower instruction.`,
+          refineResumable: payload ? refineResumableFrom(payload, outcome) : null,
+          refineRounds: recordRound(
+            curr.refineRounds,
+            unchangedRound(
+              round,
+              curr.activityLog,
+              "failed",
+              "Ran out of steps before writing the revised draft.",
+            ),
+            args.resumed,
+          ),
+        }));
+        if (cp && payload) await cp.writer.flush(payload);
+        schedulePersistDraft();
+        return;
+      }
+
+      // Nothing structured came back — better to keep the user's existing
+      // batch than to wipe it for an empty response. The model ANSWERED (just
+      // uselessly), so this is not resumable: drop the row instead of leaving
+      // a resume point that could only re-fail the same way.
+      if (result.batch.cases.length === 0 && result.batch.bugs.length === 0) {
+        set((curr) => ({
+          isRefining: false,
+          stepLabel: "",
+          refineError:
+            "The model returned an empty refine result — your previous draft is unchanged. Try a more specific instruction.",
+          refineResumable: null,
+          refineRounds: recordRound(
+            curr.refineRounds,
+            unchangedRound(round, curr.activityLog, "empty", null),
+            args.resumed,
+          ),
+        }));
+        await cp?.writer.delete();
+        schedulePersistDraft();
+        return;
+      }
+
+      // Carry forward analysis the refine didn't invalidate. Similarity is
+      // title-based, so a case the refine kept titled the same keeps its
+      // "similar to #X" matches. The confidence verdict and the reviewer's
+      // chosen outcome are CONTENT-based, so they only survive when the case is
+      // unchanged (same steps + description) — a genuinely edited case gets a
+      // clean slate so a stale score can't mislead. New/renamed cases start
+      // empty. This is why undo no longer has to "bring back" similarity /
+      // confidence for cases the refine never touched.
+      const normTitle = (t: string) => t.trim().toLowerCase();
+      const prevByTitle = new Map<string, ReviewedCase>();
+      for (const pc of snapshot.cases) prevByTitle.set(normTitle(pc.title), pc);
+      const nextCases: ReviewedCase[] = result.batch.cases.map((c) => {
+        const prev = prevByTitle.get(normTitle(c.title));
+        const contentUnchanged =
+          !!prev &&
+          JSON.stringify(prev.steps) === JSON.stringify(c.steps) &&
+          (prev.description ?? "") === (c.description ?? "");
+        return {
+          ...c,
+          uid: uid(),
+          decision: "keep" as const,
+          similarMatches: prev ? prev.similarMatches : [],
+          // Carry the reviewer's "update existing case #N" binding forward on a
+          // title match — it's an ADO-case identity, NOT tied to the draft body,
+          // so gate on `prev` (title), not `contentUnchanged`. Without this a
+          // refine silently drops the binding and publish CREATES a duplicate
+          // work item instead of updating the case the reviewer chose.
+          ...(prev?.updateTargetCaseId != null
+            ? { updateTargetCaseId: prev.updateTargetCaseId }
+            : {}),
+          ...(contentUnchanged && prev?.verdict ? { verdict: prev.verdict } : {}),
+          ...(contentUnchanged && prev?.desiredOutcome
+            ? {
+                desiredOutcome: prev.desiredOutcome,
+                outcomeAuto: prev.outcomeAuto,
+              }
+            : {}),
+        };
+      });
+      const nextBugs: ReviewedBug[] = result.batch.bugs.map((b) => ({
+        ...b,
+        uid: uid(),
+        decision: "keep",
+      }));
+
+      set((curr) => ({
+        isRefining: false,
+        cases: reconcileAutoOutcomes(nextCases, nextBugs),
+        bugs: nextBugs,
+        rawText: result.rawText,
+        stepLabel: "",
+        refineUndoSnapshot: snapshot,
+        refineResumable: null,
+        // Record the prompt in history (newest first, dedup'd, capped).
+        refineHistory: [
+          round.instruction,
+          ...curr.refineHistory.filter((p) => p !== round.instruction),
+        ].slice(0, REFINE_HISTORY_MAX),
+        // And record the structured round so the user can later read back the
+        // thinking process behind why the draft looks like this. Survives a
+        // window close via the draft autosave path.
+        refineRounds: recordRound(
+          curr.refineRounds,
+          {
+            timestamp: round.startedAt,
+            instruction: round.instruction,
+            activityLog: curr.activityLog,
+            beforeCases: round.beforeCases,
+            afterCases: nextCases.length,
+            beforeBugs: round.beforeBugs,
+            afterBugs: nextBugs.length,
+            outcome: "ok",
+            // A round that only landed on the second attempt would otherwise
+            // keep the first attempt's error text next to an "ok" badge.
+            error: null,
+          },
+          args.resumed,
+        ),
+      }));
+      // Arms the debounced draft write. Unlike settleAnalyzeRun — which awaits
+      // its saveRun before dropping the checkpoint — this can't await a save
+      // that hasn't fired yet, so there is a sub-100ms window where a crash
+      // loses both the refined draft and the resume point. Accepted: the round
+      // is already applied in memory, and holding the row longer would mean
+      // offering a Resume for work that's on screen.
+      schedulePersistDraft();
+      await cp?.writer.delete();
+    };
+
+    /** Terminal handling for a follow-up that THREW — a user abort or a real
+     *  failure. Both keep their checkpoint and offer a resume. `cp` is null
+     *  only for a failure BEFORE the run reached the provider (prompt assembly,
+     *  keys, work-item fetch) — nothing was spent, so nothing is left behind. */
+    const settleRefineFailure = async (args: {
+      seq: number;
+      sessionRunId: string | null;
+      resumed: boolean;
+      round: RefineRoundMeta;
+      error: unknown;
+      cp: RefineCheckpointCtx | null;
+    }): Promise<void> => {
+      const { round, cp } = args;
+      if (!refineRoundIsCurrent(args.seq, args.sessionRunId)) {
+        await abandonRefineRound(cp);
+        return;
+      }
+      const cancelled = isCancelledError(args.error);
+      // Refine errors stay inside the review phase — wiping the user back to
+      // the input screen would lose the draft they were trying to refine.
+      if (!cancelled) console.error("[generator] refine failed:", args.error);
+      const errorText = cancelled ? "" : errToString(args.error);
+      const outcome: CheckpointOutcome = cancelled
+        ? { at: new Date().toISOString(), kind: "cancelled" }
+        : {
+            at: new Date().toISOString(),
+            kind: "error",
+            errorKind: classifyForResume(args.error).kind,
+            message: errorText,
+          };
+      // Built BEFORE the flush and from the run's own scope, so a tab closed
+      // mid-refine (disposeStore cancels, then drops the store) still leaves a
+      // resume point behind.
+      const payload = cp?.buildPayload(outcome) ?? null;
+      set((curr) => ({
+        isRefining: false,
+        stepLabel: "",
+        // Cancelled runs don't leave a banner — the user asked to abort, so
+        // showing them an error after they pressed ESC is hostile UX. The
+        // resume card below is the affordance that replaces it.
+        refineError: cancelled ? null : errorText,
+        refineResumable: payload ? refineResumableFrom(payload, outcome) : null,
+        refineRounds: recordRound(
+          curr.refineRounds,
+          unchangedRound(
+            round,
+            curr.activityLog,
+            cancelled ? "empty" : "failed",
+            cancelled ? "Cancelled before completion." : errorText,
+          ),
+          args.resumed,
+        ),
+      }));
+      if (cp && payload) await cp.writer.flush(payload);
+      schedulePersistDraft();
+    };
+
     return ({
   ...initialState,
 
@@ -938,6 +1325,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
   clearWorkItems: () => set({ attachedWorkItems: [] }),
 
   analyze: async () => {
+    // Re-analyzing replaces the draft a follow-up is refining, so stop it —
+    // otherwise it keeps streaming (and billing) against a draft that's about
+    // to stop existing. Its terminal handler then finds a session it doesn't
+    // belong to and drops its row instead of writing into the new run.
+    get().cancelRefine();
     const { requirements, changesets, attachments, attachedWorkItems, planId, suiteId, coverage, suggestBugs, overrideModelId } = get();
     if (!requirements.trim()) {
       set({
@@ -966,6 +1358,13 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       return !reuseRunId && s.runId && s.resumable ? s.runId : null;
     })();
     if (supersededRunId) void deleteCheckpoint(supersededRunId).catch(() => {});
+    // A fresh analyze replaces the whole draft, so an unfinished follow-up
+    // against the OLD draft can never be resumed meaningfully — drop its row
+    // rather than leave it to be adopted when this run reaches review.
+    const supersededRefineId = get().refineResumable?.runId ?? null;
+    if (supersededRefineId) {
+      void deleteCheckpoint(supersededRefineId).catch(() => {});
+    }
     const runId = reuseRunId ?? newRunId();
     set({
       phase: "analyzing",
@@ -995,6 +1394,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       // A fresh analyze invalidates any prior refine snapshot — there's no
       // previous batch to restore once we kick a brand new run.
       refineUndoSnapshot: null,
+      refineResumable: null,
     });
 
     // Minted before the prep awaits so a cancel during them already-aborts
@@ -1185,7 +1585,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       const result: RunResult = await executeQaAnalystRun(prepared, {
         keys,
         local: localProviderConfig(prefs),
-        onActivity: onAnalyzeActivity,
+        onActivity: onRunActivity,
         onCheckpoint: (cp) => {
           // A step that finishes in the same tick as cancel()/settle would
           // otherwise queue a live-run payload on top of the terminal outcome
@@ -1304,6 +1704,13 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     const base = payload.transcript;
     const baseSteps = base?.stepsUsed ?? 0;
 
+    // Same reasoning as analyze(): the resumed run re-derives the whole draft,
+    // so a follow-up against the previous one is unreachable from here.
+    const supersededRefineId = get().refineResumable?.runId ?? null;
+    if (supersededRefineId) {
+      void deleteCheckpoint(supersededRefineId).catch(() => {});
+    }
+
     set({
       phase: "analyzing",
       stepLabel: "Resuming…",
@@ -1327,6 +1734,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       refineRounds: [],
       refineHistory: [],
       refineUndoSnapshot: null,
+      refineResumable: null,
     });
 
     const writer = createCheckpointWriter({
@@ -1364,7 +1772,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         local: localProviderConfig(prefs),
         maxSteps: cap,
         resumeMessages,
-        onActivity: onAnalyzeActivity,
+        onActivity: onRunActivity,
         onCheckpoint: (cp) => {
           if (get().phase !== "analyzing") return;
           // cp.messages already carries the resumed prefix (the runner
@@ -1735,6 +2143,19 @@ export function createGenerationSessionStore(): GenerationSessionStore {
   },
 
   publish: async () => {
+    // Publishing is the end of the line for the draft as it stands. A pending
+    // follow-up must not outlive it: resuming one after publish re-mints every
+    // case's uid, which breaks the okByUid idempotency map below and makes the
+    // next Publish create a DUPLICATE set of work items in ADO. Drop the
+    // affordance and its row (and stop a still-running round) up front, so it
+    // can't be reached from the review breadcrumb or resurrected by the probe
+    // after a restart.
+    get().cancelRefine();
+    const pendingRefine = get().refineResumable;
+    if (pendingRefine) {
+      void deleteCheckpoint(pendingRefine.runId).catch(() => {});
+      set({ refineResumable: null });
+    }
     const { cases, bugs, planId, suiteId, tagSourceBranch } = get();
     if (!planId || !suiteId) {
       set({
@@ -2057,8 +2478,18 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     }));
   },
 
-  reset: () => set({ ...initialState }),
-  startNew: () => set({ ...initialState }),
+  // Both wipe the session out from under any follow-up that's still running.
+  // The round's terminal handler refuses to write into a session it doesn't
+  // belong to, but only cancelling actually stops the provider request — and
+  // the billing — instead of leaving it to finish into the void.
+  reset: () => {
+    get().cancelRefine();
+    set({ ...initialState });
+  },
+  startNew: () => {
+    get().cancelRefine();
+    set({ ...initialState });
+  },
 
   refine: async (instruction: string, workItemIds?: number[]) => {
     const s = get();
@@ -2074,10 +2505,21 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       bugs: s.bugs,
       rawText: s.rawText,
     };
-    const roundStartedAt = newTimestamp();
-    const beforeCases = s.cases.length;
-    const beforeBugs = s.bugs.length;
+    const round: RefineRoundMeta = {
+      instruction: text,
+      startedAt: newTimestamp(),
+      beforeCases: s.cases.length,
+      beforeBugs: s.bugs.length,
+    };
+    const sessionRunId = s.runId;
 
+    // A new follow-up supersedes the one the user walked away from: nothing
+    // points at that row any more, so drop it rather than leave it waiting to
+    // be adopted the next time this draft is opened.
+    const superseded = s.refineResumable?.runId ?? null;
+    if (superseded) void deleteCheckpoint(superseded).catch(() => {});
+
+    const seq = ++refineSeq;
     set({
       isRefining: true,
       activityLog: [],
@@ -2085,6 +2527,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       error: null,
       errorPhase: null,
       refineError: null,
+      refineResumable: null,
     });
 
     // Minted before the prep awaits so a cancel during them already-aborts
@@ -2092,77 +2535,75 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     const refineAc = new AbortController();
     refineAbort = refineAc;
 
-    const onActivity = (entry: ActivityEntry) => {
-      set((curr) => {
-        const i = curr.activityLog.findIndex((e) => e.id === entry.id);
-        const next = curr.activityLog.slice();
-        if (i >= 0) {
-          next[i] = { ...next[i], ...entry };
-        } else {
-          next.push(entry);
-        }
-        return { activityLog: next, stepLabel: entryToLabel(entry) };
-      });
-    };
-
-    // Rebuild the target/related context the same way analyze() does so the
-    // model sees the same plan/suite framing. Falls through gracefully if
-    // ADO is unreachable — refine still works from spec + attachments.
-    let targetContext: TargetContext | null = null;
-    let relatedCases: RelatedCase[] = [];
-    if (s.planId && s.suiteId) {
-      try {
-        targetContext = await buildTargetContext(s.planId, s.suiteId);
-      } catch {
-        // non-fatal
-      }
-      try {
-        relatedCases = await fetchRelatedCaseTitles(s.planId, s.suiteId);
-      } catch {
-        // non-fatal
-      }
-    }
-
-    const keptCases = s.cases.filter((c) => c.decision === "keep");
-    const skippedCases = s.cases.filter((c) => c.decision !== "keep");
-    const keptBugs = s.bugs.filter((b) => b.decision === "keep");
-    const skippedBugs = s.bugs.filter((b) => b.decision !== "keep");
-
-    const userPrompt = buildRefineUserPrompt({
-      requirements: s.requirements,
-      changesets: s.changesets,
-      attachments: s.attachments,
-      coverage: s.coverage,
-      suggestBugs: s.suggestBugs,
-      targetContext,
-      relatedCases,
-      keptCases,
-      skippedCases,
-      keptBugs,
-      skippedBugs,
-      instruction: text,
-    });
-
-    const chat = useChatStore.getState();
-    const keys = await chat.ensureApiKeys();
-    const modelId = s.overrideModelId ?? chat.selectedModelId;
-    const prefs = usePreferencesStore.getState();
-    const { blocks: bpBlocks, warnings: bpWarnings } =
-      await loadBestPracticeBlocks(prefs.bestPracticeFiles, {
-        visionCapable: supportsVision(modelId),
-      });
-    if (bpWarnings.length > 0) {
-      console.warn("[generator] best-practices skipped:", bpWarnings);
-    }
-    // Attach any #id-mentioned work items as read-only grounding context.
-    const bugBlocks =
-      workItemIds && workItemIds.length > 0
-        ? await bugsToContextBlocks(workItemIds)
-        : [];
-    const contextBlocks = [...bpBlocks, ...bugBlocks];
+    // Out here so the catch can flush a terminal outcome from the run's own
+    // scope. Null until the prompt is assembled: a failure before that point
+    // (ADO context, keys, best-practice files) spent nothing model-side, so it
+    // must not leave a row that reads as resumable.
+    let cp: RefineCheckpointCtx | null = null;
 
     try {
-      const result: RunResult = await runQaAnalyst({
+      // Rebuild the target/related context the same way analyze() does so the
+      // model sees the same plan/suite framing. Falls through gracefully if
+      // ADO is unreachable — refine still works from spec + attachments.
+      let targetContext: TargetContext | null = null;
+      let relatedCases: RelatedCase[] = [];
+      if (s.planId && s.suiteId) {
+        try {
+          targetContext = await buildTargetContext(s.planId, s.suiteId);
+        } catch {
+          // non-fatal
+        }
+        try {
+          relatedCases = await fetchRelatedCaseTitles(s.planId, s.suiteId);
+        } catch {
+          // non-fatal
+        }
+      }
+
+      const keptCases = s.cases.filter((c) => c.decision === "keep");
+      const skippedCases = s.cases.filter((c) => c.decision !== "keep");
+      const keptBugs = s.bugs.filter((b) => b.decision === "keep");
+      const skippedBugs = s.bugs.filter((b) => b.decision !== "keep");
+
+      const userPrompt = buildRefineUserPrompt({
+        requirements: s.requirements,
+        changesets: s.changesets,
+        attachments: s.attachments,
+        coverage: s.coverage,
+        suggestBugs: s.suggestBugs,
+        targetContext,
+        relatedCases,
+        keptCases,
+        skippedCases,
+        keptBugs,
+        skippedBugs,
+        instruction: text,
+      });
+
+      const chat = useChatStore.getState();
+      const keys = await chat.ensureApiKeys();
+      const modelId = s.overrideModelId ?? chat.selectedModelId;
+      const prefs = usePreferencesStore.getState();
+      const { blocks: bpBlocks, warnings: bpWarnings } =
+        await loadBestPracticeBlocks(prefs.bestPracticeFiles, {
+          visionCapable: supportsVision(modelId),
+        });
+      if (bpWarnings.length > 0) {
+        console.warn("[generator] best-practices skipped:", bpWarnings);
+      }
+      // Attach any #id-mentioned work items as read-only grounding context.
+      const bugBlocks =
+        workItemIds && workItemIds.length > 0
+          ? await bugsToContextBlocks(workItemIds)
+          : [];
+      const contextBlocks = [...bpBlocks, ...bugBlocks];
+      const sourceRoot = prefs.codeSearchEnabled ? prefs.sourceRoot : null;
+
+      // Assemble the prompt separately from running it, exactly as analyze
+      // does — that split is what lets the round be checkpointed BEFORE the
+      // provider is touched and replayed later without rebuilding anything
+      // (no second ADO prefetch, no re-read of the best-practice files).
+      const prepared = prepareQaAnalystRun({
         requirements: s.requirements,
         attachments: s.attachments,
         existingCaseTitles: [],
@@ -2172,153 +2613,323 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         suggestBugs: s.suggestBugs,
         keys,
         modelId,
-        local: localProviderConfig(prefs),
-        sourceRoot: prefs.codeSearchEnabled ? prefs.sourceRoot : null,
+        sourceRoot,
         contextBlocks,
-        onActivity,
         userPromptOverride: userPrompt,
+      });
+
+      // A cancel during the prep — or a newer round claiming the slot — spent
+      // nothing model-side. Bailing before the writer exists is what keeps a
+      // cancelled-during-prep follow-up from leaving an inputs-only row that
+      // survives a restart and reads as resumable.
+      if (seq !== refineSeq) return;
+      refineAc.signal.throwIfAborted();
+
+      // Everything above is recoverable input; from here on the round costs
+      // money, so the resume point goes to disk BEFORE the provider is touched.
+      let transcript: TranscriptCheckpoint | null = null;
+      if (sessionRunId) {
+        const createdAt = new Date().toISOString();
+        const refineRunId = newRefineRunId();
+        const writer = createCheckpointWriter({
+          runId: refineRunId,
+          surface: "generator-refine",
+          // The `cwd` column is the store's generic scope key (SQL filters on
+          // it; commit-review scopes by source dir). Scoping by the draft's
+          // runId turns the review pane's probe into a one-row lookup instead
+          // of "fetch the 10 newest payloads and filter in TS", and makes
+          // "drop every row for this draft" a single list call.
+          cwd: sessionRunId,
+          createdAt,
+        });
+        const basePayload: GeneratorRefineCheckpointV1 = {
+          v: 1,
+          surface: "generator-refine",
+          runId: refineRunId,
+          sessionRunId,
+          createdAt,
+          modelId,
+          sourceRoot,
+          customInstructions: prepared.customInstructions,
+          round,
+          prepared: {
+            userPrompt: prepared.userPrompt,
+            attachments: toCheckpointAttachments(prepared.attachments),
+          },
+          activity: [],
+          transcript: null,
+          lastOutcome: null,
+        };
+        const buildPayload = (
+          outcome: CheckpointOutcome | null,
+        ): GeneratorRefineCheckpointV1 => ({
+          ...basePayload,
+          activity: get().activityLog,
+          transcript,
+          lastOutcome: outcome,
+        });
+        cp = { writer, buildPayload };
+        await writer.flush(basePayload);
+      }
+
+      const liveCp = cp;
+      const result: RunResult = await executeQaAnalystRun(prepared, {
+        keys,
+        local: localProviderConfig(prefs),
+        onActivity: onRunActivity,
+        onCheckpoint: (checkpoint) => {
+          // A step finishing in the same tick as a cancel (or after a newer
+          // round took over) must not queue a live payload on top of the
+          // terminal outcome that was just written.
+          if (seq !== refineSeq || !liveCp) return;
+          transcript = toTranscript(checkpoint, null);
+          liveCp.writer.save(liveCp.buildPayload(null));
+        },
         signal: refineAc.signal,
       });
 
-      // Bail out gracefully when the model returned nothing structured —
-      // better to keep the user's existing batch than to wipe it for an
-      // empty refine response. Surface inline so the user stays in review.
-      if (
-        result.batch.cases.length === 0 &&
-        result.batch.bugs.length === 0
-      ) {
-        set((curr) => ({
-          isRefining: false,
-          stepLabel: "",
-          refineError:
-            "The model returned an empty refine result — your previous draft is unchanged. Try a more specific instruction.",
-          refineRounds: [
-            ...curr.refineRounds,
-            {
-              timestamp: roundStartedAt,
-              instruction: text,
-              activityLog: curr.activityLog,
-              beforeCases,
-              afterCases: beforeCases,
-              beforeBugs,
-              afterBugs: beforeBugs,
-              outcome: "empty",
-            },
-          ],
-        }));
-        schedulePersistDraft();
-        return;
-      }
-
-      // Carry forward analysis the refine didn't invalidate. Similarity is
-      // title-based, so a case the refine kept titled the same keeps its
-      // "similar to #X" matches. The confidence verdict and the reviewer's
-      // chosen outcome are CONTENT-based, so they only survive when the case is
-      // unchanged (same steps + description) — a genuinely edited case gets a
-      // clean slate so a stale score can't mislead. New/renamed cases start
-      // empty. This is why undo no longer has to "bring back" similarity /
-      // confidence for cases the refine never touched.
-      const normTitle = (t: string) => t.trim().toLowerCase();
-      const prevByTitle = new Map<string, ReviewedCase>();
-      for (const pc of snapshot.cases) prevByTitle.set(normTitle(pc.title), pc);
-      const nextCases: ReviewedCase[] = result.batch.cases.map((c) => {
-        const prev = prevByTitle.get(normTitle(c.title));
-        const contentUnchanged =
-          !!prev &&
-          JSON.stringify(prev.steps) === JSON.stringify(c.steps) &&
-          (prev.description ?? "") === (c.description ?? "");
-        return {
-          ...c,
-          uid: uid(),
-          decision: "keep" as const,
-          similarMatches: prev ? prev.similarMatches : [],
-          // Carry the reviewer's "update existing case #N" binding forward on a
-          // title match — it's an ADO-case identity, NOT tied to the draft body,
-          // so gate on `prev` (title), not `contentUnchanged`. Without this a
-          // refine silently drops the binding and publish CREATES a duplicate
-          // work item instead of updating the case the reviewer chose.
-          ...(prev?.updateTargetCaseId != null
-            ? { updateTargetCaseId: prev.updateTargetCaseId }
-            : {}),
-          ...(contentUnchanged && prev?.verdict ? { verdict: prev.verdict } : {}),
-          ...(contentUnchanged && prev?.desiredOutcome
-            ? {
-                desiredOutcome: prev.desiredOutcome,
-                outcomeAuto: prev.outcomeAuto,
-              }
-            : {}),
-        };
+      await settleRefineRun({
+        seq,
+        sessionRunId,
+        resumed: false,
+        result,
+        round,
+        snapshot,
+        stepCap: SURFACE_STEP_CAPS.generator,
+        cp,
       });
-      const nextBugs: ReviewedBug[] = result.batch.bugs.map((b) => ({
-        ...b,
-        uid: uid(),
-        decision: "keep",
-      }));
-
-      set((curr) => ({
-        isRefining: false,
-        cases: reconcileAutoOutcomes(nextCases, nextBugs),
-        bugs: nextBugs,
-        rawText: result.rawText,
-        stepLabel: "",
-        refineUndoSnapshot: snapshot,
-        // Record the prompt in history (newest first, dedup'd, capped).
-        refineHistory: [
-          text,
-          ...curr.refineHistory.filter((p) => p !== text),
-        ].slice(0, REFINE_HISTORY_MAX),
-        // And record the structured round so the user can later read
-        // back the thinking process behind why the draft looks like
-        // this. Survives a window close via the draft autosave path.
-        refineRounds: [
-          ...curr.refineRounds,
-          {
-            timestamp: roundStartedAt,
-            instruction: text,
-            activityLog: curr.activityLog,
-            beforeCases,
-            afterCases: nextCases.length,
-            beforeBugs,
-            afterBugs: nextBugs.length,
-            outcome: "ok",
-          },
-        ],
-      }));
-      schedulePersistDraft();
     } catch (e) {
-      // Refine errors stay inside the review phase — wiping the user back to
-      // the input screen would lose their draft, which is exactly what they
-      // were trying to refine. Surface the error inline; the user can read
-      // it, fix the underlying issue, and try again.
-      const cancelled = isCancelledError(e);
-      if (!cancelled) {
-        console.error("[generator] refine failed:", e);
-      }
-      const errorText = cancelled ? "" : errToString(e);
-      set((curr) => ({
-        isRefining: false,
-        stepLabel: "",
-        // Cancelled runs don't leave a banner — the user asked to abort, so
-        // showing them an error after they pressed ESC is hostile UX.
-        refineError: cancelled ? null : errorText,
-        refineRounds: [
-          ...curr.refineRounds,
-          {
-            timestamp: roundStartedAt,
-            instruction: text,
-            activityLog: curr.activityLog,
-            beforeCases,
-            afterCases: beforeCases,
-            beforeBugs,
-            afterBugs: beforeBugs,
-            outcome: cancelled ? "empty" : "failed",
-            error: cancelled ? "Cancelled before completion." : errorText,
-          },
-        ],
-      }));
-      schedulePersistDraft();
+      await settleRefineFailure({
+        seq,
+        sessionRunId,
+        resumed: false,
+        round,
+        error: e,
+        cp,
+      });
     } finally {
       if (refineAbort === refineAc) refineAbort = null;
+    }
+  },
+
+  resumeRefine: async () => {
+    const start = get();
+    if (start.phase !== "review" || start.isRefining) return;
+    const target = start.refineResumable;
+    if (!target) return;
+    // Claim the refine slot synchronously — every gate below awaits, so
+    // without this a double-click starts two runs on the same checkpoint.
+    const seq = ++refineSeq;
+    set({
+      isRefining: true,
+      stepLabel: "Resuming follow-up…",
+      error: null,
+      errorPhase: null,
+      refineError: null,
+      refineResumable: null,
+    });
+    // Minted before the checkpoint read, like refine() does before its prep:
+    // ESC during that read has to have something to abort, or the round would
+    // start anyway once the row came back.
+    const refineAc = new AbortController();
+    refineAbort = refineAc;
+    /** Give the slot back — but only if nothing newer claimed it meanwhile,
+     *  otherwise this bail would un-stick a round that IS running. */
+    const bail = (patch: Partial<SessionState>): void => {
+      if (seq !== refineSeq) return;
+      set({ isRefining: false, stepLabel: "", ...patch });
+    };
+
+    let row: Awaited<ReturnType<typeof getCheckpoint>> = null;
+    try {
+      row = await getCheckpoint(target.runId);
+    } catch (e) {
+      console.warn("[generator] couldn't read the refine checkpoint:", e);
+    }
+    // Cancelled (or superseded) while the row was being read — the resume
+    // never reached the provider, so there's nothing to record. The row is
+    // untouched, so put the affordance back rather than stranding a resume
+    // point the user can no longer see.
+    if (seq !== refineSeq || refineAc.signal.aborted) {
+      bail({ refineResumable: target });
+      return;
+    }
+    if (!row || row.payload.surface !== "generator-refine") {
+      bail({
+        refineResumable: null,
+        refineError:
+          "The saved progress for that follow-up is gone — send it again.",
+      });
+      return;
+    }
+    const payload = row.payload;
+    // The transcript is pinned to the model that produced it, so a retired id
+    // can't be resumed. Keep the row (harmless) but drop the affordance —
+    // clicking Resume could only ever fail.
+    if (!isKnownModelId(payload.modelId)) {
+      bail({
+        refineResumable: null,
+        refineError: `This follow-up ran on ${payload.modelId}, which is no longer available, so it can't be resumed. Send it again with a current model.`,
+      });
+      return;
+    }
+    // A row truncated by an older/partial write has no prompt to replay.
+    // parseCheckpointRow only validates the envelope, so guard here rather
+    // than let the deref below reject outside the try and pin the composer to
+    // its running strip. (resumeAnalyze guards the same field.)
+    if (!payload.prepared?.userPrompt) {
+      bail({
+        refineResumable: null,
+        refineError:
+          "That follow-up's saved progress is incomplete — send it again.",
+      });
+      void deleteCheckpoint(payload.runId).catch(() => {});
+      return;
+    }
+
+    const { cap, resumeMessages } = resumeBudget(payload);
+    const base = payload.transcript;
+    // Re-read: the draft is what the user sees NOW, which is the undo point a
+    // completed resume should restore, and the basis for carrying verdicts /
+    // update-bindings forward. (Nothing can edit it while a refine runs.)
+    const live = get();
+    const snapshot = {
+      cases: live.cases,
+      bugs: live.bugs,
+      rawText: live.rawText,
+    };
+    // Seeded from the checkpoint so the log reads as one continuous round.
+    set({ activityLog: payload.activity });
+
+    const writer = createCheckpointWriter({
+      runId: payload.runId,
+      surface: "generator-refine",
+      cwd: payload.sessionRunId,
+      createdAt: payload.createdAt,
+    });
+    let transcript: TranscriptCheckpoint | null = base;
+    const buildPayload = (
+      outcome: CheckpointOutcome | null,
+    ): GeneratorRefineCheckpointV1 => ({
+      ...payload,
+      activity: get().activityLog,
+      transcript,
+      lastOutcome: outcome,
+    });
+    const cp: RefineCheckpointCtx = { writer, buildPayload };
+
+    // Every input is frozen at what the round started with — re-assembling the
+    // prompt here would refine a draft the transcript never saw.
+    const prepared: PreparedAnalystRun = {
+      modelId: payload.modelId,
+      userPrompt: payload.prepared.userPrompt,
+      attachments: payload.prepared.attachments,
+      sourceRoot: payload.sourceRoot,
+      customInstructions: payload.customInstructions,
+    };
+
+    try {
+      const prefs = usePreferencesStore.getState();
+      const keys = await useChatStore.getState().ensureApiKeys();
+      const result: RunResult = await executeQaAnalystRun(prepared, {
+        keys,
+        local: localProviderConfig(prefs),
+        maxSteps: cap,
+        resumeMessages,
+        onActivity: onRunActivity,
+        onCheckpoint: (checkpoint) => {
+          if (seq !== refineSeq) return;
+          // checkpoint.messages already carries the resumed prefix (the runner
+          // prepends it), so only the COUNTERS need the earlier totals added.
+          transcript = toTranscript(checkpoint, base);
+          writer.save(buildPayload(null));
+        },
+        signal: refineAc.signal,
+      });
+      await settleRefineRun({
+        seq,
+        sessionRunId: payload.sessionRunId,
+        resumed: true,
+        result,
+        round: payload.round,
+        snapshot,
+        stepCap: cap,
+        cp,
+      });
+    } catch (e) {
+      await settleRefineFailure({
+        seq,
+        sessionRunId: payload.sessionRunId,
+        resumed: true,
+        round: payload.round,
+        error: e,
+        cp,
+      });
+    } finally {
+      if (refineAbort === refineAc) refineAbort = null;
+    }
+  },
+
+  discardRefineCheckpoint: () => {
+    const target = get().refineResumable;
+    if (!target) return;
+    void deleteCheckpoint(target.runId).catch(() => {});
+    set({ refineResumable: null });
+  },
+
+  probeRefineCheckpoint: async () => {
+    const s = get();
+    // Nothing to adopt over: a live round owns the slot, and an affordance
+    // that's already showing came from this session's own terminal write.
+    if (s.isRefining || s.refineResumable) return;
+    if (s.phase !== "review") return;
+    const sessionRunId = s.runId;
+    if (!sessionRunId) return;
+
+    let entries: Awaited<ReturnType<typeof listCheckpoints>>;
+    try {
+      // Scoped in SQL by the draft's runId (see the writer's cwd comment), so
+      // opening a draft that never ran a follow-up costs one list call and
+      // zero payload reads.
+      entries = await listCheckpoints("generator-refine", sessionRunId);
+    } catch {
+      return;
+    }
+    // Newest first (the Rust list orders by updated_at DESC), so the first
+    // match is the follow-up the user last had running. Bounded anyway: a
+    // draft shouldn't cost N round-trips to open however it got its rows.
+    for (const entry of entries.slice(0, 10)) {
+      let cp: Awaited<ReturnType<typeof getCheckpoint>> = null;
+      try {
+        cp = await getCheckpoint(entry.runId);
+      } catch {
+        continue;
+      }
+      if (!cp || cp.payload.surface !== "generator-refine") continue;
+      const p = cp.payload;
+      if (p.sessionRunId !== sessionRunId) continue;
+      // Same gate as every Resume affordance: a round that answered badly, or
+      // died non-resumably, would just re-fail.
+      if (!canOfferResume(p.lastOutcome, p.lastOutcome?.message ?? null)) {
+        continue;
+      }
+      // Re-validate in the same synchronous step as the patch — the user may
+      // have sent a new follow-up (or closed the draft) during the awaits.
+      const now = get();
+      if (now.isRefining || now.refineResumable || now.runId !== sessionRunId) {
+        return;
+      }
+      set({
+        refineResumable: {
+          runId: p.runId,
+          instruction: p.round.instruction,
+          stepsUsed: p.transcript?.stepsUsed ?? 0,
+          totalTokens: p.transcript?.usage?.totalTokens ?? null,
+          updatedAt: cp.updatedAt,
+          outcome: p.lastOutcome,
+        },
+      });
+      return;
     }
   },
 

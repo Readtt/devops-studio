@@ -74,6 +74,51 @@ export type GeneratorCheckpointV1 = {
   lastOutcome: CheckpointOutcome | null;
 };
 
+/** A review-phase follow-up ("ask follow-up" / refine), checkpointed on its own
+ *  surface rather than as a variant of the generator payload. Two reasons it
+ *  can't share `generator`: the analyze recovery paths (TabContent rehydrate,
+ *  History's interrupted list) key on `surface === "generator"` and would drop a
+ *  restored review draft back onto the empty input form; and a follow-up runs
+ *  while its analyze checkpoint may still exist, so they need separate rows.
+ *
+ *  The runId is per-ROUND (not per-session) so a follow-up cancelled and
+ *  immediately re-sent can't have the older run's trailing throttled write land
+ *  on the newer run's row. `sessionRunId` is what ties the row back to the draft
+ *  it belongs to — that's the key the review pane probes on. */
+export type GeneratorRefineCheckpointV1 = {
+  v: 1;
+  surface: "generator-refine";
+  /** This round's own id — see the per-round rationale above. */
+  runId: string;
+  /** The generation run (history row / tab) this follow-up refines. Also
+   *  written to the row's `cwd` column — the store's generic scope key — so
+   *  the review pane can look up "this draft's rounds" in SQL instead of
+   *  scanning payloads. This field stays the authority; the column is an
+   *  index. */
+  sessionRunId: string;
+  createdAt: string;
+  modelId: ModelId;
+  sourceRoot: string | null;
+  customInstructions?: string;
+  /** The follow-up itself plus the bookkeeping its RefineRound is recorded
+   *  under, so a resumed round lands in history as the round the user started
+   *  — not as a new one dated at resume time. */
+  round: {
+    instruction: string;
+    startedAt: string;
+    beforeCases: number;
+    beforeBugs: number;
+  };
+  /** Assembled prompt + vision set, replayed verbatim on resume. The draft the
+   *  follow-up was sent against is already rendered INTO this prompt, which is
+   *  why the payload doesn't carry a second copy of it — one that would be
+   *  rewritten every ~500ms for the life of the run. */
+  prepared: { userPrompt: string; attachments: Attachment[] };
+  activity: ActivityEntry[];
+  transcript: TranscriptCheckpoint | null;
+  lastOutcome: CheckpointOutcome | null;
+};
+
 export type CommitReviewCheckpointV1 = {
   v: 1;
   surface: "commit-review";
@@ -98,10 +143,21 @@ export type CommitReviewCheckpointV1 = {
   lastOutcome: CheckpointOutcome | null;
 };
 
-export type CheckpointPayload = GeneratorCheckpointV1 | CommitReviewCheckpointV1;
+export type CheckpointPayload =
+  | GeneratorCheckpointV1
+  | GeneratorRefineCheckpointV1
+  | CommitReviewCheckpointV1;
 
 export const CHECKPOINT_PAYLOAD_VERSION = 1;
 export const MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
+
+/** Every surface a checkpoint row can belong to. The envelope guard reads this,
+ *  so adding a surface here is the only place a new one has to be declared. */
+const CHECKPOINT_SURFACES = [
+  "generator",
+  "generator-refine",
+  "commit-review",
+] as const;
 
 /** Appended as a user message after the transcript when resuming a run that
  *  hit its step cap. */
@@ -186,12 +242,14 @@ function isValidEnvelope(json: unknown): json is CheckpointPayload {
   const obj = json as Record<string, unknown>;
   return (
     obj.v === CHECKPOINT_PAYLOAD_VERSION &&
-    (obj.surface === "generator" || obj.surface === "commit-review")
+    CHECKPOINT_SURFACES.includes(
+      obj.surface as CheckpointPayload["surface"],
+    )
   );
 }
 
-/** Defensive parse. JSON.parse in try/catch; envelope guard: v === 1 and
- *  surface is "generator" | "commit-review" → otherwise null. When
+/** Defensive parse. JSON.parse in try/catch; envelope guard: v === 1 and a
+ *  known surface (CHECKPOINT_SURFACES) → otherwise null. When
  *  transcript is present, validate transcript.messages with
  *  z.array(modelMessageSchema).safeParse (modelMessageSchema is exported by
  *  the `ai` package); on failure DEGRADE: return the payload with

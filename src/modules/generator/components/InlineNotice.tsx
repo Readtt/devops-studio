@@ -45,6 +45,7 @@ export function InlineNotice({
   label,
   children,
   hint,
+  action,
   icon = AlertCircleIcon,
   onDismiss,
   dismissLabel = "Dismiss",
@@ -63,6 +64,10 @@ export function InlineNotice({
   children: ReactNode;
   /** Muted helper line under the message (e.g. "Your draft is unchanged…"). */
   hint?: ReactNode;
+  /** Recovery controls under the message — the pattern RunErrorPanel uses for
+   *  "Resume run", kept here so an inline failure can offer the same one-click
+   *  continuation instead of stacking a second banner above it. */
+  action?: ReactNode;
   /** Glyph in the left rail. Defaults to the alert circle. */
   icon?: typeof AlertCircleIcon;
   /** When provided, renders a dismiss (×) button wired to this handler. */
@@ -111,6 +116,11 @@ export function InlineNotice({
           <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
             {hint}
           </p>
+        ) : null}
+        {action ? (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            {action}
+          </div>
         ) : null}
       </div>
       {onDismiss ? (

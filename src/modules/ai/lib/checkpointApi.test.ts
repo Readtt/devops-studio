@@ -19,6 +19,7 @@ import {
   sanitizeTranscriptMessages,
   type CommitReviewCheckpointV1,
   type GeneratorCheckpointV1,
+  type GeneratorRefineCheckpointV1,
 } from "./checkpointApi";
 
 function makeGeneratorPayload(
@@ -169,6 +170,29 @@ describe("parseCheckpointRow", () => {
 
   it("round-trips a valid commit-review payload", () => {
     const payload = makeCommitReviewPayload();
+    expect(parseCheckpointRow(JSON.stringify(payload))).toEqual(payload);
+  });
+
+  it("round-trips a valid generator-refine payload", () => {
+    const payload: GeneratorRefineCheckpointV1 = {
+      v: 1,
+      surface: "generator-refine",
+      runId: "rfn-1",
+      sessionRunId: "run-1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      modelId: "claude-opus-5",
+      sourceRoot: "/repo",
+      round: {
+        instruction: "tighten step 2",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        beforeCases: 3,
+        beforeBugs: 1,
+      },
+      prepared: { userPrompt: "prompt", attachments: [] },
+      activity: [],
+      transcript: null,
+      lastOutcome: { at: "2026-01-01T00:01:00.000Z", kind: "cancelled" },
+    };
     expect(parseCheckpointRow(JSON.stringify(payload))).toEqual(payload);
   });
 

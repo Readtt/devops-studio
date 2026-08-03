@@ -88,6 +88,10 @@ Long runs are interruption-proof: every agentic step checkpoints to disk, so a
 quit, crash, rate limit, or dropped connection ends in a one-click **Resume**
 that replays the saved transcript — the investigation you already paid for is
 never re-run. Runs whose tab is gone resurface as *interrupted* rows in History.
+Review-phase **follow-ups** are covered too: stop one mid-thought (or quit with
+it running) and the composer offers to pick it up where it left off, on the
+model it started with, with your draft untouched until it finishes — reopen the
+draft and the offer is still there.
 
 ## Install
 

@@ -40,6 +40,8 @@ import {
 } from "../store/useGenerationSession";
 import { AnalyzeActivityLog } from "./AnalyzeActivityLog";
 import { InlineNotice } from "./InlineNotice";
+import { relativeTime, ResumeCard } from "@/modules/ai/components/ResumeCard";
+import { canOfferResume } from "@/modules/ai/lib/errorClass";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { getModel } from "@/modules/ai/config";
@@ -114,6 +116,14 @@ type Props = {
   isRefining: boolean;
 };
 
+/** The resume card's fact line is one truncating row, so a long follow-up has
+ *  to be clamped here rather than left to CSS — otherwise the instruction eats
+ *  the step count and the timestamp that follow it. */
+function clampInstruction(text: string, max = 64): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
 /** Stdin-style follow-up composer pinned to the bottom of the review pane.
  *  Reads like a REPL prompt continuing the same session — the user types a
  *  natural-language instruction (or picks a preset) and the model refines
@@ -139,6 +149,15 @@ export function RefineComposer({ isRefining }: Props) {
   const refineHistory = useGenerationSession((s) => s.refineHistory);
   const refineRounds = useGenerationSession((s) => s.refineRounds);
   const cancelRefine = useGenerationSession((s) => s.cancelRefine);
+  const refineResumable = useGenerationSession((s) => s.refineResumable);
+  const resumeRefine = useGenerationSession((s) => s.resumeRefine);
+  const discardRefineCheckpoint = useGenerationSession(
+    (s) => s.discardRefineCheckpoint,
+  );
+  const probeRefineCheckpoint = useGenerationSession(
+    (s) => s.probeRefineCheckpoint,
+  );
+  const runId = useGenerationSession((s) => s.runId);
   const attachments = useGenerationSession((s) => s.attachments);
   const addRichAttachment = useGenerationSession((s) => s.addRichAttachment);
   const removeAttachment = useGenerationSession((s) => s.removeAttachment);
@@ -220,6 +239,16 @@ export function RefineComposer({ isRefining }: Props) {
     }
   }, [isRefining]);
 
+  // A follow-up interrupted by an app quit (or a tab closed mid-round) lives
+  // only on disk: the draft comes back from its history row, but nothing in
+  // that row knows a round was in flight. Probe once per draft so the spend
+  // resurfaces as a Resume instead of being silently lost. The action
+  // self-guards — it bails when a round is live or an affordance already shows.
+  useEffect(() => {
+    if (!runId) return;
+    void probeRefineCheckpoint();
+  }, [runId, probeRefineCheckpoint]);
+
   // ESC during a refine kills the running claude subprocess and returns
   // the user to the composer with their draft untouched. The handler lives
   // at the window level so the user can press ESC without first clicking
@@ -248,6 +277,15 @@ export function RefineComposer({ isRefining }: Props) {
   );
 
   const codeSearchOn = codeSearchEnabled && !!sourceRoot;
+
+  // Same gate every other Resume affordance uses: a round that answered badly,
+  // or died of a context overflow, would only re-fail.
+  const offerRefineResume =
+    !!refineResumable &&
+    canOfferResume(
+      refineResumable.outcome,
+      refineResumable.outcome?.message ?? refineError,
+    );
 
   // Context guardrail for the follow-up. A refine re-sends the current draft
   // plus the instruction plus attachments plus the always-injected baseline, so
@@ -354,19 +392,31 @@ export function RefineComposer({ isRefining }: Props) {
             </span>
             <div className="flex shrink-0 items-center gap-1.5">
               <Kbd>Esc</Kbd>
-              <Button
-                size="xs"
-                variant="ghost"
-                onClick={cancelRefine}
-                className="h-5 gap-1 px-1.5 font-mono text-[10px] uppercase tracking-wider text-destructive hover:bg-destructive/10 hover:text-destructive"
-              >
-                <HugeiconsIcon
-                  icon={Cancel01Icon}
-                  size={10}
-                  strokeWidth={2}
-                />
-                cancel
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    onClick={cancelRefine}
+                    className="h-5 gap-1 px-1.5 font-mono text-[10px] uppercase tracking-wider text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  >
+                    <HugeiconsIcon
+                      icon={Cancel01Icon}
+                      size={10}
+                      strokeWidth={2}
+                    />
+                    cancel
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="top"
+                  className="max-w-[260px] text-[11px]"
+                >
+                  Stops this follow-up and leaves your draft as it is.
+                  Progress is checkpointed — you can resume it from here
+                  afterwards.
+                </TooltipContent>
+              </Tooltip>
             </div>
           </div>
           <AnalyzeActivityLog entries={activityLog} running />
@@ -492,6 +542,12 @@ export function RefineComposer({ isRefining }: Props) {
     <section className="relative">
       <DockHeader rightSlot={headerExtras} />
 
+      {/* One affordance at a time. A failure that's worth continuing puts
+          Resume inside the error box (the RunErrorPanel pattern) rather than
+          stacking a second banner; a round that stopped WITHOUT an error —
+          you pressed ESC, or the app quit mid-round — has no error to show,
+          so it gets the standalone card. Dismissing the error falls through
+          to that card, which is why Resume survives the ×. */}
       {refineError ? (
         <InlineNotice
           tone="error"
@@ -499,10 +555,82 @@ export function RefineComposer({ isRefining }: Props) {
           className="mb-2"
           onDismiss={dismissRefineError}
           dismissLabel="Dismiss refine error"
-          hint="Your draft is unchanged — fix the underlying issue and try again."
+          hint={
+            !offerRefineResume
+              ? "Your draft is unchanged — fix the underlying issue and try again."
+              : (refineResumable?.stepsUsed ?? 0) > 0
+                ? "Your draft is unchanged. Resuming picks up from what the model already read — the steps you paid for aren't re-run — and re-sends the draft as it was when you asked."
+                : "Your draft is unchanged. Nothing was read before it failed, so resuming re-runs the follow-up against the draft as it was when you asked."
+          }
+          action={
+            offerRefineResume ? (
+              <>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button size="xs" onClick={() => void resumeRefine()}>
+                      <HugeiconsIcon
+                        icon={PlayIcon}
+                        size={10}
+                        strokeWidth={2}
+                      />
+                      resume follow-up
+                    </Button>
+                  </TooltipTrigger>
+                  {/* Deliberately short — the hint line right above already
+                      spells out what gets re-sent and what isn't re-run. */}
+                  <TooltipContent
+                    side="top"
+                    className="max-w-[240px] text-[11px]"
+                  >
+                    Continues where it stopped, on the model it started with.
+                  </TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      onClick={discardRefineCheckpoint}
+                    >
+                      discard
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent
+                    side="top"
+                    className="max-w-[260px] text-[11px]"
+                  >
+                    Deletes the saved progress for this follow-up. You can
+                    still re-send it from scratch.
+                  </TooltipContent>
+                </Tooltip>
+              </>
+            ) : undefined
+          }
         >
           {refineError}
         </InlineNotice>
+      ) : offerRefineResume && refineResumable ? (
+        <ResumeCard
+          className="mb-2"
+          title={
+            refineResumable.outcome?.kind === "cancelled"
+              ? "You stopped this follow-up"
+              : "Your follow-up didn't finish"
+          }
+          detail={[
+            `“${clampInstruction(refineResumable.instruction)}”`,
+            refineResumable.stepsUsed > 0
+              ? `${refineResumable.stepsUsed} step${
+                  refineResumable.stepsUsed === 1 ? "" : "s"
+                } in`
+              : null,
+            relativeTime(refineResumable.updatedAt),
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+          onResume={() => void resumeRefine()}
+          onDiscard={discardRefineCheckpoint}
+        />
       ) : null}
 
       {refineUndoSnapshot ? (

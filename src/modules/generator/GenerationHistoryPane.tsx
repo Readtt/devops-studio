@@ -249,6 +249,18 @@ export function GenerationHistoryPane({
       } catch {
         // ignore — refresh will reconcile on next mount
       }
+      // An unfinished follow-up is scoped to the draft it refines, so deleting
+      // the draft strands its row: nothing can reach a checkpoint whose session
+      // no longer exists, and each one holds a full transcript. Best-effort —
+      // the per-surface keep-10 trim is the backstop if this fails.
+      try {
+        const orphans = await listCheckpoints("generator-refine", runId);
+        await Promise.all(
+          orphans.map((o) => deleteCheckpoint(o.runId).catch(() => {})),
+        );
+      } catch {
+        // ignore
+      }
     },
     [],
   );
