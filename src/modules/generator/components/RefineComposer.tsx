@@ -556,9 +556,11 @@ export function RefineComposer({ isRefining }: Props) {
           onDismiss={dismissRefineError}
           dismissLabel="Dismiss refine error"
           hint={
-            offerRefineResume
-              ? "Your draft is unchanged. Resuming picks up from what the model already read — the steps you paid for aren't re-run."
-              : "Your draft is unchanged — fix the underlying issue and try again."
+            !offerRefineResume
+              ? "Your draft is unchanged — fix the underlying issue and try again."
+              : (refineResumable?.stepsUsed ?? 0) > 0
+                ? "Your draft is unchanged. Resuming picks up from what the model already read — the steps you paid for aren't re-run — and re-sends the draft as it was when you asked."
+                : "Your draft is unchanged. Nothing was read before it failed, so resuming re-runs the follow-up against the draft as it was when you asked."
           }
           action={
             offerRefineResume ? (
@@ -576,11 +578,13 @@ export function RefineComposer({ isRefining }: Props) {
                   </TooltipTrigger>
                   <TooltipContent
                     side="top"
-                    className="max-w-[260px] text-[11px]"
+                    className="max-w-[280px] text-[11px]"
                   >
                     Continues this follow-up where it stopped, on the model it
-                    started with. Finished steps aren&rsquo;t re-run, and your
-                    draft only changes if it completes.
+                    started with, and your draft only changes if it completes.
+                    It re-sends the draft as it was when you asked — any edits
+                    you&rsquo;ve made since won&rsquo;t survive it (undo refine
+                    brings them back).
                   </TooltipContent>
                 </Tooltip>
                 <Tooltip>

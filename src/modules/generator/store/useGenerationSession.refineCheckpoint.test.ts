@@ -81,10 +81,10 @@ function reviewStore(): GenerationSessionStore {
     phase: "review",
     runId: SESSION_RUN_ID,
     requirements: "Users can reset a forgotten password.",
-    // No plan/suite ⇒ refine skips the ADO context prefetch entirely, so any
-    // ado_* command showing up in a test is a genuine regression.
-    planId: null,
-    suiteId: null,
+    // A real plan/suite, so refine DOES run the ADO context prefetch. That's
+    // what gives "a resume re-reads nothing" something to actually prove.
+    planId: 11,
+    suiteId: 22,
     cases: [draftCase("Reset password happy path")],
     bugs: [],
     rawText: "{}",
@@ -244,45 +244,71 @@ describe("refine — checkpointing a follow-up", () => {
   });
 });
 
-/** Disk simulation: ai_checkpoint_get serves whatever the last save wrote, so a
- *  resume reads the real round-trip (JSON parse and all) rather than a fixture. */
-function withCheckpointDisk(): { get: () => string | null } {
-  let disk: string | null = null;
-  let runId = "";
+type DiskRow = {
+  runId: string;
+  surface: string;
+  cwd: string | null;
+  payload: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** Multi-row disk simulation over the four ai_checkpoint_* commands, so tests
+ *  see the real round-trip (JSON parse, surface/cwd filtering, newest-first
+ *  ordering) instead of a fixture — and so a test can assert which rows were
+ *  actually left behind. Returns the live row map. */
+function checkpointDisk(): Map<string, DiskRow> {
+  const rows = new Map<string, DiskRow>();
   invoke.mockImplementation(async (cmd: unknown, args?: unknown) => {
     if (cmd === "ai_checkpoint_save") {
-      const input = (args as { input: { payload: string; runId: string } })
-        .input;
-      disk = input.payload;
-      runId = input.runId;
+      const input = (args as { input: DiskRow }).input;
+      rows.set(input.runId, { ...input });
       return undefined;
     }
     if (cmd === "ai_checkpoint_delete") {
-      disk = null;
+      rows.delete((args as { input: { runId: string } }).input.runId);
       return undefined;
     }
     if (cmd === "ai_checkpoint_get") {
-      if (!disk) return null;
-      return {
-        runId,
-        surface: "generator-refine",
-        cwd: null,
-        payload: disk,
-        createdAt: "2026-08-01T00:00:00.000Z",
-        updatedAt: "2026-08-01T00:05:00.000Z",
-      };
+      return rows.get((args as { input: { runId: string } }).input.runId) ?? null;
     }
     if (cmd === "ai_checkpoint_list") {
-      return disk ? [{ runId, cwd: null, createdAt: "t0", updatedAt: "t1" }] : [];
+      const { surface, cwd } = (
+        args as { input: { surface: string; cwd: string | null } }
+      ).input;
+      return Array.from(rows.values())
+        .filter((r) => r.surface === surface && (cwd == null || r.cwd === cwd))
+        .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))
+        .map((r) => ({
+          runId: r.runId,
+          cwd: r.cwd,
+          createdAt: r.createdAt,
+          updatedAt: r.updatedAt,
+        }));
     }
     return undefined;
   });
-  return { get: () => disk };
+  return rows;
+}
+
+/** A round that reports one completed step, then hangs until aborted. */
+function hangingRound(): (p: unknown, o: ExecuteAnalystOptions) => Promise<never> {
+  return (_p, opts) =>
+    new Promise((_resolve, reject) => {
+      opts.onCheckpoint?.({
+        messages: [{ role: "assistant", content: "read auth.ts" }],
+        stepsUsed: 1,
+        usage: {},
+      });
+      opts.signal?.addEventListener("abort", () =>
+        reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+      );
+    });
 }
 
 describe("resumeRefine — replaying the paid-for round", () => {
   it("hands the engine the persisted transcript + prompt, rebuilding nothing", async () => {
-    withCheckpointDisk();
+    checkpointDisk();
     const store = reviewStore();
     const messages = [
       { role: "assistant" as const, content: "I already read auth.ts." },
@@ -303,6 +329,9 @@ describe("resumeRefine — replaying the paid-for round", () => {
     // The throttled writer coalesces per-step saves; the terminal flush is what
     // guarantees the transcript is on disk before we resume.
     expect(store.getState().refineResumable?.stepsUsed).toBe(2);
+    // A FRESH round does rebuild the plan/suite context from ADO — which is
+    // what makes the "resume re-reads nothing" assertion below meaningful.
+    expect(invokedCommands().some((c) => c.startsWith("ado_"))).toBe(true);
 
     // Round 2: the same round continues.
     executeQaAnalystRun.mockResolvedValueOnce(okBatch("Corrected case"));
@@ -340,7 +369,7 @@ describe("resumeRefine — replaying the paid-for round", () => {
   });
 
   it("gives a step-capped round the top-up budget and an explicit finish-now turn", async () => {
-    withCheckpointDisk();
+    checkpointDisk();
     const store = reviewStore();
     executeQaAnalystRun.mockImplementationOnce(
       async (_p: unknown, opts: ExecuteAnalystOptions) => {
@@ -375,7 +404,7 @@ describe("resumeRefine — replaying the paid-for round", () => {
   });
 
   it("refuses to resume onto a retired model instead of looping the button", async () => {
-    withCheckpointDisk();
+    checkpointDisk();
     const store = reviewStore();
     executeQaAnalystRun.mockRejectedValueOnce(new Error("fetch failed"));
     await store.getState().refine("anything");
@@ -408,6 +437,170 @@ describe("resumeRefine — replaying the paid-for round", () => {
     expect(s.isRefining).toBe(false);
     expect(s.refineResumable).toBeNull();
     expect(s.refineError).toContain("no longer available");
+  });
+});
+
+// A round that loses its slot — the user superseded it, or walked away from the
+// draft entirely — must take its row with it. Left behind, the row has no
+// terminal outcome, which reads to the probe exactly like an app-quit
+// interruption: it would resurface later offering to overwrite a newer draft
+// with a two-generations-old one.
+describe("refine — a round that can't apply its result leaves nothing behind", () => {
+  it("cleans up after itself when the user cancels and immediately re-sends", async () => {
+    const rows = checkpointDisk();
+    const store = reviewStore();
+
+    executeQaAnalystRun.mockImplementationOnce(hangingRound());
+    const roundA = store.getState().refine("round A");
+    await vi.waitFor(() => expect(executeQaAnalystRun).toHaveBeenCalledTimes(1));
+    // ESC frees the composer immediately — A's rejection is still unwinding.
+    store.getState().cancelRefine();
+    // ...and the user retypes straight away, before A has settled.
+    executeQaAnalystRun.mockResolvedValueOnce(okBatch("Refined by B"));
+    const roundB = store.getState().refine("round B");
+    await Promise.all([roundA, roundB]);
+
+    expect(store.getState().cases[0].title).toBe("Refined by B");
+    // B deleted its own row on success; A must not have orphaned one.
+    expect(Array.from(rows.keys())).toEqual([]);
+    await store.getState().probeRefineCheckpoint();
+    expect(store.getState().refineResumable).toBeNull();
+  });
+
+  it("refuses to write into a session the user has already replaced", async () => {
+    const rows = checkpointDisk();
+    const store = reviewStore();
+    let release!: (v: unknown) => void;
+    executeQaAnalystRun.mockImplementationOnce(
+      () => new Promise((resolve) => (release = resolve)),
+    );
+
+    const running = store.getState().refine("slow follow-up");
+    await vi.waitFor(() => expect(executeQaAnalystRun).toHaveBeenCalled());
+    // The user gives up on this draft and starts a brand-new generation.
+    store.getState().startNew();
+    release(okBatch("Ghost case"));
+    await running;
+
+    const s = store.getState();
+    expect(s.phase).toBe("input");
+    // None of the old draft's round may land in the fresh session — cases,
+    // thinking history and the undo snapshot all belong to a draft that's gone.
+    expect(s.cases).toEqual([]);
+    expect(s.refineRounds).toEqual([]);
+    expect(s.refineUndoSnapshot).toBeNull();
+    expect(s.refineResumable).toBeNull();
+    expect(Array.from(rows.keys())).toEqual([]);
+  });
+
+  it("stops the provider request when the session is replaced, rather than letting it bill out", async () => {
+    checkpointDisk();
+    const store = reviewStore();
+    let sawAbort = false;
+    executeQaAnalystRun.mockImplementationOnce(
+      (_p: unknown, opts: ExecuteAnalystOptions) =>
+        new Promise((resolve) => {
+          opts.signal?.addEventListener("abort", () => {
+            sawAbort = true;
+            resolve(okBatch());
+          });
+        }),
+    );
+
+    const running = store.getState().refine("slow follow-up");
+    await vi.waitFor(() => expect(executeQaAnalystRun).toHaveBeenCalled());
+    store.getState().startNew();
+    await running;
+
+    expect(sawAbort).toBe(true);
+  });
+
+  it("drops a pending follow-up when the draft is published", async () => {
+    const rows = checkpointDisk();
+    const store = reviewStore();
+    executeQaAnalystRun.mockRejectedValueOnce(new Error("fetch failed"));
+    await store.getState().refine("add negative paths");
+    expect(store.getState().refineResumable).not.toBeNull();
+    expect(rows.size).toBe(1);
+
+    // Resuming after publish re-mints every case uid, which breaks publish's
+    // okByUid idempotency map — the NEXT publish would duplicate every work
+    // item in ADO. The offer has to go before the review breadcrumb can reach
+    // it, and before a restart's probe can resurrect it.
+    void store.getState().publish().catch(() => {});
+
+    expect(store.getState().refineResumable).toBeNull();
+    await vi.waitFor(() => expect(rows.size).toBe(0));
+  });
+
+  it("stacks two failed attempts at the same instruction instead of collapsing them", async () => {
+    // Freeze the clock (Date only — the checkpoint writer's throttle still
+    // needs a real setTimeout) so both rounds get a byte-identical
+    // newTimestamp(). That's the collision case: the round-history match key
+    // is second-granular, so only a RESUME may replace an earlier entry —
+    // re-sending the same preset twice must not swallow the first attempt.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-08-01T00:00:00.000Z"));
+    try {
+      checkpointDisk();
+      const store = reviewStore();
+      executeQaAnalystRun.mockRejectedValue(new Error("fetch failed"));
+
+      await store.getState().refine("/find-bugs");
+      await store.getState().refine("/find-bugs");
+
+      const rounds = store.getState().refineRounds;
+      expect(rounds).toHaveLength(2);
+      // Pin that the collision condition was genuinely exercised.
+      expect(rounds[0].timestamp).toBe(rounds[1].timestamp);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("recovers instead of hanging when the saved row has no prompt to replay", async () => {
+    const rows = checkpointDisk();
+    const at = "2026-08-01T00:05:00.000Z";
+    // Envelope is valid, so parseCheckpointRow accepts it; `prepared` is not.
+    rows.set("rfn-broken", {
+      runId: "rfn-broken",
+      surface: "generator-refine",
+      cwd: SESSION_RUN_ID,
+      payload: JSON.stringify({
+        v: 1,
+        surface: "generator-refine",
+        runId: "rfn-broken",
+        sessionRunId: SESSION_RUN_ID,
+        createdAt: "2026-08-01T00:00:00.000Z",
+        modelId: "claude-sonnet-5",
+        sourceRoot: null,
+        round: {
+          instruction: "x",
+          startedAt: "2026-08-01T00:00:00.000Z",
+          beforeCases: 1,
+          beforeBugs: 0,
+        },
+        activity: [],
+        transcript: null,
+        lastOutcome: { at, kind: "cancelled" },
+      }),
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: at,
+    });
+
+    const store = reviewStore();
+    await store.getState().probeRefineCheckpoint();
+    expect(store.getState().refineResumable?.runId).toBe("rfn-broken");
+
+    await store.getState().resumeRefine();
+
+    const s = store.getState();
+    // The composer must not be pinned to its running strip with no way out.
+    expect(s.isRefining).toBe(false);
+    expect(s.refineResumable).toBeNull();
+    expect(s.refineError).toContain("incomplete");
+    expect(executeQaAnalystRun).not.toHaveBeenCalled();
+    expect(rows.has("rfn-broken")).toBe(false);
   });
 });
 

@@ -90,7 +90,11 @@ export type GeneratorRefineCheckpointV1 = {
   surface: "generator-refine";
   /** This round's own id — see the per-round rationale above. */
   runId: string;
-  /** The generation run (history row / tab) this follow-up refines. */
+  /** The generation run (history row / tab) this follow-up refines. Also
+   *  written to the row's `cwd` column — the store's generic scope key — so
+   *  the review pane can look up "this draft's rounds" in SQL instead of
+   *  scanning payloads. This field stays the authority; the column is an
+   *  index. */
   sessionRunId: string;
   createdAt: string;
   modelId: ModelId;

@@ -519,15 +519,28 @@ type RefineCheckpointCtx = {
  *  second round dated at resume time. */
 type RefineRoundMeta = GeneratorRefineCheckpointV1["round"];
 
-/** Record this round's outcome — replacing the entry an earlier ATTEMPT at the
- *  same round already left behind, rather than appending beside it. A resume
- *  continues one follow-up, so the thinking history should show how that
- *  follow-up ended; two rows sharing an instruction and a timestamp (one
- *  "failed", one "ok") reads as two separate asks that never happened. */
-function upsertRound(rounds: RefineRound[], next: RefineRound): RefineRound[] {
-  const i = rounds.findIndex(
-    (r) => r.timestamp === next.timestamp && r.instruction === next.instruction,
-  );
+/** Add this round's outcome to the thinking history.
+ *
+ *  A RESUME replaces the entry its earlier attempt left behind: it continues
+ *  one follow-up, so the history should show how that follow-up ended — two
+ *  rows sharing an instruction and a timestamp (one "failed", one "ok") read as
+ *  two separate asks that never happened.
+ *
+ *  A fresh round always appends, even when it matches. The match key is
+ *  second-granular (newTimestamp strips millis), so re-sending the same preset
+ *  twice inside one second would otherwise silently swallow the first attempt.
+ *  A resume is already pinned to one stored round, so it has no such ambiguity. */
+function recordRound(
+  rounds: RefineRound[],
+  next: RefineRound,
+  resumed: boolean,
+): RefineRound[] {
+  const i = resumed
+    ? rounds.findIndex(
+        (r) =>
+          r.timestamp === next.timestamp && r.instruction === next.instruction,
+      )
+    : -1;
   if (i < 0) return [...rounds, next];
   const merged = rounds.slice();
   merged[i] = next;
@@ -985,12 +998,50 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       notifyHistoryUpdated(args.runId);
     };
 
+    /** May this round still apply its result?
+     *
+     *  `refineSeq` alone isn't enough. It only covers a NEWER round taking the
+     *  slot; it says nothing about the user walking away from the draft while
+     *  this one was still unwinding — New session, Back to input, re-analyze,
+     *  Publish. Without the phase + runId checks a late round drops the old
+     *  draft's cases, refine history and undo snapshot into whatever session is
+     *  on screen now (a re-analyze even reuses the runId, so runId alone
+     *  wouldn't catch it either). settleAnalyzeRun guards on phase for exactly
+     *  this reason. */
+    const refineRoundIsCurrent = (
+      seq: number,
+      sessionRunId: string | null,
+    ): boolean => {
+      if (seq !== refineSeq) return false;
+      const s = get();
+      return s.phase === "review" && s.runId === sessionRunId;
+    };
+
+    /** A round that can't apply its result must not leave a resume point
+     *  behind either. Nothing points at its row once it loses the slot, and
+     *  probeRefineCheckpoint treats a row with no terminal outcome as an
+     *  interrupted round — so an orphan would resurface later offering to
+     *  overwrite a newer draft with a two-generations-old one. Per-round row
+     *  ids are what make this safe: deleting here can only ever touch this
+     *  round's own row, never the live one's. */
+    const abandonRefineRound = async (
+      cp: RefineCheckpointCtx | null,
+    ): Promise<void> => {
+      await cp?.writer.delete();
+    };
+
     /** Terminal handling for a follow-up that RESOLVED — shared by refine()
      *  and resumeRefine(). Mirrors settleAnalyzeRun: branch on the two "nothing
      *  usable came back" shapes, and on success swap the draft, then drop the
      *  checkpoint. */
     const settleRefineRun = async (args: {
       seq: number;
+      /** The draft this round belongs to; null when it couldn't be
+       *  checkpointed. Compared against the live runId, see above. */
+      sessionRunId: string | null;
+      /** True when this attempt continued an earlier one, so its history entry
+       *  replaces that attempt's rather than stacking beside it. */
+      resumed: boolean;
       result: RunResult;
       round: RefineRoundMeta;
       /** The draft as it stood when this attempt started: the undo point, and
@@ -1003,10 +1054,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
        *  checkpointing existed: no resume offered, draft handling unchanged. */
       cp: RefineCheckpointCtx | null;
     }): Promise<void> => {
-      // A newer round claimed the slot while this one was unwinding — writing
-      // now would un-stick its UI and clobber its resume point.
-      if (args.seq !== refineSeq) return;
       const { result, round, snapshot, cp } = args;
+      if (!refineRoundIsCurrent(args.seq, args.sessionRunId)) {
+        await abandonRefineRound(cp);
+        return;
+      }
 
       // Budget burned mid-tool-loop: the model never reached the point of
       // writing the revised draft, so this is continuable — unlike an answer
@@ -1024,7 +1076,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
             ? `This follow-up hit its ${args.stepCap}-step budget before it could write the revised draft. Your draft is unchanged — resuming grants ${RESUME_TOPUP_STEPS} more steps and asks the model to finish with what it has already read.`
             : `This follow-up hit its ${args.stepCap}-step budget before it could write the revised draft. Your draft is unchanged — try again with a narrower instruction.`,
           refineResumable: payload ? refineResumableFrom(payload, outcome) : null,
-          refineRounds: upsertRound(
+          refineRounds: recordRound(
             curr.refineRounds,
             unchangedRound(
               round,
@@ -1032,6 +1084,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
               "failed",
               "Ran out of steps before writing the revised draft.",
             ),
+            args.resumed,
           ),
         }));
         if (cp && payload) await cp.writer.flush(payload);
@@ -1050,9 +1103,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           refineError:
             "The model returned an empty refine result — your previous draft is unchanged. Try a more specific instruction.",
           refineResumable: null,
-          refineRounds: upsertRound(
+          refineRounds: recordRound(
             curr.refineRounds,
             unchangedRound(round, curr.activityLog, "empty", null),
+            args.resumed,
           ),
         }));
         await cp?.writer.delete();
@@ -1121,23 +1175,31 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         // And record the structured round so the user can later read back the
         // thinking process behind why the draft looks like this. Survives a
         // window close via the draft autosave path.
-        refineRounds: upsertRound(curr.refineRounds, {
-          timestamp: round.startedAt,
-          instruction: round.instruction,
-          activityLog: curr.activityLog,
-          beforeCases: round.beforeCases,
-          afterCases: nextCases.length,
-          beforeBugs: round.beforeBugs,
-          afterBugs: nextBugs.length,
-          outcome: "ok",
-          // A round that only landed on the second attempt would otherwise
-          // keep the first attempt's error text next to an "ok" badge.
-          error: null,
-        }),
+        refineRounds: recordRound(
+          curr.refineRounds,
+          {
+            timestamp: round.startedAt,
+            instruction: round.instruction,
+            activityLog: curr.activityLog,
+            beforeCases: round.beforeCases,
+            afterCases: nextCases.length,
+            beforeBugs: round.beforeBugs,
+            afterBugs: nextBugs.length,
+            outcome: "ok",
+            // A round that only landed on the second attempt would otherwise
+            // keep the first attempt's error text next to an "ok" badge.
+            error: null,
+          },
+          args.resumed,
+        ),
       }));
+      // Arms the debounced draft write. Unlike settleAnalyzeRun — which awaits
+      // its saveRun before dropping the checkpoint — this can't await a save
+      // that hasn't fired yet, so there is a sub-100ms window where a crash
+      // loses both the refined draft and the resume point. Accepted: the round
+      // is already applied in memory, and holding the row longer would mean
+      // offering a Resume for work that's on screen.
       schedulePersistDraft();
-      // Only after the draft is on its way to disk: the round landed, so the
-      // resume point has nothing left to buy back.
       await cp?.writer.delete();
     };
 
@@ -1147,12 +1209,17 @@ export function createGenerationSessionStore(): GenerationSessionStore {
      *  keys, work-item fetch) — nothing was spent, so nothing is left behind. */
     const settleRefineFailure = async (args: {
       seq: number;
+      sessionRunId: string | null;
+      resumed: boolean;
       round: RefineRoundMeta;
       error: unknown;
       cp: RefineCheckpointCtx | null;
     }): Promise<void> => {
-      if (args.seq !== refineSeq) return;
       const { round, cp } = args;
+      if (!refineRoundIsCurrent(args.seq, args.sessionRunId)) {
+        await abandonRefineRound(cp);
+        return;
+      }
       const cancelled = isCancelledError(args.error);
       // Refine errors stay inside the review phase — wiping the user back to
       // the input screen would lose the draft they were trying to refine.
@@ -1178,7 +1245,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         // resume card below is the affordance that replaces it.
         refineError: cancelled ? null : errorText,
         refineResumable: payload ? refineResumableFrom(payload, outcome) : null,
-        refineRounds: upsertRound(
+        refineRounds: recordRound(
           curr.refineRounds,
           unchangedRound(
             round,
@@ -1186,6 +1253,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
             cancelled ? "empty" : "failed",
             cancelled ? "Cancelled before completion." : errorText,
           ),
+          args.resumed,
         ),
       }));
       if (cp && payload) await cp.writer.flush(payload);
@@ -1257,6 +1325,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
   clearWorkItems: () => set({ attachedWorkItems: [] }),
 
   analyze: async () => {
+    // Re-analyzing replaces the draft a follow-up is refining, so stop it —
+    // otherwise it keeps streaming (and billing) against a draft that's about
+    // to stop existing. Its terminal handler then finds a session it doesn't
+    // belong to and drops its row instead of writing into the new run.
+    get().cancelRefine();
     const { requirements, changesets, attachments, attachedWorkItems, planId, suiteId, coverage, suggestBugs, overrideModelId } = get();
     if (!requirements.trim()) {
       set({
@@ -2070,6 +2143,19 @@ export function createGenerationSessionStore(): GenerationSessionStore {
   },
 
   publish: async () => {
+    // Publishing is the end of the line for the draft as it stands. A pending
+    // follow-up must not outlive it: resuming one after publish re-mints every
+    // case's uid, which breaks the okByUid idempotency map below and makes the
+    // next Publish create a DUPLICATE set of work items in ADO. Drop the
+    // affordance and its row (and stop a still-running round) up front, so it
+    // can't be reached from the review breadcrumb or resurrected by the probe
+    // after a restart.
+    get().cancelRefine();
+    const pendingRefine = get().refineResumable;
+    if (pendingRefine) {
+      void deleteCheckpoint(pendingRefine.runId).catch(() => {});
+      set({ refineResumable: null });
+    }
     const { cases, bugs, planId, suiteId, tagSourceBranch } = get();
     if (!planId || !suiteId) {
       set({
@@ -2392,8 +2478,18 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     }));
   },
 
-  reset: () => set({ ...initialState }),
-  startNew: () => set({ ...initialState }),
+  // Both wipe the session out from under any follow-up that's still running.
+  // The round's terminal handler refuses to write into a session it doesn't
+  // belong to, but only cancelling actually stops the provider request — and
+  // the billing — instead of leaving it to finish into the void.
+  reset: () => {
+    get().cancelRefine();
+    set({ ...initialState });
+  },
+  startNew: () => {
+    get().cancelRefine();
+    set({ ...initialState });
+  },
 
   refine: async (instruction: string, workItemIds?: number[]) => {
     const s = get();
@@ -2538,7 +2634,12 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         const writer = createCheckpointWriter({
           runId: refineRunId,
           surface: "generator-refine",
-          cwd: null,
+          // The `cwd` column is the store's generic scope key (SQL filters on
+          // it; commit-review scopes by source dir). Scoping by the draft's
+          // runId turns the review pane's probe into a one-row lookup instead
+          // of "fetch the 10 newest payloads and filter in TS", and makes
+          // "drop every row for this draft" a single list call.
+          cwd: sessionRunId,
           createdAt,
         });
         const basePayload: GeneratorRefineCheckpointV1 = {
@@ -2589,6 +2690,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
 
       await settleRefineRun({
         seq,
+        sessionRunId,
+        resumed: false,
         result,
         round,
         snapshot,
@@ -2596,7 +2699,14 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         cp,
       });
     } catch (e) {
-      await settleRefineFailure({ seq, round, error: e, cp });
+      await settleRefineFailure({
+        seq,
+        sessionRunId,
+        resumed: false,
+        round,
+        error: e,
+        cp,
+      });
     } finally {
       if (refineAbort === refineAc) refineAbort = null;
     }
@@ -2663,6 +2773,19 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       });
       return;
     }
+    // A row truncated by an older/partial write has no prompt to replay.
+    // parseCheckpointRow only validates the envelope, so guard here rather
+    // than let the deref below reject outside the try and pin the composer to
+    // its running strip. (resumeAnalyze guards the same field.)
+    if (!payload.prepared?.userPrompt) {
+      bail({
+        refineResumable: null,
+        refineError:
+          "That follow-up's saved progress is incomplete — send it again.",
+      });
+      void deleteCheckpoint(payload.runId).catch(() => {});
+      return;
+    }
 
     const { cap, resumeMessages } = resumeBudget(payload);
     const base = payload.transcript;
@@ -2681,7 +2804,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     const writer = createCheckpointWriter({
       runId: payload.runId,
       surface: "generator-refine",
-      cwd: null,
+      cwd: payload.sessionRunId,
       createdAt: payload.createdAt,
     });
     let transcript: TranscriptCheckpoint | null = base;
@@ -2725,6 +2848,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       });
       await settleRefineRun({
         seq,
+        sessionRunId: payload.sessionRunId,
+        resumed: true,
         result,
         round: payload.round,
         snapshot,
@@ -2732,7 +2857,14 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         cp,
       });
     } catch (e) {
-      await settleRefineFailure({ seq, round: payload.round, error: e, cp });
+      await settleRefineFailure({
+        seq,
+        sessionRunId: payload.sessionRunId,
+        resumed: true,
+        round: payload.round,
+        error: e,
+        cp,
+      });
     } finally {
       if (refineAbort === refineAc) refineAbort = null;
     }
@@ -2756,13 +2888,16 @@ export function createGenerationSessionStore(): GenerationSessionStore {
 
     let entries: Awaited<ReturnType<typeof listCheckpoints>>;
     try {
-      entries = await listCheckpoints("generator-refine");
+      // Scoped in SQL by the draft's runId (see the writer's cwd comment), so
+      // opening a draft that never ran a follow-up costs one list call and
+      // zero payload reads.
+      entries = await listCheckpoints("generator-refine", sessionRunId);
     } catch {
       return;
     }
     // Newest first (the Rust list orders by updated_at DESC), so the first
-    // match is the follow-up the user last had running. Bounded probe: an
-    // unrelated backlog shouldn't make opening a draft cost N round-trips.
+    // match is the follow-up the user last had running. Bounded anyway: a
+    // draft shouldn't cost N round-trips to open however it got its rows.
     for (const entry of entries.slice(0, 10)) {
       let cp: Awaited<ReturnType<typeof getCheckpoint>> = null;
       try {
