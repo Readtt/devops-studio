@@ -459,18 +459,26 @@ async fn bug_state_categories(
 /// `list_bugs` but spans every work-item type (minus the pure test-management
 /// artifacts, which would drown the list in a Test Plans project) and carries
 /// the type through so the picker can label each row. Newest-changed first.
+///
+/// `work_item_types`, when non-empty, replaces the exclusion with a positive
+/// `IN (…)` filter — the requirement-suite picker uses it to offer only the
+/// types Azure DevOps accepts as a requirement, so a user can't pick a Task
+/// and get a server error.
 pub async fn list_work_items(
     state: &AdoState,
     area_path: Option<&str>,
     query: Option<&str>,
     top: i64,
+    work_item_types: &[String],
 ) -> AdoResult<Vec<WorkItemRef>> {
     let (conn, _) = state.snapshot();
     let conn = conn.ok_or(AdoError::NotConfigured)?;
     let top = top.clamp(1, 200);
 
+    let type_clause = work_item_type_clause(work_item_types);
+
     let mut wiql = format!(
-        "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '{}' AND [System.WorkItemType] NOT IN ('Test Case','Test Suite','Test Plan','Shared Steps','Shared Parameter')",
+        "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '{}' AND {type_clause}",
         wiql_escape(&conn.project)
     );
     if let Some(area) = area_path.map(str::trim).filter(|s| !s.is_empty()) {
@@ -657,6 +665,28 @@ fn wiql_escape(s: &str) -> String {
     s.replace('\'', "''")
 }
 
+/// The `[System.WorkItemType] …` clause for the work-item picker.
+///
+/// Empty input keeps the historical behaviour — everything except the pure
+/// test-management artifacts, which would drown the list in a Test Plans
+/// project. A non-empty list narrows to exactly those types, which is how the
+/// requirement picker offers only what ADO accepts as a requirement.
+/// Every name goes through `wiql_escape`; blanks are dropped so a stray empty
+/// string can't produce `IN ('')` and silently match nothing.
+fn work_item_type_clause(types: &[String]) -> String {
+    let quoted: Vec<String> = types
+        .iter()
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("'{}'", wiql_escape(t)))
+        .collect();
+    if quoted.is_empty() {
+        "[System.WorkItemType] NOT IN ('Test Case','Test Suite','Test Plan','Shared Steps','Shared Parameter')".to_string()
+    } else {
+        format!("[System.WorkItemType] IN ({})", quoted.join(","))
+    }
+}
+
 fn work_item_to_bug(raw: Value, conn_org: &str, conn_project: &str) -> AdoResult<Bug> {
     let id = raw
         .get("id")
@@ -708,6 +738,19 @@ fn work_item_to_bug(raw: Value, conn_org: &str, conn_project: &str) -> AdoResult
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    // Requirement types keep their spec in Description / AcceptanceCriteria,
+    // never in ReproSteps. `get_bug` already fetches the full field set (no
+    // `fields=` filter), so these were being received and discarded.
+    let description_html = fields
+        .get("System.Description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let acceptance_criteria_html = fields
+        .get("Microsoft.VSTS.Common.AcceptanceCriteria")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let tags = fields
         .get("System.Tags")
         .and_then(|v| v.as_str())
@@ -754,6 +797,8 @@ fn work_item_to_bug(raw: Value, conn_org: &str, conn_project: &str) -> AdoResult
         area_path,
         iteration_path,
         repro_steps_html,
+        description_html,
+        acceptance_criteria_html,
         tags,
         url,
         assigned_to,
@@ -971,6 +1016,34 @@ mod tests {
         assert_eq!(wiql_escape("O'Brien\\Area"), "O''Brien\\Area");
         assert_eq!(wiql_escape("plain"), "plain");
         assert_eq!(wiql_escape("''"), "''''");
+    }
+
+    #[test]
+    fn work_item_type_clause_defaults_to_the_historical_exclusion() {
+        // The `#mention` picker passes no types and must keep its old behaviour.
+        let clause = work_item_type_clause(&[]);
+        assert!(clause.starts_with("[System.WorkItemType] NOT IN ("));
+        assert!(clause.contains("'Test Case'"));
+    }
+
+    #[test]
+    fn work_item_type_clause_narrows_to_a_positive_list() {
+        assert_eq!(
+            work_item_type_clause(&["User Story".into(), "Issue".into()]),
+            "[System.WorkItemType] IN ('User Story','Issue')"
+        );
+    }
+
+    #[test]
+    fn work_item_type_clause_escapes_and_drops_blanks() {
+        // A custom process template can absolutely have an apostrophe in a type
+        // name; blanks must never become IN ('') which matches nothing.
+        assert_eq!(
+            work_item_type_clause(&["Dev's Item".into(), "  ".into(), "".into()]),
+            "[System.WorkItemType] IN ('Dev''s Item')"
+        );
+        // All-blank input falls back to the exclusion rather than an empty IN ().
+        assert!(work_item_type_clause(&["".into(), " ".into()]).contains("NOT IN"));
     }
 
     #[test]

@@ -337,6 +337,38 @@ pub async fn ado_create_suite(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CreateRequirementSuiteInput {
+    pub plan_id: i64,
+    /// `None` attaches under the plan's root suite — same contract as
+    /// `CreateSuiteInput`.
+    pub parent_suite_id: Option<i64>,
+    pub requirement_id: i64,
+    /// Requirement title. ADO normally derives the suite name from the work
+    /// item; sending it makes the response deterministic across orgs.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// Create ONE requirement-based suite. Callers creating several loop over this
+/// so they own progress and per-row retry; there is deliberately no batch
+/// command (bulk creation lives in the Azure DevOps web UI).
+#[tauri::command]
+pub async fn ado_create_requirement_suite(
+    state: State<'_, AdoState>,
+    input: CreateRequirementSuiteInput,
+) -> Result<SuiteRef, AdoError> {
+    test_plans::create_requirement_suite(
+        &state,
+        input.plan_id,
+        input.parent_suite_id,
+        input.requirement_id,
+        input.name.as_deref(),
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RenameSuiteInput {
     pub plan_id: i64,
     pub suite_id: i64,
@@ -525,18 +557,45 @@ pub async fn ado_list_bugs(
 
 /// List work items of any type for the inline `#id` mention. Same input shape
 /// as `ado_list_bugs`; returns `WorkItemRef`s carrying the work-item type.
+/// `work_item_types` narrows to a positive type list — the requirement-suite
+/// picker passes the Requirement category so only valid choices appear.
 #[tauri::command]
 pub async fn ado_list_work_items(
     state: State<'_, AdoState>,
-    input: ListBugsInput,
+    input: ListWorkItemsInput,
 ) -> Result<Vec<WorkItemRef>, AdoError> {
     bugs::list_work_items(
         &state,
         input.area_path.as_deref(),
         input.query.as_deref(),
         input.top.unwrap_or(50),
+        &input.work_item_types,
     )
     .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListWorkItemsInput {
+    #[serde(default)]
+    pub area_path: Option<String>,
+    #[serde(default)]
+    pub query: Option<String>,
+    #[serde(default)]
+    pub top: Option<i64>,
+    /// Empty = every type except the test-management artifacts (the `#mention`
+    /// default). Non-empty = only these.
+    #[serde(default)]
+    pub work_item_types: Vec<String>,
+}
+
+/// Work-item types this project treats as requirements. Only these can back a
+/// requirement-based test suite.
+#[tauri::command]
+pub async fn ado_list_requirement_types(
+    state: State<'_, AdoState>,
+) -> Result<Vec<String>, AdoError> {
+    work_items::list_requirement_types(&state).await
 }
 
 /// Resolve a single work item by id (for `#123` exact matches in the mention).

@@ -16,7 +16,13 @@ import {
   type DraftBatchLLM,
 } from "./draftBatchSchema";
 import { QA_ANALYST_PROMPT } from "./qaAnalystPrompt";
-import type { TestCaseRef } from "@/modules/ado";
+import {
+  isQuerySuite,
+  renderRequirementBlock,
+  type SuiteType,
+  type TargetRequirement,
+  type TestCaseRef,
+} from "@/modules/ado";
 import type { ActivityEntry } from "./activityLog";
 import { renderRelatedCases, type RelatedCase } from "./relatedCases";
 import {
@@ -90,6 +96,18 @@ export type TargetContext = {
   areaPath: string | null;
   /** Default ADO iteration path for the plan. */
   iterationPath: string | null;
+  /** Normalized suite type, so the prompt can name what kind of suite this is
+   *  instead of letting the model draft into a target it can't publish to.
+   *  Optional: older callers and fixtures predate it. */
+  suiteType?: SuiteType;
+  /** The work item a requirement-based suite tracks — non-null only for that
+   *  suite type. Resolved fresh on every analyze, never persisted. */
+  requirement?: TargetRequirement | null;
+  /** Id of the tracked work item, straight off the suite ref. Carried
+   *  separately from `requirement` because the body fetch can fail — and when
+   *  it does we still want to tell the model which requirement it's blind to
+   *  rather than silently dropping the whole block. */
+  requirementId?: number | null;
 };
 
 /** An existing case in the target suite, with steps, so the analyst can read
@@ -430,6 +448,14 @@ export function renderTargetContext(
   const iterLine = ctx.iterationPath
     ? `- Default iteration path: ${ctx.iterationPath}`
     : null;
+  // A query-based suite can't take hand-added cases at all. Say so rather than
+  // letting the model draft confidently into an unpublishable target.
+  const queryNote = isQuerySuite(ctx)
+    ? "- NOTE: this is a query-based suite; Azure DevOps fills it from a work-item query and will not accept new cases."
+    : null;
+  const requirementBlock = renderRequirementBlock(ctx.requirement, {
+    unresolvedId: ctx.requirementId ?? null,
+  });
   return [
     "TARGET CONTEXT — these are the test plan and suite the cases will be",
     "published into. Cases inherit the default area / iteration unless your",
@@ -438,6 +464,8 @@ export function renderTargetContext(
     suiteLine,
     areaLine,
     iterLine,
+    queryNote,
+    requirementBlock ? `\n${requirementBlock}` : null,
     "",
   ]
     .filter((line): line is string => line !== null)

@@ -559,6 +559,8 @@ pub fn run() {
             ado::ado_list_suites,
             ado::ado_list_suite_cases,
             ado::ado_create_suite,
+            ado::ado_create_requirement_suite,
+            ado::ado_list_requirement_types,
             ado::ado_update_suite_name,
             ado::ado_update_plan_name,
             ado::ado_get_case,

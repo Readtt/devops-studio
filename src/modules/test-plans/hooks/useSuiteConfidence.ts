@@ -128,7 +128,11 @@ function finishWithNotice(suiteName: string | null, notice: string) {
 }
 
 /** Score a resolved target list, wiring progress into the store. */
-async function runBatch(suiteName: string | null, targets: ScoreTarget[]) {
+async function runBatch(
+  suiteName: string | null,
+  targets: ScoreTarget[],
+  target: { planId: number; suiteId: number },
+) {
   clearDismiss();
   const myRun = ++runSeq;
   const ac = new AbortController();
@@ -174,7 +178,7 @@ async function runBatch(suiteName: string | null, targets: ScoreTarget[]) {
         failures: [...s.failures, { caseId, title, message: errMsg(error) }],
       }));
     },
-  });
+  }, target);
 
   if (bulkAbort === ac) bulkAbort = null;
   // cancel() flips phase to "idle"; only finalize if this run still owns it.
@@ -272,14 +276,17 @@ export const useSuiteConfidence = create<State>((set, get) => ({
       return;
     }
 
-    await runBatch(suiteName, targets);
+    await runBatch(suiteName, targets, { planId, suiteId });
   },
 
   confirmPending: () => {
     const p = get().pendingConfirm;
     if (!p) return;
     set({ pendingConfirm: null });
-    void runBatch(p.suiteName, p.targets);
+    void runBatch(p.suiteName, p.targets, {
+      planId: p.planId,
+      suiteId: p.suiteId,
+    });
   },
 
   cancelPending: () => set({ pendingConfirm: null }),

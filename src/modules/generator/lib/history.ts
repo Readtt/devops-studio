@@ -3,6 +3,7 @@ import type { ReviewedBug, ReviewedCase } from "./draftBatchSchema";
 import type { ActivityEntry } from "./activityLog";
 import type { Coverage, GenerationMode } from "./qaAnalystRun";
 import type { Attachment } from "@/components/chat/attachments";
+import type { SuiteType } from "@/modules/ado";
 
 /**
  * One refine round captured for later inspection. The user asked us to keep
@@ -58,6 +59,13 @@ export type DraftPayload = {
   planName?: string | null;
   suiteId?: number | null;
   suiteName?: string | null;
+  /** Target suite's ADO type, so a reopened draft can badge a requirement-based
+   *  target and refuse to publish into a query-based one without re-fetching.
+   *  Absent on drafts saved before suite types were understood. */
+  targetSuiteType?: SuiteType | null;
+  /** Just the id — the requirement's body is re-derived on every analyze
+   *  rather than persisted, so drafts stay small and never go stale. */
+  targetRequirementId?: number | null;
   /** Per-session pinned model. Persisted so reopening a draft keeps the model
    *  the user chose instead of snapping back to the global default. */
   overrideModelId?: import("@/modules/ai/config").ModelId | null;
@@ -112,6 +120,9 @@ export type GenerationRun = {
   planName: string | null;
   suiteId: number | null;
   suiteName: string | null;
+  /** So the History list can badge a run that targeted a requirement-based
+   *  suite. Optional — rows predating suite-type awareness don't have it. */
+  suiteType?: SuiteType | null;
   mode: string;
   specExcerpt?: string | null;
   cases: CaseSummary[];

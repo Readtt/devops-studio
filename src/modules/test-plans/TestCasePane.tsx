@@ -33,6 +33,7 @@ import { OutcomeControl } from "./OutcomeControl";
 import { ConfidenceChip } from "./components/ConfidenceChip";
 import { ConfidenceDetailPanel } from "./components/ConfidenceDetailPanel";
 import { fromTestCase } from "./lib/runConfidenceEval";
+import { resolveSuiteRequirement } from "./lib/resolveSuiteRequirement";
 import { evaluateCaseConfidence } from "./lib/evaluateCaseConfidence";
 import { clearConfidence, getConfidence, saveConfidence } from "./lib/confidenceApi";
 import type { ConfidenceVerdict } from "./lib/confidence";
@@ -109,8 +110,15 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
     evalAbortRef.current = ac;
     setEvaluating(true);
     try {
+      // A case opened from a requirement-based suite is graded against the
+      // acceptance criteria it was written from. Resolved per invocation
+      // rather than cached: this fires on an explicit user click, not in a
+      // loop, and a stale requirement would be worse than a second request.
+      const req = await resolveSuiteRequirement(planId, suiteId);
       const v = await evaluateCaseConfidence(fromTestCase(tc), {
         signal: ac.signal,
+        requirement: req.requirement,
+        requirementId: req.requirementId,
       });
       setVerdict(v);
       await saveConfidence(tc.id, v).catch(() => undefined);
@@ -123,7 +131,7 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
       evalAbortRef.current = null;
       useSuiteConfidence.getState().endCaseEval(tc.id);
     }
-  }, [tc, evaluating]);
+  }, [tc, evaluating, planId, suiteId]);
   const cancelEvaluate = useCallback(() => evalAbortRef.current?.abort(), []);
 
   // Optimistic title commit: update local state first so the UI feels live,

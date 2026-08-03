@@ -78,15 +78,64 @@ pub struct TestPlanRef {
     pub state: Option<String>,
 }
 
+/// ADO's `TestSuiteType`.
+///
+/// Reads come back camelCase (`requirementTestSuite`) but our own creates SEND
+/// PascalCase (`StaticTestSuite`) and ADO accepts both — so no comparison
+/// anywhere may be case-sensitive. `parse` is the single place that decides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SuiteType {
+    None,
+    DynamicTestSuite,
+    StaticTestSuite,
+    RequirementTestSuite,
+    /// Anything ADO adds later, or an on-prem TFS variant. Deliberately NOT a
+    /// deserialize error: a strict enum would fail the whole `list_suites`
+    /// parse and blank the entire tree over one unrecognized suite. Consumers
+    /// treat Unknown permissively — never gate a user out on ignorance.
+    #[default]
+    Unknown,
+}
+
+impl SuiteType {
+    pub fn parse(raw: Option<&str>) -> Self {
+        let s = raw.unwrap_or("").trim();
+        if s.eq_ignore_ascii_case("staticTestSuite") {
+            Self::StaticTestSuite
+        } else if s.eq_ignore_ascii_case("requirementTestSuite") {
+            Self::RequirementTestSuite
+        } else if s.eq_ignore_ascii_case("dynamicTestSuite") {
+            Self::DynamicTestSuite
+        } else if s.eq_ignore_ascii_case("none") {
+            Self::None
+        } else {
+            if !s.is_empty() {
+                log::warn!("unknown ADO suiteType {s:?} — treating as Unknown");
+            }
+            Self::Unknown
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SuiteRef {
     pub id: i64,
     pub name: String,
     #[serde(default)]
-    pub suite_type: Option<String>,
+    pub suite_type: SuiteType,
     #[serde(default)]
     pub parent_suite_id: Option<i64>,
+    /// Work item this suite tracks. Only ever `Some` on a RequirementTestSuite.
+    /// Cases added to such a suite are auto-linked to it as "Tested By" — that
+    /// link is the only way ADO does requirement traceability.
+    #[serde(default)]
+    pub requirement_id: Option<i64>,
+    /// WIQL behind a DynamicTestSuite. Read-only: ADO forbids manual
+    /// add/remove on a query suite and we don't offer editing the query.
+    #[serde(default)]
+    pub query_string: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,6 +253,16 @@ pub struct Bug {
     /// Raw HTML for repro steps. Includes the devops-studio:code-links block
     /// the TS side parses out into structured anchors.
     pub repro_steps_html: String,
+    /// `System.Description`. Bugs usually leave this empty — their body lives
+    /// in ReproSteps — but every requirement type (User Story / PBI /
+    /// Requirement / Issue) puts its spec here. Reading only ReproSteps is why
+    /// attaching a user story used to yield a title and nothing else.
+    #[serde(default)]
+    pub description_html: String,
+    /// `Microsoft.VSTS.Common.AcceptanceCriteria`. Present on the requirement
+    /// types, absent on Bug and Task.
+    #[serde(default)]
+    pub acceptance_criteria_html: String,
     pub tags: Vec<String>,
     pub url: String,
     #[serde(default)]
@@ -437,4 +496,46 @@ pub struct PagedResponse<T> {
     pub count: usize,
     #[serde(default = "Vec::new")]
     pub value: Vec<T>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suite_type_parse_is_case_insensitive() {
+        // ADO echoes camelCase on reads but accepts (and we send) PascalCase
+        // on create. A case-sensitive compare would classify every suite we
+        // just created as Unknown.
+        for raw in ["staticTestSuite", "StaticTestSuite", "STATICTESTSUITE"] {
+            assert_eq!(SuiteType::parse(Some(raw)), SuiteType::StaticTestSuite);
+        }
+        for raw in ["requirementTestSuite", "RequirementTestSuite"] {
+            assert_eq!(SuiteType::parse(Some(raw)), SuiteType::RequirementTestSuite);
+        }
+        for raw in ["dynamicTestSuite", "DynamicTestSuite"] {
+            assert_eq!(SuiteType::parse(Some(raw)), SuiteType::DynamicTestSuite);
+        }
+    }
+
+    #[test]
+    fn suite_type_parse_tolerates_the_unrecognized() {
+        // Must not panic or error: a strict enum would fail the whole
+        // list_suites parse and blank the tree over one odd suite.
+        assert_eq!(SuiteType::parse(Some("someFutureType")), SuiteType::Unknown);
+        assert_eq!(SuiteType::parse(Some("")), SuiteType::Unknown);
+        assert_eq!(SuiteType::parse(None), SuiteType::Unknown);
+        assert_eq!(SuiteType::parse(Some(" none ")), SuiteType::None);
+    }
+
+    #[test]
+    fn suite_type_serializes_camel_case_for_the_frontend() {
+        // The TS SuiteType union matches these strings exactly.
+        let j = serde_json::to_string(&SuiteType::RequirementTestSuite).unwrap();
+        assert_eq!(j, r#""requirementTestSuite""#);
+        assert_eq!(
+            serde_json::to_string(&SuiteType::Unknown).unwrap(),
+            r#""unknown""#
+        );
+    }
 }

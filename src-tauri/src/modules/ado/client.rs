@@ -439,14 +439,29 @@ fn map_error_status(
     }
 }
 
-fn excerpt(s: &str) -> String {
-    if s.len() <= 500 {
-        s.to_string()
-    } else {
-        let mut t = s[..500].to_string();
-        t.push('…');
-        t
+/// Truncate to at most `max_bytes`, never splitting a UTF-8 char.
+///
+/// `str::len()` is bytes, so slicing at a fixed offset panics whenever that
+/// offset lands inside a multi-byte sequence — and the release profile is
+/// `panic = "abort"`, which turns that into the app vanishing with no error
+/// dialog. Every truncation-for-display in this module routes through here so
+/// a fourth hand-rolled copy can't reintroduce it.
+pub fn truncate_chars(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
     }
+    let cut = (0..=max_bytes)
+        .rev()
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(0);
+    format!("{}…", &s[..cut])
+}
+
+fn excerpt(s: &str) -> String {
+    // Reached with arbitrary server bodies — ADO error payloads embed
+    // user-supplied text (work-item titles, project and area paths), so
+    // non-ASCII here is ordinary, not exotic.
+    truncate_chars(s, 500)
 }
 
 /// Parse arbitrary JSON into a serde Value for callers that don't have a typed schema.

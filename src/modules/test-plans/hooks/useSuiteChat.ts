@@ -8,12 +8,17 @@ import { create } from "zustand";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import {
   adoErrorMessage,
+  getBug,
   getCase,
+  isRequirementSuite,
   listSuiteCases,
   listSuites,
   toAdoError,
+  toTargetRequirement,
   type AdoError,
   type SuiteRef,
+  type SuiteType,
+  type TargetRequirement,
   type TestCase,
 } from "@/modules/ado";
 import { isKnownModelId, supportsVision, type ModelId } from "@/modules/ai/config";
@@ -67,6 +72,17 @@ export type SuiteCaseState = {
   suiteName: string | null;
   suitePath: string[];
   planName: string | null;
+  /** Suite's ADO type, so the prompt can say what kind of suite this is and
+   *  the create-case action can refuse a read-only (query-based) one. */
+  suiteType: SuiteType | null;
+  /** The work item a requirement-based suite tracks, loaded alongside the
+   *  cases so coverage questions can be answered against its acceptance
+   *  criteria. Null for every other suite type, and on a failed fetch. */
+  requirement: TargetRequirement | null;
+  /** Tracked work-item id off the suite ref. Non-null whenever the suite is
+   *  requirement-based, INCLUDING when the `requirement` fetch above failed —
+   *  that's the whole point of keeping it separate. */
+  requirementId: number | null;
   /** Free-text filter applied client-side to the prompt's CASES IN SCOPE
    *  block. Empty = include every loaded case. */
   filter: string;
@@ -94,6 +110,9 @@ const initialCaseState = (): SuiteCaseState => ({
   suiteName: null,
   suitePath: [],
   planName: null,
+  suiteType: null,
+  requirement: null,
+  requirementId: null,
   filter: "",
 });
 
@@ -598,6 +617,18 @@ export const useSuiteChat = create<Store>((set, get) => ({
         cursor = parent.parentSuiteId ?? null;
       }
 
+      // The suite object is already in hand from the listSuites above, so the
+      // type costs nothing. Only the requirement needs a fetch, and only for
+      // the one suite type that has one.
+      let requirement: TargetRequirement | null = null;
+      if (suite && isRequirementSuite(suite) && suite.requirementId != null) {
+        // Best-effort, matching how this loader treats every other optional
+        // input: a chat without the requirement is degraded, not broken.
+        requirement = await getBug(suite.requirementId)
+          .then(toTargetRequirement)
+          .catch(() => null);
+      }
+
       patchSuite(set, planId, suiteId, {
         cases,
         casesLoading: false,
@@ -606,6 +637,12 @@ export const useSuiteChat = create<Store>((set, get) => ({
         truncated: total > PROMPT_CASE_CAP,
         suiteName: suite?.name ?? null,
         suitePath: path,
+        suiteType: suite?.suiteType ?? null,
+        requirement,
+        // Off the suite ref, so a failed body fetch still leaves the chat able
+        // to name the requirement it couldn't read.
+        requirementId:
+          suite && isRequirementSuite(suite) ? suite.requirementId ?? null : null,
       });
     } catch (e) {
       patchSuite(set, planId, suiteId, {
@@ -837,6 +874,9 @@ export const useSuiteChat = create<Store>((set, get) => ({
         suiteName: suite.suiteName,
         suitePath: suite.suitePath,
         planName: suite.planName,
+        suiteType: suite.suiteType,
+        requirement: suite.requirement,
+        requirementId: suite.requirementId,
         cases: promptCases,
         history: priorMessages,
         newQuestion: text,

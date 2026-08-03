@@ -22,7 +22,11 @@ import {
   type ConfidenceVerdictLLM,
   type PredictedOutcome,
 } from "./confidence";
-import type { TestCase } from "@/modules/ado";
+import {
+  renderRequirementBlock,
+  type TargetRequirement,
+  type TestCase,
+} from "@/modules/ado";
 
 /** Just the case fields the evaluator needs — accepts a full ADO TestCase or a
  *  lighter draft shape (the generator review phase). */
@@ -52,10 +56,23 @@ export type ConfidenceEvalInput = {
   /** User's freeform "Custom instructions" from Settings — appended to the
    *  system prompt on every surface. Empty/absent ⇒ base prompt unchanged. */
   customInstructions?: string;
+  /** The work item this case's suite tracks, when it sits in a
+   *  requirement-based suite. A verdict that ignores the acceptance criteria
+   *  the case was written against is grading it on the wrong rubric — this is
+   *  the same block the generator and Suite Chat render, just capped tighter
+   *  because confidence runs once PER CASE and a bulk suite run pays for it
+   *  every time. */
+  requirement?: TargetRequirement | null;
+  /** Tracked work-item id, which survives a failed `requirement` fetch. */
+  requirementId?: number | null;
   /** Cooperative cancel. Aborts the model run and makes evaluateConfidence
    *  reject with an AbortError. */
   signal?: AbortSignal;
 };
+
+/** Per-field cap for the requirement block on this surface. Deliberately far
+ *  below the generator's 4000: one bulk run multiplies it by the case count. */
+const CONFIDENCE_REQUIREMENT_CHARS = 1200;
 
 export function fromTestCase(tc: TestCase): EvalCase {
   return {
@@ -238,7 +255,9 @@ function abortError(): Error {
 
 // --- Prompt -----------------------------------------------------------------
 
-function buildEvalPrompt(input: ConfidenceEvalInput): string {
+/** Exported for tests: the requirement grounding is otherwise only observable
+ *  through a live model call. */
+export function buildEvalPrompt(input: ConfidenceEvalInput): string {
   const tc = input.testCase;
   const idPart = tc.id != null ? `#${tc.id} ` : "";
   const sourceLine = input.sourceRoot
@@ -249,10 +268,15 @@ function buildEvalPrompt(input: ConfidenceEvalInput): string {
     return `${n}. ACTION: ${oneLine(s.action)}\n   EXPECTED: ${oneLine(s.expected)}`;
   });
   const ctx = formatContextBlocks(input.contextBlocks ?? []);
+  const requirementBlock = renderRequirementBlock(input.requirement, {
+    maxBodyChars: CONFIDENCE_REQUIREMENT_CHARS,
+    unresolvedId: input.requirementId ?? null,
+  });
   return [
     `TEST CASE ${idPart}— ${tc.title}`,
     tc.description ? `Description: ${oneLine(tc.description)}` : null,
     sourceLine,
+    requirementBlock ? `\n${requirementBlock}` : null,
     "",
     "STEPS:",
     ...stepLines,

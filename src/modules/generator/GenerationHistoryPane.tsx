@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SuiteTypeBadge } from "@/components/SuiteTypeBadge";
 import {
   Tooltip,
   TooltipContent,
@@ -523,11 +524,17 @@ function RunCard({
               </span>
             ) : null}
           </div>
-          <p className="mt-0.5 truncate text-[10.5px] text-muted-foreground">
-            {planLabel}
-            {" · "}
-            {suiteLabel}
-          </p>
+          {/* Flex, not an inline badge in a `truncate` <p>: `shrink-0` is inert
+              in a block box, so the badge was the first thing the ellipsis ate
+              — and in this narrow sidebar that's the common case. */}
+          <div className="mt-0.5 flex items-center gap-1 text-[10.5px] text-muted-foreground">
+            <span className="min-w-0 truncate">
+              {planLabel}
+              {" · "}
+              {suiteLabel}
+            </span>
+            <SuiteTypeBadge suiteType={run.suiteType} />
+          </div>
           <p className="mt-0.5 truncate text-[10.5px] text-muted-foreground/85">
             {run.cases.length} case{run.cases.length === 1 ? "" : "s"} ·{" "}
             {run.bugs.length} bug{run.bugs.length === 1 ? "" : "s"} ·{" "}
@@ -821,12 +828,15 @@ function InterruptedRunCard({
                     interrupted
                   </span>
                 </div>
-                <p className="mt-0.5 truncate text-[10.5px] text-muted-foreground">
-                  {planLabel}
-                  {" · "}
-                  {suiteLabel}
-                  {stepsUsed > 0 ? ` · ${stepsUsed} steps in` : ""}
-                </p>
+                <div className="mt-0.5 flex items-center gap-1 text-[10.5px] text-muted-foreground">
+                  <span className="min-w-0 truncate">
+                    {planLabel}
+                    {" · "}
+                    {suiteLabel}
+                    {stepsUsed > 0 ? ` · ${stepsUsed} steps in` : ""}
+                  </span>
+                  <SuiteTypeBadge suiteType={form.targetSuiteType} />
+                </div>
                 {form.requirements.trim() ? (
                   <p className="mt-0.5 truncate text-[10.5px] italic text-muted-foreground/85">
                     {specExcerpt(form.requirements, 120)}

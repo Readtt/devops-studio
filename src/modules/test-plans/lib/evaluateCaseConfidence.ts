@@ -12,11 +12,20 @@ import { supportsVision } from "@/modules/ai/config";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import { evaluateConfidence, type EvalCase } from "./runConfidenceEval";
 import type { ConfidenceVerdict } from "./confidence";
+import type { TargetRequirement } from "@/modules/ado";
 import type { GitRepoInfo } from "@/modules/git";
 
 export async function evaluateCaseConfidence(
   testCase: EvalCase,
-  opts?: { runs?: number; signal?: AbortSignal },
+  opts?: {
+    runs?: number;
+    signal?: AbortSignal;
+    /** Requirement this case's suite tracks. Callers that know the suite
+     *  resolve it once (see `resolveSuiteRequirement`) and pass it in — a bulk
+     *  run must not re-fetch the same work item per case. */
+    requirement?: TargetRequirement | null;
+    requirementId?: number | null;
+  },
 ): Promise<ConfidenceVerdict> {
   const chat = useChatStore.getState();
   const prefs = usePreferencesStore.getState();
@@ -54,6 +63,8 @@ export async function evaluateCaseConfidence(
     runs: opts?.runs ?? 1,
     contextBlocks: blocks,
     customInstructions: prefs.customInstructions || undefined,
+    requirement: opts?.requirement ?? null,
+    requirementId: opts?.requirementId ?? null,
     signal: opts?.signal,
   });
 }

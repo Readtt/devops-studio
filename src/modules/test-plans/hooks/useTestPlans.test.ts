@@ -7,6 +7,7 @@ const getConnection = vi.fn();
 const listPlans = vi.fn();
 const listProjects = vi.fn();
 const setConnection = vi.fn();
+const updateSuiteName = vi.fn();
 
 vi.mock("@/modules/ado", () => ({
   getConnection: (...a: unknown[]) => getConnection(...a),
@@ -18,9 +19,22 @@ vi.mock("@/modules/ado", () => ({
   listSuitesForCase: vi.fn(),
   getCase: vi.fn(),
   updatePlanName: vi.fn(),
-  updateSuiteName: vi.fn(),
+  updateSuiteName: (...a: unknown[]) => updateSuiteName(...a),
   toAdoError: (e: unknown) => ({ kind: "local", message: String(e) }),
+  // Real implementations, not stubs: the store's rename guard asks these what
+  // Azure DevOps permits, and a stub would make the guard vacuously pass.
+  suiteCapabilities: (s: { suiteType?: string | null }) =>
+    realSuiteCapabilities(s as never),
+  suiteRestriction: (
+    s: { suiteType?: string | null; requirementId?: number | null },
+    action: "addCases" | "nestSuites" | "rename",
+  ) => realSuiteRestriction(s as never, action),
 }));
+
+import {
+  suiteCapabilities as realSuiteCapabilities,
+  suiteRestriction as realSuiteRestriction,
+} from "@/modules/ado/lib/suiteType";
 
 import { useTestPlans } from "./useTestPlans";
 
@@ -41,9 +55,90 @@ beforeEach(() => {
   listPlans.mockReset();
   listProjects.mockReset();
   setConnection.mockReset();
+  updateSuiteName.mockReset();
   listPlans.mockResolvedValue([]);
   setConnection.mockResolvedValue(undefined);
   useTestPlans.getState().reset();
+});
+
+/** Seed the store's suite cache for one plan without going through loadSuites. */
+function seedSuites(
+  planId: number,
+  suites: Array<Record<string, unknown>>,
+): void {
+  useTestPlans.setState({
+    bySuite: new Map([
+      [
+        planId,
+        {
+          loading: false,
+          error: null,
+          suites: suites as never,
+          suiteCases: new Map(),
+          cases: new Map(),
+          loadingCases: new Set(),
+        },
+      ],
+    ]),
+  } as never);
+}
+
+describe("useTestPlans.renameSuite", () => {
+  it("refuses a requirement-based suite before touching ADO", async () => {
+    // ADO derives a requirement suite's name from its work item, so the PATCH
+    // would fail server-side. Guarding in the store (not just the menu) matters
+    // because a context menu rendered before a refresh can still fire this.
+    seedSuites(1, [
+      {
+        id: 10,
+        name: "4821 : Bulk archive",
+        suiteType: "requirementTestSuite",
+        requirementId: 4821,
+        parentSuiteId: null,
+      },
+    ]);
+
+    const err = await useTestPlans.getState().renameSuite(1, 10, "Renamed");
+
+    expect(updateSuiteName).not.toHaveBeenCalled();
+    expect(err).toMatchObject({ kind: "local" });
+    expect((err as { message: string }).message).toContain("#4821");
+    // The optimistic patch must not have run either.
+    expect(useTestPlans.getState().bySuite.get(1)?.suites[0].name).toBe(
+      "4821 : Bulk archive",
+    );
+  });
+
+  it("still renames a static suite", async () => {
+    seedSuites(1, [
+      { id: 11, name: "Smoke", suiteType: "staticTestSuite", parentSuiteId: null },
+    ]);
+    updateSuiteName.mockResolvedValue({
+      id: 11,
+      name: "Smoke tests",
+      suiteType: "staticTestSuite",
+    });
+
+    const err = await useTestPlans.getState().renameSuite(1, 11, "Smoke tests");
+
+    expect(err).toBeNull();
+    expect(updateSuiteName).toHaveBeenCalledWith(1, 11, "Smoke tests");
+    expect(useTestPlans.getState().bySuite.get(1)?.suites[0].name).toBe(
+      "Smoke tests",
+    );
+  });
+
+  it("still renames a suite whose type we failed to parse", async () => {
+    // Unknown must stay permissive — degrade to previous behaviour rather than
+    // locking the user out of a suite they can actually rename.
+    seedSuites(1, [
+      { id: 12, name: "Odd", suiteType: "unknown", parentSuiteId: null },
+    ]);
+    updateSuiteName.mockResolvedValue({ id: 12, name: "Odd renamed" });
+
+    expect(await useTestPlans.getState().renameSuite(1, 12, "Odd renamed")).toBeNull();
+    expect(updateSuiteName).toHaveBeenCalled();
+  });
 });
 
 describe("useTestPlans.refreshConnection", () => {

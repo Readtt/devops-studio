@@ -7,11 +7,11 @@
 //!   - `/_apis/wit/workitems/{id}`      — the case as a work item (steps live here)
 
 use super::client::{
-    get_all_value_rows, get_json, patch_json, post_json, project_api, AdoState,
+    get_all_value_rows, get_json, patch_json, post_json, project_api, truncate_chars, AdoState,
 };
 use super::errors::{AdoError, AdoResult};
 use super::test_cases::work_item_to_case;
-use super::types::{PagedResponse, SuiteRef, TestCase, TestCaseRef, TestPlanRef};
+use super::types::{PagedResponse, SuiteRef, SuiteType, TestCase, TestCaseRef, TestPlanRef};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -36,8 +36,33 @@ pub async fn list_suites(state: &AdoState, plan_id: i64) -> AdoResult<Vec<SuiteR
     // The result was "No suites in this plan." for every plan with real
     // suites, because the root suite was the only thing we ever parsed.
     let url = project_api(&conn, &format!("testplan/Plans/{plan_id}/suites"));
-    let resp: PagedResponse<RawSuite> = get_json(state, &url, "suites").await?;
-    Ok(resp.value.into_iter().map(RawSuite::into_ref).collect())
+    // Follow continuation tokens, like list_suite_cases already does. A plan
+    // using requirement-based suites has one suite PER user story, so 200+
+    // suites is ordinary and a single-page read would silently drop the tail.
+    let rows = get_all_value_rows(state, &url, "suites").await?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    let mut dropped = 0_usize;
+    for row in rows {
+        match serde_json::from_value::<RawSuite>(row.clone()) {
+            Ok(raw) => out.push(raw.into_ref()),
+            Err(e) => {
+                dropped += 1;
+                log::warn!(
+                    "ado_list_suites: dropped a row from plan {plan_id} ({e}): {}",
+                    truncate_for_log(&row.to_string())
+                );
+            }
+        }
+    }
+    if dropped > 0 {
+        log::warn!(
+            "ado_list_suites: returned {} suites; {} skipped due to unparsable shape",
+            out.len(),
+            dropped
+        );
+    }
+    Ok(out)
 }
 
 pub async fn list_suite_cases(
@@ -141,7 +166,7 @@ fn json_to_i64(v: &Value) -> Option<i64> {
 }
 
 fn truncate_for_log(s: &str) -> String {
-    if s.len() <= 240 { s.to_string() } else { format!("{}…", &s[..240]) }
+    truncate_chars(s, 240)
 }
 
 /// Create a static test suite under `plan_id`. When `parent_suite_id` is
@@ -168,28 +193,72 @@ pub async fn create_static_suite(
         "name": name,
         "suiteType": "StaticTestSuite",
         "parentSuite": { "id": parent_id },
+        "inheritDefaultConfigurations": true,
     });
 
-    let raw: Value = post_json(state, &url, &body, "application/json", "create suite").await?;
+    post_suite(state, &url, &body, name, parent_id).await
+}
+
+/// Create a requirement-based test suite bound to `requirement_id`.
+///
+/// This is the suite type that gives Azure DevOps requirement traceability:
+/// every test case added to the result is auto-linked to the work item as
+/// "Tested By", which is the ONLY link ADO's requirement-coverage reporting
+/// understands. Our existing publish path does exactly that POST, so no extra
+/// linking code is needed here.
+///
+/// Creates ONE suite per call, matching the REST API 1:1. Bulk creation across
+/// a query's worth of requirements stays in the Azure DevOps web UI, whose
+/// dialog already does it well.
+pub async fn create_requirement_suite(
+    state: &AdoState,
+    plan_id: i64,
+    parent_suite_id: Option<i64>,
+    requirement_id: i64,
+    name: Option<&str>,
+) -> AdoResult<SuiteRef> {
+    let (conn, _) = state.snapshot();
+    let conn = conn.ok_or(AdoError::NotConfigured)?;
+
+    let parent_id = match parent_suite_id {
+        Some(id) => id,
+        None => resolve_root_suite_id(state, plan_id).await?,
+    };
+
+    let url = project_api(&conn, &format!("testplan/Plans/{plan_id}/suites"));
+    let mut body = json!({
+        "suiteType": "RequirementTestSuite",
+        "requirementId": requirement_id,
+        "parentSuite": { "id": parent_id },
+        // Without inherited configurations a fresh suite has none, so every
+        // published case takes link_case_to_suite's full self-heal path
+        // (link → count points → resolve configs → re-POST) and can still end
+        // at the "may need them set explicitly" warning.
+        "inheritDefaultConfigurations": true,
+    });
+    // ADO normally derives the name from the work item; send it anyway so the
+    // response is deterministic on orgs that don't.
+    if let Some(n) = name.map(str::trim).filter(|s| !s.is_empty()) {
+        body["name"] = Value::String(n.to_string());
+    }
+
+    post_suite(state, &url, &body, name.unwrap_or(""), parent_id).await
+}
+
+/// Shared POST + response parse for the suite-create variants.
+async fn post_suite(
+    state: &AdoState,
+    url: &str,
+    body: &Value,
+    fallback_name: &str,
+    parent_id: i64,
+) -> AdoResult<SuiteRef> {
+    let raw: Value = post_json(state, url, body, "application/json", "create suite").await?;
     let id = raw
         .get("id")
         .and_then(|v| v.as_i64())
         .ok_or_else(|| AdoError::local("create suite: missing id"))?;
-    let new_name = raw
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or(name)
-        .to_string();
-    let suite_type = raw
-        .get("suiteType")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    Ok(SuiteRef {
-        id,
-        name: new_name,
-        suite_type,
-        parent_suite_id: Some(parent_id),
-    })
+    Ok(raw_suite_to_ref(&raw, id, fallback_name, Some(parent_id)))
 }
 
 /// Rename an existing static test suite. ADO's testplan suite update accepts
@@ -216,25 +285,7 @@ pub async fn update_suite_name(
     );
     let body = json!({ "name": trimmed });
     let raw: Value = patch_json(state, &url, &body, "rename suite").await?;
-    let new_name = raw
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or(trimmed)
-        .to_string();
-    let suite_type = raw
-        .get("suiteType")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let parent_suite_id = raw
-        .get("parentSuite")
-        .and_then(|p| p.get("id"))
-        .and_then(json_to_i64);
-    Ok(SuiteRef {
-        id: suite_id,
-        name: new_name,
-        suite_type,
-        parent_suite_id,
-    })
+    Ok(raw_suite_to_ref(&raw, suite_id, trimmed, None))
 }
 
 /// Rename a Test Plan. PATCHes `/_apis/testplan/Plans/{planId}` with a
@@ -349,6 +400,12 @@ struct RawSuite {
     suite_type: Option<String>,
     #[serde(default)]
     parent_suite: Option<RawSuiteParent>,
+    /// Left as a raw Value because ADO sends work-item ids as a number on some
+    /// orgs and a string on others — `json_to_i64` absorbs both.
+    #[serde(default)]
+    requirement_id: Option<Value>,
+    #[serde(default)]
+    query_string: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -362,9 +419,102 @@ impl RawSuite {
         SuiteRef {
             id: self.id,
             name: self.name,
-            suite_type: self.suite_type,
+            // Case-insensitive on purpose: ADO echoes camelCase but accepts the
+            // PascalCase we send on create. Never compare these strings raw.
+            suite_type: SuiteType::parse(self.suite_type.as_deref()),
             parent_suite_id: self.parent_suite.map(|p| p.id),
+            requirement_id: self.requirement_id.as_ref().and_then(json_to_i64),
+            query_string: self.query_string,
         }
     }
 }
 
+/// Parse a testplan suite response body (POST/PATCH echo) into a `SuiteRef`.
+///
+/// The echo shape varies by org — some omit `name` or `parentSuite` entirely —
+/// so callers pass what they already know as a fallback. Shared by
+/// `create_static_suite` and `update_suite_name` so the field list only has to
+/// be right in one place.
+fn raw_suite_to_ref(
+    raw: &Value,
+    id: i64,
+    fallback_name: &str,
+    fallback_parent: Option<i64>,
+) -> SuiteRef {
+    SuiteRef {
+        id,
+        name: raw
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(fallback_name)
+            .to_string(),
+        suite_type: SuiteType::parse(raw.get("suiteType").and_then(|v| v.as_str())),
+        parent_suite_id: raw
+            .get("parentSuite")
+            .and_then(|p| p.get("id"))
+            .and_then(json_to_i64)
+            .or(fallback_parent),
+        requirement_id: raw.get("requirementId").and_then(json_to_i64),
+        query_string: raw
+            .get("queryString")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_chars_never_splits_a_multibyte_char_at_any_offset() {
+        // The headline "300 × é" case is NOT sufficient on its own: byte 240
+        // happens to be a boundary for 2-byte chars, so the buggy version
+        // survives it. Sweep every offset class instead — 3-byte and 4-byte
+        // sequences straddle 240 and 500 at different paddings.
+        for max in [240_usize, 500] {
+            for pad in 0..8 {
+                for ch in ["é", "→", "🎯"] {
+                    let s = format!("{}{}", "a".repeat(pad), ch.repeat(400));
+                    let out = truncate_chars(&s, max);
+                    assert!(out.ends_with('…'), "max {max} pad {pad} {ch}");
+                    // Round-trips as valid UTF-8 with no replacement chars.
+                    assert!(!out.contains('\u{FFFD}'), "max {max} pad {pad} {ch}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn truncate_chars_leaves_short_and_empty_input_alone() {
+        assert_eq!(truncate_chars("", 240), "");
+        assert_eq!(truncate_chars("héllo", 240), "héllo");
+        // Exactly at the limit is untouched; one past it truncates.
+        assert_eq!(truncate_chars(&"a".repeat(240), 240), "a".repeat(240));
+        assert!(truncate_chars(&"a".repeat(241), 240).ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_for_log_never_splits_a_multibyte_char() {
+        // `s.len()` is bytes, so slicing at a fixed 240 panics when that offset
+        // lands mid-char. The release profile is `panic = "abort"`, so this
+        // killed the app rather than dropping one unparsable suite row — and
+        // list_suites logs a row on every plan expand.
+        let s = "é".repeat(300);
+        let out = truncate_for_log(&s);
+        assert!(out.ends_with('…'));
+        // 240 bytes of payload + the 3-byte '…'.
+        assert!(out.len() <= 243, "got {} bytes", out.len());
+
+        // A boundary at exactly 240 bytes, and one straddling it.
+        for pad in 0..8 {
+            let s = format!("{}{}", "a".repeat(pad), "é".repeat(200));
+            let out = truncate_for_log(&s);
+            assert!(out.chars().count() > 0, "pad {pad} produced nothing");
+        }
+
+        // Short strings pass through untouched, multibyte or not.
+        assert_eq!(truncate_for_log("héllo"), "héllo");
+    }
+}

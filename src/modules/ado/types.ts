@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SUITE_TYPES } from "./lib/suiteType";
 
 // --- Connection ---
 
@@ -43,11 +44,20 @@ export const TestPlanRefSchema = z.object({
 });
 export type TestPlanRef = z.infer<typeof TestPlanRefSchema>;
 
+/** `.catch` is load-bearing: a suite type ADO adds later must not throw inside
+ *  `listSuites` and blank the entire plans tree. Unknown degrades to the app's
+ *  previous (permissive) behaviour — see `lib/suiteType.ts`. */
+export const SuiteTypeSchema = z.enum(SUITE_TYPES).catch("unknown");
+
 export const SuiteRefSchema = z.object({
   id: z.number().int(),
   name: z.string(),
-  suiteType: z.string().nullable().optional(),
+  suiteType: SuiteTypeSchema.default("unknown"),
   parentSuiteId: z.number().int().nullable().optional(),
+  /** Work item a requirement-based suite tracks. Null on every other type. */
+  requirementId: z.number().int().nullable().optional(),
+  /** WIQL behind a query-based suite. Read-only. */
+  queryString: z.string().nullable().optional(),
 });
 export type SuiteRef = z.infer<typeof SuiteRefSchema>;
 
@@ -188,6 +198,11 @@ export const BugSchema = z.object({
   areaPath: z.string().nullable().optional(),
   iterationPath: z.string().nullable().optional(),
   reproStepsHtml: z.string(),
+  /** `System.Description` — where every requirement type keeps its spec.
+   *  Empty on most Bugs, whose body lives in reproStepsHtml. */
+  descriptionHtml: z.string().optional().default(""),
+  /** `Microsoft.VSTS.Common.AcceptanceCriteria` — requirement types only. */
+  acceptanceCriteriaHtml: z.string().optional().default(""),
   tags: z.array(z.string()),
   url: z.string(),
   assignedTo: z.string().nullable().optional(),

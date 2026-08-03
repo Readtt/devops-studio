@@ -51,6 +51,7 @@ import {
   getWorkItemTitles,
   listTeamMembers,
   OUTCOMES,
+  suiteCapabilities,
   type ExecutionOutcome,
   type TeamMember,
 } from "@/modules/ado";
@@ -404,6 +405,25 @@ export function GeneratorPane({
 /** Bridges a draft case (by uid) to the shared confidence panel: reads the
  *  live verdict from the session store so a re-evaluation reflects back into
  *  the review card, and drives Re-evaluate via the same path the chip uses. */
+/** The requirement `analyze()` resolved for this session, for grounding a
+ *  confidence eval in the acceptance criteria the case was written from.
+ *
+ *  Read from the store at call time rather than subscribed: these fire inside
+ *  async loops where a closure captured at render would go stale. No fetch —
+ *  analyze already paid for it. Without this, the same case scored here and
+ *  scored again after publishing (from TestCasePane, which IS grounded)
+ *  returns two different verdicts. */
+function useSessionRequirement() {
+  const store = useGenerationSessionStore();
+  return useCallback(() => {
+    const s = store.getState();
+    return {
+      requirement: s.targetRequirement,
+      requirementId: s.targetRequirementId,
+    };
+  }, [store]);
+}
+
 function GeneratorConfidencePanel({
   uid,
   onClose,
@@ -413,6 +433,7 @@ function GeneratorConfidencePanel({
 }) {
   const cases = useGenerationSession((s) => s.cases);
   const setCaseVerdict = useGenerationSession((s) => s.setCaseVerdict);
+  const sessionRequirement = useSessionRequirement();
   const c = cases.find((x) => x.uid === uid);
   const [evaluating, setEvaluating] = useState(false);
 
@@ -426,7 +447,10 @@ function GeneratorConfidencePanel({
     if (evaluating) return;
     setEvaluating(true);
     try {
-      const v = await evaluateCaseConfidence({ title: c.title, steps: c.steps });
+      const v = await evaluateCaseConfidence(
+        { title: c.title, steps: c.steps },
+        sessionRequirement(),
+      );
       setCaseVerdict(uid, v);
     } catch (e) {
       console.error("[confidence] panel re-eval failed:", e);
@@ -799,8 +823,15 @@ function InputPhase() {
   }, [planId, loadSuites]);
 
   const suites = planId !== null ? bySuite.get(planId)?.suites ?? [] : [];
+  // A target can arrive pre-set from outside this form (the plans tree, the
+  // command palette, a rehydrated draft), so gating only the picker's options
+  // isn't enough — Analyze itself has to refuse a suite ADO won't publish into.
+  const targetSuite = suites.find((s) => s.id === suiteId) ?? null;
   const canAnalyze =
-    requirements.trim().length > 0 && planId !== null && suiteId !== null;
+    requirements.trim().length > 0 &&
+    planId !== null &&
+    suiteId !== null &&
+    (targetSuite === null || suiteCapabilities(targetSuite).canAddCases);
   const planName = plans.find((p) => p.id === planId)?.name ?? null;
   const suiteName = suites.find((s) => s.id === suiteId)?.name ?? null;
   const git = useSourceDirGitInfo();
@@ -1052,11 +1083,22 @@ function InputPhase() {
                   : "No suites in this plan."
               }
               noResultsLabel="No matching suites"
-              options={suites.map((s) => ({
-                value: String(s.id),
-                label: s.name,
-                hint: `#${s.id}`,
-              }))}
+              options={suites.map((s) => {
+                const caps = suiteCapabilities(s);
+                return {
+                  value: String(s.id),
+                  label: s.name,
+                  // Query-based suites stay VISIBLE but disabled. Filtering them
+                  // out would make a user who can see the suite in Azure DevOps
+                  // conclude our list is broken; the hint says why instead.
+                  disabled: !caps.canAddCases,
+                  hint: caps.canAddCases
+                    ? s.requirementId != null
+                      ? `#${s.id} · requirement #${s.requirementId}`
+                      : `#${s.id}`
+                    : `#${s.id} · query-based`,
+                };
+              })}
             />
           </Field>
         </div>
@@ -1698,6 +1740,7 @@ function ReviewPhase({
   /** Open the confidence detail side panel for a draft case (by uid). */
   onOpenConfidence?: (uid: string) => void;
 }) {
+  const sessionRequirement = useSessionRequirement();
   const cases = useGenerationSession((s) => s.cases);
   const bugs = useGenerationSession((s) => s.bugs);
   const setCaseDecision = useGenerationSession((s) => s.setCaseDecision);
@@ -1743,7 +1786,10 @@ function ReviewPhase({
       evalAbortsRef.current.set(uid, ac);
       setEvaluatingUids((s) => new Set(s).add(uid));
       try {
-        const v = await evaluateCaseConfidence({ title, steps }, { signal: ac.signal });
+        const v = await evaluateCaseConfidence(
+          { title, steps },
+          { signal: ac.signal, ...sessionRequirement() },
+        );
         setCaseVerdict(uid, v);
       } catch (e) {
         if ((e as { name?: string } | null)?.name !== "AbortError") {
@@ -1857,7 +1903,7 @@ function ReviewPhase({
           try {
             let v = await evaluateCaseConfidence(
               { title: t.title, steps: t.steps },
-              { signal: ac.signal },
+              { signal: ac.signal, ...sessionRequirement() },
             );
             // A verdict that came back as the "failed to produce structured
             // output" sentinel is usually a transient hiccup under the
@@ -1873,7 +1919,7 @@ function ReviewPhase({
             ) {
               v = await evaluateCaseConfidence(
                 { title: t.title, steps: t.steps },
-                { signal: ac.signal },
+                { signal: ac.signal, ...sessionRequirement() },
               );
             }
             setCaseVerdict(t.uid, v);

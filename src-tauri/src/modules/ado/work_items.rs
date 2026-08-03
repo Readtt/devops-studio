@@ -60,3 +60,37 @@ pub async fn get_work_item_titles(
     }
     Ok(out)
 }
+
+/// Work-item type names in this project's Requirement category — "User Story"
+/// on Agile, "Product Backlog Item" on Scrum, "Requirement" on CMMI, "Issue"
+/// on Basic. Read from ADO rather than hardcoded so a custom process template
+/// works too.
+///
+/// Only these types can back a requirement-based test suite, so the picker
+/// filters to them instead of letting a user choose a Task and hit a 400.
+pub async fn list_requirement_types(state: &AdoState) -> AdoResult<Vec<String>> {
+    let (conn, _) = state.snapshot();
+    let conn = conn.ok_or(AdoError::NotConfigured)?;
+    let url = project_api(
+        &conn,
+        "wit/workitemtypecategories/Microsoft.RequirementCategory",
+    );
+    let raw: Value = get_json(state, &url, "requirement work-item types").await?;
+    let types: Vec<String> = raw
+        .get("workItemTypes")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| t.get("name").and_then(|v| v.as_str()))
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    if types.is_empty() {
+        log::warn!(
+            "list_requirement_types: Microsoft.RequirementCategory returned no types; \
+             the requirement picker will fall back to every work-item type"
+        );
+    }
+    Ok(types)
+}

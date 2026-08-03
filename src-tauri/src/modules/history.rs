@@ -53,6 +53,12 @@ pub struct GenerationRun {
     /// the TS side owns the schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draft_payload: Option<serde_json::Value>,
+    /// Raw ADO suite type the run targeted ("staticTestSuite",
+    /// "requirementTestSuite", …) so History can badge the row without
+    /// re-fetching the suite. Optional: absent on every row written before
+    /// suite types existed, and the TS side normalizes whatever it gets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suite_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,10 +185,14 @@ mod tests {
             publish_log: vec![],
             status: Some("draft".into()),
             draft_payload: None,
+            suite_type: Some("requirementTestSuite".into()),
         };
         let j = serde_json::to_value(&run).unwrap();
         assert_eq!(j["planId"], 7);
         assert_eq!(j["planName"], "Sprint 42");
+        // The TS side writes this field; without it on the struct serde
+        // silently discarded the value and History could never badge a run.
+        assert_eq!(j["suiteType"], "requirementTestSuite");
         // snake_case keys should not leak.
         assert!(j.get("plan_id").is_none());
         assert!(j.get("publish_log").is_none());

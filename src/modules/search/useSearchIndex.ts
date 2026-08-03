@@ -4,6 +4,7 @@
 
 import { useMemo } from "react";
 import { useTestPlans } from "@/modules/test-plans";
+import type { SuiteType } from "@/modules/ado";
 
 export type SearchEntry =
   | {
@@ -21,6 +22,9 @@ export type SearchEntry =
       title: string;
       planId: number;
       planName: string;
+      /** So a result row can badge requirement/query suites and callers can
+       *  avoid routing a query-based suite into the generator. */
+      suiteType: SuiteType;
     }
   | { kind: "plan"; id: number; title: string };
 
@@ -47,6 +51,7 @@ export function useSearchIndex() {
           title: s.name,
           planId: p.id,
           planName: p.name,
+          suiteType: s.suiteType,
         });
         const cases = load.suiteCases.get(s.id)?.cases ?? [];
         for (const c of cases) {

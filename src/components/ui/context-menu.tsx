@@ -92,6 +92,8 @@ function ContextMenuItem({
   variant = "default",
   icon,
   description,
+  disabledReason,
+  disabled,
   children,
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.Item> & {
@@ -105,13 +107,23 @@ function ContextMenuItem({
    *  explain what the action does — context-menu items can't host tooltips
    *  because radix's portals fight each other. */
   description?: React.ReactNode
+  /** Why this action is unavailable. Setting it disables the item AND keeps
+   *  the reason legible: the blanket `data-disabled:opacity-50` below would
+   *  drop 10.5px muted text to ~40% and make the explanation unreadable,
+   *  which defeats the point of explaining. Prefer this over hiding an item —
+   *  a menu that changes shape per row reads as a bug, while a disabled row
+   *  with a reason teaches the constraint. */
+  disabledReason?: React.ReactNode
 }) {
-  const hasDescription = description != null
+  const isDisabled = disabled || disabledReason != null
+  const shown = disabledReason ?? description
+  const hasDescription = shown != null
   return (
     <ContextMenuPrimitive.Item
       data-slot="context-menu-item"
       data-inset={inset}
       data-variant={variant}
+      disabled={isDisabled}
       className={cn(
         "group/context-menu-item relative flex cursor-default gap-1.5 rounded-sm px-2 text-[11.5px] outline-hidden select-none transition-colors",
         hasDescription ? "items-start py-1.5" : "items-center py-1",
@@ -119,6 +131,9 @@ function ContextMenuItem({
         "data-inset:pl-7",
         "data-[variant=destructive]:text-destructive data-[variant=destructive]:focus:bg-destructive/10 data-[variant=destructive]:focus:text-destructive dark:data-[variant=destructive]:focus:bg-destructive/20",
         "data-disabled:pointer-events-none data-disabled:opacity-50",
+        // Explained-disabled rows opt out of the blanket dim and mute only the
+        // label, so the reason keeps full contrast.
+        disabledReason != null && "data-disabled:opacity-100",
         "[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3",
         "data-[variant=destructive]:*:[svg]:text-destructive",
         className,
@@ -128,14 +143,33 @@ function ContextMenuItem({
       {hasDescription ? (
         <>
           {icon ? (
-            <span className="mt-px flex size-3 shrink-0 items-center justify-center">
+            <span
+              className={cn(
+                "mt-px flex size-3 shrink-0 items-center justify-center",
+                disabledReason != null && "opacity-50",
+              )}
+            >
               {icon}
             </span>
           ) : null}
           <span className="flex min-w-0 flex-col gap-0.5">
-            <span className="leading-tight">{children}</span>
-            <span className="max-w-[260px] text-[10.5px] leading-snug text-muted-foreground/80 group-focus/context-menu-item:text-muted-foreground">
-              {description}
+            <span
+              className={cn(
+                "leading-tight",
+                disabledReason != null && "text-muted-foreground",
+              )}
+            >
+              {children}
+            </span>
+            <span
+              className={cn(
+                "max-w-[260px] text-[10.5px] leading-snug",
+                disabledReason != null
+                  ? "text-muted-foreground"
+                  : "text-muted-foreground/80 group-focus/context-menu-item:text-muted-foreground",
+              )}
+            >
+              {shown}
             </span>
           </span>
         </>

@@ -9,6 +9,7 @@
  *     on `kind` for targeted handling (e.g. show "Re-authorize SSO" hint).
  */
 import { invoke } from "@tauri-apps/api/core";
+import { z } from "zod";
 import {
   AdoDiffSummarySchema,
   BranchRefSchema,
@@ -189,6 +190,30 @@ export type CreateSuiteArgs = {
 
 export async function createSuite(input: CreateSuiteArgs): Promise<SuiteRef> {
   const raw = await invoke("ado_create_suite", { input });
+  return SuiteRefSchema.parse(raw);
+}
+
+export type CreateRequirementSuiteArgs = {
+  planId: number;
+  /** `null` attaches the new suite under the plan's root (i.e. top-level). */
+  parentSuiteId: number | null;
+  /** Work item the suite tracks. Must be a type in the project's Requirement
+   *  category — see {@link listRequirementTypes}. */
+  requirementId: number;
+  /** Requirement title. Optional; ADO derives the name from the work item. */
+  name?: string | null;
+};
+
+/** Create ONE requirement-based suite. Every test case added to it is
+ *  auto-linked to the requirement as "Tested By" — the only link Azure DevOps'
+ *  requirement-coverage reporting understands. Bulk creation across a query's
+ *  worth of requirements stays in the ADO web UI. */
+export async function createRequirementSuite(
+  input: CreateRequirementSuiteArgs,
+): Promise<SuiteRef> {
+  const raw = await invoke("ado_create_requirement_suite", {
+    input: { ...input, name: input.name ?? null },
+  });
   return SuiteRefSchema.parse(raw);
 }
 
@@ -374,15 +399,28 @@ export async function searchWorkItems(input?: {
   areaPath?: string | null;
   query?: string | null;
   top?: number;
+  /** Narrow to these work-item types. Omit/empty = every type except the
+   *  test-management artifacts. The requirement-suite picker passes the
+   *  project's Requirement category so only valid choices appear. */
+  workItemTypes?: string[];
 }): Promise<WorkItemRef[]> {
   const raw = await invoke("ado_list_work_items", {
     input: {
       areaPath: input?.areaPath ?? null,
       query: input?.query ?? null,
       top: input?.top ?? null,
+      workItemTypes: input?.workItemTypes ?? [],
     },
   });
   return WorkItemRefSchema.array().parse(raw);
+}
+
+/** Work-item types this project treats as requirements ("User Story" on Agile,
+ *  "Product Backlog Item" on Scrum, …). Only these can back a
+ *  requirement-based test suite. */
+export async function listRequirementTypes(): Promise<string[]> {
+  const raw = await invoke("ado_list_requirement_types");
+  return z.string().array().parse(raw);
 }
 
 /** Resolve a single work item by id (for `#123` exact matches). */

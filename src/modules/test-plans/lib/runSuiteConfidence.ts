@@ -10,6 +10,7 @@
 import { getCase } from "@/modules/ado";
 import { evaluateCaseConfidence } from "./evaluateCaseConfidence";
 import { fromTestCase } from "./runConfidenceEval";
+import { resolveSuiteRequirement } from "./resolveSuiteRequirement";
 import { saveConfidence } from "./confidenceApi";
 import type { ConfidenceVerdict } from "./confidence";
 
@@ -39,11 +40,17 @@ function isAbort(e: unknown): boolean {
   return (e as { name?: string } | null)?.name === "AbortError";
 }
 
-/** Score each target case in order, persisting verdicts to SQLite as it goes. */
+/** Score each target case in order, persisting verdicts to SQLite as it goes.
+ *
+ *  `target` is optional so existing callers keep working; passing it lets a
+ *  requirement-bound suite grade its cases against the acceptance criteria
+ *  they were written from. */
 export async function scoreCases(
   cases: ScoreTarget[],
   cb: ScoreCallbacks,
+  target?: { planId: number | null; suiteId: number | null },
 ): Promise<void> {
+  const req = await resolveSuiteRequirement(target?.planId, target?.suiteId);
   for (const c of cases) {
     if (cb.signal.aborted) return;
     if (!cb.claim(c.id)) {
@@ -56,6 +63,11 @@ export async function scoreCases(
       const verdict = await evaluateCaseConfidence(fromTestCase(tc), {
         runs: 1,
         signal: cb.signal,
+        // Resolved ONCE before the loop — a requirement suite has one work
+        // item, and re-fetching it per case would multiply the cost of a bulk
+        // run by the case count for no new information.
+        requirement: req.requirement,
+        requirementId: req.requirementId,
       });
       if (cb.signal.aborted) return; // cancelled while this case was scoring
       await saveConfidence(c.id, verdict);

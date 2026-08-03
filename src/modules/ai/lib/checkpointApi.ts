@@ -17,7 +17,7 @@ import type { ModelId } from "../config";
 import type { ResumeErrorKind } from "./errorClass";
 import type { ContextBlock } from "./contextBlocks";
 import type { Attachment } from "@/components/chat/attachments";
-import type { WorkItemRef } from "@/modules/ado";
+import type { SuiteType, WorkItemRef } from "@/modules/ado";
 import type { ActivityEntry } from "@/modules/generator/lib/activityLog";
 import type { Coverage } from "@/modules/generator/lib/qaAnalystRun";
 import type { CandidateFinding } from "@/modules/commit-review/schema";
@@ -63,6 +63,10 @@ export type GeneratorCheckpointV1 = {
     planName: string | null;
     suiteId: number | null;
     suiteName: string | null;
+    /** Optional for read-tolerance: checkpoints written before suite types
+     *  were understood must still resume. */
+    targetSuiteType?: SuiteType | null;
+    targetRequirementId?: number | null;
     coverage: Coverage;
     suggestBugs: boolean;
     tagSourceBranch: boolean;

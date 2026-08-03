@@ -5,13 +5,19 @@ import {
   adoErrorMessage,
   createCaseInSuite,
   createBugAndLink,
+  getBug,
   getConnection,
   getCase,
+  isRequirementSuite,
   listPlans,
+  normalizeSuiteType,
   listSuiteCases,
   listSuites,
   listTestPoints,
   setTestPointOutcome,
+  suiteCapabilities,
+  suiteRestriction,
+  toTargetRequirement,
   updateCaseDescription,
   updateCaseSteps,
   updateWorkItemTitle,
@@ -21,6 +27,8 @@ import {
   type DraftCase as AdoDraftCase,
   type ExecutionOutcome,
   type SuiteRef,
+  type SuiteType,
+  type TargetRequirement,
   type TestPlanRef,
 } from "@/modules/ado";
 import { useChatStore } from "@/modules/ai/store/chatStore";
@@ -150,6 +158,22 @@ export type SessionState = {
    *  ADO fetch. Falls back to "#<id>" when unknown. */
   planName: string | null;
   suiteName: string | null;
+  /** Target suite's ADO type, resolved by analyze() alongside the names.
+   *  Two jobs: the review UI can badge a requirement-based target, and
+   *  publish() can refuse a query-based one before creating any work items.
+   *  Null until analyze resolves it (or a draft restores it). */
+  targetSuiteType: SuiteType | null;
+  /** Work item a requirement-based target tracks. The requirement's BODY is
+   *  deliberately not stored — it's re-derived per analyze — but the id is
+   *  cheap and lets a reopened draft explain itself without a fetch. */
+  targetRequirementId: number | null;
+  /** The requirement BODY, cached in memory for the life of this session only.
+   *  analyze() already paid for the fetch; draft-chat reuses it so "did we
+   *  cover every acceptance criterion?" is answered against the real criteria
+   *  instead of blind. Deliberately absent from the draft payload and the
+   *  checkpoint — it's re-derived on the next analyze, and persisting it would
+   *  let a stale copy outlive an edit to the work item. */
+  targetRequirement: TargetRequirement | null;
   /** Coverage depth for generated cases. */
   coverage: Coverage;
   /** Whether to also flag concrete bug suggestions. Independent of coverage. */
@@ -669,6 +693,9 @@ const initialState: Omit<
   suiteId: null,
   planName: null,
   suiteName: null,
+  targetSuiteType: null,
+  targetRequirementId: null,
+  targetRequirement: null,
   coverage: "full",
   suggestBugs: true,
   tagSourceBranch: true,
@@ -739,6 +766,7 @@ function makeSchedulePersistDraft(getter: () => SessionState) {
         planName: s.planName,
         suiteId: s.suiteId,
         suiteName: s.suiteName,
+        suiteType: s.targetSuiteType,
         mode: describeGeneration(s.coverage, s.suggestBugs),
         specExcerpt: specExcerpt(s.requirements ?? ""),
         cases: s.cases.map((c) => ({
@@ -767,6 +795,8 @@ function makeSchedulePersistDraft(getter: () => SessionState) {
           planName: s.planName,
           suiteId: s.suiteId,
           suiteName: s.suiteName,
+          targetSuiteType: s.targetSuiteType,
+          targetRequirementId: s.targetRequirementId,
           refineRounds: s.refineRounds,
           refineUndoSnapshot: s.refineUndoSnapshot,
           attachments: s.attachments,
@@ -950,6 +980,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           planName: args.planName,
           suiteId: s.suiteId,
           suiteName: args.suiteName,
+          suiteType: s.targetSuiteType,
           mode: describeGeneration(s.coverage, s.suggestBugs),
           specExcerpt: specExcerpt(s.requirements ?? ""),
           cases: s.cases.map((c) => ({
@@ -978,6 +1009,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
             planName: args.planName,
             suiteId: s.suiteId,
             suiteName: args.suiteName,
+            targetSuiteType: s.targetSuiteType,
+            targetRequirementId: s.targetRequirementId,
             refineRounds: s.refineRounds,
             refineUndoSnapshot: s.refineUndoSnapshot,
             attachments: s.attachments,
@@ -1271,7 +1304,17 @@ export function createGenerationSessionStore(): GenerationSessionStore {
   // analyze() time (or restored by loadDraft) so the tab title stays in
   // sync with whichever plan/suite is actually selected.
   setTarget: (planId, suiteId) =>
-    set({ planId, suiteId, planName: null, suiteName: null }),
+    set({
+      planId,
+      suiteId,
+      planName: null,
+      suiteName: null,
+      // Clear the resolved type too — keeping a stale one would badge the new
+      // target as requirement-based, or let publish() gate on the old suite.
+      targetSuiteType: null,
+      targetRequirementId: null,
+      targetRequirement: null,
+    }),
   setPlanSuiteNames: (planName, suiteName) => {
     set({ planName, suiteName });
     schedulePersistDraft();
@@ -1461,6 +1504,41 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       }
       try {
         targetContext = await buildTargetContext(planId, suiteId);
+        // Mirror the resolved suite type onto the session so the review UI can
+        // badge it and publish() can gate on it without a second lookup.
+        set({
+          targetSuiteType: targetContext.suiteType ?? null,
+          // From the suite ref, not the fetched body — a failed requirement
+          // fetch shouldn't lose which work item the suite is bound to.
+          targetRequirementId:
+            targetContext.requirementId ?? targetContext.requirement?.id ?? null,
+          targetRequirement: targetContext.requirement ?? null,
+        });
+        // Refuse a target Azure DevOps will never accept cases into, BEFORE
+        // spending a multi-minute agentic run on it. publish() has the same
+        // guard, but reaching it means the user already paid for the tokens
+        // and waited — which is the exact failure this whole feature exists
+        // to prevent. This is the backstop for every entry point into
+        // analyze(), including ones added later.
+        const targetCaps = suiteCapabilities({
+          suiteType: targetContext.suiteType,
+        });
+        if (!targetCaps.canAddCases) {
+          // Release the slot like every other exit from analyze() does. A
+          // pinned analyzeAbort makes resumeAnalyze a silent no-op for the
+          // life of this store — see the regression test in
+          // useGenerationSession.checkpoint.test.ts.
+          releaseAnalyzeClaim();
+          set({
+            phase: "error",
+            errorPhase: "analyze",
+            stepLabel: "",
+            error:
+              suiteRestriction({ suiteType: targetContext.suiteType }, "addCases") ??
+              "This suite doesn't accept new test cases.",
+          });
+          return;
+        }
       } catch (e) {
         // Non-fatal — the run still works, the prompt just lacks the chip.
         console.warn("[generator] couldn't build target context:", e);
@@ -1555,6 +1633,12 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         planName: targetContext?.planName ?? null,
         suiteId,
         suiteName: targetContext?.suiteName ?? null,
+        targetSuiteType: targetContext?.suiteType ?? null,
+        // Off the suite ref, like the session mirror above — a checkpoint
+        // written after a failed requirement fetch must still resume knowing
+        // which work item the suite is bound to.
+        targetRequirementId:
+          targetContext?.requirementId ?? targetContext?.requirement?.id ?? null,
         coverage,
         suggestBugs,
         tagSourceBranch: get().tagSourceBranch,
@@ -1841,6 +1925,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       planName: form.planName,
       suiteId: form.suiteId,
       suiteName: form.suiteName,
+      targetSuiteType: form.targetSuiteType ?? null,
+      targetRequirementId: form.targetRequirementId ?? null,
       coverage: form.coverage,
       suggestBugs: form.suggestBugs,
       tagSourceBranch: form.tagSourceBranch,
@@ -2165,6 +2251,44 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       });
       return;
     }
+    // Belt-and-braces against a target restored from an older draft: Azure
+    // DevOps fills a query-based suite from its own query and rejects every
+    // hand-added case, so this would otherwise fail per-case with an opaque
+    // server error after already creating orphan work items.
+    // A draft saved before suite types existed has `targetSuiteType: null`,
+    // which `suiteCapabilities` treats as permissive ("never gate on
+    // ignorance"). That's the right default for a badge, but the wrong one
+    // here: publish is where orphan work items get created, so resolve the
+    // real type once rather than letting an unknown sail through. Cheap
+    // (one list call, once, on an action the user takes rarely) and
+    // best-effort — an ADO failure falls back to the permissive default
+    // rather than blocking a publish that would have worked.
+    let { targetSuiteType } = get();
+    if (
+      normalizeSuiteType(targetSuiteType) === "unknown" &&
+      planId != null &&
+      suiteId != null
+    ) {
+      try {
+        const suites = await listSuites(planId);
+        const fresh = suites.find((s) => s.id === suiteId);
+        if (fresh) {
+          targetSuiteType = fresh.suiteType ?? null;
+          set({ targetSuiteType });
+        }
+      } catch {
+        // Leave it unknown → permissive.
+      }
+    }
+    if (!suiteCapabilities({ suiteType: targetSuiteType }).canAddCases) {
+      set({
+        phase: "error",
+        error:
+          "Query-based suites are filled by Azure DevOps from their work-item query — pick a static or requirement-based suite to publish into.",
+        errorPhase: "publish",
+      });
+      return;
+    }
     const keptCases = cases.filter((c) => c.decision === "keep");
     const keptBugs = bugs.filter((b) => b.decision === "keep");
 
@@ -2459,6 +2583,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           planName: s.planName,
           suiteId: s.suiteId,
           suiteName: s.suiteName,
+          targetSuiteType: s.targetSuiteType,
+          targetRequirementId: s.targetRequirementId,
           refineRounds: s.refineRounds,
           refineUndoSnapshot: s.refineUndoSnapshot,
           attachments: s.attachments,
@@ -3016,6 +3142,23 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       bugIds && bugIds.length > 0 ? await bugsToContextBlocks(bugIds) : [];
     const chatContextBlocks = [...bpBlocks, ...bugBlocks];
 
+    // A draft reopened from History — or a resumed run — restores
+    // `targetRequirementId` but deliberately not the body. Without this the
+    // block renders its "could NOT be loaded from Azure DevOps" variant and
+    // the model is told something false: nothing was ever attempted. Hydrate
+    // once, here, on the surface that actually asks coverage questions.
+    let requirement = get().targetRequirement;
+    const requirementId = get().targetRequirementId;
+    if (requirement == null && requirementId != null) {
+      requirement = await getBug(requirementId)
+        .then(toTargetRequirement)
+        .catch(() => null);
+      // Cache even a null result's counterpart: on success this spares every
+      // later message the same fetch. On failure the block correctly reports
+      // the requirement as unreadable, because now it genuinely is.
+      if (requirement) set({ targetRequirement: requirement });
+    }
+
     try {
       await streamChatTask({
         requirements: s.requirements,
@@ -3023,7 +3166,26 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         attachments: s.attachments,
         cases: s.cases,
         bugs: s.bugs,
-        targetContext: null,
+        // Was `null`, which meant draft-chat couldn't answer "does this cover
+        // the acceptance criteria?" for a requirement-bound suite. Normally the
+        // body is whatever analyze() already resolved — the hydrate above only
+        // fires for a draft reopened from History or a resumed run, where the
+        // id survived but the body deliberately didn't.
+        targetContext:
+          s.planId != null && s.suiteId != null
+            ? {
+                planId: s.planId,
+                planName: s.planName,
+                suiteId: s.suiteId,
+                suiteName: s.suiteName,
+                suitePath: [],
+                areaPath: null,
+                iterationPath: null,
+                suiteType: s.targetSuiteType ?? undefined,
+                requirement,
+                requirementId,
+              }
+            : null,
         history: priorHistory,
         newQuestion: text,
         keys,
@@ -3154,6 +3316,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       // doesn't briefly say "Generate cases" before re-resolving.
       planName: payload.planName ?? run.planName ?? null,
       suiteName: payload.suiteName ?? run.suiteName ?? null,
+      targetSuiteType: payload.targetSuiteType ?? run.suiteType ?? null,
+      targetRequirementId: payload.targetRequirementId ?? null,
       runId: run.id,
       refineRounds: rounds,
       refineHistory: refineHistoryFromRounds,
@@ -3318,7 +3482,13 @@ function renderSourceLinksBlock(
 /** Resolve plan + suite metadata into the structured TargetContext that the
  *  analyst engines embed at the top of the user prompt. Walks the suite tree
  *  to build the parent path so the model sees "Auth › Sign-in › 2FA" instead
- *  of an orphan suite id. */
+ *  of an orphan suite id.
+ *
+ *  When the target is a requirement-based suite this also pulls in the work
+ *  item it tracks, so cases are grounded in the story's own acceptance
+ *  criteria. That's DERIVED here, never stored on the session: re-targeting to
+ *  a different suite recomputes it on the next analyze with no state to undo,
+ *  and no requirement body bloats a saved draft. */
 async function buildTargetContext(
   planId: number,
   suiteId: number,
@@ -3341,6 +3511,18 @@ async function buildTargetContext(
     path.unshift(parent.name);
     cursor = parent.parentSuiteId ?? null;
   }
+  let requirement: TargetRequirement | null = null;
+  if (suite && isRequirementSuite(suite) && suite.requirementId != null) {
+    try {
+      // getBug is a plain work-item fetch despite the name — it's type-agnostic.
+      requirement = toTargetRequirement(await getBug(suite.requirementId));
+    } catch (e) {
+      // Non-fatal, same contract as this function's own callers: the run still
+      // works, it just isn't grounded in the requirement.
+      console.warn("[generator] couldn't load target requirement:", e);
+    }
+  }
+
   return {
     planId,
     planName: plan?.name ?? null,
@@ -3349,6 +3531,10 @@ async function buildTargetContext(
     suitePath: path,
     areaPath: plan?.areaPath ?? null,
     iterationPath: plan?.iteration ?? null,
+    suiteType: suite?.suiteType,
+    requirement,
+    requirementId:
+      suite && isRequirementSuite(suite) ? suite.requirementId ?? null : null,
   };
 }
 

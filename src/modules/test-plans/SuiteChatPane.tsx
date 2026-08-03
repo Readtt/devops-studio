@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { ENTER_KEY, SHIFT_KEY, fmtShortcut } from "@/lib/platform";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SuiteTypeBadge } from "@/components/SuiteTypeBadge";
 import {
   Tooltip,
   TooltipContent,
@@ -55,15 +56,20 @@ import {
   EXECUTION_OUTCOMES,
   getBug,
   getConnection,
+  isQuerySuite,
+  isRequirementSuite,
   linkBugToCase,
   listTestPoints,
   setTestPointOutcome,
+  suiteCapabilities,
+  suiteRestriction,
   toAdoError,
   updateBug,
   updateCaseSteps,
   updateWorkItemTitle,
   type ConnectionStatus,
   type ExecutionOutcome,
+  type SuiteType,
 } from "@/modules/ado";
 import { stripHtml } from "@/modules/ado/lib/bugContextBlock";
 import { MODELS, type ModelId } from "@/modules/ai/config";
@@ -401,6 +407,16 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
     // — the case doesn't exist yet. Handle it first and short-circuit
     // before the caseId validation below kicks in.
     if (kind === "create-case") {
+      // Azure DevOps fills a query-based suite from its own query and rejects
+      // hand-added cases with an opaque server error. Refuse with a reason the
+      // user can act on instead of surfacing that.
+      if (!suiteCapabilities({ suiteType: suite?.suiteType }).canAddCases) {
+        return {
+          ok: false,
+          message:
+            "This is a query-based suite — Azure DevOps fills it from its work-item query, so cases can't be added here.",
+        };
+      }
       const title = typeof p.title === "string" ? p.title.trim() : "";
       if (!title) return { ok: false, message: "Empty title — refusing to create." };
       const rawSteps = Array.isArray(p.steps) ? p.steps : null;
@@ -492,6 +508,18 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
         };
       }
       if (kind === "delete-case") {
+        // Same reason create-case is gated: ADO owns membership of a
+        // query-based suite. Without this the unlink either errors opaquely or
+        // no-ops while we still recycle the work item — and the success
+        // message would claim a removal that didn't happen.
+        if (!suiteCapabilities({ suiteType: suite?.suiteType }).canRemoveCases) {
+          return {
+            ok: false,
+            message:
+              suiteRestriction({ suiteType: suite?.suiteType }, "removeCases") ??
+              "Cases can't be removed from this suite.",
+          };
+        }
         try {
           // Pass the suite so the backend unlinks the case first — ADO 400s a
           // work-item delete while a suite still references the case.
@@ -569,7 +597,10 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
         message: adoErrorMessage(toAdoError(e)) || String(e),
       };
     }
-  }, [cases, loadCases, planId, suiteId]);
+    // `suite?.suiteType` is a real dependency: the create-case and delete-case
+    // gates above read it. Omitting it was correct only by the accident that
+    // `suiteType` and `cases` are written in the same patchSuite call.
+  }, [cases, loadCases, planId, suiteId, suite?.suiteType]);
 
   // Inverse of handleApplyEdit — restores a case to the pre-apply snapshot
   // the applied-edit record captured. We don't require the case to still
@@ -762,6 +793,8 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
         truncated={truncated}
         contextScope={contextScope}
         suite={{ planId, suiteId }}
+        suiteType={suite?.suiteType}
+        requirementId={suite?.requirementId}
         filter={filter}
         onFilterChange={(v) => setFilter(planId, suiteId, v)}
         modelId={modelId}
@@ -803,6 +836,8 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
         casesLoading={casesLoading}
         cases={cases}
         suiteName={suiteName}
+        suiteType={suite?.suiteType}
+        requirementTitle={suite?.requirement?.title}
         messages={messages}
         busy={busy}
         lookupCase={lookupCase}
@@ -884,6 +919,8 @@ function ChatHeader({
   truncated,
   contextScope,
   suite,
+  suiteType,
+  requirementId,
   filter,
   onFilterChange,
   modelId,
@@ -910,6 +947,9 @@ function ChatHeader({
   truncated: boolean;
   contextScope: SuiteChatScope;
   suite: { planId: number; suiteId: number };
+  /** Suite's ADO type + tracked work item, for the header badge. */
+  suiteType?: SuiteType | null;
+  requirementId?: number | null;
   filter: string;
   onFilterChange: (v: string) => void;
   modelId: ModelId | null;
@@ -960,6 +1000,13 @@ function ChatHeader({
                 </span>
               ))}
             </span>
+            {/* In a query suite that already HAS cases the type-aware empty
+                state never renders, so without this nothing in the pane says
+                it's read-only until an action gets refused. */}
+            <SuiteTypeBadge
+              suiteType={suiteType}
+              requirementId={requirementId}
+            />
           </h1>
         </div>
         <div className="flex shrink-0 items-center gap-1">
@@ -1175,6 +1222,8 @@ function ChatThread({
   casesLoading,
   cases,
   suiteName,
+  suiteType,
+  requirementTitle,
   messages,
   busy,
   lookupCase,
@@ -1192,6 +1241,10 @@ function ChatThread({
   casesLoading: boolean;
   cases: { id: number }[] | null;
   suiteName: string | null;
+  /** Drives the empty-state copy — "generate some cases" is wrong advice on a
+   *  query-based suite, which Azure DevOps won't accept cases into. */
+  suiteType?: SuiteType | null;
+  requirementTitle?: string | null;
   messages: Msg[];
   busy: boolean;
   lookupCase: CaseLookup;
@@ -1291,7 +1344,11 @@ function ChatThread({
           {casesLoading && !cases ? (
             <CaseLoadingShimmer />
           ) : cases && cases.length === 0 ? (
-            <EmptySuiteHint suiteName={suiteName} />
+            <EmptySuiteHint
+              suiteName={suiteName}
+              suiteType={suiteType}
+              requirementTitle={requirementTitle}
+            />
           ) : messages.length === 0 ? (
             <Onboarding
               hasCases={cases !== null && cases.length > 0}
@@ -2159,15 +2216,46 @@ function CaseLoadingShimmer() {
   );
 }
 
-function EmptySuiteHint({ suiteName }: { suiteName: string | null }) {
+function EmptySuiteHint({
+  suiteName,
+  suiteType,
+  requirementTitle,
+}: {
+  suiteName: string | null;
+  suiteType?: SuiteType | null;
+  requirementTitle?: string | null;
+}) {
+  const name = (
+    <span className="font-medium text-foreground/90">
+      {suiteName ?? "this suite"}
+    </span>
+  );
+  // "Generate some from the context menu" is actively wrong advice on a
+  // query-based suite, which Azure DevOps won't let anyone add cases to.
+  const body = isQuerySuite({ suiteType }) ? (
+    <>
+      {name} is a query-based suite and currently matches no test cases. Azure
+      DevOps fills it from its work-item query — nothing can be added by hand.
+      Adjust the query in Azure DevOps to change what lands here.
+    </>
+  ) : isRequirementSuite({ suiteType }) ? (
+    <>
+      No cases tracing to{" "}
+      <span className="font-medium text-foreground/90">
+        {requirementTitle ?? "this requirement"}
+      </span>{" "}
+      yet — generate some from the suite&apos;s context menu and they&apos;ll
+      link back to the requirement automatically.
+    </>
+  ) : (
+    <>
+      No cases in {name} yet — generate some from the suite&apos;s context menu,
+      then come back here to chat about them.
+    </>
+  );
   return (
     <div className="rounded-md border border-border/50 bg-card/40 px-4 py-4 text-[12px] leading-relaxed text-muted-foreground">
-      No cases in{" "}
-      <span className="font-medium text-foreground/90">
-        {suiteName ?? "this suite"}
-      </span>{" "}
-      yet — generate some from the suite&apos;s context menu, then come back
-      here to chat about them.
+      {body}
     </div>
   );
 }

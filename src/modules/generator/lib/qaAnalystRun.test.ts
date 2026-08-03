@@ -19,8 +19,10 @@ vi.mock("@/modules/test-plans/lib/suiteChatTools", () => ({
 import {
   executeQaAnalystRun,
   prepareQaAnalystRun,
+  renderTargetContext,
   runQaAnalyst,
   type RunInput,
+  type TargetContext,
 } from "./qaAnalystRun";
 
 const base: RunInput = {
@@ -369,5 +371,70 @@ describe("executeQaAnalystRun passthroughs", () => {
       keys: {} as never,
     });
     expect(runnerArg().maxSteps).toBe(24);
+  });
+});
+
+describe("renderTargetContext — suite type awareness", () => {
+  const ctx: TargetContext = {
+    planId: 1,
+    planName: "Web",
+    suiteId: 2,
+    suiteName: "4821 : Bulk archive",
+    suitePath: ["Sprint 12"],
+    areaPath: null,
+    iterationPath: null,
+  };
+
+  it("stays byte-identical for a static suite", () => {
+    // The whole feature must be inert for the suites this app already handled.
+    const before = renderTargetContext(ctx);
+    const after = renderTargetContext({ ...ctx, suiteType: "staticTestSuite" });
+    expect(after).toBe(before);
+    expect(after).not.toContain("REQUIREMENT");
+    // Asserted against `after` directly, not via the equality above: `ctx` has
+    // no suiteType, so both operands take the same branch and an inverted
+    // `isQuerySuite` would leak this note onto EVERY static suite while
+    // keeping the two strings equal.
+    expect(after).not.toContain("query-based");
+  });
+
+  it("embeds the requirement block for a requirement-based suite", () => {
+    const out = renderTargetContext({
+      ...ctx,
+      suiteType: "requirementTestSuite",
+      requirement: {
+        id: 4821,
+        workItemType: "User Story",
+        title: "Bulk-archive contacts",
+        state: "Active",
+        description: "Users need to archive many contacts at once.",
+        acceptanceCriteria: "- Select all works",
+      },
+    });
+    expect(out).toContain("REQUIREMENT");
+    expect(out).toContain('User Story #4821 — "Bulk-archive contacts"');
+    expect(out).toContain("Acceptance criteria:");
+    expect(out).toContain("- Select all works");
+    // The TARGET CONTEXT header must survive alongside it.
+    expect(out).toContain("- Suite: Sprint 12 › 4821 : Bulk archive (#2)");
+  });
+
+  it("warns the model that a query-based suite won't take cases", () => {
+    const out = renderTargetContext({ ...ctx, suiteType: "dynamicTestSuite" });
+    expect(out).toContain("query-based suite");
+    expect(out).toContain("will not accept new cases");
+    expect(out).not.toContain("REQUIREMENT");
+  });
+
+  it("omits the requirement block when the work item couldn't be fetched", () => {
+    // buildTargetContext swallows a failed requirement fetch, so suiteType can
+    // be requirement-based with a null requirement. That must not render a
+    // half-empty block.
+    const out = renderTargetContext({
+      ...ctx,
+      suiteType: "requirementTestSuite",
+      requirement: null,
+    });
+    expect(out).not.toContain("REQUIREMENT");
   });
 });

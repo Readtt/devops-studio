@@ -1,9 +1,13 @@
 import { Button } from "@/components/ui/button";
+import { SuiteTypeBadge } from "@/components/SuiteTypeBadge";
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -19,6 +23,8 @@ import { cn } from "@/lib/utils";
 import {
   adoErrorMessage,
   getConnection,
+  suiteCapabilities,
+  suiteRestriction,
   type LinkedWorkItem,
 } from "@/modules/ado";
 import { useWorkItemTitles } from "@/modules/ado/hooks/useWorkItemTitles";
@@ -36,6 +42,8 @@ import {
   FileEditIcon,
   FolderAddIcon,
   FolderIcon,
+  FolderLinksIcon,
+  FolderSearchIcon,
   Link01Icon,
   PlusSignIcon,
   RefreshIcon,
@@ -139,6 +147,35 @@ function buildSuiteTree(suites: SuiteRef[], planName: string): SuiteNode[] {
   return roots.map(buildNode);
 }
 
+/** Icon + badge for a suite, keyed off its Azure DevOps type.
+ *
+ *  The requirement tint deliberately matches the "User Story" tint in
+ *  WorkItemMention's TYPE_TINT — a requirement suite is coloured like the thing
+ *  it tracks. Static suites keep the plain folder they've always had, so the
+ *  common case looks untouched. */
+/** Icon + tint only. The REQ/QUERY chip and its tooltip belong to
+ *  `SuiteTypeBadge`, which every surface shares — this used to compute its own
+ *  and they drifted apart the moment the badge was extracted. */
+function suiteVisual(suite: SuiteRef): {
+  icon: typeof FolderIcon;
+  tint: string | null;
+} {
+  switch (suiteCapabilities(suite).badge) {
+    case "REQ":
+      return {
+        icon: FolderLinksIcon,
+        tint: "text-sky-600/80 dark:text-sky-400/80",
+      };
+    case "QUERY":
+      return {
+        icon: FolderSearchIcon,
+        tint: "text-violet-600/80 dark:text-violet-400/80",
+      };
+    default:
+      return { icon: FolderIcon, tint: null };
+  }
+}
+
 /** Find the root suite for a plan — the one with no parent (or whose parent
  *  isn't in the returned set). Used when creating a top-level suite so the
  *  new suite gets attached to the plan's root rather than orphaned. */
@@ -160,6 +197,9 @@ type NewSuiteRequest =
       planName: string;
       parentSuiteId: number | null;
       parentSuiteName: string | null;
+      /** Which tab the dialog opens on. Two menu items feed one dialog so the
+       *  toggle stays discoverable without duplicating the form. */
+      mode: "static" | "requirement";
     };
 
 export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, activeCaseId }: Props) {
@@ -341,7 +381,7 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
     expandedPlans.size > 0 || expandedSuites.size > 0 || expandedCases.size > 0;
 
   const openNewSuiteForPlan = useCallback(
-    (planId: number, planName: string) => {
+    (planId: number, planName: string, mode: "static" | "requirement") => {
       const suites = bySuite.get(planId)?.suites ?? [];
       const rootId = findRootSuiteId(suites);
       // If we haven't loaded suites yet, pass `null` and the backend resolves
@@ -351,6 +391,7 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
         planName,
         parentSuiteId: rootId,
         parentSuiteName: null,
+        mode,
       });
     },
     [bySuite],
@@ -362,12 +403,14 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
       planName: string,
       parentSuiteId: number,
       parentSuiteName: string,
+      mode: "static" | "requirement",
     ) => {
       setNewSuiteRequest({
         planId,
         planName,
         parentSuiteId,
         parentSuiteName,
+        mode,
       });
     },
     [],
@@ -513,9 +556,11 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
               onToggleCase={toggleCase}
               onOpenCase={onOpenCase}
               onStartGenerator={onStartGenerator}
-              onNewSuiteForPlan={() => openNewSuiteForPlan(p.id, p.name)}
-              onNewSuiteForSuite={(sid, sname) =>
-                openNewSuiteForSuite(p.id, p.name, sid, sname)
+              onNewSuiteForPlan={(mode) =>
+                openNewSuiteForPlan(p.id, p.name, mode)
+              }
+              onNewSuiteForSuite={(sid, sname, mode) =>
+                openNewSuiteForSuite(p.id, p.name, sid, sname, mode)
               }
               bySuite={bySuite}
               caseDetails={caseDetails}
@@ -547,6 +592,17 @@ export function TestPlansPanel({ onOpenCase, onStartGenerator, onChatWithSuite, 
           planName={newSuiteRequest.planName}
           parentSuiteId={newSuiteRequest.parentSuiteId}
           parentSuiteName={newSuiteRequest.parentSuiteName}
+          planWebUrl={
+            conn
+              ? `${conn.orgUrl}/${encodeURIComponent(
+                  conn.project,
+                )}/_testPlans/define?planId=${newSuiteRequest.planId}`
+              : null
+          }
+          planAreaPath={
+            plans.find((p) => p.id === newSuiteRequest.planId)?.areaPath ?? null
+          }
+          initialMode={newSuiteRequest.mode}
           onCreated={(sid) => {
             // Expand the plan + parent suite (if any) + new suite so the
             // user sees their freshly-created node in context.
@@ -596,8 +652,12 @@ type PlanRowProps = {
   onToggleCase: (caseId: number) => void;
   onOpenCase: Props["onOpenCase"];
   onStartGenerator: Props["onStartGenerator"];
-  onNewSuiteForPlan: () => void;
-  onNewSuiteForSuite: (parentSuiteId: number, parentSuiteName: string) => void;
+  onNewSuiteForPlan: (mode: "static" | "requirement") => void;
+  onNewSuiteForSuite: (
+    parentSuiteId: number,
+    parentSuiteName: string,
+    mode: "static" | "requirement",
+  ) => void;
   bySuite: Map<number, SuiteLoad>;
   caseDetails: Map<number, CaseDetailsState>;
   loadSuites: (planId: number, opts?: { force?: boolean }) => Promise<void>;
@@ -712,9 +772,16 @@ function PlanRow({
           </ContextMenuItem>
           <ContextMenuItem
             icon={<HugeiconsIcon icon={FolderAddIcon} size={12} strokeWidth={1.75} />}
-            onSelect={onNewSuiteForPlan}
+            onSelect={() => onNewSuiteForPlan("static")}
           >
-            New suite…
+            New static suite…
+          </ContextMenuItem>
+          <ContextMenuItem
+            icon={<HugeiconsIcon icon={FolderLinksIcon} size={12} strokeWidth={1.75} />}
+            description="Bind a suite to a user story — cases you add link back to it as Tested By."
+            onSelect={() => onNewSuiteForPlan("requirement")}
+          >
+            New requirement-based suite…
           </ContextMenuItem>
           <ContextMenuItem
             icon={<HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={1.75} />}
@@ -913,7 +980,11 @@ type SuiteRowProps = {
   matches: ((s: string) => boolean) | null;
   onOpenCase: Props["onOpenCase"];
   onStartGenerator: Props["onStartGenerator"];
-  onNewSuite: (parentSuiteId: number, parentSuiteName: string) => void;
+  onNewSuite: (
+    parentSuiteId: number,
+    parentSuiteName: string,
+    mode: "static" | "requirement",
+  ) => void;
   conn: ConnInfo | null;
   activeCaseId: number | null;
   renamingSuiteId: number | null;
@@ -965,6 +1036,8 @@ function SuiteRow({
       void useTestPlans.getState().loadSuiteCases(planId, suite.id);
     }
   }, [forceExpand, cases, loading, error, planId, suite.id]);
+  const caps = suiteCapabilities(suite);
+  const visual = suiteVisual(suite);
   const isRenaming = renamingSuiteId === suite.id;
   const [renameError, setRenameError] = useState<string | null>(null);
   // Clear any lingering rename error when the user exits rename mode by
@@ -996,6 +1069,9 @@ function SuiteRow({
               // propagation so the row's onClick doesn't fire the toggle as
               // part of the same gesture.
               e.stopPropagation();
+              // A requirement suite's name mirrors its work item, so ADO owns
+              // it — don't offer an input that can only fail.
+              if (!caps.canRename) return;
               onStartRename(suite.id);
             }}
             className="flex w-full items-center gap-1 rounded-sm px-1.5 py-1 text-left text-[11.5px] transition-colors duration-150 hover:bg-foreground/[0.04]"
@@ -1007,12 +1083,15 @@ function SuiteRow({
               className="shrink-0 text-muted-foreground"
             />
             <HugeiconsIcon
-              icon={FolderIcon}
+              icon={visual.icon}
               size={10}
               strokeWidth={1.75}
               className={cn(
                 "shrink-0",
-                hasChildren ? "text-foreground/70" : "text-muted-foreground/70",
+                visual.tint ??
+                  (hasChildren
+                    ? "text-foreground/70"
+                    : "text-muted-foreground/70"),
               )}
             />
             {isRenaming ? (
@@ -1032,7 +1111,14 @@ function SuiteRow({
                 onCancel={onCancelRename}
               />
             ) : (
-              <span className="truncate">{suite.name}</span>
+              <>
+                <span className="truncate">{suite.name}</span>
+                <SuiteTypeBadge
+                  suiteType={suite.suiteType}
+                  requirementId={suite.requirementId}
+                  queryString={suite.queryString}
+                />
+              </>
             )}
           </button>
         </ContextMenuTrigger>
@@ -1050,19 +1136,40 @@ function SuiteRow({
           </ContextMenuItem>
           <ContextMenuItem
             icon={<HugeiconsIcon icon={FileEditIcon} size={12} strokeWidth={1.75} />}
+            disabledReason={suiteRestriction(suite, "rename")}
             onSelect={() => onStartRename(suite.id)}
           >
             Rename suite
           </ContextMenuItem>
           <ContextMenuItem
             icon={<HugeiconsIcon icon={FolderAddIcon} size={12} strokeWidth={1.75} />}
-            onSelect={() => onNewSuite(suite.id, suite.name)}
+            disabledReason={suiteRestriction(suite, "nestSuites")}
+            onSelect={() => onNewSuite(suite.id, suite.name, "static")}
           >
             New nested suite…
           </ContextMenuItem>
           <ContextMenuItem
+            icon={<HugeiconsIcon icon={FolderLinksIcon} size={12} strokeWidth={1.75} />}
+            disabledReason={suiteRestriction(suite, "nestSuites")}
+            description="Nest a requirement-tracking suite under this one."
+            onSelect={() => onNewSuite(suite.id, suite.name, "requirement")}
+          >
+            New requirement-based suite…
+          </ContextMenuItem>
+          <ContextMenuItem
             icon={<HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={1.75} />}
-            description="Open the AI generator targeting this suite."
+            disabledReason={suiteRestriction(suite, "addCases")}
+            description={
+              caps.badge === "REQ"
+                ? // `requirementId` is optional in the schema — name it only
+                  // when we actually have it, rather than showing "#?".
+                  `Open the AI generator targeting this suite. Cases published here link back to ${
+                    suite.requirementId != null
+                      ? `requirement #${suite.requirementId}`
+                      : "this suite's requirement"
+                  } automatically.`
+                : "Open the AI generator targeting this suite."
+            }
             onSelect={() => onStartGenerator({ planId, suiteId: suite.id })}
           >
             Generate cases for suite
@@ -1086,7 +1193,11 @@ function SuiteRow({
           {onChatWithSuite ? (
             <ContextMenuItem
               icon={<HugeiconsIcon icon={BubbleChatIcon} size={12} strokeWidth={1.75} />}
-              description="Chat with this suite's cases loaded as context."
+              description={
+                caps.badge === "REQ"
+                  ? "Chat with this suite's cases and its requirement loaded as context."
+                  : "Chat with this suite's cases loaded as context."
+              }
               onSelect={() =>
                 onChatWithSuite({
                   planId,
@@ -1099,25 +1210,48 @@ function SuiteRow({
             </ContextMenuItem>
           ) : null}
           <ContextMenuSeparator />
-          <ContextMenuItem
-            icon={<HugeiconsIcon icon={Copy01Icon} size={12} strokeWidth={1.75} />}
-            description="Copy this suite's open bugs as a pasteable list."
-            disabled={!conn}
-            onSelect={() => void copyOpenBugsForSuite(planId, suite.id)}
-          >
-            Copy all open bugs
-          </ContextMenuItem>
-          <ContextMenuItem
-            icon={<HugeiconsIcon icon={Link01Icon} size={12} strokeWidth={1.75} />}
-            description="Copies this suite's Azure DevOps URL."
-            disabled={!suiteWebUrl}
-            onSelect={() => {
-              if (!suiteWebUrl) return;
-              void navigator.clipboard.writeText(suiteWebUrl);
-            }}
-          >
-            Copy suite link
-          </ContextMenuItem>
+          {/* Copy actions nest happily — terminal, low-frequency, and grouping
+              them keeps the row count flat as type-specific items appear. */}
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>
+              <HugeiconsIcon icon={Copy01Icon} size={12} strokeWidth={1.75} />
+              Copy
+            </ContextMenuSubTrigger>
+            <ContextMenuSubContent>
+              <ContextMenuItem
+                icon={<HugeiconsIcon icon={Bug01Icon} size={12} strokeWidth={1.75} />}
+                description="Copy this suite's open bugs as a pasteable list."
+                disabled={!conn}
+                onSelect={() => void copyOpenBugsForSuite(planId, suite.id)}
+              >
+                All open bugs
+              </ContextMenuItem>
+              <ContextMenuItem
+                icon={<HugeiconsIcon icon={Link01Icon} size={12} strokeWidth={1.75} />}
+                description="Copies this suite's Azure DevOps URL."
+                disabled={!suiteWebUrl}
+                onSelect={() => {
+                  if (!suiteWebUrl) return;
+                  void navigator.clipboard.writeText(suiteWebUrl);
+                }}
+              >
+                Suite link
+              </ContextMenuItem>
+            </ContextMenuSubContent>
+          </ContextMenuSub>
+          {suite.requirementId != null && conn ? (
+            <ContextMenuItem
+              icon={<HugeiconsIcon icon={Link01Icon} size={12} strokeWidth={1.75} />}
+              description={`Open work item #${suite.requirementId} — the requirement this suite tracks.`}
+              onSelect={() =>
+                void openUrl(
+                  `${conn.orgUrl}/${encodeURIComponent(conn.project)}/_workitems/edit/${suite.requirementId}`,
+                )
+              }
+            >
+              Open requirement #{suite.requirementId}
+            </ContextMenuItem>
+          ) : null}
           <ContextMenuItem
             icon={<HugeiconsIcon icon={ExternalLink} size={12} strokeWidth={1.75} />}
             disabled={!suiteWebUrl}
@@ -1198,6 +1332,7 @@ function SuiteRow({
                 planId={planId}
                 suiteId={suite.id}
                 conn={conn}
+                addCasesRestriction={suiteRestriction(suite, "addCases")}
                 active={activeCaseId === c.id}
                 expanded={expandedCases.has(c.id)}
                 onToggleExpand={() => onToggleCase(c.id)}
@@ -1223,6 +1358,10 @@ type CaseRowProps = {
   expanded: boolean;
   onToggleExpand: () => void;
   details?: CaseDetailsState;
+  /** Why this case's suite can't take new cases, or null when it can. Passed
+   *  down from the suite row so "Generate sibling cases" is gated the same way
+   *  the suite's own "Generate cases" is. */
+  addCasesRestriction: string | null;
 };
 
 function CaseRow({
@@ -1232,6 +1371,7 @@ function CaseRow({
   planId,
   suiteId,
   conn,
+  addCasesRestriction,
   active,
   expanded,
   onToggleExpand,
@@ -1342,7 +1482,14 @@ function CaseRow({
             <ContextMenuItem
               icon={<HugeiconsIcon icon={PlusSignIcon} size={12} strokeWidth={1.75} />}
               description="Generate more cases into this same suite."
-              onSelect={() => onStartGenerator({ planId, suiteId })}
+              // A query suite lists its cases normally, so without this the
+              // suite row's disabled "Generate cases" sat one row above an
+              // enabled item doing exactly the same thing.
+              disabledReason={addCasesRestriction ?? undefined}
+              onSelect={() => {
+                if (addCasesRestriction) return;
+                onStartGenerator({ planId, suiteId });
+              }}
             >
               Generate sibling cases
             </ContextMenuItem>

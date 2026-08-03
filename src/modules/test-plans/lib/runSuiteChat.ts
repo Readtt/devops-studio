@@ -11,7 +11,14 @@ import { SURFACE_STEP_CAPS, type ModelId } from "@/modules/ai/config";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import { streamTask } from "@/modules/ai/lib/taskRunner";
 import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
-import type { TestCase } from "@/modules/ado";
+import {
+  isQuerySuite,
+  isRequirementSuite,
+  renderRequirementBlock,
+  type SuiteType,
+  type TargetRequirement,
+  type TestCase,
+} from "@/modules/ado";
 import { buildSuiteChatTools } from "./suiteChatTools";
 import {
   collectContextImages,
@@ -91,6 +98,12 @@ export type SuiteChatMessage = {
 };
 
 export const SUITE_CHAT_SYSTEM_PROMPT = `You are a senior QA engineer chatting with the user about a SUITE OF TEST CASES that already exist in Azure DevOps. The cases have been published; this conversation is for analysis, review, suggested edits, and "does this actually cover what the spec says it does".
+
+SUITE TYPE
+The SUITE line tells you what kind of suite this is.
+- Requirement-based: every case in it is linked to the requirement shown in the REQUIREMENT block as "Tested By". Answer coverage questions against that requirement's acceptance criteria, and explicitly NAME any criterion that has no covering case — "looks well covered" is not an answer when a criterion is unaddressed.
+- Query-based (read-only): Azure DevOps fills this suite from a work-item query. You CANNOT create or delete cases in it. Say so in prose instead of emitting a create-case or delete-case block.
+- Static (the default): no special constraints.
 
 APPLYING EDITS (special markdown block)
 When the user wants to change a case and you have a concrete recommendation, emit the change as a fenced code block with the language tag \`devops-edit\`. The UI renders these blocks as an "Apply to ADO" card the user can click. Three kinds are supported:
@@ -318,6 +331,18 @@ export type SuiteChatRunInput = {
   suiteName: string | null;
   suitePath: string[];
   planName: string | null;
+  /** Suite's ADO type. Tells the model whether this suite can take new cases
+   *  at all, and whether coverage should be judged against a requirement. */
+  suiteType?: SuiteType | null;
+  /** The work item a requirement-based suite tracks. Rendered by the SAME
+   *  block the generator uses, so a coverage answer here is judged against the
+   *  criteria the cases were written from. */
+  requirement?: TargetRequirement | null;
+  /** Tracked work-item id straight off the suite ref. Survives a failed
+   *  `requirement` fetch, so the prompt can say WHICH requirement it couldn't
+   *  read instead of dropping the block and letting the system prompt's
+   *  "audit against the REQUIREMENT block" instruction dangle. */
+  requirementId?: number | null;
   /** Full TestCase objects already fetched from ADO. The runner trusts the
    *  caller to have populated steps + descriptions; we don't re-fetch. */
   cases: TestCase[];
@@ -408,10 +433,17 @@ function buildSuiteChatUserPrompt(
   const casesBlock = renderCasesBlock(input.cases, input.confidence);
   const historyBlock = renderHistoryBlock(input.history);
   const contextText = formatContextBlocks(input.contextBlocks ?? []);
+  // Same renderer the generator uses — a coverage answer is only trustworthy
+  // if it read the criteria the cases were written against.
+  const requirementBlock = renderRequirementBlock(input.requirement, {
+    unresolvedId: input.requirementId ?? null,
+  });
   return [
     suiteLine,
     sourceLine,
     "",
+    requirementBlock || null,
+    requirementBlock ? "" : null,
     casesBlock,
     "",
     historyBlock || null,
@@ -428,7 +460,15 @@ function buildSuiteChatUserPrompt(
 function renderSuiteLine(input: SuiteChatRunInput): string {
   const plan = input.planName ?? "(unknown plan)";
   const pathParts = [...input.suitePath, input.suiteName ?? "(unnamed suite)"];
-  return `SUITE: ${plan} › ${pathParts.join(" › ")} — ${input.cases.length} case${input.cases.length === 1 ? "" : "s"}`;
+  // Name the suite type inline. Without it the model can't tell a read-only
+  // query suite from a static one and will happily offer to create cases in it.
+  const reqId = input.requirement?.id ?? input.requirementId ?? null;
+  const kind = isRequirementSuite(input)
+    ? ` [requirement-based${reqId != null ? ` → #${reqId}` : ""}]`
+    : isQuerySuite(input)
+      ? " [query-based · read-only]"
+      : "";
+  return `SUITE: ${plan} › ${pathParts.join(" › ")}${kind} — ${input.cases.length} case${input.cases.length === 1 ? "" : "s"}`;
 }
 
 function renderCasesBlock(

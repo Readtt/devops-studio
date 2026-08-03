@@ -8,6 +8,8 @@ import {
   listSuites,
   listSuitesForCase,
   setConnection,
+  suiteCapabilities,
+  suiteRestriction,
   toAdoError,
   updatePlanName,
   updateSuiteName,
@@ -390,6 +392,17 @@ export const useTestPlans = create<State>((set, get) => ({
     const prev = prevSuites.find((s) => s.id === suiteId);
     if (!prev) return null;
     if (prev.name === trimmed) return null;
+    // Guard here, not just in the menu: a context menu rendered before a
+    // refresh reclassified the suite can still fire this, and the optimistic
+    // patch below would flash a name ADO is about to reject.
+    if (!suiteCapabilities(prev).canRename) {
+      return {
+        kind: "local",
+        message:
+          suiteRestriction(prev, "rename") ??
+          "Azure DevOps owns this suite's name.",
+      };
+    }
 
     // Optimistic patch: swap the suite's name in the in-memory tree so the
     // sidebar reflects the rename immediately, without waiting for the ADO

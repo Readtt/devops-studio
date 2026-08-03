@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
-import { listPlans, listSuites } from "@/modules/ado";
+import {
+  listPlans,
+  listSuites,
+  suiteCapabilities,
+  type SuiteCapabilities,
+  type SuiteType,
+} from "@/modules/ado";
+import { SuiteTypeBadge } from "@/components/SuiteTypeBadge";
 import { cn } from "@/lib/utils";
 import { FolderOpenIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -22,6 +29,12 @@ type Resolved = {
   suitePath: string[];
   areaPath: string | null;
   iterationPath: string | null;
+  caps: SuiteCapabilities;
+  /** Raw suite type, kept alongside `caps` so the shared badge can derive its
+   *  own label rather than this chip re-deciding the colour and wording. */
+  suiteType: SuiteType | null;
+  /** Work item a requirement-based target tracks. */
+  requirementId: number | null;
 };
 
 /** Compact chip beside the requirements input that surfaces exactly what
@@ -71,6 +84,9 @@ export function TargetContextChip({
           suitePath: path,
           areaPath: plan.areaPath ?? null,
           iterationPath: plan.iteration ?? null,
+          caps: suiteCapabilities(suite),
+          suiteType: suite.suiteType ?? null,
+          requirementId: suite.requirementId ?? null,
         });
       } catch {
         if (!cancelled) setResolved(null);
@@ -124,6 +140,15 @@ export function TargetContextChip({
               </span>
             ))}
           </span>
+          <SuiteTypeBadge
+            suiteType={resolved?.suiteType}
+            requirementId={resolved?.requirementId}
+          />
+          {resolved?.requirementId != null ? (
+            <span className="shrink-0 text-muted-foreground/70">
+              req #{resolved.requirementId}
+            </span>
+          ) : null}
           {existingCaseCount != null && existingCaseCount > 0 ? (
             <span className="shrink-0 rounded-sm bg-foreground/[0.06] px-1 py-px text-[10px] text-muted-foreground">
               {existingCaseCount} existing
@@ -165,6 +190,33 @@ export function TargetContextChip({
                 #{suiteId}
               </span>
             </dd>
+
+            {resolved && resolved.caps.badge ? (
+              <>
+                <dt className="text-muted-foreground/70">type</dt>
+                <dd className="min-w-0 text-foreground/80">
+                  {resolved.caps.label}
+                  {resolved.caps.canAddCases ? null : (
+                    <span className="ml-1 text-muted-foreground/70">
+                      — Azure DevOps fills this from a work-item query and won't
+                      accept published cases.
+                    </span>
+                  )}
+                </dd>
+              </>
+            ) : null}
+
+            {resolved?.requirementId != null ? (
+              <>
+                <dt className="text-muted-foreground/70">requirement</dt>
+                <dd className="min-w-0 text-foreground/80">
+                  <span className="font-mono">#{resolved.requirementId}</span>
+                  <span className="ml-1 text-muted-foreground/70">
+                    — published cases link back to it automatically.
+                  </span>
+                </dd>
+              </>
+            ) : null}
 
             {resolved?.areaPath ? (
               <>

@@ -8,15 +8,18 @@ import {
   CommandSeparator,
 } from "@/components/ui/command";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SuiteTypeBadge } from "@/components/SuiteTypeBadge";
 import {
   getBug,
   getCase,
   searchWorkItems,
+  suiteCapabilities,
   type Bug,
   type TestCase,
   type WorkItemRef,
 } from "@/modules/ado";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
+import { cn } from "@/lib/utils";
 import { useTestPlans } from "@/modules/test-plans";
 import {
   useSearchIndex,
@@ -493,19 +496,36 @@ function SearchRow({
     );
   }
   if (result.kind === "suite") {
+    const caps = suiteCapabilities(result);
     return (
       <CommandItem
         value={`suite-${result.id}-${result.title}`}
-        onSelect={() => onOpenSuite(result.planId, result.id)}
+        onSelect={() =>
+          // Azure DevOps fills a query-based suite from its own query and
+          // refuses hand-added cases, so targeting one is a dead end. Land the
+          // user in the plan instead, where the picker offers valid suites.
+          caps.canAddCases
+            ? onOpenSuite(result.planId, result.id)
+            : onOpenPlan(result.planId)
+        }
       >
         <HugeiconsIcon icon={FolderOpenIcon} size={12} strokeWidth={1.75} />
         <div className="flex min-w-0 flex-col">
           <span className="truncate">{result.title}</span>
           <span className="truncate text-[10.5px] text-muted-foreground">
-            {result.planName} · open in generator
+            {result.planName} ·{" "}
+            {caps.canAddCases
+              ? "open in generator"
+              : "query-based — pick another suite"}
           </span>
         </div>
-        <span className="ml-auto text-[10px] text-muted-foreground">
+        <SuiteTypeBadge suiteType={result.suiteType} className="ml-auto" />
+        <span
+          className={cn(
+            "text-[10.5px] text-muted-foreground",
+            caps.badge ? "" : "ml-auto",
+          )}
+        >
           #{result.id}
         </span>
       </CommandItem>
