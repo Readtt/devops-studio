@@ -5,8 +5,9 @@
 import { RESUME_TOPUP_STEPS, SURFACE_STEP_CAPS } from "@/modules/ai/config";
 import {
   FINISH_NOW_NUDGE,
+  type CheckpointOutcome,
   type CheckpointUsage,
-  type GeneratorCheckpointV1,
+  type TranscriptCheckpoint,
 } from "@/modules/ai/lib/checkpointApi";
 import type { ModelMessage } from "ai";
 
@@ -53,10 +54,15 @@ export type ResumeBudget = {
  *  A run that died mid-loop (error / cancel) gets its full budget back — it
  *  never got to finish investigating. A run that BURNED its budget gets only a
  *  top-up plus an explicit "stop reading, answer now" turn, so a model stuck in
- *  a tool loop converges instead of spending another full budget the same way. */
-export function resumeBudget(
-  payload: Pick<GeneratorCheckpointV1, "lastOutcome" | "transcript">,
-): ResumeBudget {
+ *  a tool loop converges instead of spending another full budget the same way.
+ *
+ *  Structurally typed rather than tied to one payload: analyze and review-phase
+ *  follow-ups run the same engine under the same cap, so they must not drift on
+ *  what a resume is allowed to spend. */
+export function resumeBudget(payload: {
+  lastOutcome: CheckpointOutcome | null;
+  transcript: TranscriptCheckpoint | null;
+}): ResumeBudget {
   const prior = payload.transcript?.messages;
   if (payload.lastOutcome?.kind === "step_cap") {
     return {
