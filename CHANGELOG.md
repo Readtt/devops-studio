@@ -7,6 +7,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.17.0] - 2026-08-03
+
+### Added
+
+- **Copy suite link.** A suite's context menu can now copy its Azure DevOps URL, for pasting into a ticket or chat instead of opening it yourself.
+
+### Fixed
+
+- **Published test cases now show up in Azure DevOps' Execute tab.** Execute lists *test points* (test case × configuration), not suite entries — and ADO creates those from the suite's default configurations. A suite with none (inheriting none from its plan) accepted the case and created zero points, so it appeared in ADO's Define tab and in the app's suite list but was invisible under Execute. Publishing now confirms a test point exists and assigns a configuration explicitly when one is missing, so generated cases are runnable. When it genuinely can't be fixed — no configuration exists in the project, or the suite is query/requirement-based — the case still publishes and the publish log explains what to do, including when it means a chosen run outcome went unrecorded.
+- **The Settings window can no longer reopen unusably small.** Its size was being saved in physical pixels and restored as logical ones, so a size stored on one display came back divided by the scale factor on a differently-scaled one (720×520 at 100% reopened as 360×260 at 200%). Because the window was also fixed-size, there was no way to drag it back. Settings geometry is no longer persisted at all, which also neutralises any bad size already saved on disk.
+
+### Changed
+
+- The Settings window is resizable, with a sensible minimum, and shrinks to fit when it opens on a display too small for its preferred size.
+
 ## [0.16.3] - 2026-07-30
 
 ### Fixed
