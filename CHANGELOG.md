@@ -7,6 +7,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.18.0] - 2026-08-03
+
+### Added
+
+- **Follow-ups in the review phase are resumable.** "Ask follow-up" was the last AI run in the app that could still lose your work: a rate limit, an accidental ESC, or quitting mid-round threw away the whole tool loop, and you had to retype the instruction and pay for it again. Follow-ups now checkpoint every agentic step, exactly like the generator's analyze pass and Commit Review. An interrupted round comes back as a **Resume** card — or a Resume button inside the failure notice when there's an error to explain — and continues on the model it started with, so the steps you already paid for aren't re-run. Your draft only changes if the round completes. Quit with one running and it's still there when you reopen the draft from History.
+
+### Fixed
+
+- **A follow-up that ran out of steps used to report "the model returned an empty refine result".** It's now recognised for what it is — the loop never got as far as writing the revised draft — so it's resumable with a top-up budget and an explicit "finish with what you've read" instruction, instead of reading as if the model had nothing to say.
+- **A follow-up could get stuck on its "running" strip forever.** If something failed while the request was still being assembled — no API key configured, an unreachable work item — the error escaped without ever clearing the running state, leaving the composer spinning with no way back.
+
 ## [0.17.0] - 2026-08-03
 
 ### Added
