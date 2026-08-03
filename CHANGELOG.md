@@ -7,6 +7,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.19.0] - 2026-08-03
+
+### Added
+
+- **Requirement-based test suites.** Azure DevOps has three kinds of test suite and the app only ever understood one of them. You can now create a suite bound to a user story or PBI — right-click a plan, **New suite** → **Requirement-based**, pick the work item — and every case you publish into it links back as **"Tested By"**. That link is the only thing ADO's requirement-coverage reporting reads, so suites created this way show up in coverage instead of sitting outside it. The requirement picker only offers work-item types your project actually treats as requirements, which is process-template dependent and read from your project rather than hardcoded.
+- **The generator and Suite Chat now write cases against the requirement.** When a suite tracks a work item, its description and acceptance criteria are handed to the model, which is told to prefer one case per criterion and to say so plainly when a criterion is untestable as written rather than inventing scope. Suite Chat answers coverage questions against those same criteria and names the ones nothing covers — "looks well covered" isn't an answer when a criterion is unaddressed. Both surfaces render the requirement from one shared block, so a coverage answer is always judged against the same text the cases were generated from.
+- **Confidence evaluation is graded against the requirement too.** A case in a requirement-bound suite is now scored knowing the acceptance criteria it was written for, so a step whose expected result contradicts a criterion reads as a real risk instead of an unknown.
+- **Query-based suites are recognised and protected.** ADO fills these from a work-item query and refuses anything added by hand. Generate, publish, and the Suite Chat create/delete actions are now disabled on them with an explanation of why, rather than letting a full generation run finish and then failing at publish with an opaque server error. Requirement suites likewise refuse renaming and child suites — ADO derives their name from the work item and only nests under static suites.
+- **REQ and QUERY badges** on suites throughout the app — the plans tree, the command palette, the generator's target chip, and the generation history — so you can tell at a glance what kind of suite you're about to generate into.
+
+### Fixed
+
+- **A bug's repro steps could silently lose text.** Any `<` in a work item — an acceptance criterion reading `qty < 10 and total > 5`, say — swallowed everything up to the next `>` when the HTML was converted to text, so the model was handed `qty  5` and wrote cases for a requirement nobody had written. Script and style blocks also survived as prompt text, unclosed list items ran two criteria together on one line, and the numeric entities Word and Outlook paste in (`&#8217;`, `&#8212;`) reached the model undecoded.
+- **The app could close silently — no error, no dialog — on text containing non-ASCII characters.** Two paths did it: a suite or case whose data Azure DevOps returned in an unexpected shape, and any Azure DevOps error message long enough to be shortened for display. Since error messages routinely quote your own work-item titles and project names, this was reachable by anyone whose ADO content isn't pure ASCII. Both now shorten safely, through one shared helper so a third copy can't reintroduce it.
+- Pasting a screenshot into a work item no longer sends the whole embedded image to the AI as if it were requirement text, and pasting a very large document no longer freezes the window while that text is prepared for a prompt.
+
+### Changed
+
+- Newly created static suites now explicitly inherit the plan's default configurations, matching what the Azure DevOps web UI does when you create a suite there.
+- Work-item text sent to the AI is now explicitly marked as data rather than as instructions. Descriptions and acceptance criteria are editable by anyone with access to your Azure DevOps project, and they reach prompts that can read your source, so the model is told plainly to treat that text as the requirement to test and never as directions addressed to it.
+- Dialogs no longer stretch past their own edges when they contain something long, like a work-item title.
+
 ## [0.18.0] - 2026-08-03
 
 ### Added
