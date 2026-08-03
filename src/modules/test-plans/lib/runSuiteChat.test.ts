@@ -13,6 +13,7 @@ vi.mock("./suiteChatTools", () => ({
 import {
   streamSuiteChatTask,
   SUITE_CHAT_SYSTEM_PROMPT,
+  type SuiteChatMessage,
   type SuiteChatTaskInput,
 } from "./runSuiteChat";
 
@@ -34,11 +35,18 @@ beforeEach(() => {
   streamTask.mockResolvedValue({ text: "ok", durationMs: 1 });
 });
 
+/** Everything the model reads on the user side, in the order it reads it: the
+ *  stable context turn followed by the question. Assembled here rather than
+ *  asserted per-field so these tests keep testing WHAT the model is told, and
+ *  stay silent about which message it arrives in. */
 async function promptFor(
   over: Partial<SuiteChatTaskInput>,
 ): Promise<string> {
   await streamSuiteChatTask({ ...base, ...over });
-  return streamTask.mock.calls[0][0].prompt as string;
+  const call = streamTask.mock.calls[0][0];
+  return [call.contextPrompt, call.prompt]
+    .filter((s: unknown): s is string => typeof s === "string" && s.length > 0)
+    .join("\n");
 }
 
 describe("suite-chat prompt — suite type awareness", () => {
@@ -103,6 +111,76 @@ describe("suite-chat prompt — suite type awareness", () => {
     expect(p).toContain("[requirement-based → #4821]");
     expect(p).toContain("could NOT be loaded");
     expect(p).toContain("do not claim coverage");
+  });
+});
+
+describe("suite-chat history — real messages, not re-inlined prose", () => {
+  const turn = (
+    role: "user" | "assistant",
+    content: string,
+  ): SuiteChatMessage => ({
+    id: `${role}-${content}`,
+    role,
+    content,
+    timestamp: "2026-08-03T00:00:00.000Z",
+  });
+
+  it("sends the thread as conversation turns", async () => {
+    await streamSuiteChatTask({
+      ...base,
+      history: [turn("user", "q1"), turn("assistant", "a1")],
+      newQuestion: "q2",
+    });
+    const call = streamTask.mock.calls[0][0];
+    expect(call.priorMessages).toEqual([
+      { role: "user", content: "q1" },
+      { role: "assistant", content: "a1" },
+    ]);
+    expect(call.prompt).toBe("q2");
+    // The prose framing the roles replaced must be gone from BOTH halves —
+    // left behind, it would still be rebuilt inside a growing string.
+    expect(call.contextPrompt).not.toContain("PRIOR CONVERSATION");
+    expect(call.contextPrompt).not.toContain("q1");
+    expect(call.prompt).not.toContain("PRIOR CONVERSATION");
+  });
+
+  it("drops an empty turn instead of sending an empty text block", async () => {
+    // A stream that died before its first delta can leave one behind in a
+    // persisted thread. As prose that was a blank line; as a real message it is
+    // a text block with no text, which Anthropic answers with a 400 — so this
+    // conversion has to filter where the prose never had to.
+    await streamSuiteChatTask({
+      ...base,
+      history: [turn("user", "q1"), turn("assistant", "   ")],
+      newQuestion: "q2",
+    });
+    expect(streamTask.mock.calls[0][0].priorMessages).toEqual([
+      { role: "user", content: "q1" },
+    ]);
+  });
+
+  it("keeps the stable half byte-identical as the thread grows", async () => {
+    // This is the property that makes the conversation cacheable: the leading
+    // context turn must not move a single byte between turns. It re-renders
+    // the suite and the standards blocks every time, so "it happens to be the
+    // same" is a claim worth pinning.
+    await streamSuiteChatTask({ ...base, history: [], newQuestion: "q1" });
+    await streamSuiteChatTask({
+      ...base,
+      history: [turn("user", "q1"), turn("assistant", "a1")],
+      newQuestion: "q2",
+    });
+    const first = streamTask.mock.calls[0][0];
+    const second = streamTask.mock.calls[1][0];
+    expect(second.contextPrompt).toBe(first.contextPrompt);
+    expect(second.systemPrompt).toBe(first.systemPrompt);
+    // …and turn 2 is turn 1 with two messages appended, which is what a cached
+    // prefix has to be.
+    expect(second.priorMessages).toEqual([
+      ...(first.priorMessages as unknown[]),
+      { role: "user", content: "q1" },
+      { role: "assistant", content: "a1" },
+    ]);
   });
 });
 

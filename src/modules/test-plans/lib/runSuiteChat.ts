@@ -12,6 +12,7 @@ import {
   SURFACE_TOKEN_BUDGETS,
   type ModelId,
 } from "@/modules/ai/config";
+import type { ModelMessage } from "ai";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import { streamTask } from "@/modules/ai/lib/taskRunner";
 import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
@@ -401,7 +402,6 @@ export type SuiteChatTaskInput = SuiteChatRunInput & {
 export async function streamSuiteChatTask(
   input: SuiteChatTaskInput & { onText: (delta: string) => void },
 ): Promise<SuiteChatRunResult> {
-  const userPrompt = buildSuiteChatUserPrompt(input, input.sourceRoot);
   const tools = buildSuiteChatTools(input.sourceRoot);
   const r = await streamTask({
     modelId: input.modelId,
@@ -409,7 +409,9 @@ export async function streamSuiteChatTask(
     local: input.local ?? {},
     systemPrompt: SUITE_CHAT_SYSTEM_PROMPT,
     customInstructions: input.customInstructions,
-    prompt: userPrompt,
+    contextPrompt: buildSuiteChatContext(input, input.sourceRoot),
+    priorMessages: historyMessages(input.history),
+    prompt: input.newQuestion.trim(),
     attachments: [
       ...(input.attachments ?? []),
       ...collectContextImages(input.contextBlocks ?? []),
@@ -427,7 +429,21 @@ export async function streamSuiteChatTask(
 
 // --- Shared prompt builder --------------------------------------------------
 
-function buildSuiteChatUserPrompt(
+/** The stable half of the request: the suite, its cases, the requirement, and
+ *  the standards blocks. Everything here is rebuilt from the same inputs every
+ *  turn, so it comes out byte-identical turn after turn — which is the whole
+ *  point. It is the leading user message, the conversation follows it as real
+ *  messages, and the newest question comes last, so each turn's request is the
+ *  previous turn's request plus two messages. That shape is what the prompt
+ *  cache can actually match.
+ *
+ *  What this replaced: the same text with the conversation spliced into the
+ *  MIDDLE of it as `PRIOR CONVERSATION: / USER: / ASSISTANT:` prose. The model
+ *  saw the same words in the same order, but because the block was rebuilt
+ *  inside a single growing string, turn N+1 diverged from turn N right where
+ *  the history was — so nothing past the system prompt could ever be a cache
+ *  hit, and every turn re-bought the entire conversation at full price. */
+function buildSuiteChatContext(
   input: SuiteChatRunInput,
   sourceRoot: string | null,
 ): string {
@@ -436,7 +452,6 @@ function buildSuiteChatUserPrompt(
     ? `Source directory: ${sourceRoot} (use the fs tools to verify cases against actual code).`
     : "Source directory: NOT SET — code grounding isn't available. Tell the user if they ask for it.";
   const casesBlock = renderCasesBlock(input.cases, input.confidence);
-  const historyBlock = renderHistoryBlock(input.history);
   const contextText = formatContextBlocks(input.contextBlocks ?? []);
   // Same renderer the generator uses — a coverage answer is only trustworthy
   // if it read the criteria the cases were written against.
@@ -450,16 +465,26 @@ function buildSuiteChatUserPrompt(
     requirementBlock || null,
     requirementBlock ? "" : null,
     casesBlock,
-    "",
-    historyBlock || null,
-    historyBlock ? "" : null,
-    contextText || null,
     contextText ? "" : null,
-    "USER:",
-    input.newQuestion.trim(),
+    contextText || null,
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
+}
+
+/** The thread so far as real conversation turns. The role each message already
+ *  carries is exactly what the `USER:` / `ASSISTANT:` labels were standing in
+ *  for, so nothing is lost by dropping them.
+ *
+ *  Empty turns ARE dropped, and have to be: as prose an empty turn rendered a
+ *  blank line and cost nothing, but as a real message it is a text block with no
+ *  text, which Anthropic rejects with a 400. A persisted thread can carry one
+ *  from a stream that died before its first delta. Nothing is lost — an empty
+ *  turn said nothing either way. */
+function historyMessages(history: SuiteChatMessage[]): ModelMessage[] {
+  return history
+    .filter((m) => m.content.trim().length > 0)
+    .map((m) => ({ role: m.role, content: m.content }));
 }
 
 function renderSuiteLine(input: SuiteChatRunInput): string {
@@ -506,17 +531,6 @@ function renderCasesBlock(
     }
   }
   return lines.join("\n");
-}
-
-function renderHistoryBlock(history: SuiteChatMessage[]): string {
-  if (history.length === 0) return "";
-  const lines: string[] = ["PRIOR CONVERSATION:"];
-  for (const m of history) {
-    lines.push(`${m.role === "user" ? "USER" : "ASSISTANT"}:`);
-    lines.push(m.content);
-    lines.push("");
-  }
-  return lines.join("\n").trimEnd();
 }
 
 // Collapse newlines in step text so each step renders on one line in the

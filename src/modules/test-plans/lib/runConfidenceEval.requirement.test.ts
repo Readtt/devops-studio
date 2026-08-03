@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { buildEvalPrompt, type ConfidenceEvalInput } from "./runConfidenceEval";
+import {
+  buildEvalPrompt,
+  buildEvalSystem,
+  type ConfidenceEvalInput,
+} from "./runConfidenceEval";
 import type { TargetRequirement } from "@/modules/ado";
+
+/** Everything the model reads, in the order it reads it. The request is split
+ *  at the prompt-cache boundary (shared grounding in the system, the case in the
+ *  user turn), and these tests are about WHAT the model is told, not which half
+ *  it arrives in — so they assert against the whole thing. The split itself is
+ *  pinned by runConfidenceEval.cachePrefix.test.ts. */
+function render(i: ConfidenceEvalInput): string {
+  return `${buildEvalSystem(i)}\n${buildEvalPrompt(i)}`;
+}
 
 function input(over: Partial<ConfidenceEvalInput> = {}): ConfidenceEvalInput {
   return {
@@ -28,14 +41,16 @@ const req: TargetRequirement = {
 describe("confidence eval prompt — requirement grounding", () => {
   it("stays byte-identical when there is no requirement", () => {
     // The whole feature must be inert for the suites this app already handled.
-    const out = buildEvalPrompt(input());
-    expect(out).not.toContain("REQUIREMENT");
+    const out = render(input());
+    // The BLOCK, not the word: the base system prompt tells the model what to
+    // do when a REQUIREMENT block is present, and always has.
+    expect(out).not.toContain("REQUIREMENT — this suite is requirement-based");
     expect(out).toContain("TEST CASE #15310");
     expect(out).toContain("Trace every step against the code");
   });
 
   it("embeds the acceptance criteria the case must be graded against", () => {
-    const out = buildEvalPrompt(input({ requirement: req, requirementId: 4821 }));
+    const out = render(input({ requirement: req, requirementId: 4821 }));
     expect(out).toContain("REQUIREMENT");
     expect(out).toContain("Select all works");
     expect(out).toContain("#4821");
@@ -45,7 +60,7 @@ describe("confidence eval prompt — requirement grounding", () => {
 
   it("fences the work-item prose as data, not instructions", () => {
     // Confidence runs with read-only file tools, same as every other surface.
-    const out = buildEvalPrompt(
+    const out = render(
       input({
         requirement: {
           ...req,
@@ -62,7 +77,7 @@ describe("confidence eval prompt — requirement grounding", () => {
   it("caps the requirement harder than the generator does", () => {
     // This prompt is built once PER CASE; a bulk suite run pays the cost N
     // times, so it must not carry the generator's 4000-char budget.
-    const out = buildEvalPrompt(
+    const out = render(
       input({
         requirement: { ...req, acceptanceCriteria: "y".repeat(9000) },
         requirementId: 4821,
@@ -73,7 +88,7 @@ describe("confidence eval prompt — requirement grounding", () => {
   });
 
   it("names a requirement whose body couldn't be loaded", () => {
-    const out = buildEvalPrompt(input({ requirement: null, requirementId: 4821 }));
+    const out = render(input({ requirement: null, requirementId: 4821 }));
     expect(out).toContain("#4821");
     expect(out).toContain("could NOT be loaded");
   });

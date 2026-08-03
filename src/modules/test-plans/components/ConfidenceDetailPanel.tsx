@@ -170,7 +170,24 @@ export function ConfidenceDetailPanel({
             {verdict.runs && verdict.runs > 1 ? (
               <>
                 <span className="text-muted-foreground/40">·</span>
-                <span>{verdict.runs} self-consistency runs</span>
+                {/* Names the price of the extra confidence. Self-consistency is
+                    a straight cost multiplier — N complete evaluations of one
+                    case — and a bare "3 self-consistency runs" reads as free
+                    rigour rather than as 3x the spend. */}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="cursor-default underline decoration-dotted underline-offset-2">
+                      {verdict.runs} self-consistency runs
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
+                    This case was evaluated {verdict.runs} separate times and the
+                    score only stayed high because the runs agreed. That is{" "}
+                    {verdict.runs}× the tokens of a single pass — every run
+                    re-reads the code from scratch — which is why evaluations
+                    run once unless something explicitly asks for more.
+                  </TooltipContent>
+                </Tooltip>
               </>
             ) : null}
             <span className="text-muted-foreground/40">·</span>

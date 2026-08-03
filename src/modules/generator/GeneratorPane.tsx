@@ -104,6 +104,7 @@ import {
   type ModelId,
 } from "@/modules/ai/config";
 import { budgetSpentPhrase, type BudgetLimit } from "@/modules/ai/lib/runBudget";
+import { CacheHitReadout } from "@/modules/ai/components/CacheHitReadout";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
 import {
   canOfferResume as canOfferResumeShared,
@@ -1529,6 +1530,7 @@ function RunBudgetReadout(props: {
   tokensUsed: number | null;
   tokenBudget: number | null;
   tokensCached: number | null;
+  peakPromptTokens: number | null;
   stepsUsed: number | null;
   stepCap: number | null;
   modelId: ModelId;
@@ -1561,35 +1563,50 @@ function RunBudgetReadout(props: {
     : null;
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span className="cursor-default text-[11px] tabular-nums text-muted-foreground">
-          {measured
-            ? `~${formatTokens(tokensUsed ?? 0)}/${formatTokens(tokenBudget)}`
-            : `step ${stepNow}${stepCap != null ? `/${stepCap}` : ""}`}{" "}
-          · {elapsed}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
-        {measured ? (
-          <>
-            This run has spent ~{formatTokens(tokensUsed ?? 0)} of the{" "}
-            {formatTokens(tokenBudget)} tokens it's allowed
-            {spentUsd != null ? ` (roughly ${formatCostUsd(spentUsd)} so far)` : ""}
-            . Every step re-sends the whole conversation, so it climbs faster
-            than it looks. If it runs out, the run stops with everything it read
-            kept, and you can top it up and resume — nothing is lost.
-            {stepCap != null ? ` Step ${stepNow} of ${stepCap}.` : ""}
-          </>
-        ) : (
-          <>
-            This model's endpoint doesn't report token usage, so the run is
-            bounded by its {stepCap} reading steps instead. If it runs out, the
-            run stops with everything it read kept and you can resume it.
-          </>
-        )}
-      </TooltipContent>
-    </Tooltip>
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="cursor-default text-[11px] tabular-nums text-muted-foreground">
+            {measured
+              ? `~${formatTokens(tokensUsed ?? 0)}/${formatTokens(tokenBudget)}`
+              : `step ${stepNow}${stepCap != null ? `/${stepCap}` : ""}`}{" "}
+            · {elapsed}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
+          {measured ? (
+            <>
+              This run has spent ~{formatTokens(tokensUsed ?? 0)} of the{" "}
+              {formatTokens(tokenBudget)} tokens it's allowed
+              {spentUsd != null
+                ? ` (roughly ${formatCostUsd(spentUsd)} so far)`
+                : ""}
+              . Every step re-sends the whole conversation, so it climbs faster
+              than it looks. If it runs out, the run stops with everything it
+              read kept, and you can top it up and resume — nothing is lost.
+              {stepCap != null ? ` Step ${stepNow} of ${stepCap}.` : ""}
+            </>
+          ) : (
+            <>
+              This model's endpoint doesn't report token usage, so the run is
+              bounded by its {stepCap} reading steps instead. If it runs out, the
+              run stops with everything it read kept and you can resume it.
+            </>
+          )}
+        </TooltipContent>
+      </Tooltip>
+      {/* Beside the spend, because neither number means much alone: the same
+          token count costs ~10x more once the cache stops hitting, and this is
+          the only place in the app where that difference is visible. */}
+      {measured ? (
+        <CacheHitReadout
+          inputTokens={tokensUsed}
+          cacheReadTokens={props.tokensCached}
+          peakPromptTokens={props.peakPromptTokens}
+          modelId={props.modelId}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -1606,6 +1623,7 @@ function AnalyzingPhase() {
   const tokensUsed = useGenerationSession((s) => s.tokensUsed);
   const tokenBudget = useGenerationSession((s) => s.tokenBudget);
   const tokensCached = useGenerationSession((s) => s.tokensCached);
+  const peakPromptTokens = useGenerationSession((s) => s.peakPromptTokens);
   const overrideModelId = useGenerationSession((s) => s.overrideModelId);
   const defaultModelId = useChatStore((s) => s.selectedModelId);
   const analyzeStartedAt = useGenerationSession((s) => s.analyzeStartedAt);
@@ -1662,6 +1680,7 @@ function AnalyzingPhase() {
             tokensUsed={tokensUsed}
             tokenBudget={tokenBudget}
             tokensCached={tokensCached}
+            peakPromptTokens={peakPromptTokens}
             stepsUsed={stepsUsed}
             stepCap={stepCap}
             modelId={overrideModelId ?? defaultModelId}
@@ -1880,6 +1899,14 @@ function ReviewPhase({
   const publish = useGenerationSession((s) => s.publish);
   const startNew = useGenerationSession((s) => s.startNew);
   const durationMs = useGenerationSession((s) => s.durationMs);
+  // The finished run's cost shape. Kept on screen after the run rather than
+  // only during it: a cache hit ratio is a comparison, and you can't compare
+  // two numbers that both vanish the moment the run lands.
+  const tokensUsed = useGenerationSession((s) => s.tokensUsed);
+  const tokensCached = useGenerationSession((s) => s.tokensCached);
+  const peakPromptTokens = useGenerationSession((s) => s.peakPromptTokens);
+  const overrideModelId = useGenerationSession((s) => s.overrideModelId);
+  const defaultModelId = useChatStore((s) => s.selectedModelId);
   const isRefining = useGenerationSession((s) => s.isRefining);
   const publishLog = useGenerationSession((s) => s.publishLog);
 
@@ -2272,7 +2299,19 @@ function ReviewPhase({
           {bugs.length > 0
             ? `, ${bugs.length} bug suggestion${bugs.length === 1 ? "" : "s"}`
             : ""}
-          {durationMs ? ` · ${(durationMs / 1000).toFixed(1)}s` : ""}.
+          {durationMs ? ` · ${(durationMs / 1000).toFixed(1)}s` : ""}
+          {tokensUsed ? ` · ~${formatTokens(tokensUsed)} tokens` : ""}.
+          {tokensUsed ? (
+            <>
+              {" "}
+              <CacheHitReadout
+                inputTokens={tokensUsed}
+                cacheReadTokens={tokensCached}
+                peakPromptTokens={peakPromptTokens}
+                modelId={overrideModelId ?? defaultModelId}
+              />
+            </>
+          ) : null}
           <span className="ml-2 hidden text-muted-foreground/70 @md:inline">
             j/k to nav cases &amp; bugs · space to toggle · p to publish
           </span>

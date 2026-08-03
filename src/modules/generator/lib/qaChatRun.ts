@@ -6,6 +6,7 @@ import {
   SURFACE_TOKEN_BUDGETS,
   type ModelId,
 } from "@/modules/ai/config";
+import type { ModelMessage } from "ai";
 import { type LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { streamTask } from "@/modules/ai/lib/taskRunner";
 import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
@@ -130,7 +131,6 @@ export async function streamChatTask(
   // live tool-call strip, and citation grounding — previously it called
   // streamText directly with no tools, which is why tool calls never showed
   // and source citations couldn't be grounded in real code.
-  const userPrompt = buildChatUserPrompt(input);
   const tools = buildSuiteChatTools(input.sourceRoot ?? null);
   const r = await streamTask({
     modelId: input.modelId,
@@ -138,7 +138,9 @@ export async function streamChatTask(
     local: input.local,
     systemPrompt: CHAT_SYSTEM_PROMPT,
     customInstructions: input.customInstructions,
-    prompt: userPrompt,
+    contextPrompt: buildChatContext(input),
+    priorMessages: historyMessages(input.history),
+    prompt: buildChatQuestion(input),
     attachments: [
       ...input.attachments,
       ...collectContextImages(input.contextBlocks ?? []),
@@ -159,16 +161,15 @@ export async function streamChatTask(
 
 // --- Shared user-prompt builder --------------------------------------------
 
-function buildChatUserPrompt(input: ChatRunInput): string {
+/** The stable half: the spec, the draft on screen, the standards blocks. Same
+ *  split, and for the same reason, as Suite Chat's — see buildSuiteChatContext.
+ *  The conversation used to be re-inlined as prose in the middle of this, which
+ *  put a moving edit right where a cached prefix has to stay still. */
+function buildChatContext(input: ChatRunInput): string {
   const targetBlock = renderTargetContext(input.targetContext);
   const changesetsBlock = renderChangesetsBlock(input.changesets);
   const draftBlock = renderDraftBlock(input.cases, input.bugs);
-  const historyBlock = renderHistoryBlock(input.history);
   const contextText = formatContextBlocks(input.contextBlocks ?? []);
-  const attached =
-    input.attachments.length === 0
-      ? ""
-      : "\n\nAttachments:\n\n" + renderAttachmentBlocks(input.attachments);
 
   return [
     targetBlock,
@@ -179,17 +180,32 @@ function buildChatUserPrompt(input: ChatRunInput): string {
     changesetsBlock ? "" : null,
     "CURRENT DRAFT (what the user is looking at right now):",
     draftBlock,
-    "",
-    historyBlock,
-    historyBlock ? "" : null,
-    contextText || null,
     contextText ? "" : null,
-    "USER:",
-    input.newQuestion.trim(),
-    attached,
+    contextText || null,
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
+}
+
+/** The turn being answered. Attachments ride with it rather than with the
+ *  stable context: they belong to the turn the user just sent, and putting
+ *  anything that changes per turn in front of the history would defeat the
+ *  split. */
+function buildChatQuestion(input: ChatRunInput): string {
+  const attached =
+    input.attachments.length === 0
+      ? ""
+      : "\n\nAttachments:\n\n" + renderAttachmentBlocks(input.attachments);
+  return `${input.newQuestion.trim()}${attached}`;
+}
+
+/** The thread so far as real conversation turns — the roles carry what the
+ *  `USER:` / `ASSISTANT:` labels used to. Empty turns are dropped: harmless as a
+ *  blank line of prose, a 400 from Anthropic as a text block with no text. */
+function historyMessages(history: ChatMessage[]): ModelMessage[] {
+  return history
+    .filter((m) => m.content.trim().length > 0)
+    .map((m) => ({ role: m.role, content: m.content }));
 }
 
 function renderDraftBlock(cases: ReviewedCase[], bugs: ReviewedBug[]): string {
@@ -224,17 +240,6 @@ function renderDraftBlock(cases: ReviewedCase[], bugs: ReviewedBug[]): string {
     }
   }
   return lines.join("\n");
-}
-
-function renderHistoryBlock(history: ChatMessage[]): string {
-  if (history.length === 0) return "";
-  const lines: string[] = ["PRIOR CONVERSATION:"];
-  for (const m of history) {
-    lines.push(`${m.role === "user" ? "USER" : "ASSISTANT"}:`);
-    lines.push(m.content);
-    lines.push("");
-  }
-  return lines.join("\n").trimEnd();
 }
 
 let chatMsgCounter = 0;

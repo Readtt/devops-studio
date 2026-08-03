@@ -114,6 +114,18 @@ export type TaskInput<S extends z.ZodTypeAny | undefined = undefined> = {
   /** The user turn. Text attachments are assumed already folded in by the
    *  caller; only images are lifted into vision parts. */
   prompt: string;
+  /** A leading user turn carrying the material that does NOT change from turn to
+   *  turn — the suite and its cases, the spec, the draft, the standards blocks.
+   *  Split out from `prompt` purely so the prompt cache can cover it: it sits in
+   *  front of {@link priorMessages}, so the whole conversation up to the newest
+   *  question is a stable prefix that grows only at the end. Omit for surfaces
+   *  that send one turn and are done. */
+  contextPrompt?: string;
+  /** The conversation so far, as REAL user/assistant messages rather than prose
+   *  quoted inside `prompt`. Both are the same bytes to the model; only the
+   *  former can be cached, because a rebuilt prose block changes shape in the
+   *  MIDDLE of the request every turn and a cached prefix has to be a prefix. */
+  priorMessages?: ModelMessage[];
   attachments?: ImageLike[];
   /** Read-only tool set (build*Tools). null/undefined ⇒ tool-less. */
   tools?: ToolSet | null;
@@ -493,6 +505,42 @@ function buildRequestPrompt(
   return { messages: [systemMessage, ...userMessages] };
 }
 
+/** The user side of the request: an optional stable context turn, the prior
+ *  conversation, then the turn being answered.
+ *
+ *  A surface that passes neither of the first two gets `buildUserTurn` verbatim
+ *  — a bare `{ prompt }` string when there are no images — so every single-turn
+ *  surface sends byte-for-byte what it sent before this existed, and the
+ *  providers that cache on an identical prefix are undisturbed.
+ *
+ *  Consecutive user messages are fine: the Anthropic provider groups same-role
+ *  messages into one turn with several content blocks, and every other provider
+ *  passes them through. What matters is the ORDER — stable context first, then
+ *  history oldest-first, then the new question — because that is what makes each
+ *  turn's request an extension of the last one's rather than a rewrite of it. */
+function buildConversationTurn(
+  input: Pick<
+    TaskInput<z.ZodTypeAny | undefined>,
+    "modelId" | "prompt" | "contextPrompt" | "priorMessages" | "attachments"
+  >,
+): { prompt: string } | { messages: ModelMessage[] } {
+  const current = buildUserTurn(input.prompt, visionSafe(input));
+  const context = input.contextPrompt?.trim() ? input.contextPrompt : null;
+  const prior = input.priorMessages ?? [];
+  if (!context && prior.length === 0) return current;
+  const currentMessages: ModelMessage[] =
+    "messages" in current
+      ? current.messages
+      : [{ role: "user", content: current.prompt }];
+  return {
+    messages: [
+      ...(context ? [{ role: "user" as const, content: context }] : []),
+      ...prior,
+      ...currentMessages,
+    ],
+  };
+}
+
 /** Rebuild the request for a RESUMED run: a freshly assembled system + user turn
  *  followed by the transcript an earlier attempt accumulated. The user turn is
  *  rebuilt rather than replayed from the transcript because image parts never
@@ -870,7 +918,7 @@ export async function runTask<
     input.local ?? {},
   );
   const system = assembleSystem(input);
-  const userTurn = buildUserTurn(input.prompt, visionSafe(input));
+  const userTurn = buildConversationTurn(input);
   const tools = input.tools ?? undefined;
   const budget = runBudgetOf(input);
   const repairAttempts = input.repairAttempts ?? DEFAULT_REPAIR_ATTEMPTS;
@@ -1047,7 +1095,7 @@ export async function streamTask<
     input.local ?? {},
   );
   const system = assembleSystem(input);
-  const userTurn = buildUserTurn(input.prompt, visionSafe(input));
+  const userTurn = buildConversationTurn(input);
   const tools = input.tools ?? undefined;
   const budget = runBudgetOf(input);
   const temperature = effectiveTemperature(input);

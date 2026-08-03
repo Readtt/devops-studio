@@ -282,6 +282,40 @@ export function measureRequestContext(input: {
   };
 }
 
+/** Run-level cache hit ratio: cache reads as a share of the tokens the run sent.
+ *
+ *  Same formula as {@link RequestContextSignal.cacheHitRatio}, over a run's
+ *  SUMMED usage rather than one step's. `inputTokens` is already the total —
+ *  the AI SDK maps it from `inputTokens.total` = noCache + cacheRead +
+ *  cacheWrite — so dividing by `inputTokens + cacheReadTokens` would count the
+ *  cache reads twice and cap a perfectly cached run at 50%.
+ *
+ *  Null means "unknown", never "nothing cached": a provider that reports no
+ *  cache detail (every local endpoint, some gateways) is not the same as one
+ *  reporting a miss, and rendering that as 0% would read as a cost regression
+ *  that never happened. */
+export function cacheHitRatioOf(
+  usage:
+    | { inputTokens?: number | null; cacheReadTokens?: number | null }
+    | null
+    | undefined,
+): number | null {
+  const input = usage?.inputTokens;
+  const cacheRead = usage?.cacheReadTokens;
+  if (typeof input !== "number" || !Number.isFinite(input) || input <= 0) {
+    return null;
+  }
+  if (typeof cacheRead !== "number" || !Number.isFinite(cacheRead)) return null;
+  return Math.min(1, Math.max(0, cacheRead) / input);
+}
+
+/** `0.873` → `"87%"`. Whole percent: the ratio is a health indicator to compare
+ *  between runs, and decimals imply a precision the provider's own rounding
+ *  doesn't have. */
+export function formatPercent(ratio: number): string {
+  return `${Math.round(Math.min(1, Math.max(0, ratio)) * 100)}%`;
+}
+
 /** Compact token label: `840`, `12k`, `1.2M`. Pairs with a leading "~". */
 export function formatTokens(tokens: number): string {
   if (tokens < 1_000) return String(Math.max(0, Math.round(tokens)));

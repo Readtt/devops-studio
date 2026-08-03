@@ -8,10 +8,12 @@ import {
   QUALITY_BUDGET_FRACTION,
   QUALITY_SEVERE_MULTIPLE,
   TOKENS_PER_IMAGE,
+  cacheHitRatioOf,
   computeContextUsage,
   estimateTokens,
   estimateTokensFromBytes,
   formatCostUsd,
+  formatPercent,
   formatTokens,
   measureRequestContext,
   qualityBudgetFor,
@@ -288,6 +290,55 @@ describe("measureRequestContext", () => {
       compatOverride: 32_000,
     })!;
     expect(s.windowTokens).toBe(32_000);
+  });
+});
+
+describe("cacheHitRatioOf (run-level, what the readout shows)", () => {
+  it("divides by a total that already includes the cache reads", () => {
+    // The double-count trap: `cacheRead / (input + cacheRead)` would report
+    // 47% here and could never exceed 50% however well the cache performed.
+    expect(cacheHitRatioOf({ inputTokens: 100_000, cacheReadTokens: 90_000 })).toBeCloseTo(
+      0.9,
+    );
+    expect(cacheHitRatioOf({ inputTokens: 1_000, cacheReadTokens: 1_000 })).toBe(1);
+  });
+
+  it("says UNKNOWN, not zero, when the provider reported no cache detail", () => {
+    // An endpoint that doesn't meter cache reads is not an endpoint whose cache
+    // is missing. Rendering it as 0% would report a cost regression that never
+    // happened — and this readout exists precisely to be trusted on that.
+    expect(cacheHitRatioOf({ inputTokens: 100_000 })).toBeNull();
+    expect(cacheHitRatioOf(undefined)).toBeNull();
+    expect(cacheHitRatioOf({ cacheReadTokens: 90_000 })).toBeNull();
+  });
+
+  it("distinguishes a reported zero from an unreported one", () => {
+    expect(cacheHitRatioOf({ inputTokens: 100_000, cacheReadTokens: 0 })).toBe(0);
+  });
+
+  it("clamps a provider that reports more cache reads than input", () => {
+    expect(cacheHitRatioOf({ inputTokens: 100, cacheReadTokens: 400 })).toBe(1);
+    expect(cacheHitRatioOf({ inputTokens: 100, cacheReadTokens: -5 })).toBe(0);
+  });
+
+  it("agrees with the per-step signal it aggregates", () => {
+    const usage = { inputTokens: 80_000, cacheReadTokens: 60_000 };
+    expect(cacheHitRatioOf(usage)).toBeCloseTo(
+      measureRequestContext({ modelId: "claude-sonnet-5", usage })!.cacheHitRatio!,
+    );
+  });
+});
+
+describe("formatPercent", () => {
+  it("renders whole percent", () => {
+    expect(formatPercent(0.873)).toBe("87%");
+    expect(formatPercent(0)).toBe("0%");
+    expect(formatPercent(1)).toBe("100%");
+  });
+
+  it("clamps out-of-range input rather than printing nonsense", () => {
+    expect(formatPercent(1.4)).toBe("100%");
+    expect(formatPercent(-0.2)).toBe("0%");
   });
 });
 

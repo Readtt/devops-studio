@@ -2,7 +2,12 @@
 // make the prediction code-grounded rather than a guess.
 //
 // Reliability lever: `runs` > 1 evaluates N times and only allows a high final
-// confidence when the runs agree (self-consistency).
+// confidence when the runs agree (self-consistency). It is also a straight cost
+// multiplier — see MAX_SELF_CONSISTENCY_RUNS.
+//
+// This is the surface bulk suite scoring calls once PER CASE, which makes it the
+// app's dominant cost path and the one place the prompt-cache split below is
+// worth the extra structure.
 
 import {
   SURFACE_STEP_CAPS,
@@ -53,7 +58,10 @@ export type ConfidenceEvalInput = {
   modelId: ModelId;
   keys: ProviderKeys;
   local?: LocalProviderConfig;
-  /** Self-consistency runs (default 1). >1 requires agreement for a high score. */
+  /** Self-consistency runs. DEFAULT 1, and every live call site leaves it there
+   *  — see {@link MAX_SELF_CONSISTENCY_RUNS}. Raising it multiplies this case's
+   *  entire cost by N, so it is an explicit per-call opt-in rather than a
+   *  setting. >1 requires agreement between the runs for a high score. */
   runs?: number;
   /** Best-practices / extra context blocks to apply during evaluation. */
   contextBlocks?: ContextBlock[];
@@ -78,6 +86,21 @@ export type ConfidenceEvalInput = {
  *  below the generator's 4000: one bulk run multiplies it by the case count. */
 const CONFIDENCE_REQUIREMENT_CHARS = 1200;
 
+/** Ceiling on self-consistency runs, and the reason `runs` defaults to 1.
+ *
+ *  `runs` is a straight COST MULTIPLIER on the app's most expensive path: one
+ *  case at `runs: 5` is five complete agentic evaluations, each re-reading the
+ *  code from scratch, and bulk suite scoring multiplies that by the case count
+ *  again — 50 cases × 5 runs × an 18-step ceiling is ~4,500 model calls for one
+ *  click. Nothing else in the app is within an order of magnitude.
+ *
+ *  So it is opt-in per call and no surface opts in: every live call site passes
+ *  1 (explicitly in `runSuiteConfidence`, by default everywhere else) and
+ *  runConfidenceEval.runs.test.ts pins that. A caller that genuinely wants
+ *  self-consistency has to ask for it and, in asking, take responsibility for
+ *  multiplying its own spend. */
+export const MAX_SELF_CONSISTENCY_RUNS = 5;
+
 export function fromTestCase(tc: TestCase): EvalCase {
   return {
     id: tc.id,
@@ -95,13 +118,17 @@ export function fromTestCase(tc: TestCase): EvalCase {
 export async function evaluateConfidence(
   input: ConfidenceEvalInput,
 ): Promise<ConfidenceVerdict> {
-  const runs = Math.max(1, Math.min(5, input.runs ?? 1));
+  const runs = Math.max(1, Math.min(MAX_SELF_CONSISTENCY_RUNS, input.runs ?? 1));
+  // Built once, then reused verbatim by every self-consistency run — same
+  // reason the split exists at all. Rebuilding per run would be byte-identical
+  // today and one careless timestamp away from not being.
+  const system = buildEvalSystem(input);
   const prompt = buildEvalPrompt(input);
 
   const verdicts: ConfidenceVerdictLLM[] = [];
   for (let i = 0; i < runs; i++) {
     if (input.signal?.aborted) throw abortError();
-    const v = await runConfidenceOnce(input, prompt);
+    const v = await runConfidenceOnce(input, system, prompt);
     if (v) verdicts.push(v);
   }
   if (input.signal?.aborted) throw abortError();
@@ -227,6 +254,7 @@ export function aggregate(verdicts: ConfidenceVerdictLLM[]): ConfidenceVerdictLL
 
 async function runConfidenceOnce(
   input: ConfidenceEvalInput,
+  system: string,
   prompt: string,
 ): Promise<ConfidenceVerdictLLM | null> {
   const tools = buildSuiteChatTools(input.sourceRoot);
@@ -238,7 +266,7 @@ async function runConfidenceOnce(
     modelId: input.modelId,
     keys: input.keys,
     local: input.local ?? {},
-    systemPrompt: CONFIDENCE_EVAL_SYSTEM_PROMPT,
+    systemPrompt: system,
     customInstructions: input.customInstructions,
     prompt,
     temperature: 0,
@@ -259,33 +287,63 @@ function abortError(): Error {
 }
 
 // --- Prompt -----------------------------------------------------------------
+//
+// SPLIT AT THE PROMPT-CACHE BOUNDARY. This is the app's largest cost path by an
+// order of magnitude: bulk suite scoring invokes a full agentic run once per
+// case, so a 50-case suite pays for whatever sits in front of the case content
+// fifty times over. Everything that does NOT vary per case therefore lives in
+// the SYSTEM prompt, where the runner's existing cache breakpoint already sits
+// (buildRequestPrompt tags the leading system message, and Anthropic orders the
+// request tools -> system -> messages, so that one breakpoint covers the tool
+// definitions too). The case itself is the entire user turn, strictly after it.
+//
+// The rule this has to keep: the system string must be BYTE-IDENTICAL across
+// every case of a run. Anthropic matches a cached prefix, not a set of pieces —
+// one per-case byte anywhere in front of the boundary and the whole prefix is
+// re-billed at full price. The requirement, the source line, and the
+// best-practice blocks all qualify: a bulk run resolves the requirement once
+// before the loop and loads the standards files once, so all three are constant
+// for the whole batch. See runConfidenceEval.cachePrefix.test.ts.
 
-/** Exported for tests: the requirement grounding is otherwise only observable
- *  through a live model call. */
-export function buildEvalPrompt(input: ConfidenceEvalInput): string {
-  const tc = input.testCase;
-  const idPart = tc.id != null ? `#${tc.id} ` : "";
+/** The shared, per-case-INVARIANT half of a confidence request: the surface's
+ *  system prompt plus the grounding every case in a run is graded against.
+ *  Exported for the test that pins its byte-stability. */
+export function buildEvalSystem(input: ConfidenceEvalInput): string {
   const sourceLine = input.sourceRoot
     ? `Source directory: ${input.sourceRoot} — use the file tools to trace each step.`
     : "No source directory is set — you cannot ground this; return Unknown with low confidence.";
-  const stepLines = tc.steps.map((s, i) => {
-    const n = s.index ?? i + 1;
-    return `${n}. ACTION: ${oneLine(s.action)}\n   EXPECTED: ${oneLine(s.expected)}`;
-  });
-  const ctx = formatContextBlocks(input.contextBlocks ?? []);
   const requirementBlock = renderRequirementBlock(input.requirement, {
     maxBodyChars: CONFIDENCE_REQUIREMENT_CHARS,
     unresolvedId: input.requirementId ?? null,
   });
+  const ctx = formatContextBlocks(input.contextBlocks ?? []);
+  return [
+    CONFIDENCE_EVAL_SYSTEM_PROMPT,
+    "",
+    sourceLine,
+    requirementBlock ? `\n${requirementBlock}` : null,
+    ctx ? `\n${ctx}` : null,
+  ]
+    .filter((l): l is string => l !== null)
+    .join("\n");
+}
+
+/** The per-case half: the thing being graded, and nothing else. Exported for
+ *  tests — the requirement grounding is otherwise only observable through a
+ *  live model call. */
+export function buildEvalPrompt(input: ConfidenceEvalInput): string {
+  const tc = input.testCase;
+  const idPart = tc.id != null ? `#${tc.id} ` : "";
+  const stepLines = tc.steps.map((s, i) => {
+    const n = s.index ?? i + 1;
+    return `${n}. ACTION: ${oneLine(s.action)}\n   EXPECTED: ${oneLine(s.expected)}`;
+  });
   return [
     `TEST CASE ${idPart}— ${tc.title}`,
     tc.description ? `Description: ${oneLine(tc.description)}` : null,
-    sourceLine,
-    requirementBlock ? `\n${requirementBlock}` : null,
     "",
     "STEPS:",
     ...stepLines,
-    ctx ? `\n${ctx}` : null,
     "",
     "Trace every step against the code and return ONLY the verdict JSON.",
   ]

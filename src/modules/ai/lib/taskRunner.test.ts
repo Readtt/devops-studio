@@ -356,6 +356,115 @@ describe("prompt caching (Anthropic breakpoint)", () => {
   });
 });
 
+describe("conversation turns (contextPrompt + priorMessages)", () => {
+  const anthropic = { ...baseInput, modelId: "claude-opus-5" as never };
+  const history = [
+    { role: "user" as const, content: "q1" },
+    { role: "assistant" as const, content: "a1" },
+  ];
+
+  it("orders the request stable-context → history → new question", async () => {
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({
+      ...baseInput,
+      contextPrompt: "CTX",
+      priorMessages: history,
+    });
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    // Non-Anthropic keeps the top-level system; only the user side becomes
+    // messages.
+    expect(arg.system).toBe("SYS");
+    expect(arg.prompt).toBeUndefined();
+    expect(arg.messages).toEqual([
+      { role: "user", content: "CTX" },
+      { role: "user", content: "q1" },
+      { role: "assistant", content: "a1" },
+      { role: "user", content: "hello" },
+    ]);
+  });
+
+  it("a later turn's request is the earlier one plus two messages", async () => {
+    // THE cache property. Anthropic matches a cached PREFIX, so a turn is only
+    // cheap when its request is the previous request with turns appended — not
+    // when it is the same content rebuilt with the conversation spliced into
+    // the middle, which is what the prose history block did.
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({ ...baseInput, contextPrompt: "CTX", priorMessages: history });
+    await runTask({
+      ...baseInput,
+      prompt: "third question",
+      contextPrompt: "CTX",
+      priorMessages: [
+        ...history,
+        { role: "user" as const, content: "hello" },
+        { role: "assistant" as const, content: "a2" },
+      ],
+    });
+    const first = (generateText.mock.calls[0][0] as { messages: unknown[] })
+      .messages;
+    const second = (generateText.mock.calls[1][0] as { messages: unknown[] })
+      .messages;
+    expect(second.length).toBe(first.length + 2);
+    expect(second.slice(0, first.length)).toEqual(first);
+  });
+
+  it("Anthropic's cache breakpoint still lands on the newest turn", async () => {
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({
+      ...anthropic,
+      tools: { read_file: {} } as never,
+      contextPrompt: "CTX",
+      priorMessages: history,
+    });
+    const prepare = (
+      generateText.mock.calls[0][0] as {
+        prepareStep: (a: { messages: unknown[] }) => { messages: unknown[] };
+      }
+    ).prepareStep;
+    const sent = (generateText.mock.calls[0][0] as { messages: unknown[] })
+      .messages;
+    const out = prepare({ messages: sent }).messages as Array<
+      Record<string, unknown>
+    >;
+    expect(out[0]).toMatchObject({ role: "system" });
+    expect(out[out.length - 1]).toMatchObject({
+      role: "user",
+      content: "hello",
+      providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+    });
+  });
+
+  it("images ride the newest turn, not the stable context", async () => {
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({
+      ...anthropic,
+      contextPrompt: "CTX",
+      priorMessages: history,
+      attachments: [
+        { kind: "image", content: "data:image/png;base64,AAA", mime: "image/png" },
+      ] as never,
+    });
+    const messages = (
+      generateText.mock.calls[0][0] as { messages: Array<Record<string, unknown>> }
+    ).messages;
+    expect(messages[1]).toEqual({ role: "user", content: "CTX" });
+    const last = messages[messages.length - 1] as {
+      content: Array<Record<string, unknown>>;
+    };
+    expect(last.content.some((p) => p.type === "image")).toBe(true);
+  });
+
+  it("a surface that passes neither sends exactly what it sent before", async () => {
+    // The whole feature has to be inert for single-turn surfaces: a bare
+    // `{ prompt }` string, not a one-element messages array that would change
+    // the bytes every auto-caching provider matches on.
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({ ...baseInput, contextPrompt: "   ", priorMessages: [] });
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    expect(promptShape(arg)).toEqual({ system: "SYS", prompt: "hello" });
+  });
+});
+
 describe("rate-limit resilience", () => {
   const anthropic = { ...baseInput, modelId: "claude-opus-5" as never };
   type Msg = {

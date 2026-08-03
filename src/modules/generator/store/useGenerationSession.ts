@@ -221,11 +221,22 @@ export type SessionState = {
    *  total plus this call's top-up, for the same reason `stepCap` is: both
    *  counters are cumulative, so a raw budget here would read "~1.2M / 500k". */
   tokenBudget: number | null;
-  /** How many of `tokensUsed` were cache reads. Carried only so the live
-   *  readout can price the run honestly: cached input bills at ~10% and an
-   *  agentic loop is mostly cache hits, so costing the whole total at the fresh
-   *  rate would overstate a Sonnet run several-fold. */
+  /** How many of `tokensUsed` were cache reads. Prices the run honestly —
+   *  cached input bills at ~10% and an agentic loop is mostly cache hits, so
+   *  costing the whole total at the fresh rate would overstate a Sonnet run
+   *  several-fold — and, as a share of `tokensUsed`, is the cache hit ratio the
+   *  readout shows.
+   *
+   *  Null means the provider reported no cache detail at ALL, which is why this
+   *  isn't seeded to 0: local endpoints and some gateways never report it, and
+   *  rendering that as "cache 0%" would accuse a healthy run of a cost
+   *  regression it didn't have. */
   tokensCached: number | null;
+  /** Largest single request this run made, from the provider's own count. The
+   *  run's spend is the sum of every request; this is the one that has to FIT,
+   *  and the one to compare across runs when judging whether the caps and
+   *  eviction are doing their job. Null until a step reports an input count. */
+  peakPromptTokens: number | null;
   /** Date.now() when the current/last analyze started, for the elapsed timer. */
   analyzeStartedAt: number | null;
   /** Set when a failed / cancelled analyze left a checkpoint worth continuing.
@@ -729,6 +740,7 @@ const initialState: Omit<
   tokensUsed: null,
   tokenBudget: null,
   tokensCached: null,
+  peakPromptTokens: null,
   analyzeStartedAt: null,
   resumable: null,
   cases: [],
@@ -759,6 +771,27 @@ const GENERATOR_BUDGET: RunBudget = {
   tokens: SURFACE_TOKEN_BUDGETS.generator,
   steps: SURFACE_STEP_CAPS.generator,
 };
+
+/** Fold one request's measured size into the run's peak. A zustand updater
+ *  rather than a read-then-write so two steps landing in the same tick can't
+ *  clobber each other's maximum. */
+function peakFrom(promptTokens: number) {
+  return (s: { peakPromptTokens: number | null }) => ({
+    peakPromptTokens: Math.max(s.peakPromptTokens ?? 0, promptTokens),
+  });
+}
+
+/** Sum two counts that are ABSENT when the provider never reported them. Adding
+ *  with `?? 0` would turn "this endpoint doesn't meter cache reads" into a
+ *  confident zero, which the readout would then show as a 0% hit ratio — an
+ *  accusation of a cost regression that never happened. */
+function addReported(
+  a: number | undefined | null,
+  b: number | undefined | null,
+): number | null {
+  if (a == null && b == null) return null;
+  return (a ?? 0) + (b ?? 0);
+}
 
 /** Debounce window for auto-persisting draft edits.
  *
@@ -1470,7 +1503,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       stepCap: SURFACE_STEP_CAPS.generator,
       tokensUsed: 0,
       tokenBudget: SURFACE_TOKEN_BUDGETS.generator,
-      tokensCached: 0,
+      tokensCached: null,
+      peakPromptTokens: null,
       analyzeStartedAt: Date.now(),
       resumable: null,
       // Clean-slate the prior run's RESULT state (mirrors tryAgain). When
@@ -1726,11 +1760,14 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           set({
             stepsUsed: cp.stepsUsed,
             tokensUsed: stepSpend(cp.usage),
-            tokensCached: cp.usage.cacheReadTokens ?? 0,
+            // Absent (not 0) when no step reported cache detail — the
+            // accumulator only writes a usage field a provider actually sent.
+            tokensCached: cp.usage.cacheReadTokens ?? null,
           });
           transcript = toTranscript(cp, null);
           writer.save(buildPayload(null));
         },
+        onContextSignal: (s) => set(peakFrom(s.promptTokens)),
         onText: (delta) => {
           if (!analyzePartialText) set({ stepLabel: "Writing output…" });
           analyzePartialText += delta;
@@ -1864,7 +1901,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       stepsUsed: baseSteps,
       tokenBudget: baseTokens + tokens,
       tokensUsed: baseTokens,
-      tokensCached: base?.usage?.cacheReadTokens ?? 0,
+      tokensCached: base?.usage?.cacheReadTokens ?? null,
+      // Not carried across a resume: the checkpoint records what the run SPENT,
+      // not how big any one request got, so the peak has to be re-measured from
+      // this attempt's own steps rather than invented from the total.
+      peakPromptTokens: null,
       error: null,
       errorPhase: null,
       resumable: null,
@@ -1924,11 +1965,14 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           set({
             stepsUsed: baseSteps + cp.stepsUsed,
             tokensUsed: baseTokens + stepSpend(cp.usage),
-            tokensCached:
-              (base?.usage?.cacheReadTokens ?? 0) + (cp.usage.cacheReadTokens ?? 0),
+            tokensCached: addReported(
+              base?.usage?.cacheReadTokens,
+              cp.usage.cacheReadTokens,
+            ),
           });
           writer.save(buildPayload(null));
         },
+        onContextSignal: (s) => set(peakFrom(s.promptTokens)),
         onText: (delta) => {
           if (!analyzePartialText) set({ stepLabel: "Writing output…" });
           analyzePartialText += delta;

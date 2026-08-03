@@ -4,6 +4,7 @@ import {
   type ModelId,
 } from "@/modules/ai/config";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
+import type { RequestContextSignal } from "@/modules/ai/lib/contextEstimate";
 import type { BudgetLimit } from "@/modules/ai/lib/runBudget";
 import {
   runTask,
@@ -251,6 +252,10 @@ export type ExecuteAnalystOptions = {
   /** Fired after each completed agentic step so the caller can persist a
    *  resume point. Tool-bearing path only (tool-less runs are single-shot). */
   onCheckpoint?: (cp: TaskCheckpoint) => void;
+  /** Fired with the provider's own measurement of each request the run made.
+   *  The checkpoint's `usage` says what the run SPENT; this says how big any one
+   *  request got, which is the number the window binds on. */
+  onContextSignal?: (signal: RequestContextSignal) => void;
   /** Liveness only — fires on the tool-bearing (streaming) path. */
   onText?: (delta: string) => void;
   /** Continuation transcript from an earlier attempt at this same run. */
@@ -292,6 +297,7 @@ export async function executeQaAnalystRun(
     schema: DraftBatchLLMSchema,
     onToolEvent: opts.onActivity,
     onCheckpoint: opts.onCheckpoint,
+    onContextSignal: opts.onContextSignal,
     resumeMessages: opts.resumeMessages,
     signal: opts.signal,
   };
