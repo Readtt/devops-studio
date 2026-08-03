@@ -7,7 +7,7 @@ use modules::{
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::sync::Mutex;
-use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, LogicalSize, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_window_state::StateFlags;
 
 /// Drained on first read so HMR / re-mounts can't replay the launch dir.
@@ -351,6 +351,18 @@ mod normalize_path_tests {
     }
 }
 
+/// Preferred settings-window size, in LOGICAL pixels, and the floor we allow a
+/// user to shrink it to. The preferred size is clamped to the work area of
+/// whichever monitor the window lands on — a 1366x768 laptop at 150% scaling
+/// only has 910x512 logical to work with, and a dialog taller than the screen
+/// is as unusable as one that's too small.
+const SETTINGS_WIDTH: f64 = 720.0;
+const SETTINGS_HEIGHT: f64 = 520.0;
+const SETTINGS_MIN_WIDTH: f64 = 480.0;
+const SETTINGS_MIN_HEIGHT: f64 = 360.0;
+/// Breathing room left around the dialog when it has to be shrunk to fit.
+const SETTINGS_SCREEN_MARGIN: f64 = 48.0;
+
 #[tauri::command]
 async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Result<(), String> {
     let url_path = match tab.as_deref() {
@@ -370,10 +382,15 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
 
     let mut builder = WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App(url_path.into()))
         .title("Settings")
-        .inner_size(720.0, 520.0)
-        .min_inner_size(720.0, 520.0)
-        .max_inner_size(720.0, 520.0)
-        .resizable(false)
+        .inner_size(SETTINGS_WIDTH, SETTINGS_HEIGHT)
+        .min_inner_size(SETTINGS_MIN_WIDTH, SETTINGS_MIN_HEIGHT)
+        // Resizable, and deliberately NO max_inner_size. This used to be pinned
+        // to exactly 720x520 with resizable(false), which left users whose
+        // window came up mis-sized with no way out (see the window-state
+        // denylist in `run`). The layout is fluid — the tab strip scrolls and
+        // the content column is centred with a max width — so any size at or
+        // above the minimum is usable.
+        .resizable(true)
         .visible(false)
         // No always_on_top: with editor/terminal gone, the historical reason
         // for pinning settings above everything (#33) no longer applies, and
@@ -404,7 +421,25 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
     {
         let _ = window.set_decorations(false);
     }
-    let _ = window;
+
+    // Shrink to fit the monitor the window actually landed on. Done after
+    // build (rather than against the primary monitor up front) because the
+    // dialog follows the main window, which may be on a different display
+    // with a different resolution and scale factor. The window is still
+    // invisible here — the frontend shows it after first paint — so this
+    // never reads as a resize jump.
+    if let Ok(Some(monitor)) = window.current_monitor() {
+        let scale = monitor.scale_factor();
+        let work = monitor.work_area().size;
+        let avail_w = work.width as f64 / scale - SETTINGS_SCREEN_MARGIN;
+        let avail_h = work.height as f64 / scale - SETTINGS_SCREEN_MARGIN;
+        let w = SETTINGS_WIDTH.min(avail_w).max(SETTINGS_MIN_WIDTH);
+        let h = SETTINGS_HEIGHT.min(avail_h).max(SETTINGS_MIN_HEIGHT);
+        if w < SETTINGS_WIDTH || h < SETTINGS_HEIGHT {
+            let _ = window.set_size(LogicalSize::new(w, h));
+            let _ = window.center();
+        }
+    }
     Ok(())
 }
 
@@ -418,6 +453,20 @@ pub fn run() {
         .plugin(
             tauri_plugin_window_state::Builder::new()
                 .with_state_flags(StateFlags::all() & !StateFlags::VISIBLE)
+                // Never persist the settings dialog's geometry. The plugin
+                // saves `inner_size()` in PHYSICAL pixels and restores it with
+                // `set_size(PhysicalSize)`, but the window declares its bounds
+                // in LOGICAL pixels — so a size written on one display reopens
+                // at `saved_px / scale` logical on a differently-scaled one
+                // (720x520 saved at 100% comes back as 360x260 on a 200%
+                // display). `min_inner_size` cannot catch it: tao's
+                // `set_inner_size` doesn't clamp to the size constraints, which
+                // are only enforced via WM_GETMINMAXINFO on user-driven sizing.
+                // That is how the window ended up unusably small — and, back
+                // when it was `resizable(false)`, unrecoverable. Denylisting
+                // also makes existing bad state on disk inert: the plugin bails
+                // out before restoring for a denylisted label.
+                .with_denylist(&["settings"])
                 .build(),
         )
         .plugin(tauri_plugin_autostart::Builder::new().build())
