@@ -576,15 +576,13 @@ export function RefineComposer({ isRefining }: Props) {
                       resume follow-up
                     </Button>
                   </TooltipTrigger>
+                  {/* Deliberately short — the hint line right above already
+                      spells out what gets re-sent and what isn't re-run. */}
                   <TooltipContent
                     side="top"
-                    className="max-w-[280px] text-[11px]"
+                    className="max-w-[240px] text-[11px]"
                   >
-                    Continues this follow-up where it stopped, on the model it
-                    started with, and your draft only changes if it completes.
-                    It re-sends the draft as it was when you asked — any edits
-                    you&rsquo;ve made since won&rsquo;t survive it (undo refine
-                    brings them back).
+                    Continues where it stopped, on the model it started with.
                   </TooltipContent>
                 </Tooltip>
                 <Tooltip>
