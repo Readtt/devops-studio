@@ -1108,6 +1108,17 @@ function SuiteRow({
             Copy all open bugs
           </ContextMenuItem>
           <ContextMenuItem
+            icon={<HugeiconsIcon icon={Link01Icon} size={12} strokeWidth={1.75} />}
+            description="Copies this suite's Azure DevOps URL."
+            disabled={!suiteWebUrl}
+            onSelect={() => {
+              if (!suiteWebUrl) return;
+              void navigator.clipboard.writeText(suiteWebUrl);
+            }}
+          >
+            Copy suite link
+          </ContextMenuItem>
+          <ContextMenuItem
             icon={<HugeiconsIcon icon={ExternalLink} size={12} strokeWidth={1.75} />}
             disabled={!suiteWebUrl}
             onSelect={() => suiteWebUrl && void openUrl(suiteWebUrl)}
