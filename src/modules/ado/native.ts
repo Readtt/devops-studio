@@ -20,6 +20,7 @@ import {
   CreatedWorkItemSchema,
   FileContentSchema,
   ProjectRefSchema,
+  PublishedCaseSchema,
   PullRequestRefSchema,
   RepoRefSchema,
   SuiteBugSchema,
@@ -47,6 +48,7 @@ import {
   type ExecutionOutcome,
   type FileContent,
   type ProjectRef,
+  type PublishedCase,
   type RepoRef,
   type SuiteBug,
   type SuiteRef,
@@ -269,15 +271,18 @@ export async function setTestPointOutcome(input: {
 
 // --- Publishing ---
 
+/** Create a Test Case work item and link it into the suite. The result carries
+ *  `testPointCount` — zero means Azure DevOps made no test point, so the case
+ *  won't show in its Execute tab; `pointWarning` then explains why. */
 export async function createCaseInSuite(
   planId: number,
   suiteId: number,
   draft: DraftCase,
-): Promise<CreatedWorkItem> {
+): Promise<PublishedCase> {
   const raw = await invoke("ado_create_case_in_suite", {
     input: { planId, suiteId, draft },
   });
-  return CreatedWorkItemSchema.parse(raw);
+  return PublishedCaseSchema.parse(raw);
 }
 
 /** Delete a test case. Pass `planId`/`suiteId` (the suite it's being deleted

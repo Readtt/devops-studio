@@ -424,7 +424,9 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
         void loadCases(planId, suiteId, true);
         return {
           ok: true,
-          message: `Created #${result.id} in this suite.`,
+          message: result.pointWarning
+            ? `Created #${result.id} in this suite. ${result.pointWarning}`
+            : `Created #${result.id} in this suite.`,
         };
       } catch (e) {
         console.error("[suite-chat] create-case failed:", e);

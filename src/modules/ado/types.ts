@@ -254,6 +254,18 @@ export const CreatedWorkItemSchema = z.object({
 });
 export type CreatedWorkItem = z.infer<typeof CreatedWorkItemSchema>;
 
+/** A published test case, plus whether Azure DevOps actually gave it a test
+ *  point. ADO's Execute tab lists test points (case × configuration), not
+ *  suite entries — a case with `testPointCount: 0` is in the suite and visible
+ *  in Define (and in our suite list) but will NOT appear under Execute. The
+ *  backend repairs that where it can; `pointWarning` is set only when it
+ *  couldn't. */
+export const PublishedCaseSchema = CreatedWorkItemSchema.extend({
+  testPointCount: z.number().int(),
+  pointWarning: z.string().nullable().optional(),
+});
+export type PublishedCase = z.infer<typeof PublishedCaseSchema>;
+
 // --- Repos ---
 
 export const RepoRefSchema = z.object({

@@ -1845,6 +1845,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         // CREATE a new one. Both paths converge on `caseId` for the shared
         // confidence + run-outcome writes below.
         let caseId: number;
+        // Set when ADO gave the new case no test point — it's in the suite but
+        // won't show under Execute, and no outcome can be recorded against it.
+        let pointWarning: string | null = null;
         if (c.updateTargetCaseId != null) {
           caseId = c.updateTargetCaseId;
           await updateWorkItemTitle(caseId, c.title);
@@ -1875,6 +1878,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           };
           const created = await createCaseInSuite(planId, suiteId, draft);
           caseId = created.id;
+          pointWarning = created.pointWarning ?? null;
           updateLog(set, c.uid, { status: "ok", result: created });
         }
         caseIdByDraftUid.set(c.uid, caseId);
@@ -1895,7 +1899,20 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         // point. ADO can briefly lag creating the point for a just-added case,
         // so retry once; on failure surface a non-fatal warning rather than
         // failing the whole publish.
-        if (c.desiredOutcome) {
+        //
+        // When the backend already told us there's no test point at all, report
+        // that instead — it's the reason any outcome write would fail, and a
+        // retry loop against a point that will never exist just wastes time.
+        if (pointWarning) {
+          updateLog(set, c.uid, {
+            // Say the outcome was dropped. Without a point there's nothing to
+            // record it against, and silently ignoring a choice the reviewer
+            // made is how "it published fine" turns into a wrong test report.
+            error: c.desiredOutcome
+              ? `${pointWarning} Its "${c.desiredOutcome}" outcome wasn't recorded.`
+              : pointWarning,
+          });
+        } else if (c.desiredOutcome) {
           try {
             let points = await listTestPoints(planId, suiteId, caseId);
             if (points.length === 0) {

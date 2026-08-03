@@ -20,7 +20,7 @@ pub mod test_points;
 pub mod types;
 pub mod work_items;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_store::StoreExt;
 
@@ -376,14 +376,30 @@ pub struct CreateCaseInput {
     pub draft: DraftCase,
 }
 
+/// A published case plus whether it actually ended up runnable. Flattens
+/// `CreatedWorkItem` so the wire shape keeps its existing `id` / `url` /
+/// `webUrl` keys and merely gains the test-point fields.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishedCase {
+    #[serde(flatten)]
+    pub work_item: CreatedWorkItem,
+    #[serde(flatten)]
+    pub link: test_cases::SuiteLinkOutcome,
+}
+
 #[tauri::command]
 pub async fn ado_create_case_in_suite(
     state: State<'_, AdoState>,
     input: CreateCaseInput,
-) -> Result<CreatedWorkItem, AdoError> {
+) -> Result<PublishedCase, AdoError> {
     let created = test_cases::create_test_case_workitem(&state, &input.draft).await?;
-    test_cases::link_case_to_suite(&state, input.plan_id, input.suite_id, created.id).await?;
-    Ok(created)
+    let link =
+        test_cases::link_case_to_suite(&state, input.plan_id, input.suite_id, created.id).await?;
+    Ok(PublishedCase {
+        work_item: created,
+        link,
+    })
 }
 
 #[derive(Deserialize)]
