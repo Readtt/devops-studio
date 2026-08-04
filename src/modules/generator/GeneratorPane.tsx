@@ -1575,26 +1575,23 @@ function RunBudgetReadout(props: {
             · {elapsed}
           </span>
         </TooltipTrigger>
-        <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
+        {/* What it costs and what happens at the end — nothing else. The
+            mechanics of how the number is counted belong in runBudget.ts, not
+            in a tooltip a user reads while watching a run. */}
+        <TooltipContent side="bottom" className="max-w-[250px] text-[11px]">
           {measured ? (
             <>
-              This run has spent ~{formatTokens(tokensUsed ?? 0)} of the{" "}
-              {formatTokens(tokenBudget)} it's allowed
-              {spentUsd != null
-                ? ` (roughly ${formatCostUsd(spentUsd)} so far)`
-                : ""}
-              . Counted as what they COST, not how many there were: tokens the
-              prompt cache served bill at about a tenth, so a well-cached run
-              gets much further on the same budget. If it runs out, the run
-              stops with everything it read kept, and you can top it up and
-              resume — nothing is lost.
-              {stepCap != null ? ` Step ${stepNow} of ${stepCap}.` : ""}
+              Spend budget
+              {spentUsd != null ? ` — roughly ${formatCostUsd(spentUsd)} so far` : ""}
+              . Counted by cost, so cached tokens barely move it. Running out
+              stops the run with everything it read kept; you can top it up and
+              resume.
             </>
           ) : (
             <>
-              This model's endpoint doesn't report token usage, so the run is
-              bounded by its {stepCap} reading steps instead. If it runs out, the
-              run stops with everything it read kept and you can resume it.
+              This endpoint reports no token usage, so the run is bounded by its{" "}
+              {stepCap} reading steps. Running out stops it with everything it
+              read kept; you can resume.
             </>
           )}
         </TooltipContent>
@@ -1670,7 +1667,13 @@ function AnalyzingPhase() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-md border border-border/60 bg-card/40 px-3 py-2.5">
-        <div className="flex min-w-0 items-center gap-2">
+        {/* `basis-0 flex-1`, not just `min-w-0`. In a flex-WRAP container an
+            item's hypothetical size is its max-content width, and an item that
+            doesn't fit wraps rather than shrinks — so a long tool label pushed
+            the budget readout and Cancel onto a second line however aggressive
+            the `truncate` below it was. Zero basis makes this cell claim no
+            intrinsic width, so it absorbs the slack and truncates instead. */}
+        <div className="flex min-w-0 basis-0 flex-1 items-center gap-2">
           <Spinner className="size-4 shrink-0 text-primary" />
           <div className="min-w-0">
             <p className="text-[12px] font-medium">Analyzing requirements…</p>
@@ -3313,8 +3316,9 @@ function ErrorPhase() {
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="top" className="max-w-[260px] text-[11px]">
-                {resumeUnavailableReason(resumable.outcome, resumable)} This
-                deletes the stored transcript for that attempt.
+                {/* The reason only. "…and this deletes it" was a second
+                    sentence saying what a button labelled Discard does. */}
+                {resumeUnavailableReason(resumable.outcome, resumable)}
               </TooltipContent>
             </Tooltip>
           ) : null}

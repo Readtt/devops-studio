@@ -56,7 +56,6 @@ export function CacheHitReadout(props: CacheHitReadoutProps) {
   }
   const ratio = cacheHitRatioOf({ inputTokens, cacheReadTokens });
   const cached = cacheReadTokens ?? 0;
-  const fresh = Math.max(0, inputTokens - cached);
 
   // What the cache saved, in money: the same spend priced with and without it.
   // Both figures come from the run's OWN usage, so this is a measurement rather
@@ -94,33 +93,29 @@ export function CacheHitReadout(props: CacheHitReadoutProps) {
           cache {ratio == null ? "n/a" : formatPercent(ratio)}
         </span>
       </TooltipTrigger>
-      <TooltipContent side="bottom" className="max-w-[300px] text-[11px]">
+      {/* One fact, one consequence. The raw counts used to ride here too —
+          cached, total, fresh, dollars saved, peak request — which is a table
+          in a tooltip, read during a live run. Higher is cheaper is all a
+          reader needs at a glance; the numbers behind it are a debugging
+          concern, not a monitoring one. */}
+      <TooltipContent side="bottom" className="max-w-[260px] text-[11px]">
         {ratio == null ? (
           <>
-            This model's endpoint reports how many tokens it read (
-            {formatTokens(inputTokens)}) but not how many came from its prompt
-            cache, so there's no ratio to show. Cached input bills at roughly a
-            tenth of fresh input, so on providers that do report it this is the
-            number that decides what a run costs.
+            This endpoint doesn't report cache reads, so there's no ratio to
+            show. Where it is reported, cached input bills at about a tenth.
           </>
         ) : (
           <>
-            {formatTokens(cached)} of the {formatTokens(inputTokens)} tokens this
-            run sent were served from the prompt cache; {formatTokens(fresh)}{" "}
-            were charged fresh.
+            {formatTokens(cached)} of {formatTokens(inputTokens)} tokens came
+            from the prompt cache, at about a tenth the price
             {saved != null && saved > 0
-              ? ` That's about ${formatCostUsd(saved)} the cache saved.`
+              ? ` — roughly ${formatCostUsd(saved)} saved`
               : ""}
-            {peakPromptTokens ? (
-              <>
-                {" "}
-                Its largest single request was ~{formatTokens(peakPromptTokens)}{" "}
-                tokens.
-              </>
-            ) : null}{" "}
-            Compare this figure between two runs: if the token count improves
-            while this falls, the run got cheaper to send and more expensive to
-            pay for.
+            . Higher is cheaper; a run whose tokens fall while this falls got
+            more expensive.
+            {peakPromptTokens
+              ? ` Largest single request ~${formatTokens(peakPromptTokens)}.`
+              : ""}
           </>
         )}
       </TooltipContent>

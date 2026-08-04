@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatToolResult, summarizeToolInput } from "./activityLog";
+import {
+  clampStepLabelArg,
+  entryToLabel,
+  formatToolResult,
+  summarizeToolInput,
+} from "./activityLog";
 
 // `list_files` (suite-chat tools → Rust `fs_list_files`) returns
 // `{ files: string[] }`. The formatter used to read `.entries` — the shape of
@@ -191,5 +196,55 @@ describe("summarizeToolInput · list_files", () => {
     expect(summarizeToolInput("list_files", { subpath: '"src/auth"' })).toBe(
       "src/auth",
     );
+  });
+});
+
+// The spinner caption shares a header row with the budget readout and the
+// Cancel button. A grep pattern is routinely 100+ characters, and
+// `inputSummary` carries no cap of its own — OUTPUT_SUMMARY_MAX bounds tool
+// RESULTS, a different field — so the caption was as long as whatever the
+// model happened to search for, and the header wrapped to a second line.
+describe("entryToLabel · the one-line spinner caption", () => {
+  const longPattern = "a".repeat(90);
+
+  it("keeps a short label exactly as it is", () => {
+    expect(
+      entryToLabel({ id: "1", ts: 0, kind: "tool", toolName: "Read", inputSummary: "src/auth.ts" }),
+    ).toBe("Read: src/auth.ts");
+  });
+
+  it("shortens the ARGUMENT, never the tool name", () => {
+    const label = entryToLabel({
+      id: "1",
+      ts: 0,
+      kind: "tool",
+      toolName: "Grep",
+      inputSummary: `${longPattern} (src/**/*.ts)`,
+    });
+    expect(label.startsWith("Grep: ")).toBe(true);
+    expect(label.length).toBeLessThan(90);
+  });
+
+  // Head-clipping would throw away the scope — the glob or path saying WHERE
+  // it looked — which is the half a reader is most likely checking.
+  it("elides the middle so the scope at the end survives", () => {
+    const label = entryToLabel({
+      id: "1",
+      ts: 0,
+      kind: "tool",
+      toolName: "Grep",
+      inputSummary: `${longPattern} (src/**/*.ts)`,
+    });
+    expect(label).toContain("…");
+    expect(label.endsWith("*.ts)")).toBe(true);
+  });
+
+  it("flattens newlines — a caption is one line by definition", () => {
+    expect(clampStepLabelArg("first\n  second")).toBe("first second");
+  });
+
+  it("leaves the non-tool labels alone", () => {
+    expect(entryToLabel({ id: "1", ts: 0, kind: "thinking" })).toBe("Thinking…");
+    expect(entryToLabel({ id: "1", ts: 0, kind: "output" })).toBe("Reading result…");
   });
 });

@@ -35,6 +35,14 @@ export type ActivityEntry = {
 const OUTPUT_SUMMARY_MAX = 200;
 const OUTPUT_FULL_MAX = 8_192;
 
+/** Ceiling on the ONE-LINE caption beside the spinner ({@link entryToLabel}).
+ *
+ *  Much tighter than {@link OUTPUT_SUMMARY_MAX} because it is a glance, not a
+ *  record: it shares a header row with the budget readout and the Cancel
+ *  button, and 200 characters of regex there is a paragraph. The log row below
+ *  keeps the argument in full — this only shortens the summary of it. */
+const STEP_LABEL_MAX = 72;
+
 let counter = 0;
 
 export function newActivityId(): string {
@@ -353,14 +361,33 @@ function langFromPath(path: string): string | undefined {
   return map[ext];
 }
 
-/** Compact label for the spinner caption — most recent thing the agent did. */
+/** Compact label for the spinner caption — most recent thing the agent did.
+ *
+ *  The ARGUMENT is what gets shortened, never the tool name: "Grep" on its own
+ *  says nothing, and clipping the whole string would eventually eat it. A
+ *  120-character grep pattern is normal and belongs in the log row underneath,
+ *  which keeps it in full; here it is a caption. `inputSummary` carries no cap
+ *  of its own — `OUTPUT_SUMMARY_MAX` bounds tool RESULTS, which is a different
+ *  field — so without this the caption is as long as whatever the model
+ *  happened to search for. */
 export function entryToLabel(entry: ActivityEntry): string {
   if (entry.kind === "tool" && entry.toolName) {
     return entry.inputSummary
-      ? `${entry.toolName}: ${entry.inputSummary}`
+      ? `${entry.toolName}: ${clampStepLabelArg(entry.inputSummary)}`
       : entry.toolName;
   }
-  if (entry.kind === "error") return entry.error ?? "Error";
+  if (entry.kind === "error") return clampStepLabelArg(entry.error ?? "Error");
   if (entry.kind === "output") return "Reading result…";
   return "Thinking…";
+}
+
+/** Middle-elide, not head-clip. A grep argument's tail is its scope — the glob
+ *  or path that says WHERE it looked — and that is the half a reader is most
+ *  likely to be checking. Cutting the end throws exactly that away. */
+export function clampStepLabelArg(s: string): string {
+  const flat = s.replace(/\s+/g, " ").trim();
+  if (flat.length <= STEP_LABEL_MAX) return flat;
+  const head = Math.ceil((STEP_LABEL_MAX - 1) * 0.6);
+  const tail = STEP_LABEL_MAX - 1 - head;
+  return `${flat.slice(0, head)}…${flat.slice(flat.length - tail)}`;
 }

@@ -941,8 +941,7 @@ function BodyContent({
                 </button>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="max-w-[260px] text-[11px]">
-                {resumeUnavailableReason(resumable.outcome, resumable)} This
-                deletes the stored transcript for that attempt.
+                {resumeUnavailableReason(resumable.outcome, resumable)}
               </TooltipContent>
             </Tooltip>
           ) : null}

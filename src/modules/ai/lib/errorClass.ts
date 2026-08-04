@@ -217,17 +217,20 @@ export function resumeUnavailableReason(
   // nothing" there blames the model for our own storage limit.
   const workWithoutTranscript =
     (progress?.stepsUsed ?? 0) > 0 && progress?.hasTranscript !== true;
+  // One clause each. It sits under a fact line that already says how far the
+  // run got, beside a Discard button whose own tooltip already says what
+  // Discard does — three overlapping paragraphs about the same checkpoint was
+  // more than the situation warrants.
+  if (workWithoutTranscript) {
+    return "Its transcript was too large to save, so there's nothing left to continue from — re-run.";
+  }
   switch (outcome?.kind) {
     case "empty":
-      return workWithoutTranscript
-        ? "The model read plenty but returned no final answer, and the transcript was too large to save — so there's nothing left to continue from. Re-run instead."
-        : "The model returned nothing to continue from, so a resume would replay an empty transcript and fail the same way. Re-run instead.";
+      return "The model returned nothing to continue from — re-run.";
     case "schema_violation":
-      return workWithoutTranscript
-        ? "The model answered with output this run couldn't read, and the transcript was too large to save — so there's nothing left to continue from. Re-run instead."
-        : "The model answered with output this run couldn't read, and it read nothing beforehand, so continuing that transcript would only reproduce it. Re-run instead — a more capable model usually fixes it.";
+      return "The model answered with output this run couldn't read, having read nothing first — re-run, ideally on a more capable model.";
     default:
-      return "This saved progress can't be continued. Re-run instead.";
+      return "This saved progress can't be continued — re-run.";
   }
 }
 

@@ -462,9 +462,9 @@ export function RefineComposer({ isRefining }: Props) {
                 </span>
               </button>
             </TooltipTrigger>
-            <TooltipContent side="top" className="max-w-[260px] text-[11px]">
-              See every past round — your follow-up, the tool calls the model
-              made, and how the draft changed.
+            <TooltipContent side="top" className="max-w-[240px] text-[11px]">
+              Every past round: what you asked, what the model read, what
+              changed.
             </TooltipContent>
           </Tooltip>
         ) : null}
@@ -629,8 +629,7 @@ export function RefineComposer({ isRefining }: Props) {
                   {resumeUnavailableReason(
                     refineResumable.outcome,
                     refineResumable,
-                  )}{" "}
-                  This deletes the saved progress for that attempt.
+                  )}
                 </TooltipContent>
               </Tooltip>
             ) : undefined
