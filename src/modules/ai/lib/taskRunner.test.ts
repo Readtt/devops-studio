@@ -1477,6 +1477,37 @@ describe("final-answer selection (multi-step streams)", () => {
     if (r.ok) expect(r.object).toEqual({ items: ["real"] });
   });
 
+  // The back door into the shadowing bug this describe block exists to close.
+  // `stepTexts` records "" for every pure tool-call step, so a `|| acc`
+  // fallback for "the last step wrote nothing" fired exactly when the loop
+  // ended ON a tool call — a budget stop — and handed the whole-run
+  // concatenation to the validator. With defaulted schemas that "validates" as
+  // an empty batch and the run reports ok:true with zero cases.
+  it("does not fall back to the concatenation when the last step wrote nothing", async () => {
+    const schema = z.object({ items: z.array(z.string()).default([]) });
+    streamSteps([
+      { deltas: [narration], finishReason: "tool-calls" },
+      { deltas: [], finishReason: "tool-calls" },
+    ]);
+    const r = await streamTask({ ...baseInput, schema, tools, onText: () => {} });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("empty");
+  });
+
+  // …and the finish reason that says WHY rides out with it. Without this the
+  // surface can only say "the model returned an empty response", which is one
+  // of three quite different failures.
+  it("reports the provider's finish reason on an empty answer", async () => {
+    const schema = z.object({ a: z.number() });
+    streamSteps([
+      { deltas: ["reading"], finishReason: "tool-calls" },
+      { deltas: [], finishReason: "length" },
+    ]);
+    const r = await streamTask({ ...baseInput, schema, tools, onText: () => {} });
+    expect(r.ok).toBe(false);
+    expect(r.finishReason).toBe("length");
+  });
+
   it("trailing-error salvage validates the unfinished step's tail, not the narration", async () => {
     const schema = z.object({ a: z.number() });
     // Final answer streamed fully but its step never finished (stream died).

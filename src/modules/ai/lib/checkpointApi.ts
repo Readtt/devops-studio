@@ -57,6 +57,18 @@ export type CheckpointOutcome = {
    *  field — those still load, and their panel falls back to budget-neutral
    *  copy rather than asserting a limit nobody recorded. */
   limit?: BudgetLimit;
+  /** Why the provider ended the model's LAST step — the SDK's `finishReason`,
+   *  widened to string because this is persisted and the SDK's union can grow.
+   *
+   *  This is the field that answers "why did a 22-step run come back empty?",
+   *  and it was being computed and thrown away at every layer. The three
+   *  answers mean completely different things: `stop` is a model that chose to
+   *  end without writing anything (it wandered), `length` is an output cap hit
+   *  — plausibly during reasoning, which produces a step with thinking and no
+   *  text at all — and `tool-calls` is a loop cut off mid-investigation. Only
+   *  the last of those is what the "empty response? turn on JSON mode" copy
+   *  describes, so without this we were guessing in the user's face. */
+  finishReason?: string;
   message?: string;
 };
 

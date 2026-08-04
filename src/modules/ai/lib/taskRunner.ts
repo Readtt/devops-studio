@@ -1171,10 +1171,19 @@ export async function streamTask<
   // false clean). Completed steps' texts are exact prefixes of `acc`, so any
   // remainder is the in-flight step that never finished — the right text to
   // salvage when the stream died mid-answer.
+  //
+  // There is deliberately NO `|| acc` fallback for "the last step finished with
+  // no text". `stepTexts` records "" for every pure tool-call step, so that
+  // fallback fired exactly when the loop ended ON a tool call — a budget stop —
+  // and handed the whole-run concatenation to the validator: the shadowing bug
+  // above, still reachable through the back door in the one case it was most
+  // likely to bite. When no step wrote an answer the honest result is `empty`,
+  // and since an empty answer after real work is now resumable, that costs the
+  // user a click rather than the run.
   const completedTextLen = steps.stepTexts.reduce((n, t) => n + t.length, 0);
   const inFlightTail = acc.slice(completedTextLen);
   const lastStepText = steps.stepTexts[steps.stepTexts.length - 1] ?? "";
-  const finalText = inFlightTail.trim() ? inFlightTail : lastStepText || acc;
+  const finalText = inFlightTail.trim() ? inFlightTail : lastStepText;
 
   // A user abort also lands here as a quietly-ended stream. Rethrow it as an
   // AbortError so surfaces map it to their "cancelled" state instead of an
@@ -1208,6 +1217,31 @@ export async function streamTask<
       // No final answer at all — mirror runTask's "empty" (or step_cap when
       // the loop burned its budget still calling tools) instead of blaming
       // the schema. `text` keeps the narration for display/salvage.
+      //
+      // WHAT REACHES HERE, for the next person diagnosing an empty run. A live
+      // run came back empty after 22 steps and ~1.7M tokens; working backwards:
+      //
+      //  • `finalText` empty ⇒ the last completed step wrote no text AND no
+      //    in-flight tail survived. Whether `acc` (the whole run's narration)
+      //    was also empty is now irrelevant — see the `|| acc` note above.
+      //  • `streamError` was null, so it was NOT a stall or a dropped socket:
+      //    those take the throw path above and surface as a classified error,
+      //    not as EMPTY-RESULT. The stall banner on that run explains its 15
+      //    minutes, not its emptiness.
+      //  • `limit` was unset (22 of 40 steps, 1.7M of 2.5M tokens), so the
+      //    loop was not cut off by either guard — `budgetReason` would have
+      //    said `step_cap`.
+      //  • Eviction cannot produce this: it rewrites tool-result content, and
+      //    at that request size it never armed in the first place.
+      //
+      // That leaves the provider's own reason for ending the last step, which
+      // the runner has had all along and every layer above it discarded. It is
+      // now carried out on the result and persisted on the outcome. `stop`
+      // means the model ended its turn writing nothing; `length` means it hit
+      // the output ceiling, which on a reasoning model the thinking block
+      // spends too — a step of pure thinking and no text looks identical to
+      // silence from here. Read it off the error panel rather than inferring
+      // it again.
       return {
         ok: false,
         reason: budgetReason("empty", scalars),

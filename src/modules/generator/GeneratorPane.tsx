@@ -3261,7 +3261,18 @@ function ErrorPhase() {
   return (
     <RunErrorPanel
       klass={klass}
-      metaLabel={errorPhase ? `phase: ${errorPhase}` : "phase: —"}
+      // The provider's own reason for ending the last step, when there is one.
+      // "22 steps in and nothing came back" is unanswerable without it; `stop`
+      // vs `length` vs `tool-calls` are three different failures wearing the
+      // same error card, and this is the only place the difference is visible.
+      metaLabel={[
+        errorPhase ? `phase: ${errorPhase}` : "phase: —",
+        resumable?.outcome?.finishReason
+          ? `finish: ${resumable.outcome.finishReason}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")}
       raw={message}
     >
       {/* Action row — primary remediation on the left (when there is one)

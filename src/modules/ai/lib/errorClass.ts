@@ -161,6 +161,47 @@ export function hasContinuableWork(
   return (progress?.stepsUsed ?? 0) > 0 && progress?.hasTranscript === true;
 }
 
+/** Why a run came back with no usable answer, in one clause, keyed on the
+ *  provider's own `finishReason` for the model's LAST step.
+ *
+ *  Written because "the model returned an empty response — turn on JSON mode"
+ *  was being said to every empty result, and it is only true of one of them.
+ *  A 22-step run that reads the codebase and then returns nothing is not a
+ *  connector that can't do structured output; sending that user to a JSON-mode
+ *  setting is sending them to the wrong place entirely. The three finish
+ *  reasons that produce an empty or unreadable answer mean three different
+ *  things and want three different next actions:
+ *
+ *  - `length`  — the response hit the output-token ceiling. With a reasoning
+ *                model the thinking block spends that budget too, so the step
+ *                can end with reasoning and NO text at all, which is
+ *                indistinguishable from silence unless you look here.
+ *  - `stop`    — the model chose to end its turn and wrote nothing. It
+ *                wandered; a resume with the finish-now nudge is the fix.
+ *  - `tool-calls` — the loop was cut off while still reading. That's a budget
+ *                stop, and `step_cap` copy already covers it.
+ *
+ *  `undefined` (no steps reported, or an endpoint that reports nothing) falls
+ *  back to the connector wording, which is where it was actually earned. */
+export function emptyAnswerCause(
+  kind: "empty" | "schema_violation",
+  finishReason: string | undefined,
+): string {
+  if (finishReason === "length") {
+    return kind === "empty"
+      ? "The model hit its output-token ceiling before writing anything readable. On a reasoning model the thinking itself spends that budget, so the reply can end up empty. A model with a larger output limit, or a narrower spec, is the fix."
+      : "The model hit its output-token ceiling partway through its answer, so what came back was cut off mid-structure. A model with a larger output limit, or a narrower spec, is the fix.";
+  }
+  if (finishReason === "stop") {
+    return kind === "empty"
+      ? "The model ended its turn without writing an answer at all — it read the code but never wrote the batch."
+      : "The model ended its turn with output this run couldn't read, and nothing usable could be salvaged from it.";
+  }
+  return kind === "empty"
+    ? "The model returned an empty response — no answer came back. OpenAI-compatible or custom endpoints often need JSON mode (structured output) turned on before they return a usable result."
+    : "The model's response couldn't be read as the structured format expected, and nothing usable could be salvaged from it. This is common with OpenAI-compatible or custom endpoints that don't fully support structured JSON output.";
+}
+
 /** One clause explaining why Resume isn't on offer, for the surfaces that still
  *  have a checkpoint to show (and to DISCARD — see ResumeCard's second mode). A
  *  card that just quietly loses its main button reads as broken, and the reasons

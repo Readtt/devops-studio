@@ -193,6 +193,12 @@ export type RunResult = {
    *  text came back but didn't match the expected shape; `step_cap` ⇒ the
    *  agentic loop ran into a run budget before writing its answer. */
   reason?: "schema_violation" | "empty" | "step_cap";
+  /** Why the provider ended the model's last step. Carried out of the runner
+   *  rather than dropped there because it is the only thing that distinguishes
+   *  a model that wandered (`stop`) from one that ran out of output tokens
+   *  (`length`) from a loop cut off mid-read (`tool-calls`) — and those need
+   *  three different sentences to the user. */
+  finishReason?: string;
   /** Which budget guard bound the loop, when one did — tokens (the ration) or
    *  steps (the runaway ceiling). Lets the error panel name the right one
    *  instead of always blaming steps. */
@@ -322,6 +328,7 @@ export async function executeQaAnalystRun(
     ok: r.ok,
     reason: r.ok ? undefined : r.reason,
     limit: r.limit,
+    finishReason: r.finishReason,
     stepsUsed: r.stepsUsed,
     usage: r.usage,
   };

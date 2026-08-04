@@ -101,6 +101,10 @@ export type RunCommitReviewResult =
       reason: "schema_violation" | "empty" | "step_cap";
       /** Which budget guard bound the loop, when one did. */
       limit?: BudgetLimit;
+      /** Why the provider ended the model's last step — `length` (output cap),
+       *  `stop` (wrote nothing), `tool-calls` (cut off mid-read). The three
+       *  need different sentences; see `emptyAnswerCause`. */
+      finishReason?: string;
       rawText: string;
       durationMs: number;
     };
@@ -226,6 +230,7 @@ export async function runCommitReview(
         ok: false,
         reason: stage1.reason,
         ...(stage1.limit ? { limit: stage1.limit } : {}),
+        ...(stage1.finishReason ? { finishReason: stage1.finishReason } : {}),
         rawText: stage1.text,
         durationMs: stage1.durationMs,
       };

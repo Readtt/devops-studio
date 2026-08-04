@@ -397,7 +397,7 @@ describe("useGenerationSession — an empty answer AFTER real work is resumable"
    *  and (optionally) a transcript, exactly as the engine would. */
   async function analyzeEndingWith(
     reason: "empty" | "schema_violation",
-    opts: { stepsUsed: number; withTranscript: boolean },
+    opts: { stepsUsed: number; withTranscript: boolean; finishReason?: string },
   ) {
     const store = createGenerationSessionStore();
     executeQaAnalystRun.mockImplementation(
@@ -417,6 +417,7 @@ describe("useGenerationSession — an empty answer AFTER real work is resumable"
           reason,
           stepsUsed: opts.stepsUsed,
           usage: {},
+          ...(opts.finishReason ? { finishReason: opts.finishReason } : {}),
         };
       },
     );
@@ -443,6 +444,30 @@ describe("useGenerationSession — an empty answer AFTER real work is resumable"
       expect(invokedCommands()).not.toContain("ai_checkpoint_delete");
     },
   );
+
+  // The instrument P0-B is really about: the run already knew why it ended and
+  // nothing carried it. It goes into the outcome (so a reopened checkpoint
+  // still knows) and into the leading sentence (so the user isn't sent to a
+  // JSON-mode setting for a run that hit its output ceiling).
+  it("persists the provider's finish reason and leads with the matching cause", async () => {
+    const store = await analyzeEndingWith("empty", {
+      stepsUsed: 22,
+      withTranscript: true,
+      finishReason: "length",
+    });
+    const s = store.getState();
+    expect(s.resumable?.outcome?.finishReason).toBe("length");
+    expect(String(s.error)).toMatch(/output-token ceiling/);
+    expect(String(s.error)).not.toMatch(/JSON mode/);
+  });
+
+  it("keeps the connector wording when no finish reason was reported", async () => {
+    const store = await analyzeEndingWith("empty", {
+      stepsUsed: 0,
+      withTranscript: false,
+    });
+    expect(String(store.getState().error)).toMatch(/JSON mode/);
+  });
 
   it("records the real reason rather than flattening both to 'empty'", async () => {
     const store = await analyzeEndingWith("schema_violation", {

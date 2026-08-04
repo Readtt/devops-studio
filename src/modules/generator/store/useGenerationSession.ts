@@ -57,7 +57,11 @@ import {
   type GeneratorRefineCheckpointV1,
   type TranscriptCheckpoint,
 } from "@/modules/ai/lib/checkpointApi";
-import { canOfferResume, classifyForResume } from "@/modules/ai/lib/errorClass";
+import {
+  canOfferResume,
+  classifyForResume,
+  emptyAnswerCause,
+} from "@/modules/ai/lib/errorClass";
 import type { TaskCheckpoint } from "@/modules/ai/lib/taskRunner";
 import { CURRENT_BRANCH_SENTINEL, resolveTrackingBranch } from "@/modules/git";
 import {
@@ -1012,9 +1016,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       // guidance instead. tryAgain() keeps the spec, so it's a one-click fix.
       if (cases.length === 0 && bugs.length === 0) {
         const why = !result.ok
-          ? result.reason === "empty"
-            ? "The model returned an empty response — no test cases came back. OpenAI-compatible or custom endpoints often need JSON mode (structured output) turned on before they return a usable batch."
-            : "The model's response couldn't be read as the structured format the generator expects, and nothing usable could be salvaged from it. This is common with OpenAI-compatible or custom endpoints that don't fully support structured JSON output."
+          ? emptyAnswerCause(
+              result.reason === "schema_violation" ? "schema_violation" : "empty",
+              result.finishReason,
+            )
           : "The model ran but produced no test cases or bugs for this spec.";
         // `resumable` means "a checkpoint exists", not "a resume is on offer":
         // the render sites ask `canOfferResume` for that, and gating this field
@@ -1040,6 +1045,13 @@ export function createGenerationSessionStore(): GenerationSessionStore {
             !result.ok && result.reason === "schema_violation"
               ? "schema_violation"
               : "empty",
+          // Persisted so a checkpoint reopened from History still knows WHY,
+          // and so the next occurrence of this failure names its own cause
+          // instead of being diagnosed by inference a second time.
+          // Persisted so a checkpoint reopened from History still knows WHY,
+          // and so the next occurrence of this failure names its own cause
+          // instead of being diagnosed by inference a second time.
+          ...(result.finishReason ? { finishReason: result.finishReason } : {}),
         };
         const emptyPayload = buildPayload(emptyOutcome);
         const emptyResumable = resumableFrom(emptyPayload, emptyOutcome);
@@ -1251,6 +1263,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
             !result.ok && result.reason === "schema_violation"
               ? "schema_violation"
               : "empty",
+          ...(result.finishReason ? { finishReason: result.finishReason } : {}),
         };
         const payload = cp?.buildPayload(outcome) ?? null;
         const resumable = payload

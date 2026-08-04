@@ -153,6 +153,22 @@ describe("runQaAnalyst tool wiring", () => {
     expect(out.batch.cases).toHaveLength(1);
   });
 
+  // The runner knows why the provider ended the last step; every layer above
+  // it used to drop that on the floor, which is what made "22 steps in and
+  // nothing came back" a guess instead of a readout. `length` (output ceiling)
+  // and `stop` (the model wrote nothing) want different sentences.
+  it("carries the runner's finish reason out with a failed run", async () => {
+    streamTask.mockResolvedValue({
+      ok: false,
+      reason: "empty",
+      text: "",
+      durationMs: 1,
+      finishReason: "length",
+    });
+    const out = await runQaAnalyst({ ...base, sourceRoot: "C:/repo" });
+    expect(out.finishReason).toBe("length");
+  });
+
   it("salvages a partial batch when the runner reports schema_violation", async () => {
     runTask.mockResolvedValue({
       ok: false,

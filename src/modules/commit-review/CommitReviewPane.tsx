@@ -875,6 +875,13 @@ function BodyContent({
     return (
       <RunErrorPanel
         klass={klass}
+        // See GeneratorPane: the provider's finish reason is the one thing that
+        // separates "the model wandered" from "it ran out of output tokens".
+        metaLabel={
+          resumable?.outcome?.finishReason
+            ? `finish: ${resumable.outcome.finishReason}`
+            : undefined
+        }
         raw={slice.schemaViolationRaw ?? slice.error}
         rawLabel={
           slice.schemaViolationRaw

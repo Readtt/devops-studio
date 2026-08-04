@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   canOfferResume,
   classifyForResume,
+  emptyAnswerCause,
   isResumableKind,
   matchErrorKind,
   resumeUnavailableReason,
@@ -273,6 +274,41 @@ describe("canOfferResume", () => {
 
   it("is false for any other/unrecognised kind", () => {
     expect(canOfferResume({ kind: "something-new" })).toBe(false);
+  });
+});
+
+// The sentence a failed run leads with. It used to be one sentence for every
+// empty result — "turn on JSON mode" — which is true of a connector that can't
+// do structured output and false of the failure that prompted this: 22 steps of
+// codebase reading, then nothing.
+describe("emptyAnswerCause", () => {
+  it("names the output ceiling on a length finish, not JSON mode", () => {
+    const s = emptyAnswerCause("empty", "length");
+    expect(s).toMatch(/output-token ceiling/);
+    expect(s).not.toMatch(/JSON mode/);
+    // The reasoning-model trap: thinking spends the output budget, so the
+    // reply can be empty with nothing wrong at the connector at all.
+    expect(s).toMatch(/thinking/);
+  });
+
+  it("says the model wrote nothing on a stop finish, not that it can't format", () => {
+    const s = emptyAnswerCause("empty", "stop");
+    expect(s).toMatch(/without writing an answer/);
+    expect(s).not.toMatch(/JSON mode/);
+  });
+
+  it("keeps the connector wording where it was earned — no finish reason at all", () => {
+    expect(emptyAnswerCause("empty", undefined)).toMatch(/JSON mode/);
+    expect(emptyAnswerCause("empty", "tool-calls")).toMatch(/JSON mode/);
+  });
+
+  it("distinguishes an unreadable answer from a missing one at the same finish", () => {
+    expect(emptyAnswerCause("schema_violation", "length")).toMatch(
+      /cut off mid-structure/,
+    );
+    expect(emptyAnswerCause("empty", "length")).not.toMatch(
+      /cut off mid-structure/,
+    );
   });
 });
 

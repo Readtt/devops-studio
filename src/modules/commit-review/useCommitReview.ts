@@ -46,7 +46,11 @@ import {
   type CommitReviewCheckpointV1,
   type TranscriptCheckpoint,
 } from "@/modules/ai/lib/checkpointApi";
-import { canOfferResume, classifyForResume } from "@/modules/ai/lib/errorClass";
+import {
+  canOfferResume,
+  classifyForResume,
+  emptyAnswerCause,
+} from "@/modules/ai/lib/errorClass";
 import {
   diedOfContextOverflow,
   resumesByFinishing,
@@ -337,6 +341,7 @@ async function settleResult(
       at,
       kind: result.reason,
       ...(result.limit ? { limit: result.limit } : {}),
+      ...(result.finishReason ? { finishReason: result.finishReason } : {}),
     };
     const payload = cp.buildPayload(outcome);
     const resumable = resumableFrom(payload, outcome);
@@ -350,8 +355,8 @@ async function settleResult(
       error: stepCapped
         ? `The review spent ${budgetSpentPhrase(result.limit, budget, formatTokens)} before it could write its findings. Resume adds ~${formatTokens(RESUME_TOPUP_TOKENS)} more tokens and asks the model to finish with what it has already read.`
         : canContinue
-          ? `The model didn't return findings in the expected format, but it had already investigated over ${resumable.stepsUsed} step${resumable.stepsUsed === 1 ? "" : "s"} — resuming asks it to write them up from what it has instead of reviewing again.`
-          : "The model didn't return findings in the expected format. Re-run, or try a more capable model.",
+          ? `${emptyAnswerCause(result.reason === "schema_violation" ? "schema_violation" : "empty", result.finishReason)} It had already investigated over ${resumable.stepsUsed} step${resumable.stepsUsed === 1 ? "" : "s"} — resuming asks it to write the findings up from what it has instead of reviewing again.`
+          : `${emptyAnswerCause(result.reason === "schema_violation" ? "schema_violation" : "empty", result.finishReason)} Re-run, or try a more capable model.`,
       errorReason: result.reason,
       errorLimit: stepCapped ? (result.limit ?? null) : null,
       schemaViolationRaw: stepCapped ? null : result.rawText,
