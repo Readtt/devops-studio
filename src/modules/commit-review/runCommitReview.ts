@@ -35,6 +35,7 @@ import {
   Stage1Schema,
   Stage2Schema,
   compareFindings,
+  salvageCandidateFindings,
   type CandidateFinding,
   type Finding,
 } from "./schema";
@@ -226,17 +227,28 @@ export async function runCommitReview(
     });
 
     if (!stage1.ok) {
-      return {
-        ok: false,
-        reason: stage1.reason,
-        ...(stage1.limit ? { limit: stage1.limit } : {}),
-        ...(stage1.finishReason ? { finishReason: stage1.finishReason } : {}),
-        rawText: stage1.text,
-        durationMs: stage1.durationMs,
-      };
+      // An answer that BROKE (cut off by the output cap, or item-wise invalid)
+      // still carries the complete findings that landed before the break —
+      // salvage those and continue, exactly as the generator keeps the cases
+      // that arrived. NOT for `step_cap`: that loop was cut off mid-READ, so
+      // anything findings-shaped in its narration is premature, and the resume
+      // affordance (finish with what you have) is the honest recovery there.
+      const salvaged =
+        stage1.reason === "step_cap" ? [] : salvageCandidateFindings(stage1.text);
+      if (salvaged.length === 0) {
+        return {
+          ok: false,
+          reason: stage1.reason,
+          ...(stage1.limit ? { limit: stage1.limit } : {}),
+          ...(stage1.finishReason ? { finishReason: stage1.finishReason } : {}),
+          rawText: stage1.text,
+          durationMs: stage1.durationMs,
+        };
+      }
+      candidates = salvaged;
+    } else {
+      candidates = stage1.object.findings;
     }
-
-    candidates = stage1.object.findings;
     stage1Ms = stage1.durationMs;
     // The one moment the expensive investigate pass becomes durable — fired
     // before the (independently failable) verify pass, and before the

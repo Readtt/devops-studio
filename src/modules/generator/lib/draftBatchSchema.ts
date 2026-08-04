@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { extractJsonBlock } from "@/modules/ai/lib/extractJson";
+import {
+  completeItemsOfTruncatedArray,
+  extractJsonBlock,
+} from "@/modules/ai/lib/extractJson";
 import type { ExecutionOutcome } from "@/modules/ado";
 import type { ConfidenceVerdict } from "@/modules/test-plans/lib/confidence";
 
@@ -133,14 +136,33 @@ export function parseDraftBatch(text: string): DraftBatchLLM {
  *  JSON out of the (possibly fenced/prose-wrapped) text, then `safeParse` each
  *  case/bug INDIVIDUALLY — keeping every valid item and dropping only the
  *  malformed ones (logged by index). One bad case no longer zeroes the whole
- *  batch. Never throws; returns an empty batch when nothing parses. */
+ *  batch. A batch cut off mid-structure (`finish: length`) doesn't JSON.parse
+ *  at all, so that path walks the arrays element-by-element instead — the
+ *  complete cases that arrived before the cut are kept, and only the object
+ *  the cut landed in is lost. Never throws; returns an empty batch when
+ *  nothing parses. */
 export function salvageDraftBatch(text: string): DraftBatchLLM {
   const candidate = extractBatchJson(text.trim());
   let obj: unknown;
   try {
     obj = JSON.parse(candidate);
   } catch {
-    return { cases: [], bugs: [] };
+    // Scan the RAW text, not `candidate`: extractJsonBlock needs a closing
+    // fence / closing brace to slice well, and truncated output has neither.
+    // The scanner keys on `"cases": [` itself, so leading prose or an
+    // unterminated fence in front of it doesn't matter.
+    return {
+      cases: salvageItems(
+        completeItemsOfTruncatedArray(text, "cases"),
+        DraftCaseLLMSchema,
+        "case",
+      ),
+      bugs: salvageItems(
+        completeItemsOfTruncatedArray(text, "bugs"),
+        DraftBugLLMSchema,
+        "bug",
+      ),
+    };
   }
   if (!obj || typeof obj !== "object") return { cases: [], bugs: [] };
   const rec = obj as { cases?: unknown; bugs?: unknown };

@@ -546,3 +546,77 @@ describe("buildVerifyPrompt — the verify stage's window", () => {
     }
   });
 });
+
+// A stage-1 answer cut off by the output cap (`finish: length`) fails
+// whole-batch validation, but the complete findings that arrived before the
+// cut are bought-and-paid-for work — and the verify pass exists precisely to
+// filter candidates. These pin: broken answers are salvaged and the pipeline
+// continues; a budget-stopped loop is NOT (its resume affordance is the honest
+// recovery, and narration-shaped "findings" from a half-read investigation
+// would be premature).
+describe("runCommitReview — stage-1 salvage of a truncated answer", () => {
+  it("salvages complete findings from a length-cut stage 1 and continues to verify", async () => {
+    const truncated =
+      `{"findings":[${JSON.stringify(cand("f1"))},` +
+      `{"id":"f2","title":"the finding the cut landed i`;
+    mockStreamTask.mockResolvedValue({
+      ok: false,
+      reason: "schema_violation",
+      finishReason: "length",
+      text: truncated,
+      durationMs: 9,
+      stepsUsed: 12,
+    } as never);
+    mockRunTask.mockResolvedValue(stage2Ok([{ id: "f1", verdict: "confirmed" }]));
+    const onStage1Candidates = vi.fn();
+
+    const res = await runCommitReview(input({ onStage1Candidates }));
+
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.findings.map((f) => f.id)).toEqual(["f1"]);
+    }
+    // The salvaged candidates became durable before verify ran…
+    expect(onStage1Candidates).toHaveBeenCalledWith([cand("f1")]);
+    // …and verify actually ran over them.
+    expect(mockRunTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not salvage a step_cap loop — that failure keeps its resume path", async () => {
+    // Narration from a cut-off loop can contain findings-shaped JSON; a
+    // half-read investigation must still fail through to the resume affordance.
+    mockStreamTask.mockResolvedValue({
+      ok: false,
+      reason: "step_cap",
+      text: `{"findings":[${JSON.stringify(cand("f1"))}]}`,
+      durationMs: 9,
+      stepsUsed: 28,
+    } as never);
+
+    const res = await runCommitReview(input());
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe("step_cap");
+    expect(mockRunTask).not.toHaveBeenCalled();
+  });
+
+  it("still fails through with the finish reason when nothing is salvageable", async () => {
+    mockStreamTask.mockResolvedValue({
+      ok: false,
+      reason: "schema_violation",
+      finishReason: "length",
+      text: "no findings json anywhere",
+      durationMs: 9,
+      stepsUsed: 12,
+    } as never);
+
+    const res = await runCommitReview(input());
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reason).toBe("schema_violation");
+      expect(res.finishReason).toBe("length");
+    }
+    expect(mockRunTask).not.toHaveBeenCalled();
+  });
+});
