@@ -69,6 +69,14 @@ export type CheckpointOutcome = {
    *  the last of those is what the "empty response? turn on JSON mode" copy
    *  describes, so without this we were guessing in the user's face. */
   finishReason?: string;
+  /** The output-token cap the failed attempt's requests asked for (TaskResult
+   *  `outputCap`). What makes a `finish: length` outcome self-describing: the
+   *  resume gate compares it against the model's known ceiling to decide
+   *  whether a retry with MORE output room even exists. Absent ⇒ the attempt
+   *  ran at the provider/SDK default — for catalogued models that default WAS
+   *  the ceiling (the pre-cap bug), and for uncatalogued ones nobody knows —
+   *  so absent correctly gates a truncation resume closed. */
+  outputCap?: number;
   message?: string;
 };
 
@@ -208,6 +216,16 @@ export function hasReplayableTranscript(
  *  model that has read nothing to answer from nothing. */
 export const FINISH_NOW_NUDGE =
   "You have exhausted your investigation budget. Do not call any more tools. Using only what you have already read, produce the final answer now, in exactly the output format the instructions require.";
+
+/** The `finish: length` variant of the nudge above. FINISH_NOW_NUDGE diagnoses
+ *  the wrong problem for a truncated answer — the model didn't wander, its
+ *  answer overran the output cap — and telling it only "answer now" invites the
+ *  same overrun. This one names the real failure and pushes compactness; the
+ *  resume that carries it also retries at the model's output CEILING when one
+ *  is known (resumePolicy), so the retry differs from the failed attempt in
+ *  both instruction and room. */
+export const TRUNCATED_ANSWER_NUDGE =
+  "Your previous answer was cut off by the output-token limit before it finished. Do not call any more tools, and do not repeat long deliberation — write the complete final answer now, in exactly the output format the instructions require, keeping prose fields tight so the whole answer fits.";
 
 // ---- Wire row shapes (mirror Rust AiCheckpointRow / AiCheckpointListEntry) --
 

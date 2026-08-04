@@ -30,7 +30,7 @@ import {
   listCheckpoints,
   type GeneratorCheckpointV1,
 } from "@/modules/ai/lib/checkpointApi";
-import { canOfferResume } from "@/modules/ai/lib/errorClass";
+import { canOfferResume, canRaiseOutputCap } from "@/modules/ai/lib/errorClass";
 import { useTabsStore } from "@/modules/tabs/store/useTabsStore";
 import { useTestPlans } from "@/modules/test-plans";
 import { CopyableSectionHeader } from "@/components/CopyableSectionHeader";
@@ -99,6 +99,7 @@ async function loadInterruptedRuns(): Promise<InterruptedGenRun[]> {
         !canOfferResume(outcome, outcome?.message ?? null, {
           stepsUsed: t?.stepsUsed ?? 0,
           hasTranscript: hasReplayableTranscript(t),
+          outputCapRaisable: canRaiseOutputCap(cp.payload.modelId, outcome),
         })
       ) {
         continue;

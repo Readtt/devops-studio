@@ -208,6 +208,11 @@ export type RunResult = {
   stepsUsed?: number;
   /** Token usage this call accrued, when the provider reported it. */
   usage?: TaskUsage;
+  /** The output-token cap the call's requests asked for (explicit override or
+   *  the per-model config cap); absent when none was sent. Persisted onto a
+   *  failure outcome so the `finish: length` resume gate can tell whether a
+   *  larger cap exists to retry with. */
+  outputCap?: number;
 };
 
 /** Everything the model call needs, with prompt assembly already done. Split
@@ -254,6 +259,10 @@ export type ExecuteAnalystOptions = {
   /** Tokens this call may spend — the primary budget. Defaults to
    *  SURFACE_TOKEN_BUDGETS.generator; a resume passes a smaller top-up. */
   tokenBudget?: number;
+  /** Per-request output cap override. Only the truncation resume passes one —
+   *  the model's hard ceiling, from `resumeBudget` — so the retry has room the
+   *  failed attempt didn't. Omit ⇒ the runner's per-model config cap. */
+  maxOutputTokens?: number;
   onActivity?: (e: ActivityEntry) => void;
   /** Fired after each completed agentic step so the caller can persist a
    *  resume point. Tool-bearing path only (tool-less runs are single-shot). */
@@ -300,6 +309,7 @@ export async function executeQaAnalystRun(
     temperature: 0,
     maxSteps: opts.maxSteps ?? SURFACE_STEP_CAPS.generator,
     tokenBudget: opts.tokenBudget ?? SURFACE_TOKEN_BUDGETS.generator,
+    maxOutputTokens: opts.maxOutputTokens,
     schema: DraftBatchLLMSchema,
     onToolEvent: opts.onActivity,
     onCheckpoint: opts.onCheckpoint,
@@ -331,6 +341,7 @@ export async function executeQaAnalystRun(
     finishReason: r.finishReason,
     stepsUsed: r.stepsUsed,
     usage: r.usage,
+    outputCap: r.outputCap,
   };
 }
 

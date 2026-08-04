@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   canOfferResume,
+  canRaiseOutputCap,
   classifyForResume,
   emptyAnswerCause,
   isResumableKind,
@@ -342,5 +343,89 @@ describe("resumeUnavailableReason", () => {
         hasTranscript: false,
       }),
     ).toContain("too large to save");
+  });
+});
+
+// `finish: length` is its own resume case: the answer overran the output cap,
+// so a replay at the SAME cap deterministically meets the same ceiling — the
+// button re-fails and bills the user twice. It is offered only when the retry
+// genuinely differs (a known ceiling above the cap the attempt ran at), and
+// refused with copy that names the real problem otherwise.
+describe("canOfferResume / canRaiseOutputCap — truncated (length) answers", () => {
+  const work = { stepsUsed: 22, hasTranscript: true };
+
+  it.each(["empty", "schema_violation"] as const)(
+    "refuses a length-cut %s even with banked work when no raise exists",
+    (kind) => {
+      expect(
+        canOfferResume({ kind, finishReason: "length" }, null, {
+          ...work,
+          outputCapRaisable: false,
+        }),
+      ).toBe(false);
+      // Absent flag fails closed, like the other progress fields.
+      expect(canOfferResume({ kind, finishReason: "length" }, null, work)).toBe(
+        false,
+      );
+    },
+  );
+
+  it("offers a length-cut answer when the output cap can be raised", () => {
+    expect(
+      canOfferResume({ kind: "empty", finishReason: "length" }, null, {
+        ...work,
+        outputCapRaisable: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("a raisable cap does not rescue a run with nothing banked", () => {
+    expect(
+      canOfferResume({ kind: "empty", finishReason: "length" }, null, {
+        stepsUsed: 0,
+        hasTranscript: false,
+        outputCapRaisable: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("non-length answered-badly outcomes keep the plain banked-work gate", () => {
+    expect(canOfferResume({ kind: "empty", finishReason: "stop" }, null, work)).toBe(
+      true,
+    );
+    expect(canOfferResume({ kind: "schema_violation" }, null, work)).toBe(true);
+  });
+
+  it("canRaiseOutputCap: known ceiling above the recorded cap, and only that", () => {
+    // Catalogued model, ran at the standing cap → the ceiling is headroom.
+    expect(canRaiseOutputCap("claude-sonnet-5", { outputCap: 64_000 })).toBe(true);
+    // Already ran at the ceiling (a resumed attempt) → nothing left to offer.
+    expect(canRaiseOutputCap("claude-sonnet-5", { outputCap: 128_000 })).toBe(
+      false,
+    );
+    // No recorded cap: the attempt ran at the provider/SDK default, which for
+    // catalogued models WAS the ceiling (the pre-cap bug) — fail closed.
+    expect(canRaiseOutputCap("claude-sonnet-5", {})).toBe(false);
+    expect(canRaiseOutputCap("claude-sonnet-5", null)).toBe(false);
+    // Uncatalogued model: no known ceiling to raise to.
+    expect(canRaiseOutputCap("some-local-model", { outputCap: 4_096 })).toBe(
+      false,
+    );
+  });
+
+  it("resumeUnavailableReason names the ceiling for a refused length outcome", () => {
+    const reason = resumeUnavailableReason(
+      { kind: "schema_violation", finishReason: "length" },
+      { stepsUsed: 22, hasTranscript: true },
+    );
+    expect(reason).toMatch(/output-token limit/);
+    expect(reason).not.toMatch(/returned nothing/);
+    // Without banked work the transcript-loss / generic copy still wins.
+    expect(
+      resumeUnavailableReason(
+        { kind: "empty", finishReason: "length" },
+        { stepsUsed: 0, hasTranscript: false },
+      ),
+    ).toMatch(/returned nothing/);
   });
 });

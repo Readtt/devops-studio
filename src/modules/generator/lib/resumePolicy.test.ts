@@ -10,7 +10,10 @@ import {
   SURFACE_STEP_CAPS,
   SURFACE_TOKEN_BUDGETS,
 } from "@/modules/ai/config";
-import { FINISH_NOW_NUDGE } from "@/modules/ai/lib/checkpointApi";
+import {
+  FINISH_NOW_NUDGE,
+  TRUNCATED_ANSWER_NUDGE,
+} from "@/modules/ai/lib/checkpointApi";
 import { resumeBudget, sumUsage } from "./resumePolicy";
 
 const messages: ModelMessage[] = [
@@ -271,5 +274,66 @@ describe("sumUsage", () => {
     expect(sumUsage(undefined, { totalTokens: 12 })).toEqual({ totalTokens: 12 });
     expect(sumUsage({ totalTokens: 12 }, undefined)).toEqual({ totalTokens: 12 });
     expect(sumUsage(undefined, undefined)).toEqual({});
+  });
+});
+
+// A truncated (`finish: length`) answer resumes as a finish pass with two
+// deliberate differences from the wandering case: the nudge names the
+// truncation and pushes compactness (FINISH_NOW_NUDGE would tell the model to
+// do again exactly what just overran), and when the model's hard ceiling is
+// known the retry runs AT it — the headroom the standing cap reserves.
+describe("resumeBudget — truncated answers retry with more output room", () => {
+  const lengthOutcome = {
+    at: "2026-01-01T00:00:00.000Z",
+    kind: "schema_violation" as const,
+    finishReason: "length",
+    outputCap: 64_000,
+  };
+
+  it("raises to the model ceiling and swaps in the truncation nudge", () => {
+    const out = resumeBudget({
+      lastOutcome: lengthOutcome,
+      transcript: { messages, stepsUsed: 5, usage: {} },
+      modelId: "claude-sonnet-5",
+    });
+    expect(out.maxOutputTokens).toBe(128_000);
+    expect(out.tokens).toBe(RESUME_TOPUP_TOKENS);
+    const last = out.resumeMessages?.[out.resumeMessages.length - 1];
+    expect(last).toEqual({ role: "user", content: TRUNCATED_ANSWER_NUDGE });
+  });
+
+  it("no known ceiling ⇒ no raise, but the truncation nudge still applies", () => {
+    const out = resumeBudget({
+      lastOutcome: lengthOutcome,
+      transcript: { messages, stepsUsed: 5, usage: {} },
+      modelId: "some-local-model",
+    });
+    expect(out.maxOutputTokens).toBeUndefined();
+    const last = out.resumeMessages?.[out.resumeMessages.length - 1];
+    expect(last).toEqual({ role: "user", content: TRUNCATED_ANSWER_NUDGE });
+  });
+
+  it("an attempt that already ran at the ceiling gets no second raise", () => {
+    const out = resumeBudget({
+      lastOutcome: { ...lengthOutcome, outputCap: 128_000 },
+      transcript: { messages, stepsUsed: 5, usage: {} },
+      modelId: "claude-sonnet-5",
+    });
+    expect(out.maxOutputTokens).toBeUndefined();
+  });
+
+  it("non-length finish passes keep FINISH_NOW_NUDGE and no output override", () => {
+    const out = resumeBudget({
+      lastOutcome: {
+        at: "2026-01-01T00:00:00.000Z",
+        kind: "empty",
+        finishReason: "stop",
+      },
+      transcript: { messages, stepsUsed: 5, usage: {} },
+      modelId: "claude-sonnet-5",
+    });
+    expect(out.maxOutputTokens).toBeUndefined();
+    const last = out.resumeMessages?.[out.resumeMessages.length - 1];
+    expect(last).toEqual({ role: "user", content: FINISH_NOW_NUDGE });
   });
 });

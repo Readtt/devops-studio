@@ -29,6 +29,8 @@
 // remediation copy (title / why / steps); this file answers only the narrower
 // resumability question, so the two can't drift on whether Resume is offered.
 
+import { getModelOutputCeiling } from "../config";
+
 export type ResumeErrorKind =
   | "rate-limit"
   | "overloaded"
@@ -142,7 +144,36 @@ export type ResumeProgress = {
    *  `transcript: null`, which leaves a run that took 22 steps with nothing to
    *  replay. */
   hasTranscript?: boolean;
+  /** Whether a `finish: length` failure could be retried with MORE output room
+   *  — see {@link canRaiseOutputCap}, which callers compute from the
+   *  checkpoint's modelId (this module never sees the payload). Absent ⇒ false:
+   *  a call site that hasn't been taught to pass it fails closed, exactly like
+   *  the two fields above. */
+  outputCapRaisable?: boolean;
 };
+
+/** Whether a truncated (`finish: length`) answer has anywhere to go on retry:
+ *  the model has a known hard output ceiling ABOVE the cap the failed attempt
+ *  ran at. That headroom exists by design — every catalogued model's standing
+ *  cap sits below its ceiling (config's MODEL_OUTPUT_LIMITS) precisely so this
+ *  one retry has room the failed attempt didn't.
+ *
+ *  `outcome.outputCap` absent fails closed, and that is load-bearing twice
+ *  over: an outcome written before caps existed ran at the SDK's own default —
+ *  which for catalogued models WAS the ceiling, so replaying it "with more
+ *  room" is a lie — and an uncatalogued model has no known ceiling to raise
+ *  to. A resumed attempt that already ran at the ceiling records that number,
+ *  so a second truncation refuses rather than re-offering a button that can't
+ *  work. */
+export function canRaiseOutputCap(
+  modelId: string,
+  outcome: { outputCap?: number } | null | undefined,
+): boolean {
+  const ceiling = getModelOutputCeiling(modelId);
+  if (ceiling === undefined) return false;
+  const ranAt = outcome?.outputCap;
+  return ranAt !== undefined && ranAt < ceiling;
+}
 
 /** Whether there is bought-and-paid-for research a resume could continue from.
  *
@@ -209,7 +240,7 @@ export function emptyAnswerCause(
  *  it did real work whose transcript was too big to keep. Only ever called when
  *  {@link canOfferResume} already said no. */
 export function resumeUnavailableReason(
-  outcome: { kind: string } | null | undefined,
+  outcome: { kind: string; finishReason?: string } | null | undefined,
   progress?: ResumeProgress | null,
 ): string {
   // Steps were taken but no transcript survived — the payload was too big for a
@@ -223,6 +254,18 @@ export function resumeUnavailableReason(
   // more than the situation warrants.
   if (workWithoutTranscript) {
     return "Its transcript was too large to save, so there's nothing left to continue from — re-run.";
+  }
+  // A truncated answer with banked work is refused for a reason of its own: a
+  // replay would run into the SAME output ceiling, so the button would just
+  // bill the failure twice. (When a raise exists, canOfferResume said yes and
+  // this is never called.) The generic "returned nothing" copy below would be
+  // a lie about a model that wrote plenty — too much, in fact.
+  if (
+    outcome?.finishReason === "length" &&
+    (outcome.kind === "empty" || outcome.kind === "schema_violation") &&
+    hasContinuableWork(progress)
+  ) {
+    return "Its answer overran the model's output-token limit, and no larger limit exists to retry with — re-run with a narrower request so the answer fits.";
   }
   switch (outcome?.kind) {
     case "empty":
@@ -247,7 +290,12 @@ export function resumeUnavailableReason(
  *  fails closed. */
 export function canOfferResume(
   outcome:
-    | { kind: string; errorKind?: ResumeErrorKind; message?: string }
+    | {
+        kind: string;
+        errorKind?: ResumeErrorKind;
+        finishReason?: string;
+        message?: string;
+      }
     | null
     | undefined,
   errorMessage?: string | null,
@@ -260,7 +308,17 @@ export function canOfferResume(
       return true;
     case "empty":
     case "schema_violation":
-      return hasContinuableWork(progress);
+      if (!hasContinuableWork(progress)) return false;
+      // `finish: length` is its own case: the answer overran the output cap,
+      // so replaying the transcript at the SAME cap deterministically meets
+      // the same ceiling — a Resume button that bills the user twice for one
+      // failure. Offer it only when the retry genuinely differs: a known
+      // ceiling above the cap the attempt ran at (the resume then retries at
+      // that ceiling, with the truncation nudge). Absent flag fails closed.
+      if (outcome.finishReason === "length") {
+        return progress?.outputCapRaisable === true;
+      }
+      return true;
     case "error":
       return isResumableKind(
         outcome.errorKind ?? matchErrorKind(errorMessage ?? outcome.message ?? ""),

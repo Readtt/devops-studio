@@ -59,6 +59,7 @@ import {
 } from "@/modules/ai/lib/checkpointApi";
 import {
   canOfferResume,
+  canRaiseOutputCap,
   classifyForResume,
   emptyAnswerCause,
 } from "@/modules/ai/lib/errorClass";
@@ -266,6 +267,9 @@ export type SessionState = {
      *  state because `canOfferResume` needs it for the answered-badly outcomes
      *  and the render sites only have this object. */
     hasTranscript: boolean;
+    /** Whether a `finish: length` outcome has output headroom to retry with —
+     *  same carry-it-for-the-gate reason as `hasTranscript`. */
+    outputCapRaisable: boolean;
     totalTokens: number | null;
     updatedAt: string;
     outcome: CheckpointOutcome | null;
@@ -417,6 +421,8 @@ export type SessionState = {
     stepsUsed: number;
     /** See `resumable.hasTranscript`. */
     hasTranscript: boolean;
+    /** See `resumable.outputCapRaisable`. */
+    outputCapRaisable: boolean;
     totalTokens: number | null;
     updatedAt: string;
     outcome: CheckpointOutcome | null;
@@ -563,6 +569,7 @@ function resumableFrom(
   return {
     stepsUsed: payload.transcript?.stepsUsed ?? 0,
     hasTranscript: hasReplayableTranscript(payload.transcript),
+    outputCapRaisable: canRaiseOutputCap(payload.modelId, outcome),
     totalTokens: payload.transcript?.usage?.totalTokens ?? null,
     updatedAt: outcome.at,
     outcome,
@@ -579,6 +586,7 @@ function refineResumableFrom(
     instruction: payload.round.instruction,
     stepsUsed: payload.transcript?.stepsUsed ?? 0,
     hasTranscript: hasReplayableTranscript(payload.transcript),
+    outputCapRaisable: canRaiseOutputCap(payload.modelId, outcome),
     totalTokens: payload.transcript?.usage?.totalTokens ?? null,
     updatedAt: outcome.at,
     outcome,
@@ -1062,10 +1070,12 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           // Persisted so a checkpoint reopened from History still knows WHY,
           // and so the next occurrence of this failure names its own cause
           // instead of being diagnosed by inference a second time.
-          // Persisted so a checkpoint reopened from History still knows WHY,
-          // and so the next occurrence of this failure names its own cause
-          // instead of being diagnosed by inference a second time.
           ...(result.finishReason ? { finishReason: result.finishReason } : {}),
+          // What the failed attempt's requests asked for — the number the
+          // truncation-resume gate compares against the model's ceiling.
+          ...(result.outputCap !== undefined
+            ? { outputCap: result.outputCap }
+            : {}),
         };
         const emptyPayload = buildPayload(emptyOutcome);
         const emptyResumable = resumableFrom(emptyPayload, emptyOutcome);
@@ -1074,10 +1084,18 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           emptyOutcome.message ?? null,
           emptyResumable,
         );
+        // A truncated answer resumes differently from a wandering one — it
+        // retries the answer at the model's output CEILING with a be-compact
+        // nudge (resumeBudget) — so the offer has to say that, not "write the
+        // batch from what it has", which is the same request that just failed.
+        const resumeSuffix =
+          result.finishReason === "length"
+            ? `It had already read the codebase over ${emptyResumable.stepsUsed} step${emptyResumable.stepsUsed === 1 ? "" : "s"} — resuming replays that work and retries the answer with a raised output-token limit.`
+            : `It had already read the codebase over ${emptyResumable.stepsUsed} step${emptyResumable.stepsUsed === 1 ? "" : "s"} before that, so resuming asks it to write the batch from what it has instead of paying for the run again.`;
         set({
           phase: "error",
           error: canContinue
-            ? `No test cases generated. ${why} It had already read the codebase over ${emptyResumable.stepsUsed} step${emptyResumable.stepsUsed === 1 ? "" : "s"} before that, so resuming asks it to write the batch from what it has instead of paying for the run again.`
+            ? `No test cases generated. ${why} ${resumeSuffix}`
             : `No test cases generated. ${why}`,
           errorPhase: "analyze",
           stepLabel: "",
@@ -1278,6 +1296,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
               ? "schema_violation"
               : "empty",
           ...(result.finishReason ? { finishReason: result.finishReason } : {}),
+          ...(result.outputCap !== undefined
+            ? { outputCap: result.outputCap }
+            : {}),
         };
         const payload = cp?.buildPayload(outcome) ?? null;
         const resumable = payload
@@ -1952,7 +1973,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       return;
     }
 
-    const { cap, tokens, resumeMessages } = resumeBudget(payload);
+    const { cap, tokens, resumeMessages, maxOutputTokens } =
+      resumeBudget(payload);
     const base = payload.transcript;
     const baseSteps = base?.stepsUsed ?? 0;
     const baseTokens = stepSpend(base?.usage);
@@ -2035,6 +2057,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         local: localProviderConfig(prefs),
         maxSteps: cap,
         tokenBudget: tokens,
+        maxOutputTokens,
         resumeMessages,
         onActivity: onRunActivity,
         onCheckpoint: (cp) => {
@@ -2129,6 +2152,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       resumable: {
         stepsUsed: payload.transcript?.stepsUsed ?? 0,
         hasTranscript: hasReplayableTranscript(payload.transcript),
+        outputCapRaisable: canRaiseOutputCap(payload.modelId, payload.lastOutcome),
         totalTokens: payload.transcript?.usage?.totalTokens ?? null,
         updatedAt,
         outcome: payload.lastOutcome,
@@ -3103,7 +3127,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       return;
     }
 
-    const { cap, tokens, resumeMessages } = resumeBudget(payload);
+    const { cap, tokens, resumeMessages, maxOutputTokens } =
+      resumeBudget(payload);
     const base = payload.transcript;
     // Re-read: the draft is what the user sees NOW, which is the undo point a
     // completed resume should restore, and the basis for carrying verdicts /
@@ -3152,6 +3177,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         local: localProviderConfig(prefs),
         maxSteps: cap,
         tokenBudget: tokens,
+        maxOutputTokens,
         resumeMessages,
         onActivity: onRunActivity,
         onCheckpoint: (checkpoint) => {
@@ -3230,6 +3256,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       const progress = {
         stepsUsed: p.transcript?.stepsUsed ?? 0,
         hasTranscript: hasReplayableTranscript(p.transcript),
+        outputCapRaisable: canRaiseOutputCap(p.modelId, p.lastOutcome),
       };
       if (
         !canOfferResume(p.lastOutcome, p.lastOutcome?.message ?? null, progress)

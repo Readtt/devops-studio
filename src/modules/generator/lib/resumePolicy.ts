@@ -3,18 +3,20 @@
 // IPC; these are arithmetic and a branch).
 
 import {
+  getModelOutputCeiling,
   RESUME_TOPUP_TOKENS,
   SURFACE_STEP_CAPS,
   SURFACE_TOKEN_BUDGETS,
 } from "@/modules/ai/config";
 import {
   FINISH_NOW_NUDGE,
+  TRUNCATED_ANSWER_NUDGE,
   type CheckpointOutcome,
   type CheckpointUsage,
   type TranscriptCheckpoint,
 } from "@/modules/ai/lib/checkpointApi";
 import { compactForResume } from "@/modules/ai/lib/compactTranscript";
-import { matchErrorKind } from "@/modules/ai/lib/errorClass";
+import { canRaiseOutputCap, matchErrorKind } from "@/modules/ai/lib/errorClass";
 import type { ModelMessage } from "ai";
 
 const USAGE_FIELDS = [
@@ -55,6 +57,10 @@ export type ResumeBudget = {
   /** Continuation transcript to hand the runner, or undefined to start the
    *  loop fresh from the (still-persisted) prompt. */
   resumeMessages: ModelMessage[] | undefined;
+  /** Set only for a truncation resume: the model's hard output ceiling, so the
+   *  retry has the room the failed attempt (which ran at the standing cap)
+   *  didn't. Undefined ⇒ the runner uses the per-model config cap as always. */
+  maxOutputTokens?: number;
 };
 
 /** Whether the failure being resumed from was the request not fitting. Prefers
@@ -127,6 +133,10 @@ export function resumesByFinishing(
 export function resumeBudget(payload: {
   lastOutcome: CheckpointOutcome | null;
   transcript: TranscriptCheckpoint | null;
+  /** The model the transcript is pinned to (both checkpoint payload shapes
+   *  carry it). What a truncation resume needs to look up the output ceiling;
+   *  optional for read-tolerance, and its absence only costs that raise. */
+  modelId?: string;
 }): ResumeBudget {
   const stored = payload.transcript?.messages;
   const prior = stored
@@ -135,13 +145,32 @@ export function resumeBudget(payload: {
   if (
     resumesByFinishing(payload.lastOutcome, (prior?.length ?? 0) > 0)
   ) {
+    // `finish: length` gets its own finish pass: FINISH_NOW_NUDGE tells a
+    // truncated run the wrong thing (it didn't wander — its answer overran the
+    // cap, and "answer now" alone invites the same overrun), so the nudge
+    // names the truncation and pushes compactness, and when the model's hard
+    // ceiling is known the retry runs AT it — the headroom the standing cap
+    // deliberately reserves. Without a known ceiling the nudge still differs
+    // from the failed attempt, but `canOfferResume` refuses that case anyway;
+    // handling it here keeps the fallback honest if one slips through.
+    const truncated = payload.lastOutcome?.finishReason === "length";
+    const raise =
+      truncated &&
+      payload.modelId !== undefined &&
+      canRaiseOutputCap(payload.modelId, payload.lastOutcome)
+        ? getModelOutputCeiling(payload.modelId)
+        : undefined;
     return {
       cap: SURFACE_STEP_CAPS.generator,
       tokens: RESUME_TOPUP_TOKENS,
       resumeMessages: [
         ...(prior ?? []),
-        { role: "user", content: FINISH_NOW_NUDGE },
+        {
+          role: "user",
+          content: truncated ? TRUNCATED_ANSWER_NUDGE : FINISH_NOW_NUDGE,
+        },
       ],
+      ...(raise !== undefined ? { maxOutputTokens: raise } : {}),
     };
   }
   return {
