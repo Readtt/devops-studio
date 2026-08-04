@@ -16,13 +16,34 @@
 // in tokens nobody counted is no budget.
 //
 // SPEND, NOT OCCUPANCY — the distinction this module exists to keep straight.
-// Summing `inputTokens` across steps counts the re-sent transcript once per
-// step, which is exactly what the provider billed and exactly what a spend
-// budget should bound. It is NOT a context reading: how full the window is, is
-// ONE step's own `inputTokens`, which is `measureRequestContext`'s job in
-// contextEstimate.ts and what eviction hangs off. Swap the two and you get a
-// budget a 30-step run of small requests can never trip, and an eviction
-// trigger that fires on step 3 of a healthy run.
+// Summing across steps counts the re-sent transcript once per step, which is
+// exactly what the provider billed and exactly what a spend budget should
+// bound. It is NOT a context reading: how full the window is, is ONE step's own
+// `inputTokens`, which is `measureRequestContext`'s job in contextEstimate.ts
+// and what eviction hangs off. Swap the two and you get a budget a 30-step run
+// of small requests can never trip, and an eviction trigger that fires on step
+// 3 of a healthy run.
+//
+// COST-EQUIVALENT, NOT RAW — the second distinction, and the one this module
+// got wrong first time round. It summed `inputTokens + outputTokens`, defending
+// that with "a cached token is cheaper, not free". True, and beside the point:
+// that is a coherant measure of WORK, and the product constraint is COST. The
+// consequence was perverse. The caching work made runs roughly ten times
+// cheaper and the budget could not see a penny of it — a run at 86% cache
+// exhausted its budget at exactly the same rate as an uncached one, so the
+// readout said "28% of budget consumed" about roughly 4% of the equivalent
+// spend, and legitimate long runs were cut off to protect money nobody was
+// spending.
+//
+// So a "token" here is a COST-EQUIVALENT one, normalised to a fresh input
+// token. That single change gives the budget a property it could not have
+// before: the most a run can cost is `budget × the model's fresh-input rate`,
+// invariant to how well the cache hit and invariant to the input/output mix.
+// A well-cached run therefore gets far more real work out of the same ceiling
+// (at 86% cache, roughly 4x the raw tokens) while an uncached one — which
+// genuinely costs full price — is bound exactly where it was. The budget
+// numbers themselves are unchanged for that reason: their DOLLAR ceiling is
+// what stayed fixed, and it is the uncached case that sets it.
 
 import { stepCountIs, type StopCondition, type ToolSet } from "ai";
 
@@ -32,7 +53,54 @@ export type SpendUsage = {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  /** How many of `inputTokens` were served from the prompt cache. Absent is NOT
+   *  zero — it means the provider reported no cache detail — but it bills the
+   *  same way from here, at the fresh rate, which is the conservative read. */
+  cacheReadTokens?: number;
+  /** The SDK's own nesting for the same number, read because this type has TWO
+   *  callers with different shapes and they must not disagree. The accumulator
+   *  hands over a flattened {@link TaskUsage}; the `stopWhen` condition is
+   *  handed the SDK's raw `LanguageModelUsage` steps. Reading only the flat
+   *  field would make the stop condition count every cached token at the FRESH
+   *  rate while the accumulator discounted it — the run would then stop at a
+   *  number the readout never reached, and `limitReached` would disagree with
+   *  the stop the SDK actually made. Same precedence as `toTaskUsage`. */
+  inputTokenDetails?: { cacheReadTokens?: number };
+  /** Deprecated alias some providers still populate. */
+  cachedInputTokens?: number;
 };
+
+/** Cache reads from whichever shape this usage record uses. */
+function cacheReadsOf(usage: SpendUsage): number {
+  return finite(
+    usage.cacheReadTokens ??
+      usage.inputTokenDetails?.cacheReadTokens ??
+      usage.cachedInputTokens,
+  );
+}
+
+/** What a cached input token costs relative to a fresh one.
+ *
+ *  A flat factor rather than each model's own `MODEL_PRICING.cacheRead / input`
+ *  ratio, deliberately. Every priced model in the table sits at 0.1 (5→0.5,
+ *  3→0.3, 0.4→0.04, 0.28→0.028) bar one outlier, so per-model precision buys
+ *  almost nothing — and it costs two things worth more than it. `MODEL_PRICING`
+ *  covers about a third of `MODEL_CONTEXT_LIMITS`, so budgets would silently
+ *  mean something different on the other two thirds; and the same run against
+ *  two models would consume different fractions of the same budget for a reason
+ *  the user cannot see. One factor keeps the number comparable. */
+export const CACHED_INPUT_COST_FACTOR = 0.1;
+
+/** What an output token costs relative to a fresh input one. Anthropic and
+ *  OpenAI both price output at 3–5x input (Claude 5: $3→$15 and $5→$25).
+ *
+ *  This matters BECAUSE of the discount above, not despite it. At the raw sum
+ *  output was a rounding error next to a re-sent transcript, which is why it
+ *  rode at 1x. Discount the cache reads tenfold and input collapses while
+ *  output does not: on the observed 86%-cache step, output goes from under 1%
+ *  of the step to around 10% of it. Left at 1x the metric would drift low on
+ *  exactly the runs it is now sized for. */
+export const OUTPUT_COST_FACTOR = 5;
 
 export type RunBudget = {
   /** Tokens this call may spend before it is stopped. */
@@ -52,19 +120,29 @@ function finite(n: unknown): number {
   return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-/** Tokens ONE step consumed: the request it sent plus the text it wrote.
+/** What ONE step cost, in fresh-input-token equivalents.
  *
  *  `inputTokens` already includes cache reads (the SDK maps it from
- *  `inputTokens.total`). A cached token is cheaper, not free, and it is still a
- *  token the run spent — netting them out here would understate a long agentic
- *  loop by ~10x, which is the whole shape of the thing being budgeted.
+ *  `inputTokens.total`), so the fresh part is the difference. Clamped at zero
+ *  because a provider reporting more cache reads than input is reporting
+ *  nonsense, and a negative step would let a long run spend forever.
  *
- *  Falls back to `totalTokens` only when the split is missing entirely, which is
- *  what some OpenAI-compatible endpoints report. */
+ *  Falls back to `totalTokens` at face value only when the split is missing
+ *  entirely, which is what some OpenAI-compatible endpoints report. There is
+ *  nothing to weight there — no split means no cache detail and no output
+ *  count — so it is charged as if every token were fresh input. That is the
+ *  conservative reading, and it is also true of most such endpoints, which
+ *  don't cache. */
 export function stepSpend(usage: SpendUsage | undefined | null): number {
   if (!usage) return 0;
-  const io = finite(usage.inputTokens) + finite(usage.outputTokens);
-  return io > 0 ? io : finite(usage.totalTokens);
+  const input = finite(usage.inputTokens);
+  const output = finite(usage.outputTokens);
+  if (input <= 0 && output <= 0) return finite(usage.totalTokens);
+  const cached = Math.min(cacheReadsOf(usage), input);
+  const fresh = Math.max(0, input - cached);
+  return (
+    fresh + cached * CACHED_INPUT_COST_FACTOR + output * OUTPUT_COST_FACTOR
+  );
 }
 
 /** Everything the completed steps have spent so far. */

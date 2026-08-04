@@ -306,8 +306,20 @@ export function cacheHitRatioOf(
     return null;
   }
   if (typeof cacheRead !== "number" || !Number.isFinite(cacheRead)) return null;
+  // More cache reads than tokens sent is impossible for a matched pair, so it
+  // means the DENOMINATOR is wrong — the caller passed something other than the
+  // provider's raw input count. Since the budget's `tokensUsed` is now
+  // cost-equivalent (cache reads already discounted tenfold), that mix-up is a
+  // live hazard, and clamping it to 1 would report a flawless 100% cache hit
+  // precisely when the number is meaningless. "Unknown" is the honest answer.
+  // Small overshoots stay clamped — providers round.
+  if (cacheRead > input * OVERSHOOT_TOLERANCE) return null;
   return Math.min(1, Math.max(0, cacheRead) / input);
 }
+
+/** How far past `inputTokens` a cache-read count may sit before it is read as a
+ *  mismatched pair rather than provider rounding. */
+const OVERSHOOT_TOLERANCE = 1.02;
 
 /** `0.873` → `"87%"`. Whole percent: the ratio is a health indicator to compare
  *  between runs, and decimals imply a precision the provider's own rounding

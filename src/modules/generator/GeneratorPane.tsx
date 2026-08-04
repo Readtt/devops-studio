@@ -1531,6 +1531,7 @@ function InputPhase() {
 function RunBudgetReadout(props: {
   tokensUsed: number | null;
   tokenBudget: number | null;
+  tokensInput: number | null;
   tokensCached: number | null;
   peakPromptTokens: number | null;
   stepsUsed: number | null;
@@ -1551,14 +1552,13 @@ function RunBudgetReadout(props: {
     tokenBudget != null && !((stepsUsed ?? 0) > 0 && (tokensUsed ?? 0) === 0);
   if (tokenBudget == null && stepCap == null) return null;
 
-  // Priced off the real cache split: an agentic loop re-sends its transcript
-  // every step and Anthropic bills those reads at ~10%, so charging the whole
-  // total at the fresh rate overstates a Sonnet run several-fold. Output tokens
-  // ride at the input rate — a few hundred per step against tens of thousands
-  // of input is inside the "roughly" the label already claims.
+  // Priced off the RAW input count and the real cache split — never off
+  // `tokensUsed`, which is already cost-equivalent (cache reads discounted,
+  // output weighted). Feeding that back through estimateCost would discount
+  // the same cache reads a second time and halve the figure.
   const spentUsd = measured
     ? estimateCost(props.modelId, {
-        inputTokens: tokensUsed ?? 0,
+        inputTokens: props.tokensInput ?? 0,
         outputTokens: 0,
         cachedInputTokens: props.tokensCached ?? 0,
       })
@@ -1579,13 +1579,15 @@ function RunBudgetReadout(props: {
           {measured ? (
             <>
               This run has spent ~{formatTokens(tokensUsed ?? 0)} of the{" "}
-              {formatTokens(tokenBudget)} tokens it's allowed
+              {formatTokens(tokenBudget)} it's allowed
               {spentUsd != null
                 ? ` (roughly ${formatCostUsd(spentUsd)} so far)`
                 : ""}
-              . Every step re-sends the whole conversation, so it climbs faster
-              than it looks. If it runs out, the run stops with everything it
-              read kept, and you can top it up and resume — nothing is lost.
+              . Counted as what they COST, not how many there were: tokens the
+              prompt cache served bill at about a tenth, so a well-cached run
+              gets much further on the same budget. If it runs out, the run
+              stops with everything it read kept, and you can top it up and
+              resume — nothing is lost.
               {stepCap != null ? ` Step ${stepNow} of ${stepCap}.` : ""}
             </>
           ) : (
@@ -1602,7 +1604,10 @@ function RunBudgetReadout(props: {
           the only place in the app where that difference is visible. */}
       {measured ? (
         <CacheHitReadout
-          inputTokens={tokensUsed}
+          // RAW input, not the budget's cost-equivalent figure: the ratio IS
+          // cacheReadTokens / inputTokens, and a denominator that already
+          // discounted those reads would flatter every run toward 100%.
+          inputTokens={props.tokensInput}
           cacheReadTokens={props.tokensCached}
           peakPromptTokens={props.peakPromptTokens}
           modelId={props.modelId}
@@ -1624,6 +1629,7 @@ function AnalyzingPhase() {
   const stepCap = useGenerationSession((s) => s.stepCap);
   const tokensUsed = useGenerationSession((s) => s.tokensUsed);
   const tokenBudget = useGenerationSession((s) => s.tokenBudget);
+  const tokensInput = useGenerationSession((s) => s.tokensInput);
   const tokensCached = useGenerationSession((s) => s.tokensCached);
   const peakPromptTokens = useGenerationSession((s) => s.peakPromptTokens);
   const overrideModelId = useGenerationSession((s) => s.overrideModelId);
@@ -1681,6 +1687,7 @@ function AnalyzingPhase() {
           <RunBudgetReadout
             tokensUsed={tokensUsed}
             tokenBudget={tokenBudget}
+            tokensInput={tokensInput}
             tokensCached={tokensCached}
             peakPromptTokens={peakPromptTokens}
             stepsUsed={stepsUsed}
@@ -1904,7 +1911,7 @@ function ReviewPhase({
   // The finished run's cost shape. Kept on screen after the run rather than
   // only during it: a cache hit ratio is a comparison, and you can't compare
   // two numbers that both vanish the moment the run lands.
-  const tokensUsed = useGenerationSession((s) => s.tokensUsed);
+  const tokensInput = useGenerationSession((s) => s.tokensInput);
   const tokensCached = useGenerationSession((s) => s.tokensCached);
   const peakPromptTokens = useGenerationSession((s) => s.peakPromptTokens);
   const overrideModelId = useGenerationSession((s) => s.overrideModelId);
@@ -2302,12 +2309,15 @@ function ReviewPhase({
             ? `, ${bugs.length} bug suggestion${bugs.length === 1 ? "" : "s"}`
             : ""}
           {durationMs ? ` · ${(durationMs / 1000).toFixed(1)}s` : ""}
-          {tokensUsed ? ` · ~${formatTokens(tokensUsed)} tokens` : ""}.
-          {tokensUsed ? (
+          {/* The RAW count here, not the budget's cost-equivalent one: on the
+              landed run this reads as "how big was this", and it's also the
+              denominator of the chip beside it. */}
+          {tokensInput ? ` · ~${formatTokens(tokensInput)} tokens` : ""}.
+          {tokensInput ? (
             <>
               {" "}
               <CacheHitReadout
-                inputTokens={tokensUsed}
+                inputTokens={tokensInput}
                 cacheReadTokens={tokensCached}
                 peakPromptTokens={peakPromptTokens}
                 modelId={overrideModelId ?? defaultModelId}

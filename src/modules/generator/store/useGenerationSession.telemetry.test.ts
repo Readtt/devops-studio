@@ -96,7 +96,13 @@ describe("useGenerationSession — run cost telemetry", () => {
     expect(store.getState().peakPromptTokens).toBe(120_000);
   });
 
-  it("carries the cache split the readout divides by", async () => {
+  // Two DIFFERENT numbers, and keeping them apart is the point. `tokensUsed`
+  // rations the run and is cost-equivalent (cache reads at a tenth, output at
+  // 5x); `tokensInput` is the provider's raw count and is what the cache ratio
+  // divides by. Collapse them and the ratio is computed against a denominator
+  // that already discounted the very reads it's measuring — every run would
+  // read as far better cached than it was.
+  it("carries the cache split the readout divides by, undiscounted", async () => {
     const store = await analyzeWith((opts) => {
       opts.onCheckpoint?.({
         messages: [],
@@ -104,8 +110,13 @@ describe("useGenerationSession — run cost telemetry", () => {
         usage: { inputTokens: 100_000, cacheReadTokens: 90_000 },
       });
     });
-    expect(store.getState().tokensUsed).toBe(100_000);
-    expect(store.getState().tokensCached).toBe(90_000);
+    const s = store.getState();
+    expect(s.tokensInput).toBe(100_000);
+    expect(s.tokensCached).toBe(90_000);
+    // 10k fresh + 90k cached at 0.1 = 19k of budget, for 100k of tokens.
+    expect(s.tokensUsed).toBe(19_000);
+    // The ratio the release gate reads, off the raw pair.
+    expect((s.tokensCached ?? 0) / (s.tokensInput ?? 1)).toBeCloseTo(0.9, 6);
   });
 
   it("leaves the cache count ABSENT when no step reported one", async () => {
@@ -118,8 +129,10 @@ describe("useGenerationSession — run cost telemetry", () => {
         usage: { inputTokens: 100_000 },
       });
     });
-    expect(store.getState().tokensUsed).toBe(100_000);
+    expect(store.getState().tokensInput).toBe(100_000);
     expect(store.getState().tokensCached).toBeNull();
+    // No cache detail ⇒ charged as all fresh, which is the conservative read.
+    expect(store.getState().tokensUsed).toBe(100_000);
   });
 
   it("survives into the review phase, so two runs can be compared", async () => {
@@ -132,7 +145,7 @@ describe("useGenerationSession — run cost telemetry", () => {
       });
     });
     expect(store.getState().phase).toBe("review");
-    expect(store.getState().tokensUsed).toBe(100_000);
+    expect(store.getState().tokensInput).toBe(100_000);
     expect(store.getState().tokensCached).toBe(80_000);
     expect(store.getState().peakPromptTokens).toBe(75_000);
   });

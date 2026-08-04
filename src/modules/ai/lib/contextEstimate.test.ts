@@ -316,8 +316,19 @@ describe("cacheHitRatioOf (run-level, what the readout shows)", () => {
     expect(cacheHitRatioOf({ inputTokens: 100_000, cacheReadTokens: 0 })).toBe(0);
   });
 
-  it("clamps a provider that reports more cache reads than input", () => {
-    expect(cacheHitRatioOf({ inputTokens: 100, cacheReadTokens: 400 })).toBe(1);
+  it("absorbs provider rounding but refuses a mismatched pair", () => {
+    // A percent over is rounding; four times over is a different number in the
+    // numerator and the denominator. Since the run budget's own `tokensUsed`
+    // is now cost-equivalent — cache reads already discounted tenfold — that
+    // mix-up is a live wiring hazard, and clamping it to 1 would report a
+    // flawless cache hit exactly when the figure is meaningless.
+    expect(cacheHitRatioOf({ inputTokens: 100, cacheReadTokens: 101 })).toBe(1);
+    expect(cacheHitRatioOf({ inputTokens: 100, cacheReadTokens: 400 })).toBeNull();
+    // A 90%-cached run costs 19% of its raw tokens, so passing the budget
+    // figure by mistake looks exactly like this — and now reads "n/a".
+    expect(
+      cacheHitRatioOf({ inputTokens: 19_000, cacheReadTokens: 90_000 }),
+    ).toBeNull();
     expect(cacheHitRatioOf({ inputTokens: 100, cacheReadTokens: -5 })).toBe(0);
   });
 

@@ -272,9 +272,11 @@ describe("useGenerationSession — resumeAnalyze replays the paid-for transcript
       used: spentBefore,
       budget: spentBefore + RESUME_TOPUP_TOKENS,
     });
-    // And after a step of the resumed call, still under its own ceiling.
+    // And after a step of the resumed call, still under its own ceiling. The
+    // step reported 90k input (no cache detail ⇒ all fresh) and 1k output at
+    // 5x, so it costs 95k of budget rather than the 91k a raw sum would give.
     expect(seen[1]).toEqual({
-      used: spentBefore + 91_000,
+      used: spentBefore + 95_000,
       budget: spentBefore + RESUME_TOPUP_TOKENS,
     });
     for (const s of seen) expect(s.used!).toBeLessThan(s.budget!);

@@ -219,18 +219,31 @@ export type SessionState = {
    *  activity readout's fallback on endpoints that report no token usage — the
    *  budget below is what the run is actually rationed by. */
   stepCap: number | null;
-  /** Tokens the current/last analyze has spent — cumulative across resumes, so
-   *  it keeps climbing rather than restarting at 0. */
+  /** What the current/last analyze has spent AGAINST ITS BUDGET, in
+   *  cost-equivalent tokens (runBudget.stepSpend — cache reads at a tenth,
+   *  output at 5x, normalised to a fresh input token). Cumulative across
+   *  resumes, so it keeps climbing rather than restarting at 0.
+   *
+   *  Deliberately NOT the raw token count, and not interchangeable with it:
+   *  this is the budget's unit and the one that tracks the bill. Anything
+   *  measuring the run rather than rationing it — the cache hit ratio, the
+   *  dollar estimate — wants {@link tokensInput} instead. */
   tokensUsed: number | null;
   /** The ceiling `tokensUsed` is shown against. On a resume this is the PRIOR
    *  total plus this call's top-up, for the same reason `stepCap` is: both
    *  counters are cumulative, so a raw budget here would read "~1.2M / 500k". */
   tokenBudget: number | null;
-  /** How many of `tokensUsed` were cache reads. Prices the run honestly —
-   *  cached input bills at ~10% and an agentic loop is mostly cache hits, so
-   *  costing the whole total at the fresh rate would overstate a Sonnet run
-   *  several-fold — and, as a share of `tokensUsed`, is the cache hit ratio the
-   *  readout shows.
+  /** RAW input tokens the run sent, summed across steps and inclusive of cache
+   *  reads — the provider's own count, undiscounted.
+   *
+   *  Separate from `tokensUsed` because the cache hit ratio is
+   *  `cacheReadTokens / inputTokens` and computing it against a denominator
+   *  that already discounts cache reads would flatter every run. (It also
+   *  quietly fixes the old denominator, which was input PLUS output.) */
+  tokensInput: number | null;
+  /** How many of `tokensInput` were cache reads. Prices the run honestly —
+   *  cached input bills at ~10% and an agentic loop is mostly cache hits — and,
+   *  as a share of `tokensInput`, is the cache hit ratio the readout shows.
    *
    *  Null means the provider reported no cache detail at ALL, which is why this
    *  isn't seeded to 0: local endpoints and some gateways never report it, and
@@ -752,6 +765,7 @@ const initialState: Omit<
   stepCap: null,
   tokensUsed: null,
   tokenBudget: null,
+  tokensInput: null,
   tokensCached: null,
   peakPromptTokens: null,
   analyzeStartedAt: null,
@@ -1566,6 +1580,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       stepCap: SURFACE_STEP_CAPS.generator,
       tokensUsed: 0,
       tokenBudget: SURFACE_TOKEN_BUDGETS.generator,
+      tokensInput: null,
       tokensCached: null,
       peakPromptTokens: null,
       analyzeStartedAt: Date.now(),
@@ -1823,8 +1838,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           set({
             stepsUsed: cp.stepsUsed,
             tokensUsed: stepSpend(cp.usage),
-            // Absent (not 0) when no step reported cache detail — the
-            // accumulator only writes a usage field a provider actually sent.
+            // Absent (not 0) when no step reported it — the accumulator only
+            // writes a usage field a provider actually sent.
+            tokensInput: cp.usage.inputTokens ?? null,
             tokensCached: cp.usage.cacheReadTokens ?? null,
           });
           transcript = toTranscript(cp, null);
@@ -1964,6 +1980,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       stepsUsed: baseSteps,
       tokenBudget: baseTokens + tokens,
       tokensUsed: baseTokens,
+      tokensInput: base?.usage?.inputTokens ?? null,
       tokensCached: base?.usage?.cacheReadTokens ?? null,
       // Not carried across a resume: the checkpoint records what the run SPENT,
       // not how big any one request got, so the peak has to be re-measured from
@@ -2028,6 +2045,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           set({
             stepsUsed: baseSteps + cp.stepsUsed,
             tokensUsed: baseTokens + stepSpend(cp.usage),
+            tokensInput: addReported(
+              base?.usage?.inputTokens,
+              cp.usage.inputTokens,
+            ),
             tokensCached: addReported(
               base?.usage?.cacheReadTokens,
               cp.usage.cacheReadTokens,
