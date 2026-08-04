@@ -30,6 +30,7 @@ import type { z } from "zod";
 import {
   DEFAULT_TOKEN_BUDGET,
   getModel,
+  getModelOutputCap,
   MAX_AGENT_STEPS,
   supportsTemperature,
   supportsVision,
@@ -139,6 +140,12 @@ export type TaskInput<S extends z.ZodTypeAny | undefined = undefined> = {
    *  — the PRIMARY budget (runBudget.ts). Omit ⇒ {@link DEFAULT_TOKEN_BUDGET};
    *  every live surface passes its own from `SURFACE_TOKEN_BUDGETS`. */
   tokenBudget?: number;
+  /** Output-token cap per REQUEST (each agentic step is one request). Omit ⇒
+   *  the per-model cap from config (`getModelOutputCap`); no entry there either
+   *  ⇒ nothing is sent and the endpoint decides, exactly as before this field
+   *  existed. Only the truncation-resume path passes an explicit value — it
+   *  retries at the model's ceiling. */
+  maxOutputTokens?: number;
   /** Present ⇒ structured mode (the result carries a validated `object`). */
   schema?: S;
   /** Optional blocks layered below the base prompt. Surfaces that don't pass
@@ -196,6 +203,11 @@ type TaskScalars = {
    *  SUCCESSFUL run that answered on its last allowed step — the reason field
    *  is what says the run failed; this only says what bound it. */
   limit?: BudgetLimit;
+  /** The output cap this call's requests actually asked for (explicit or the
+   *  per-model config cap). Absent ⇒ none was sent. Persisted onto the failure
+   *  outcome so a `finish: length` resume can tell whether a HIGHER cap even
+   *  exists to retry with — without it, that gate would be a guess. */
+  outputCap?: number;
 };
 
 export type TaskResult<S extends z.ZodTypeAny | undefined = undefined> =
@@ -831,6 +843,17 @@ function effectiveTemperature(input: {
   return supportsTemperature(input.modelId) ? input.temperature : undefined;
 }
 
+/** The output cap this call's requests ask for: the caller's explicit value,
+ *  else the per-model cap from config. Undefined ⇒ nothing is sent — the
+ *  request is byte-identical to before caps existed, and the endpoint's own
+ *  default governs (the only safe answer for models we haven't catalogued). */
+function effectiveOutputCap(input: {
+  modelId: ModelId;
+  maxOutputTokens?: number;
+}): number | undefined {
+  return input.maxOutputTokens ?? getModelOutputCap(input.modelId);
+}
+
 /** Provider errors arrive wrapped (RetryError → APICallError), and the useful
  *  string sits on `cause` or the raw `responseBody` as often as on the outer
  *  error. Read all of them, cheaply. */
@@ -923,6 +946,7 @@ export async function runTask<
   const budget = runBudgetOf(input);
   const repairAttempts = input.repairAttempts ?? DEFAULT_REPAIR_ATTEMPTS;
   const temperature = effectiveTemperature(input);
+  const outputCap = effectiveOutputCap(input);
 
   // --- Structured, tool-less: generateObject -------------------------------
   if (input.schema && !tools) {
@@ -955,6 +979,7 @@ export async function runTask<
           },
           ...(temp !== undefined ? { temperature: temp } : {}),
           ...(input.seed !== undefined ? { seed: input.seed } : {}),
+          ...(outputCap !== undefined ? { maxOutputTokens: outputCap } : {}),
           abortSignal: input.signal,
         });
         const usage = toTaskUsage(r.usage);
@@ -969,6 +994,7 @@ export async function runTask<
           tokensUsed: stepSpend(usage),
           usage,
           ...(context ? { context } : {}),
+          ...(outputCap !== undefined ? { outputCap } : {}),
         };
       } catch (e) {
         if (input.signal?.aborted) throw e;
@@ -1000,6 +1026,7 @@ export async function runTask<
       durationMs: Date.now() - start,
       stepsUsed: 0,
       tokensUsed: 0,
+      ...(outputCap !== undefined ? { outputCap } : {}),
     };
   }
 
@@ -1022,6 +1049,7 @@ export async function runTask<
     ...(prepareStep ? { prepareStep } : {}),
     ...(temp !== undefined ? { temperature: temp } : {}),
     ...(input.seed !== undefined ? { seed: input.seed } : {}),
+    ...(outputCap !== undefined ? { maxOutputTokens: outputCap } : {}),
     maxRetries: TASK_MAX_RETRIES,
     abortSignal: input.signal,
     onStepFinish: steps.onStepFinish,
@@ -1034,7 +1062,10 @@ export async function runTask<
     r = await generateText(args(undefined));
   }
 
-  const scalars = scalarsOf(steps, budget);
+  const scalars = {
+    ...scalarsOf(steps, budget),
+    ...(outputCap !== undefined ? { outputCap } : {}),
+  };
   const text = r.text ?? "";
   if (input.schema) {
     // The model ran its tool loop and emitted the object as its final text;
@@ -1099,6 +1130,7 @@ export async function streamTask<
   const tools = input.tools ?? undefined;
   const budget = runBudgetOf(input);
   const temperature = effectiveTemperature(input);
+  const outputCap = effectiveOutputCap(input);
 
   // streamText NEVER rejects: a provider/network failure mid-stream (429 on a
   // follow-up agentic step, overload, dropped connection) is reported via
@@ -1130,6 +1162,7 @@ export async function streamTask<
       ...(prepareStep ? { prepareStep } : {}),
       ...(temp !== undefined ? { temperature: temp } : {}),
       ...(input.seed !== undefined ? { seed: input.seed } : {}),
+      ...(outputCap !== undefined ? { maxOutputTokens: outputCap } : {}),
       maxRetries: TASK_MAX_RETRIES,
       abortSignal: input.signal,
       // Live per-tool events (spinner → done) plus the step-finish sweep as a
@@ -1161,7 +1194,10 @@ export async function streamTask<
   }
   const { steps, acc, streamError } = run;
 
-  const scalars = scalarsOf(steps, budget);
+  const scalars = {
+    ...scalarsOf(steps, budget),
+    ...(outputCap !== undefined ? { outputCap } : {}),
+  };
 
   // `acc` is EVERY step's text concatenated (the SDK's textStream spans the
   // whole agentic loop), but the answer is only the LAST step's text —

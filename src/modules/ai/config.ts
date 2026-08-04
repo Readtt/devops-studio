@@ -711,6 +711,63 @@ export function getModelContextLimit(
   return MODEL_CONTEXT_LIMITS[modelId] ?? 128_000;
 }
 
+/** Per-model OUTPUT-token policy, decided here — not delegated to the provider
+ *  SDKs. Same doctrine as `supportsTemperature`, one field over: with no
+ *  explicit `maxOutputTokens`, @ai-sdk/anthropic fills in its own per-model
+ *  table (3.0.104 resolves claude-opus-5 / claude-sonnet-5 to the full 128k
+ *  ceiling, unknown non-Claude ids to 4096), which means the number changes
+ *  whenever the SDK table does — silently, a release behind every model launch.
+ *  Gateway/local transports have no table at all and forward whatever we send.
+ *
+ *  `cap` is what every request asks for. It has to clear the largest legitimate
+ *  answer on ANY surface — a 10-case DraftBatch with steps and bugs is ~4k–15k
+ *  text tokens — PLUS the adaptive-thinking phase Claude 5 runs by default,
+ *  which bills against the SAME max_tokens budget (that's how a run ends
+ *  `finish: length` with an empty answer: the thinking spent it first). 64k is
+ *  Anthropic's own floor guidance for high-effort agentic work and halves what
+ *  a runaway thinking spiral can burn in one step versus the 128k default the
+ *  SDK was applying. Haiku doesn't think unless asked, so half that is still
+ *  ~2x its largest legitimate answer.
+ *
+ *  `ceiling` is the model's hard max, held in reserve deliberately: it is the
+ *  headroom a resume-after-truncation retries with (see resumePolicy), which
+ *  only exists because `cap` sits below it.
+ *
+ *  Per-MODEL, not per-surface, on purpose. Answer sizes differ by surface, but
+ *  the failure this bounds — a thinking/narration spiral — is a property of the
+ *  model, and a per-surface cap tight enough to matter would create a NEW
+ *  truncation failure on the multiplied path (bulk Confidence runs once per
+ *  case). Per-surface COST is already governed by SURFACE_TOKEN_BUDGETS.
+ *
+ *  Absent entry ⇒ send nothing and let the endpoint decide — exactly today's
+ *  behavior for OpenRouter's non-Anthropic routes, custom OpenAI-compatible
+ *  endpoints, LM Studio, MLX and Ollama. Never invent a cap for a model we
+ *  don't know. The OpenRouter Claude routes are listed because they are the
+ *  same upstream models reached through a transport that forwards our body
+ *  verbatim — the same reasoning that put `rejectsSamplingParams` on them. */
+export const MODEL_OUTPUT_LIMITS: Record<
+  string,
+  { cap: number; ceiling: number }
+> = {
+  "claude-opus-5": { cap: 64_000, ceiling: 128_000 },
+  "claude-sonnet-5": { cap: 64_000, ceiling: 128_000 },
+  "claude-haiku-4-5": { cap: 32_000, ceiling: 64_000 },
+  "anthropic/claude-opus-5": { cap: 64_000, ceiling: 128_000 },
+  "anthropic/claude-sonnet-5": { cap: 64_000, ceiling: 128_000 },
+};
+
+/** The output cap every request for this model asks for, or undefined to send
+ *  nothing and let the endpoint decide (unknown / local / custom models). */
+export function getModelOutputCap(id: string): number | undefined {
+  return MODEL_OUTPUT_LIMITS[id]?.cap;
+}
+
+/** The model's hard output ceiling, when we know it. Only consulted by the
+ *  truncation-resume path — ordinary runs ask for `cap`. */
+export function getModelOutputCeiling(id: string): number | undefined {
+  return MODEL_OUTPUT_LIMITS[id]?.ceiling;
+}
+
 export type ModelPricing = {
   input: number;
   output: number;

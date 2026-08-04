@@ -162,6 +162,62 @@ describe("runTask mode dispatch", () => {
   });
 });
 
+// The output cap is a per-model decision made in config.ts, NOT delegated to
+// the provider SDKs — @ai-sdk/anthropic's own per-model table filled in 128k
+// for Claude 5 (and 4096 for anything it didn't recognise), which is how a
+// thinking spiral got to burn the full ceiling in one step and still die with
+// `finish: length`. These pin: catalogued models send OUR number, uncatalogued
+// models send nothing (endpoint decides, byte-identical to before), and the
+// result records what was asked for so a truncation resume can reason about it.
+describe("per-model output caps (maxOutputTokens)", () => {
+  const capped = { ...baseInput, modelId: "claude-sonnet-5" as never };
+
+  it("a catalogued model's request carries the config cap, and the result records it", async () => {
+    generateText.mockResolvedValue({ text: "prose" });
+    const r = await runTask(capped);
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.maxOutputTokens).toBe(64_000);
+    expect(r.outputCap).toBe(64_000);
+  });
+
+  it("an uncatalogued model sends no maxOutputTokens at all", async () => {
+    generateText.mockResolvedValue({ text: "prose" });
+    const r = await runTask({ ...baseInput });
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    expect("maxOutputTokens" in arg).toBe(false);
+    expect(r.outputCap).toBeUndefined();
+  });
+
+  it("an explicit TaskInput.maxOutputTokens overrides the config cap", async () => {
+    generateText.mockResolvedValue({ text: "prose" });
+    const r = await runTask({ ...capped, maxOutputTokens: 128_000 });
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.maxOutputTokens).toBe(128_000);
+    expect(r.outputCap).toBe(128_000);
+  });
+
+  it("the structured tool-less (generateObject) path carries the cap too", async () => {
+    const schema = z.object({ a: z.number() });
+    generateObject.mockResolvedValue({ object: { a: 1 } });
+    const r = await runTask({ ...capped, schema });
+    const arg = generateObject.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.maxOutputTokens).toBe(64_000);
+    expect(r.outputCap).toBe(64_000);
+  });
+
+  it("the streaming path carries the cap and records it on the result", async () => {
+    streamText.mockReturnValue({
+      textStream: (async function* () {
+        yield "x";
+      })(),
+    });
+    const r = await streamTask({ ...capped, onText: () => {} });
+    const arg = streamText.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.maxOutputTokens).toBe(64_000);
+    expect(r.outputCap).toBe(64_000);
+  });
+});
+
 describe("streamTask", () => {
   it("streams prose deltas and resolves accumulated text", async () => {
     streamText.mockReturnValue({
