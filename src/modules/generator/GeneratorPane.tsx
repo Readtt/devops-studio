@@ -266,7 +266,9 @@ function canOfferResume(
   errorMessage: string,
 ): boolean {
   if (!resumable) return false;
-  return canOfferResumeShared(resumable.outcome, errorMessage);
+  // `resumable` is already the ResumeProgress shape (stepsUsed + hasTranscript),
+  // which is what decides the answered-badly outcomes.
+  return canOfferResumeShared(resumable.outcome, errorMessage, resumable);
 }
 
 const STEPS = [
@@ -931,7 +933,7 @@ function InputPhase() {
             unresumableReason={
               canOfferResume(resumable, resumable.outcome?.message ?? "")
                 ? undefined
-                : resumeUnavailableReason(resumable.outcome)
+                : resumeUnavailableReason(resumable.outcome, resumable)
             }
             onDiscard={discardCheckpoint}
           />
@@ -3290,8 +3292,8 @@ function ErrorPhase() {
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="top" className="max-w-[260px] text-[11px]">
-                {resumeUnavailableReason(resumable.outcome)} This deletes the
-                stored transcript for that attempt.
+                {resumeUnavailableReason(resumable.outcome, resumable)} This
+                deletes the stored transcript for that attempt.
               </TooltipContent>
             </Tooltip>
           ) : null}

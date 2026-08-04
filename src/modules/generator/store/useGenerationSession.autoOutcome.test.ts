@@ -161,6 +161,7 @@ describe("useGenerationSession — loadCheckpoint / discardCheckpoint", () => {
     expect(s.suiteId).toBe(2);
     expect(s.resumable).toEqual({
       stepsUsed: 5,
+      hasTranscript: false,
       totalTokens: null,
       updatedAt: "2026-06-11T00:05:00.000Z",
       outcome: { at: "2026-06-11T00:05:00.000Z", kind: "step_cap" },

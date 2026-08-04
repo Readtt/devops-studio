@@ -38,6 +38,7 @@ import {
   createCheckpointWriter,
   deleteCheckpoint,
   getCheckpoint,
+  hasReplayableTranscript,
   listCheckpoints,
   sanitizeTranscriptMessages,
   type CheckpointOutcome,
@@ -48,6 +49,7 @@ import {
 import { canOfferResume, classifyForResume } from "@/modules/ai/lib/errorClass";
 import {
   diedOfContextOverflow,
+  resumesByFinishing,
   sumUsage,
 } from "@/modules/generator/lib/resumePolicy";
 import type { TaskCheckpoint } from "@/modules/ai/lib/taskRunner";
@@ -134,12 +136,16 @@ export type CommitReviewSlice = {
   createdAt: string | null;
   durationMs: number | null;
   modelId: ModelId | null;
-  /** Set when a failed / cancelled run left a checkpoint worth continuing.
-   *  Null when there's nothing to resume (never ran, ran to completion, or the
-   *  model answered — badly — so a resume would just re-fail). */
+  /** Set when a failed / cancelled run left a checkpoint. Null when there's
+   *  nothing on disk at all (never ran, or ran to completion). Whether a resume
+   *  is on OFFER is `canOfferResume`'s call, which is why the progress fields
+   *  live here: an answered-badly run that had already investigated is
+   *  continuable, one that answered badly having read nothing is not. */
   resumable: {
     stage: RunStage;
     stepsUsed: number;
+    /** Whether the checkpoint kept a transcript worth replaying. */
+    hasTranscript: boolean;
     totalTokens: number | null;
     updatedAt: string;
     outcome: CheckpointOutcome | null;
@@ -286,6 +292,7 @@ function resumableFrom(
   return {
     stage: payload.stage,
     stepsUsed: payload.transcript?.stepsUsed ?? 0,
+    hasTranscript: hasReplayableTranscript(payload.transcript),
     totalTokens: payload.transcript?.usage?.totalTokens ?? null,
     updatedAt: outcome.at,
     outcome,
@@ -320,8 +327,11 @@ async function settleResult(
   if (!result.ok) {
     const at = new Date().toISOString();
     // A loop that burned its whole budget still calling tools never reached the
-    // point of writing its findings — continuable, unlike a model that answered
-    // with something unusable (resuming that transcript just re-fails).
+    // point of writing its findings — continuable. So, for the same reason, is
+    // one that answered with something unusable AFTER investigating: the
+    // transcript is the expensive half of the review and only the last hop
+    // failed. What isn't continuable is answering badly with nothing banked, and
+    // that's the line `canOfferResume` draws below.
     const stepCapped = result.reason === "step_cap";
     const outcome: CheckpointOutcome = {
       at,
@@ -329,6 +339,8 @@ async function settleResult(
       ...(result.limit ? { limit: result.limit } : {}),
     };
     const payload = cp.buildPayload(outcome);
+    const resumable = resumableFrom(payload, outcome);
+    const canContinue = canOfferResume(outcome, outcome.message ?? null, resumable);
     patch(set, tabId, {
       busy: false,
       abort: null,
@@ -337,11 +349,17 @@ async function settleResult(
       durationMs: result.durationMs,
       error: stepCapped
         ? `The review spent ${budgetSpentPhrase(result.limit, budget, formatTokens)} before it could write its findings. Resume adds ~${formatTokens(RESUME_TOPUP_TOKENS)} more tokens and asks the model to finish with what it has already read.`
-        : "The model didn't return findings in the expected format. Re-run, or try a more capable model.",
+        : canContinue
+          ? `The model didn't return findings in the expected format, but it had already investigated over ${resumable.stepsUsed} step${resumable.stepsUsed === 1 ? "" : "s"} — resuming asks it to write them up from what it has instead of reviewing again.`
+          : "The model didn't return findings in the expected format. Re-run, or try a more capable model.",
       errorReason: result.reason,
       errorLimit: stepCapped ? (result.limit ?? null) : null,
       schemaViolationRaw: stepCapped ? null : result.rawText,
-      resumable: stepCapped ? resumableFrom(payload, outcome) : null,
+      // Set whether or not a resume is on offer — the row is written below
+      // either way, and this is the handle Discard hangs off. The pane asks
+      // `canOfferResume` for the button; nulling it here is what once left an
+      // unresumable checkpoint both unreachable and undeletable.
+      resumable,
     });
     await cp.writer.flush(payload);
     await persistRow(tabId, {
@@ -449,9 +467,16 @@ async function adoptInterruptedRun(
     }
     if (!cp || cp.payload.surface !== "commit-review") continue;
     const p = cp.payload;
-    // Same gate as every Resume affordance: a run that answered badly
-    // (schema_violation / empty) or died non-resumably would just re-fail.
-    if (!canOfferResume(p.lastOutcome, p.lastOutcome?.message ?? null)) continue;
+    // Same gate as every Resume affordance: a run that died non-resumably, or
+    // answered badly with nothing banked, would just re-fail.
+    if (
+      !canOfferResume(p.lastOutcome, p.lastOutcome?.message ?? null, {
+        stepsUsed: p.transcript?.stepsUsed ?? 0,
+        hasTranscript: hasReplayableTranscript(p.transcript),
+      })
+    ) {
+      continue;
+    }
     // A finished review's checkpoint is an orphan (delete-on-success swallows
     // IPC failures), not a resume point — the persisted row is the truth.
     let row: Awaited<ReturnType<typeof getCommitReview>> = null;
@@ -524,6 +549,7 @@ async function adoptInterruptedRun(
       resumable: {
         stage: p.stage,
         stepsUsed: p.transcript?.stepsUsed ?? 0,
+        hasTranscript: hasReplayableTranscript(p.transcript),
         totalTokens: p.transcript?.usage?.totalTokens ?? null,
         updatedAt: cp.updatedAt,
         outcome: p.lastOutcome,
@@ -644,7 +670,6 @@ export const useCommitReview = create<State>((set, get) => ({
         if (cp && cp.payload.surface === "commit-review") {
           const p = cp.payload;
           const curr = get().byTab.get(tabId);
-          const spent = p.lastOutcome?.kind;
           // A FINISHED review's checkpoint is an orphan, not a resume point:
           // writer.delete() swallows IPC failures by design, so a run that
           // wrote status "done" can still leave a payload behind with
@@ -666,19 +691,20 @@ export const useCommitReview = create<State>((set, get) => ({
             // review's merged findings supersede the candidates they came from.
             stage1Candidates:
               done || curr?.findings.length ? null : p.stage1Candidates,
-            // A run that ANSWERED — badly — isn't worth resuming: continuing a
-            // transcript that ends in garbage just re-fails. Re-run is the
-            // right affordance there.
-            resumable:
-              done || spent === "schema_violation" || spent === "empty"
-                ? null
-                : {
-                    stage: p.stage,
-                    stepsUsed: p.transcript?.stepsUsed ?? 0,
-                    totalTokens: p.transcript?.usage?.totalTokens ?? null,
-                    updatedAt: cp.updatedAt,
-                    outcome: p.lastOutcome,
-                  },
+            // A finished run has nothing to continue. An answered-badly one
+            // might: `canOfferResume` (via the pane) decides on what the
+            // attempt banked, so this only has to hand it the checkpoint —
+            // which is also the handle Discard hangs off.
+            resumable: done
+              ? null
+              : {
+                  stage: p.stage,
+                  stepsUsed: p.transcript?.stepsUsed ?? 0,
+                  hasTranscript: hasReplayableTranscript(p.transcript),
+                  totalTokens: p.transcript?.usage?.totalTokens ?? null,
+                  updatedAt: cp.updatedAt,
+                  outcome: p.lastOutcome,
+                },
           });
         }
       } catch (e) {
@@ -1356,7 +1382,12 @@ export const useCommitReview = create<State>((set, get) => ({
           stage: payload.stage,
           stage1Candidates: payload.stage1Candidates,
           resumeMessages: payload.transcript?.messages ?? null,
-          stepCapNudge: payload.lastOutcome?.kind === "step_cap",
+          // Budget-exhausted OR answered-badly: both stopped without findings
+          // and both want the same "stop reading, write it up" pass.
+          stepCapNudge: resumesByFinishing(
+            payload.lastOutcome,
+            hasReplayableTranscript(payload.transcript),
+          ),
           afterOverflow: diedOfContextOverflow(payload.lastOutcome),
         },
         signal: abort.signal,
@@ -1369,7 +1400,10 @@ export const useCommitReview = create<State>((set, get) => ({
         result,
         // A budget-exhausted resume runs on the top-up, not the full pass — see
         // runCommitReview's resumeArgs.
-        payload.lastOutcome?.kind === "step_cap"
+        resumesByFinishing(
+          payload.lastOutcome,
+          hasReplayableTranscript(payload.transcript),
+        )
           ? { ...INVESTIGATE_BUDGET, tokens: RESUME_TOPUP_TOKENS }
           : INVESTIGATE_BUDGET,
       );

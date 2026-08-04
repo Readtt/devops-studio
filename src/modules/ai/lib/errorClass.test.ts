@@ -4,6 +4,7 @@ import {
   classifyForResume,
   isResumableKind,
   matchErrorKind,
+  resumeUnavailableReason,
   STALL_MESSAGE,
   type ResumeErrorKind,
 } from "./errorClass";
@@ -187,9 +188,66 @@ describe("canOfferResume", () => {
     expect(canOfferResume({ kind: "cancelled" })).toBe(true);
   });
 
-  it("is false for empty and schema_violation — the model answered with nothing worth continuing", () => {
+  it("is false for empty and schema_violation with no progress recorded — an un-updated caller fails closed", () => {
     expect(canOfferResume({ kind: "empty" })).toBe(false);
     expect(canOfferResume({ kind: "schema_violation" })).toBe(false);
+  });
+
+  // The second data loss, as a test. The observed failure: 22 steps, ~1.7M
+  // tokens of the codebase read into the transcript, an empty final message,
+  // and a card offering only Discard. The research is the expensive part and
+  // it is right there in the transcript.
+  it("offers a resume for an empty answer that came AFTER real work", () => {
+    expect(
+      canOfferResume({ kind: "empty" }, null, {
+        stepsUsed: 22,
+        hasTranscript: true,
+      }),
+    ).toBe(true);
+    expect(
+      canOfferResume({ kind: "schema_violation" }, null, {
+        stepsUsed: 22,
+        hasTranscript: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("refuses a genuinely empty run — nothing read, nothing transcribed", () => {
+    expect(
+      canOfferResume({ kind: "empty" }, null, {
+        stepsUsed: 0,
+        hasTranscript: false,
+      }),
+    ).toBe(false);
+  });
+
+  // The two halves are separate questions and both are load-bearing.
+  // capPayloadSize degrades an oversized payload to `transcript: null`, so a
+  // 22-step run can bank nothing — replaying that would send the finish-now
+  // nudge to a model that has read nothing at all.
+  it("needs BOTH steps and a surviving transcript", () => {
+    expect(
+      canOfferResume({ kind: "empty" }, null, {
+        stepsUsed: 22,
+        hasTranscript: false,
+      }),
+    ).toBe(false);
+    expect(
+      canOfferResume({ kind: "empty" }, null, {
+        stepsUsed: 0,
+        hasTranscript: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("leaves the other outcomes untouched by progress", () => {
+    const none = { stepsUsed: 0, hasTranscript: false };
+    expect(canOfferResume({ kind: "step_cap" }, null, none)).toBe(true);
+    expect(canOfferResume({ kind: "cancelled" }, null, none)).toBe(true);
+    expect(canOfferResume({ kind: "something-new" }, null, {
+      stepsUsed: 22,
+      hasTranscript: true,
+    })).toBe(false);
   });
 
   it("for kind 'error', prefers the recorded errorKind over reclassifying", () => {
@@ -215,5 +273,38 @@ describe("canOfferResume", () => {
 
   it("is false for any other/unrecognised kind", () => {
     expect(canOfferResume({ kind: "something-new" })).toBe(false);
+  });
+});
+
+// The copy the discard-only card shows. It is only ever reached when
+// canOfferResume already said no, so each branch has to be true of the case
+// that actually got it there.
+describe("resumeUnavailableReason", () => {
+  it("blames the model when the model really did return nothing", () => {
+    const reason = resumeUnavailableReason({ kind: "empty" }, {
+      stepsUsed: 0,
+      hasTranscript: false,
+    });
+    expect(reason).toContain("returned nothing");
+  });
+
+  it("blames the transcript, not the model, when work was done but nothing survived", () => {
+    const reason = resumeUnavailableReason({ kind: "empty" }, {
+      stepsUsed: 22,
+      hasTranscript: false,
+    });
+    expect(reason).toContain("too large to save");
+    // The 22-step run DID return plenty; saying otherwise sends the user
+    // hunting for a model problem that isn't there.
+    expect(reason).not.toContain("returned nothing");
+  });
+
+  it("says the same for schema_violation", () => {
+    expect(
+      resumeUnavailableReason({ kind: "schema_violation" }, {
+        stepsUsed: 22,
+        hasTranscript: false,
+      }),
+    ).toContain("too large to save");
   });
 });

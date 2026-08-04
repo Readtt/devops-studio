@@ -26,6 +26,7 @@ import {
   FINISH_NOW_NUDGE,
   type GeneratorCheckpointV1,
 } from "@/modules/ai/lib/checkpointApi";
+import { canOfferResume } from "@/modules/ai/lib/errorClass";
 import {
   RESUME_TOPUP_TOKENS,
   SURFACE_STEP_CAPS,
@@ -165,6 +166,7 @@ describe("useGenerationSession — resumeAnalyze replays the paid-for transcript
       runId: payload.runId,
       resumable: {
         stepsUsed: 5,
+        hasTranscript: true,
         totalTokens: 1234,
         updatedAt: "2026-06-11T00:05:00.000Z",
         outcome: { at: "2026-06-11T00:05:00.000Z", kind: "step_cap" },
@@ -255,6 +257,7 @@ describe("useGenerationSession — resumeAnalyze replays the paid-for transcript
       runId: payload.runId,
       resumable: {
         stepsUsed: 26,
+        hasTranscript: true,
         totalTokens: spentBefore,
         updatedAt: "2026-06-11T00:05:00.000Z",
         outcome: { at: "2026-06-11T00:05:00.000Z", kind: "step_cap" },
@@ -322,6 +325,7 @@ describe("useGenerationSession — a failed resume keeps the transcript for the 
         runId: payload.runId,
         resumable: {
           stepsUsed: 5,
+          hasTranscript: true,
           totalTokens: 999,
           updatedAt: "2026-06-11T00:05:00.000Z",
           outcome: { at: "2026-06-11T00:05:00.000Z", kind: "cancelled" },
@@ -384,6 +388,83 @@ describe("useGenerationSession — a failed resume keeps the transcript for the 
   });
 });
 
+// The reported failure, end to end: 22 steps and ~1.7M tokens of codebase
+// reading, then a final message that carried no batch. The run "COMPLETED", so
+// the store offered Discard and nothing else — and 22 steps of paid research
+// went in the bin. The research is in the transcript; only the last hop failed.
+describe("useGenerationSession — an empty answer AFTER real work is resumable", () => {
+  /** Drive analyze() to a terminal `reason`, having banked `stepsUsed` steps
+   *  and (optionally) a transcript, exactly as the engine would. */
+  async function analyzeEndingWith(
+    reason: "empty" | "schema_violation",
+    opts: { stepsUsed: number; withTranscript: boolean },
+  ) {
+    const store = createGenerationSessionStore();
+    executeQaAnalystRun.mockImplementation(
+      async (_p: unknown, o: ExecuteAnalystOptions) => {
+        o.onCheckpoint?.({
+          messages: opts.withTranscript
+            ? [{ role: "assistant", content: "I read 40 files." }]
+            : [],
+          stepsUsed: opts.stepsUsed,
+          usage: { inputTokens: 1_700_000, outputTokens: 500 },
+        });
+        return {
+          batch: { cases: [], bugs: [] },
+          rawText: "",
+          durationMs: 1,
+          ok: false,
+          reason,
+          stepsUsed: opts.stepsUsed,
+          usage: {},
+        };
+      },
+    );
+    store.setState({ requirements: "Users can reset a forgotten password." });
+    await store.getState().analyze();
+    return store;
+  }
+
+  it.each(["empty", "schema_violation"] as const)(
+    "offers a resume after a %s answer that followed 22 steps",
+    async (reason) => {
+      const store = await analyzeEndingWith(reason, {
+        stepsUsed: 22,
+        withTranscript: true,
+      });
+      const s = store.getState();
+      expect(s.phase).toBe("error");
+      expect(s.resumable).not.toBeNull();
+      expect(
+        canOfferResume(s.resumable?.outcome, null, s.resumable),
+      ).toBe(true);
+      // …and the checkpoint that resume needs is on disk, not deleted.
+      expect(invokedCommands()).toContain("ai_checkpoint_save");
+      expect(invokedCommands()).not.toContain("ai_checkpoint_delete");
+    },
+  );
+
+  it("records the real reason rather than flattening both to 'empty'", async () => {
+    const store = await analyzeEndingWith("schema_violation", {
+      stepsUsed: 22,
+      withTranscript: true,
+    });
+    expect(store.getState().resumable?.outcome?.kind).toBe("schema_violation");
+  });
+
+  it("still refuses a run that answered nothing having read nothing", async () => {
+    const store = await analyzeEndingWith("empty", {
+      stepsUsed: 0,
+      withTranscript: false,
+    });
+    const s = store.getState();
+    // The checkpoint is still surfaced — it's the handle Discard hangs off —
+    // but the gate says no, which is the pre-existing behaviour for this case.
+    expect(s.resumable).not.toBeNull();
+    expect(canOfferResume(s.resumable?.outcome, null, s.resumable)).toBe(false);
+  });
+});
+
 describe("useGenerationSession — resumeAnalyze against a retired model", () => {
   it("errors and clears resumable instead of leaving the Resume button looping, and keeps the checkpoint row", async () => {
     const store = createGenerationSessionStore();
@@ -406,6 +487,7 @@ describe("useGenerationSession — resumeAnalyze against a retired model", () =>
       runId: payload.runId,
       resumable: {
         stepsUsed: 5,
+        hasTranscript: true,
         totalTokens: null,
         updatedAt: "2026-06-11T00:05:00.000Z",
         outcome: { at: "2026-06-11T00:05:00.000Z", kind: "step_cap" },

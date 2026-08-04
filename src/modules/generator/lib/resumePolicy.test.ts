@@ -46,6 +46,8 @@ describe("resumeBudget", () => {
     ]);
   });
 
+  // Unchanged, and deliberately so: a budget stop is self-evidently
+  // mid-investigation, so it takes the finish pass even with nothing banked.
   it("still nudges when the budget-stopped run has no usable transcript", () => {
     const out = resumeBudget({
       lastOutcome: { at: "2026-01-01T00:00:00.000Z", kind: "step_cap" },
@@ -55,6 +57,60 @@ describe("resumeBudget", () => {
     expect(out.resumeMessages).toEqual([
       { role: "user", content: FINISH_NOW_NUDGE },
     ]);
+  });
+
+  // The answered-badly kinds are different: with nothing banked the run simply
+  // didn't work, and "using only what you have already read, answer now" said
+  // to a model holding nothing but the prompt is a WORSE run than a plain
+  // re-run, on a smaller budget. canOfferResume refuses this case outright —
+  // this is the belt-and-braces if one ever slips through (the writer can null
+  // a transcript after the UI has already read it).
+  it.each(["empty", "schema_violation"] as const)(
+    "does NOT turn a %s answer into a finish pass when nothing was banked",
+    (kind) => {
+      for (const transcript of [
+        null,
+        { messages: [], stepsUsed: 22, usage: {} },
+      ]) {
+        const out = resumeBudget({
+          lastOutcome: { at: "2026-01-01T00:00:00.000Z", kind },
+          transcript,
+        });
+        expect(out.tokens).toBe(SURFACE_TOKEN_BUDGETS.generator);
+        expect(out.resumeMessages ?? []).toEqual([]);
+      }
+    },
+  );
+
+  // The observed failure: 22 steps of codebase reading, then an empty final
+  // message. `empty` and `schema_violation` end the loop the same way step_cap
+  // does — with everything read and nothing written — so they resume the same
+  // way: replay what was read, forbid more tools, answer now.
+  it.each(["empty", "schema_violation"] as const)(
+    "resumes a %s answer as a finish-now pass, not a fresh investigation",
+    (kind) => {
+      const out = resumeBudget({
+        lastOutcome: { at: "2026-01-01T00:00:00.000Z", kind },
+        transcript: { messages, stepsUsed: 22, usage: {} },
+      });
+      expect(out.tokens).toBe(RESUME_TOPUP_TOKENS);
+      expect(out.cap).toBe(SURFACE_STEP_CAPS.generator);
+      expect(out.resumeMessages).toEqual([
+        ...messages,
+        { role: "user", content: FINISH_NOW_NUDGE },
+      ]);
+    },
+  );
+
+  it("leaves a cancelled/errored run on the full budget with no nudge", () => {
+    for (const kind of ["cancelled", "error"] as const) {
+      const out = resumeBudget({
+        lastOutcome: { at: "2026-01-01T00:00:00.000Z", kind },
+        transcript: { messages, stepsUsed: 6, usage: {} },
+      });
+      expect(out.tokens).toBe(SURFACE_TOKEN_BUDGETS.generator);
+      expect(out.resumeMessages).toEqual(messages);
+    }
   });
 
   it("sends no continuation transcript when there is none to send", () => {

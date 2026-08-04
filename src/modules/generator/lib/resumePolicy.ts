@@ -70,12 +70,42 @@ export function diedOfContextOverflow(
   );
 }
 
+/** Outcomes whose resume is a FINISH pass, not a fresh investigation: the model
+ *  already stopped reading, it just didn't land a usable answer. `step_cap` ran
+ *  out of budget mid-loop; `empty` and `schema_violation` ended the loop of
+ *  their own accord and wrote nothing (or nonsense). All three want the same
+ *  thing — replay what was read, forbid more tools, answer now — and all three
+ *  want it bounded by a top-up rather than a second full budget, because a model
+ *  that ignores the nudge and starts reading again shouldn't be able to spend
+ *  the run twice.
+ *
+ *  `hasTranscript` is what the two ANSWERED-BADLY kinds additionally need. A
+ *  budget stop is self-evidently mid-investigation, so it takes the finish pass
+ *  either way (its no-transcript behaviour is unchanged and deliberate). An
+ *  empty answer with nothing banked is a different thing entirely — the run
+ *  simply didn't work — and "using only what you have already read, answer now"
+ *  said to a model holding nothing but the original prompt is a worse run than
+ *  a plain re-run, on a smaller budget. `canOfferResume` refuses that case
+ *  outright; this keeps the fallback honest if one ever slips through (the
+ *  checkpoint writer can null a transcript AFTER the UI read it). */
+export function resumesByFinishing(
+  outcome: CheckpointOutcome | null | undefined,
+  hasTranscript = true,
+): boolean {
+  const kind = outcome?.kind;
+  if (kind === "step_cap") return true;
+  return (
+    hasTranscript && (kind === "empty" || kind === "schema_violation")
+  );
+}
+
 /** How much budget a resume gets, and what transcript it continues from.
  *
  *  A run that died mid-loop (error / cancel) gets its full budget back — it
- *  never got to finish investigating. A run that BURNED its budget gets only a
- *  top-up plus an explicit "stop reading, answer now" turn, so a model stuck in
- *  a tool loop converges instead of spending another full budget the same way.
+ *  never got to finish investigating. A run that stopped without an answer —
+ *  budget exhausted, or an empty/unreadable final message — gets only a top-up
+ *  plus an explicit "stop reading, answer now" turn, so a model stuck in a tool
+ *  loop converges instead of spending another full budget the same way.
  *
  *  What gets topped up is the TOKEN budget; the step ceiling goes back to the
  *  full surface cap either way, because it is a runaway guard and a resume is no
@@ -102,7 +132,9 @@ export function resumeBudget(payload: {
   const prior = stored
     ? compactForResume(stored, diedOfContextOverflow(payload.lastOutcome))
     : undefined;
-  if (payload.lastOutcome?.kind === "step_cap") {
+  if (
+    resumesByFinishing(payload.lastOutcome, (prior?.length ?? 0) > 0)
+  ) {
     return {
       cap: SURFACE_STEP_CAPS.generator,
       tokens: RESUME_TOPUP_TOKENS,

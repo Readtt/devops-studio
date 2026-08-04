@@ -289,6 +289,7 @@ export function RefineComposer({ isRefining }: Props) {
     canOfferResume(
       refineResumable.outcome,
       refineResumable.outcome?.message ?? refineError,
+      refineResumable,
     );
 
   // Context guardrail for the follow-up. A refine re-sends the current draft
@@ -625,8 +626,11 @@ export function RefineComposer({ isRefining }: Props) {
                   side="top"
                   className="max-w-[260px] text-[11px]"
                 >
-                  {resumeUnavailableReason(refineResumable.outcome)} This
-                  deletes the saved progress for that attempt.
+                  {resumeUnavailableReason(
+                    refineResumable.outcome,
+                    refineResumable,
+                  )}{" "}
+                  This deletes the saved progress for that attempt.
                 </TooltipContent>
               </Tooltip>
             ) : undefined
@@ -662,7 +666,10 @@ export function RefineComposer({ isRefining }: Props) {
           unresumableReason={
             offerRefineResume
               ? undefined
-              : resumeUnavailableReason(refineResumable.outcome)
+              : resumeUnavailableReason(
+                  refineResumable.outcome,
+                  refineResumable,
+                )
           }
           onDiscard={discardRefineCheckpoint}
         />

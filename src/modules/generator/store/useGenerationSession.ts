@@ -48,6 +48,7 @@ import {
   createCheckpointWriter,
   deleteCheckpoint,
   getCheckpoint,
+  hasReplayableTranscript,
   listCheckpoints,
   sanitizeTranscriptMessages,
   type CheckpointOutcome,
@@ -244,6 +245,10 @@ export type SessionState = {
    *  user discarded it). */
   resumable: {
     stepsUsed: number;
+    /** Whether the checkpoint kept a transcript worth replaying. Carried in
+     *  state because `canOfferResume` needs it for the answered-badly outcomes
+     *  and the render sites only have this object. */
+    hasTranscript: boolean;
     totalTokens: number | null;
     updatedAt: string;
     outcome: CheckpointOutcome | null;
@@ -393,6 +398,8 @@ export type SessionState = {
     /** What the user asked, so the affordance can name the follow-up. */
     instruction: string;
     stepsUsed: number;
+    /** See `resumable.hasTranscript`. */
+    hasTranscript: boolean;
     totalTokens: number | null;
     updatedAt: string;
     outcome: CheckpointOutcome | null;
@@ -538,6 +545,7 @@ function resumableFrom(
 ): NonNullable<SessionState["resumable"]> {
   return {
     stepsUsed: payload.transcript?.stepsUsed ?? 0,
+    hasTranscript: hasReplayableTranscript(payload.transcript),
     totalTokens: payload.transcript?.usage?.totalTokens ?? null,
     updatedAt: outcome.at,
     outcome,
@@ -553,6 +561,7 @@ function refineResumableFrom(
     runId: payload.runId,
     instruction: payload.round.instruction,
     stepsUsed: payload.transcript?.stepsUsed ?? 0,
+    hasTranscript: hasReplayableTranscript(payload.transcript),
     totalTokens: payload.transcript?.usage?.totalTokens ?? null,
     updatedAt: outcome.at,
     outcome,
@@ -1007,24 +1016,46 @@ export function createGenerationSessionStore(): GenerationSessionStore {
             ? "The model returned an empty response — no test cases came back. OpenAI-compatible or custom endpoints often need JSON mode (structured output) turned on before they return a usable batch."
             : "The model's response couldn't be read as the structured format the generator expects, and nothing usable could be salvaged from it. This is common with OpenAI-compatible or custom endpoints that don't fully support structured JSON output."
           : "The model ran but produced no test cases or bugs for this spec.";
-        // The run COMPLETED — there's no partial work to continue, so no
-        // resume is offered. `resumable` is still set, because it means "a
-        // checkpoint exists", not "a resume is on offer": the render sites
-        // ask `canOfferResume` for that, and gating this field on it instead
-        // is what made a checkpoint nobody could resume also one nobody could
-        // DELETE. It's the handle Discard hangs off, and the handle the next
-        // run supersedes the row by.
+        // `resumable` means "a checkpoint exists", not "a resume is on offer":
+        // the render sites ask `canOfferResume` for that, and gating this field
+        // on it instead is what made a checkpoint nobody could resume also one
+        // nobody could DELETE. It's the handle Discard hangs off, and the
+        // handle the next run supersedes the row by.
+        //
+        // Whether it IS on offer now turns on what the attempt banked. "The run
+        // COMPLETED, so there's no partial work to continue" — the reasoning
+        // this used to carry — describes a model that answered nothing on step
+        // one. It is the wrong description of a run that spent 22 steps and
+        // 1.7M tokens reading the codebase and then failed only at turning that
+        // into a batch: the transcript is the work, and replaying it with the
+        // finish-now nudge is the cheap recovery. `canOfferResume` draws that
+        // line; the copy below follows it so we never tell a user to re-run
+        // work they can continue.
         const emptyOutcome: CheckpointOutcome = {
           at: new Date().toISOString(),
-          kind: "empty",
+          // Record what actually happened rather than flattening both to
+          // "empty" — the two get different unavailable-reason copy, and a
+          // salvage failure is not a silent model.
+          kind:
+            !result.ok && result.reason === "schema_violation"
+              ? "schema_violation"
+              : "empty",
         };
         const emptyPayload = buildPayload(emptyOutcome);
+        const emptyResumable = resumableFrom(emptyPayload, emptyOutcome);
+        const canContinue = canOfferResume(
+          emptyOutcome,
+          emptyOutcome.message ?? null,
+          emptyResumable,
+        );
         set({
           phase: "error",
-          error: `No test cases generated. ${why}`,
+          error: canContinue
+            ? `No test cases generated. ${why} It had already read the codebase over ${emptyResumable.stepsUsed} step${emptyResumable.stepsUsed === 1 ? "" : "s"} before that, so resuming asks it to write the batch from what it has instead of paying for the run again.`
+            : `No test cases generated. ${why}`,
           errorPhase: "analyze",
           stepLabel: "",
-          resumable: resumableFrom(emptyPayload, emptyOutcome),
+          resumable: emptyResumable,
         });
         await writer.flush(emptyPayload);
         notifyHistoryUpdated(args.runId);
@@ -1206,24 +1237,43 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         return;
       }
 
-      // Nothing structured came back — better to keep the user's existing
-      // batch than to wipe it for an empty response. The model ANSWERED (just
-      // uselessly), so this is not resumable: drop the row instead of leaving
-      // a resume point that could only re-fail the same way.
+      // Nothing structured came back — better to keep the user's existing batch
+      // than to wipe it for an empty response. Whether that's continuable is
+      // the same question analyze answers above: a round that answered nothing
+      // having read nothing is a dead end, but one that spent real steps in the
+      // codebase first only failed the last hop, and its transcript is worth
+      // more than the row it sits in. Keep the checkpoint in that case; drop it
+      // in the other, so a useless row doesn't linger.
       if (result.batch.cases.length === 0 && result.batch.bugs.length === 0) {
+        const outcome: CheckpointOutcome = {
+          at: new Date().toISOString(),
+          kind:
+            !result.ok && result.reason === "schema_violation"
+              ? "schema_violation"
+              : "empty",
+        };
+        const payload = cp?.buildPayload(outcome) ?? null;
+        const resumable = payload
+          ? refineResumableFrom(payload, outcome)
+          : null;
+        const canContinue =
+          !!resumable &&
+          canOfferResume(outcome, outcome.message ?? null, resumable);
         set((curr) => ({
           isRefining: false,
           stepLabel: "",
-          refineError:
-            "The model returned an empty refine result — your previous draft is unchanged. Try a more specific instruction.",
-          refineResumable: null,
+          refineError: canContinue
+            ? "The model returned an empty refine result — your previous draft is unchanged. It had already read the codebase, so resuming asks it to write the revised draft from what it has."
+            : "The model returned an empty refine result — your previous draft is unchanged. Try a more specific instruction.",
+          refineResumable: canContinue ? resumable : null,
           refineRounds: recordRound(
             curr.refineRounds,
             unchangedRound(round, curr.activityLog, "empty", null),
             args.resumed,
           ),
         }));
-        await cp?.writer.delete();
+        if (canContinue && cp && payload) await cp.writer.flush(payload);
+        else await cp?.writer.delete();
         schedulePersistDraft();
         return;
       }
@@ -2044,6 +2094,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       stepsUsed: payload.transcript?.stepsUsed ?? null,
       resumable: {
         stepsUsed: payload.transcript?.stepsUsed ?? 0,
+        hasTranscript: hasReplayableTranscript(payload.transcript),
         totalTokens: payload.transcript?.usage?.totalTokens ?? null,
         updatedAt,
         outcome: payload.lastOutcome,
@@ -3140,9 +3191,15 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       if (!cp || cp.payload.surface !== "generator-refine") continue;
       const p = cp.payload;
       if (p.sessionRunId !== sessionRunId) continue;
-      // Same gate as every Resume affordance: a round that answered badly, or
-      // died non-resumably, would just re-fail.
-      if (!canOfferResume(p.lastOutcome, p.lastOutcome?.message ?? null)) {
+      // Same gate as every Resume affordance: a round that died non-resumably,
+      // or answered badly with nothing banked, would just re-fail.
+      const progress = {
+        stepsUsed: p.transcript?.stepsUsed ?? 0,
+        hasTranscript: hasReplayableTranscript(p.transcript),
+      };
+      if (
+        !canOfferResume(p.lastOutcome, p.lastOutcome?.message ?? null, progress)
+      ) {
         continue;
       }
       // Re-validate in the same synchronous step as the patch — the user may
@@ -3155,7 +3212,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         refineResumable: {
           runId: p.runId,
           instruction: p.round.instruction,
-          stepsUsed: p.transcript?.stepsUsed ?? 0,
+          ...progress,
           totalTokens: p.transcript?.usage?.totalTokens ?? null,
           updatedAt: cp.updatedAt,
           outcome: p.lastOutcome,

@@ -302,7 +302,8 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
   // not a property access, so TS can narrow `resumable` in the branches below).
   const resumable = slice.resumable;
   const offerResume =
-    resumable != null && canOfferResume(resumable.outcome, slice.error);
+    resumable != null &&
+    canOfferResume(resumable.outcome, slice.error, resumable);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -582,7 +583,7 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
               unresumableReason={
                 offerResume
                   ? undefined
-                  : resumeUnavailableReason(resumable.outcome)
+                  : resumeUnavailableReason(resumable.outcome, resumable)
               }
               onDiscard={() => discardCheckpoint(tabId)}
             />
@@ -868,7 +869,8 @@ function BodyContent({
   if (slice.status === "error") {
     const resumable = slice.resumable;
     const offerResume =
-      resumable != null && canOfferResume(resumable.outcome, slice.error);
+      resumable != null &&
+      canOfferResume(resumable.outcome, slice.error, resumable);
     const klass = classifyReviewError(slice);
     return (
       <RunErrorPanel
@@ -932,8 +934,8 @@ function BodyContent({
                 </button>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="max-w-[260px] text-[11px]">
-                {resumeUnavailableReason(resumable.outcome)} This deletes the
-                stored transcript for that attempt.
+                {resumeUnavailableReason(resumable.outcome, resumable)} This
+                deletes the stored transcript for that attempt.
               </TooltipContent>
             </Tooltip>
           ) : null}

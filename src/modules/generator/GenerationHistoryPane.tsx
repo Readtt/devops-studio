@@ -26,6 +26,7 @@ import {
   checkpointIsNewer,
   deleteCheckpoint,
   getCheckpoint,
+  hasReplayableTranscript,
   listCheckpoints,
   type GeneratorCheckpointV1,
 } from "@/modules/ai/lib/checkpointApi";
@@ -89,9 +90,19 @@ async function loadInterruptedRuns(): Promise<InterruptedGenRun[]> {
       const cp = await getCheckpoint(e.runId);
       if (!cp || cp.payload.surface !== "generator") continue;
       const outcome = cp.payload.lastOutcome;
-      // Same gate as every Resume affordance — a run that answered badly
-      // (empty / schema_violation) would just re-fail; don't list it.
-      if (!canOfferResume(outcome, outcome?.message ?? null)) continue;
+      // Same gate as every Resume affordance — a run that died non-resumably,
+      // or answered badly with nothing banked, would just re-fail; don't list
+      // it. A run that answered badly AFTER reading the codebase is exactly the
+      // one worth listing: its transcript is the expensive part.
+      const t = cp.payload.transcript;
+      if (
+        !canOfferResume(outcome, outcome?.message ?? null, {
+          stepsUsed: t?.stepsUsed ?? 0,
+          hasTranscript: hasReplayableTranscript(t),
+        })
+      ) {
+        continue;
+      }
       out.push({ runId: e.runId, updatedAt: cp.updatedAt, payload: cp.payload });
     } catch {
       // skip this row

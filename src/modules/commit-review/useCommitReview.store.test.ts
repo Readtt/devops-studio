@@ -50,7 +50,11 @@ import { gitStatusSummary } from "@/modules/git";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { DEFAULT_MODEL_ID } from "@/modules/ai/config";
-import { runCommitReview } from "./runCommitReview";
+import {
+  runCommitReview,
+  type RunCommitReviewInput,
+} from "./runCommitReview";
+import { canOfferResume } from "@/modules/ai/lib/errorClass";
 import {
   getCommitReview,
   saveCommitReview,
@@ -506,6 +510,7 @@ function seedResumable(tabId: number) {
     resumable: {
       stage: "verify",
       stepsUsed: 5,
+      hasTranscript: true,
       totalTokens: 100,
       updatedAt: "2026-01-01T00:02:00.000Z",
       outcome: { at: "2026-01-01T00:01:00.000Z", kind: "cancelled" },
@@ -767,7 +772,7 @@ describe("run — checkpoint lifecycle", () => {
     });
   });
 
-  it("a step-capped run is resumable; a badly-formatted answer is not", async () => {
+  it("a step-capped run is resumable; a badly-formatted answer with nothing banked is not", async () => {
     seedRunnable(1);
     mockRun.mockResolvedValue({
       ok: false,
@@ -788,9 +793,42 @@ describe("run — checkpoint lifecycle", () => {
       durationMs: 9,
     });
     await useCommitReview.getState().run(2);
-    // The loop COMPLETED with a bad answer — resuming it would just re-fail.
-    expect(slice(2).resumable).toBeNull();
+    // No onCheckpoint fired, so nothing was banked — the checkpoint is still
+    // surfaced (it's the Discard handle) but the gate says no.
+    const r2 = slice(2).resumable;
+    expect(r2).not.toBeNull();
+    expect(canOfferResume(r2?.outcome, null, r2)).toBe(false);
     expect(slice(2).schemaViolationRaw).toBe("nonsense");
+  });
+
+  // The generator's data loss, in Commit Review's clothes: the investigate pass
+  // reads the diff and the code over many steps, then fumbles the JSON. The
+  // findings were nearly bought; re-running pays for the whole investigation
+  // again.
+  it("a badly-formatted answer AFTER a real investigation IS resumable", async () => {
+    seedRunnable(3);
+    mockRun.mockImplementation(async (input: RunCommitReviewInput) => {
+      input.onCheckpoint?.("investigate", {
+        messages: [{ role: "assistant", content: "I read the diff." }],
+        stepsUsed: 14,
+        usage: { inputTokens: 900_000, outputTokens: 400 },
+      });
+      return {
+        ok: false as const,
+        reason: "schema_violation" as const,
+        rawText: "nonsense",
+        durationMs: 9,
+      };
+    });
+
+    await useCommitReview.getState().run(3);
+
+    const r = slice(3).resumable;
+    expect(r?.stepsUsed).toBe(14);
+    expect(canOfferResume(r?.outcome, null, r)).toBe(true);
+    // …and the transcript it would replay is on disk, not deleted.
+    expect(lastFlushed()?.lastOutcome?.kind).toBe("schema_violation");
+    expect(writerLog.some((w) => w.kind === "delete")).toBe(false);
   });
 
   it("supersedes the previous run's checkpoint when a re-run mints a new id", async () => {
@@ -819,6 +857,7 @@ describe("ensure — checkpoint probe", () => {
     expect(s.resumable).toEqual({
       stage: "verify",
       stepsUsed: 5,
+      hasTranscript: false,
       totalTokens: 100,
       updatedAt: "2026-01-01T00:02:00.000Z",
       outcome: { at: "2026-01-01T00:01:00.000Z", kind: "cancelled" },
@@ -827,7 +866,7 @@ describe("ensure — checkpoint probe", () => {
     expect(s.activity.map((a) => a.id)).toEqual(["a1"]);
   });
 
-  it("offers no resume for a run that answered with garbage", async () => {
+  it("offers no resume for a run that answered with garbage having banked nothing", async () => {
     mockGetRow.mockResolvedValue(savedRow());
     mockGetCheckpoint.mockResolvedValue(
       checkpointRow(
@@ -842,7 +881,36 @@ describe("ensure — checkpoint probe", () => {
 
     await useCommitReview.getState().ensure(8, "C:/repo", "crun-1");
 
-    expect(slice(8).resumable).toBeNull();
+    // The checkpoint is surfaced so Discard is reachable; the gate is what
+    // withholds the Resume button.
+    const r = slice(8).resumable;
+    expect(r).not.toBeNull();
+    expect(canOfferResume(r?.outcome, null, r)).toBe(false);
+  });
+
+  it("DOES offer one when that garbage followed a real investigation", async () => {
+    mockGetRow.mockResolvedValue(savedRow());
+    mockGetCheckpoint.mockResolvedValue(
+      checkpointRow(
+        checkpoint({
+          transcript: {
+            messages: [{ role: "assistant", content: "I read the diff." }],
+            stepsUsed: 14,
+            usage: { totalTokens: 900_000 },
+          },
+          lastOutcome: {
+            at: "2026-01-01T00:01:00.000Z",
+            kind: "schema_violation",
+          },
+        }),
+      ),
+    );
+
+    await useCommitReview.getState().ensure(12, "C:/repo", "crun-1");
+
+    const r = slice(12).resumable;
+    expect(r?.hasTranscript).toBe(true);
+    expect(canOfferResume(r?.outcome, null, r)).toBe(true);
   });
 
   it("offers no resume for a review that FINISHED, orphaned checkpoint or not", async () => {

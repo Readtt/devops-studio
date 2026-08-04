@@ -19,7 +19,7 @@ import {
   CHECKPOINT_REPLAY_TOKEN_BUDGET,
   REPLAY_MIN_EVICTABLE_CHARS,
 } from "./compactTranscript";
-import type { ResumeErrorKind } from "./errorClass";
+import type { ResumeErrorKind, ResumeProgress } from "./errorClass";
 import type { BudgetLimit } from "./runBudget";
 import type { ContextBlock } from "./contextBlocks";
 import type { Attachment } from "@/components/chat/attachments";
@@ -177,8 +177,23 @@ const CHECKPOINT_SURFACES = [
   "commit-review",
 ] as const;
 
-/** Appended as a user message after the transcript when resuming a run that ran
- *  out of budget. */
+/** Whether a checkpoint kept a transcript a resume could actually replay.
+ *
+ *  Deliberately a separate question from "did the run take steps". They come
+ *  apart because {@link capPayloadSize} degrades an oversized payload to
+ *  `transcript: null` — and the runs that overflow it are precisely the long,
+ *  expensive ones a resume matters most for. `canOfferResume` needs both
+ *  (see {@link ResumeProgress}). */
+export function hasReplayableTranscript(
+  transcript: TranscriptCheckpoint | null | undefined,
+): boolean {
+  return (transcript?.messages?.length ?? 0) > 0;
+}
+
+/** Appended as a user message after the transcript when resuming a run that
+ *  stopped without a usable answer — out of budget, or done reading and empty
+ *  handed. Only ever appended when there IS a transcript: on its own it tells a
+ *  model that has read nothing to answer from nothing. */
 export const FINISH_NOW_NUDGE =
   "You have exhausted your investigation budget. Do not call any more tools. Using only what you have already read, produce the final answer now, in exactly the output format the instructions require.";
 

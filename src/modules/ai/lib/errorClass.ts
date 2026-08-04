@@ -17,6 +17,14 @@
 // ResumeCard) also made it undiscardable. Overflow is now resumable like any
 // other transport failure.
 //
+// `empty` and `schema_violation` were the same bug in a second costume, found
+// the same way — by a run losing work. They were flat "no"s justified by "the
+// model ANSWERED, so there's no partial work to continue". True of a run that
+// returns nothing on step one; false of one that spent 22 steps and 1.7M tokens
+// reading the codebase and then failed only the last hop. They now depend on
+// `ResumeProgress`: answered-badly plus real banked work is resumable, and
+// replays with FINISH_NOW_NUDGE exactly as a budget-exhausted run does.
+//
 // GeneratorPane's classifyError stays the place that writes user-facing
 // remediation copy (title / why / steps); this file answers only the narrower
 // resumability question, so the two can't drift on whether Resume is offered.
@@ -118,38 +126,88 @@ function errorText(e: unknown): string {
   return parts.length > 0 ? parts.join(" ") : String(e);
 }
 
-/** UI gate for offering a Resume affordance, shared by the generator and
- *  commit-review panes. Structural param so this module doesn't import
- *  checkpoint types (checkpointApi imports FROM errorClass — keep the
- *  dependency one-way). Judges only the outcome it's handed: callers must
- *  separately check that a checkpoint exists at all (a missing checkpoint and
- *  a checkpoint with a null outcome — an unflushed crash — are different
- *  things; only the latter defaults to resumable here). */
+/** What the failed attempt actually banked, for the two outcomes whose
+ *  resumability depends on it rather than on the error alone. Structural so this
+ *  module still doesn't import checkpoint types (checkpointApi imports FROM
+ *  errorClass — keep the dependency one-way).
+ *
+ *  Both fields are optional and both must be affirmatively present for work to
+ *  count, so a caller that hasn't been taught to pass this gets the old, safe
+ *  answer instead of an accidental yes. */
+export type ResumeProgress = {
+  /** Agentic steps the attempt completed. */
+  stepsUsed?: number;
+  /** Whether a non-empty transcript survived to the checkpoint. `stepsUsed`
+   *  alone isn't enough: `capPayloadSize` degrades an oversized payload to
+   *  `transcript: null`, which leaves a run that took 22 steps with nothing to
+   *  replay. */
+  hasTranscript?: boolean;
+};
+
+/** Whether there is bought-and-paid-for research a resume could continue from.
+ *
+ *  This is the distinction `empty` and `schema_violation` were missing. Both
+ *  used to be flat "no", on the reasoning that the model ANSWERED — just
+ *  uselessly — so there was nothing partial to continue. That premise holds for
+ *  a run that returned nothing on step one. It is flatly false for a run that
+ *  spent 22 steps and 1.7M tokens reading the codebase and then fumbled the last
+ *  hop: the transcript is full of file reads, and only the final answer is
+ *  missing. Replaying that transcript with {@link FINISH_NOW_NUDGE} is the
+ *  cheapest possible recovery, and it is the same recovery a budget-exhausted
+ *  run already gets. */
+export function hasContinuableWork(
+  progress: ResumeProgress | null | undefined,
+): boolean {
+  return (progress?.stepsUsed ?? 0) > 0 && progress?.hasTranscript === true;
+}
+
 /** One clause explaining why Resume isn't on offer, for the surfaces that still
  *  have a checkpoint to show (and to DISCARD — see ResumeCard's second mode). A
- *  card that just quietly loses its main button reads as broken, and the two
- *  reasons are genuinely different: one says the model gave us nothing, the
- *  other that it gave us nonsense. Only ever called when
+ *  card that just quietly loses its main button reads as broken, and the reasons
+ *  are genuinely different: the model gave us nothing, it gave us nonsense, or
+ *  it did real work whose transcript was too big to keep. Only ever called when
  *  {@link canOfferResume} already said no. */
 export function resumeUnavailableReason(
   outcome: { kind: string } | null | undefined,
+  progress?: ResumeProgress | null,
 ): string {
+  // Steps were taken but no transcript survived — the payload was too big for a
+  // checkpoint row and degraded to inputs-only. Saying "the model returned
+  // nothing" there blames the model for our own storage limit.
+  const workWithoutTranscript =
+    (progress?.stepsUsed ?? 0) > 0 && progress?.hasTranscript !== true;
   switch (outcome?.kind) {
     case "empty":
-      return "The model returned nothing to continue from, so a resume would replay an empty transcript and fail the same way. Re-run instead.";
+      return workWithoutTranscript
+        ? "The model read plenty but returned no final answer, and the transcript was too large to save — so there's nothing left to continue from. Re-run instead."
+        : "The model returned nothing to continue from, so a resume would replay an empty transcript and fail the same way. Re-run instead.";
     case "schema_violation":
-      return "The model answered with output this run couldn't read, so continuing that transcript would only reproduce it. Re-run instead — a more capable model usually fixes it.";
+      return workWithoutTranscript
+        ? "The model answered with output this run couldn't read, and the transcript was too large to save — so there's nothing left to continue from. Re-run instead."
+        : "The model answered with output this run couldn't read, and it read nothing beforehand, so continuing that transcript would only reproduce it. Re-run instead — a more capable model usually fixes it.";
     default:
       return "This saved progress can't be continued. Re-run instead.";
   }
 }
 
+/** UI gate for offering a Resume affordance, shared by the generator and
+ *  commit-review panes. Judges only what it's handed: callers must separately
+ *  check that a checkpoint exists at all (a missing checkpoint and a checkpoint
+ *  with a null outcome — an unflushed crash — are different things; only the
+ *  latter defaults to resumable here).
+ *
+ *  `progress` is what decides the two ANSWERED-BADLY outcomes. See
+ *  {@link hasContinuableWork} for why a flat "no" was the same data-loss bug
+ *  `context-overflow` used to have: a resume gate whose justification stopped
+ *  being true. Omitting it keeps the old answer, so an un-updated call site
+ *  fails closed. */
 export function canOfferResume(
   outcome:
     | { kind: string; errorKind?: ResumeErrorKind; message?: string }
     | null
     | undefined,
   errorMessage?: string | null,
+  progress?: ResumeProgress | null,
 ): boolean {
   if (!outcome) return true;
   switch (outcome.kind) {
@@ -158,7 +216,7 @@ export function canOfferResume(
       return true;
     case "empty":
     case "schema_violation":
-      return false;
+      return hasContinuableWork(progress);
     case "error":
       return isResumableKind(
         outcome.errorKind ?? matchErrorKind(errorMessage ?? outcome.message ?? ""),
