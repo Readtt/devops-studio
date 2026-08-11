@@ -572,24 +572,34 @@ export function renderTargetContext(
 const DRAFT_BATCH_SHAPE = {
   cases: [
     {
-      title: "[Auth] When user logs in with valid TOTP then session is created",
-      description: "Optional context for the tester running this case.",
+      title:
+        "[Sign in] When the user enters a correct email and password then the Dashboard opens",
+      description:
+        "Checks a normal sign-in. Needs the test account qa.tester@example.com (step 1 signs in with it).",
       steps: [
         {
-          action: "Navigate to /login",
-          expected: "Login form renders",
+          action:
+            "Open /login, type 'qa.tester@example.com' in the 'Email' field and 'Test@123' in 'Password', then click 'Sign in'",
+          expected: "The Dashboard page loads and shows 'Welcome back'",
         },
       ],
-      tags: ["auth", "regression"],
+      tags: ["sign-in", "happy-path"],
       rationale:
         "Why this case exists in one sentence — shown to reviewers.",
     },
   ],
   bugs: [
     {
-      title: "[Auth] SMS fallback ignores rate-limit",
+      title:
+        "[Sign in] More than three code text messages can be requested in one minute",
       reproSteps:
-        "1. Enter valid credentials. 2. Trigger SMS code 6 times in 60s. Observed: all 6 codes sent. Expected: throttled after 3.",
+        "WHAT IS BROKEN:\nSix sign-in codes can be requested in one minute; it should stop at three.\n\n" +
+        "SETUP BEFORE YOU START:\n1. Sign in as qa.tester@example.com / Test@123 until the 'Verify it's you' screen appears.\n\n" +
+        "STEPS TO REPRODUCE:\n1. Click 'Send code again' six times within one minute.\n\n" +
+        "EXPECTED RESULT:\nAfter the third request, a message says to wait before asking for another code.\n\n" +
+        "ACTUAL RESULT:\nAll six codes arrive.\n\n" +
+        "NOTES FOR DEVELOPERS:\nsendCode never checks the rate-limit counter (src/auth/sms.ts:42-58).\n\n" +
+        "ENVIRONMENT:\nn/a",
       severity: "2 - High",
       linkedDraftCaseIndex: 0,
       codeRefs: [

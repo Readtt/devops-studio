@@ -197,6 +197,17 @@ describe("SUITE_CHAT_SYSTEM_PROMPT", () => {
     expect(SUITE_CHAT_SYSTEM_PROMPT).toContain("CANNOT create or delete cases");
   });
 
+  it("shares the generator's plain-language contract and bug layout", () => {
+    // Same audience contract as QA_ANALYST_PROMPT — both surfaces publish
+    // tester-facing artifacts into the same suites, so the voice must match.
+    expect(SUITE_CHAT_SYSTEM_PROMPT).toContain("PLAIN LANGUAGE");
+    expect(SUITE_CHAT_SYSTEM_PROMPT).toContain("RUNNING PRODUCT");
+    // create-bug uses the same labeled sections the generator emits.
+    expect(SUITE_CHAT_SYSTEM_PROMPT).toContain("WHAT IS BROKEN");
+    expect(SUITE_CHAT_SYSTEM_PROMPT).toContain("SETUP BEFORE YOU START");
+    expect(SUITE_CHAT_SYSTEM_PROMPT).toContain("NOTES FOR DEVELOPERS");
+  });
+
   it("is actually the system prompt handed to the model", async () => {
     // Asserting on the exported constant alone is a change-detector: it keeps
     // passing if the runner stops sending it, or sends a different one.

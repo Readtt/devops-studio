@@ -58,3 +58,47 @@ describe("QA_ANALYST_PROMPT — proportionality", () => {
     expect(QA_ANALYST_PROMPT).toMatch(/Respond with ONLY a single JSON object/);
   });
 });
+
+// The plain-language pass exists because generated cases and bugs read like
+// developer notes: QA couldn't follow them, preconditions assumed states
+// nobody explained how to reach, and repro steps leaned on code access the
+// tester doesn't have. These pin the audience contract and the bug section
+// layout (which the Rust publisher bolds by label — see render_repro_line).
+describe("QA_ANALYST_PROMPT — plain language & tester-facing structure", () => {
+  it("carries the shared plain-language audience contract", () => {
+    expect(QA_ANALYST_PROMPT).toContain("PLAIN LANGUAGE");
+    expect(QA_ANALYST_PROMPT).toContain("RUNNING PRODUCT");
+    // Abbreviations must be explained, with the user's real pain named.
+    expect(QA_ANALYST_PROMPT).toMatch(/No unexplained abbreviations/);
+    expect(QA_ANALYST_PROMPT).toContain('not "CS01"');
+    // Plain language beats copying the technical style of existing items.
+    expect(QA_ANALYST_PROMPT).toMatch(/outrank style-matching/);
+  });
+
+  it("turns preconditions into walked setup steps", () => {
+    expect(QA_ANALYST_PROMPT).toContain("SETUP FIRST");
+    expect(QA_ANALYST_PROMPT).toMatch(/without steps that create it/);
+  });
+
+  it("pins the bug section layout the publisher renders by label", () => {
+    for (const label of [
+      "WHAT IS BROKEN:",
+      "SETUP BEFORE YOU START:",
+      "STEPS TO REPRODUCE:",
+      "TOOLS NEEDED:",
+      "EXPECTED RESULT:",
+      "ACTUAL RESULT:",
+      "NOTES FOR DEVELOPERS:",
+      "ENVIRONMENT:",
+    ]) {
+      expect(QA_ANALYST_PROMPT).toContain(label);
+    }
+    // TOOLS NEEDED is the one conditional section — present only when a tool
+    // is genuinely required, never as an "n/a" line.
+    expect(QA_ANALYST_PROMPT).toMatch(/OMIT this whole section/);
+    // Repro steps must be runnable with only the deployed product…
+    expect(QA_ANALYST_PROMPT).toMatch(/ONLY the running product/);
+    // …and a code-only bug says so honestly instead of faking UI steps.
+    expect(QA_ANALYST_PROMPT).toMatch(/never invent pretend steps/);
+  });
+});
