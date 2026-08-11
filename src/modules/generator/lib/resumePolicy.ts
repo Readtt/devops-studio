@@ -120,12 +120,12 @@ export function resumesByFinishing(
  *  re-read a 150k-token transcript eight times over, and it cut off a model that
  *  only needed a few cheap turns to write out what it already knew.
  *
- *  The transcript is compacted on the way out. At the live budget that is a
- *  deliberate no-op for anything an ordinary run produced — a rate limit or a
- *  dropped socket left a transcript that fit, and evicting out of it would
- *  degrade a resume that was going to work. A resume that follows an actual
- *  OVERFLOW runs at a much tighter budget, which is what makes the resumed
- *  request a subset of the one that didn't fit rather than a superset of it.
+ *  The transcript is compacted on the way out ONLY when the failure being
+ *  resumed from was an overflow — see `compactForResume`, which is a literal
+ *  pass-through otherwise. A rate limit or a dropped socket left a transcript
+ *  that fit, and evicting out of it would degrade a resume that was going to
+ *  work. An overflow resume runs at a much tighter budget, which is what makes
+ *  the resumed request a subset of the one that didn't fit, not a superset.
  *
  *  Structurally typed rather than tied to one payload: analyze and review-phase
  *  follow-ups run the same engine under the same cap, so they must not drift on

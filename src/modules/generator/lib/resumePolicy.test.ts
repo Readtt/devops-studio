@@ -211,7 +211,30 @@ describe("resumeBudget — compacting replay", () => {
     expect(out.resumeMessages).toEqual(messages);
   });
 
-  it("compacts under the step-cap branch too, ahead of the finish-now nudge", () => {
+  // The same rule where it actually bit. A resume used to run the LIVE budget
+  // unconditionally and call that a no-op; it isn't one for a big transcript.
+  // Live eviction fires only once a measured step lands inside the compaction
+  // buffer, so a run holding 300k tokens of reads in a 1M window never rewrites
+  // anything — while the resume path stubbed most of those reads on the way
+  // back in, and the resumed run spent its budget re-reading what it had
+  // already read. Nothing about a 429 says the transcript didn't fit.
+  it("leaves even a FAT transcript alone when the failure wasn't an overflow", () => {
+    const messages = fatTranscript(12, 40_000); // far over the live 50k budget
+    const out = resumeBudget({
+      lastOutcome: {
+        at: "2026-01-01T00:00:00.000Z",
+        kind: "error",
+        errorKind: "rate-limit",
+      },
+      transcript: { messages, stepsUsed: 24, usage: {} },
+    });
+    expect(out.resumeMessages).toEqual(messages);
+    expect(JSON.stringify(out.resumeMessages)).not.toContain(
+      "[evicted-tool-result #",
+    );
+  });
+
+  it("squeezes only the overflow resume — a step cap replays what it read", () => {
     const messages = fatTranscript(12, 40_000);
     const out = resumeBudget({
       lastOutcome: {
@@ -231,9 +254,10 @@ describe("resumeBudget — compacting replay", () => {
       role: "user",
       content: FINISH_NOW_NUDGE,
     });
-    // A step cap isn't an overflow, so it replays at the live budget — bigger
-    // than the overflow squeeze, and still bounded.
+    // A step cap isn't an overflow: its transcript fit, so it replays whole —
+    // the finish-now nudge is the only thing added to it.
     expect(size(capped.resumeMessages)).toBeGreaterThan(size(out.resumeMessages));
+    expect(tail.slice(0, -1)).toEqual(messages);
   });
 });
 

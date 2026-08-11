@@ -14,8 +14,12 @@
 // resumed request is a SUBSET. Keeping the carve-out cost the user everything it
 // was meant to protect: the checkpoint was written with the full transcript and
 // then hidden at every render site, which (because Discard lived inside
-// ResumeCard) also made it undiscardable. Overflow is now resumable like any
-// other transport failure.
+// ResumeCard) also made it undiscardable. Overflow is now resumable — but only
+// where the premise actually holds. Compaction is what turns the replay into a
+// subset, and it needs a banked transcript to work on; an overflow that banked
+// nothing (the very first request didn't fit) would resume into a byte-identical
+// request, so `canOfferResume` gates it on `hasContinuableWork` exactly as the
+// two answered-badly kinds below are gated.
 //
 // `empty` and `schema_violation` were the same bug in a second costume, found
 // the same way — by a run losing work. They were flat "no"s justified by "the
@@ -319,10 +323,20 @@ export function canOfferResume(
         return progress?.outputCapRaisable === true;
       }
       return true;
-    case "error":
-      return isResumableKind(
-        outcome.errorKind ?? matchErrorKind(errorMessage ?? outcome.message ?? ""),
-      );
+    case "error": {
+      const kind =
+        outcome.errorKind ?? matchErrorKind(errorMessage ?? outcome.message ?? "");
+      // Overflow is the one transport failure whose resume can be the SAME
+      // request again. What makes it resumable at all is `compactForResume`
+      // shrinking the banked transcript — and that only has something to shrink
+      // when there IS one. A first request that didn't fit banked nothing, so
+      // the resume rebuilds the identical prompt and 400s instantly, bills it,
+      // and leaves the button there to be pressed again; the transcript-exists
+      // case is real recovery. Same `hasContinuableWork` gate the two
+      // answered-badly kinds use, for the same reason.
+      if (kind === "context-overflow") return hasContinuableWork(progress);
+      return isResumableKind(kind);
+    }
     default:
       return false;
   }

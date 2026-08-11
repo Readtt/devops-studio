@@ -93,24 +93,31 @@ export const REPLAY_MIN_EVICTABLE_CHARS = 400;
  *  failed into a SUBSET — the premise `errorClass.isResumableKind` used to rest
  *  on when it refused to resume a context overflow at all.
  *
- *  With `afterOverflow` false it runs at the live budget, which is a deliberate
- *  no-op for every ordinary transcript: a rate limit or a dropped socket left a
- *  transcript that fit perfectly well, and evicting tool results out of it would
- *  degrade a resume that was going to succeed. Only a resume that follows an
- *  actual overflow pays for the tighter budget. */
+ *  With `afterOverflow` false it does nothing at all, which is the point: a rate
+ *  limit or a dropped socket left a transcript that fit perfectly well, and
+ *  evicting tool results out of it would degrade a resume that was going to
+ *  succeed. Only a resume that follows an actual overflow pays for the tighter
+ *  budget.
+ *
+ *  This used to run the live budget on that branch and call it a no-op. It
+ *  isn't one. Live eviction fires only once a MEASURED step lands inside the
+ *  compaction buffer, so a healthy run with 300k tokens of tool results in a 1M
+ *  window never rewrites anything — while running the same 50k budget here
+ *  unconditionally stubbed most of that run's reads on the way back in. A user
+ *  clicking Resume after a 429 got a transcript full of "call `read_file`
+ *  again" and spent the resumed budget re-reading what it had already read:
+ *  exactly the outcome Resume exists to avoid. If the resumed request turns out
+ *  not to fit, the live path still evicts on measurement, as it does for any
+ *  other run. */
 export function compactForResume(
   messages: ModelMessage[],
   afterOverflow: boolean,
 ): ModelMessage[] {
-  return compactTranscript(
-    messages,
-    afterOverflow
-      ? {
-          toolResultTokenBudget: OVERFLOW_REPLAY_TOKEN_BUDGET,
-          minEvictableChars: REPLAY_MIN_EVICTABLE_CHARS,
-        }
-      : {},
-  ).messages;
+  if (!afterOverflow) return messages;
+  return compactTranscript(messages, {
+    toolResultTokenBudget: OVERFLOW_REPLAY_TOKEN_BUDGET,
+    minEvictableChars: REPLAY_MIN_EVICTABLE_CHARS,
+  }).messages;
 }
 
 /** Leading marker on every stub. Load-bearing twice over: it is how a re-run

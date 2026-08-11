@@ -132,6 +132,33 @@ describe("planSummarization", () => {
     const messages = longRun(12);
     expect(planSummarization(messages)).toEqual(planSummarization(messages));
   });
+
+  // The chat surfaces build [system, user(stable context), ...prior turns,
+  // user(the question), …], so the protected prefix — which ends at the FIRST
+  // user message — now guards the reusable context block, not the task. The
+  // question the model is answering sits inside the summarizable middle, and
+  // replacing it with a cheap model's paraphrase is the one thing this must
+  // never do.
+  it("never cuts past the newest user turn — the question is not summarizable", () => {
+    const question = user("the question this turn is actually answering");
+    const messages = [
+      user("the stable context block"),
+      ...longRun(12).slice(1), // the prior conversation, long enough to summarize
+      question,
+      // Deeper than the hot tail on purpose: with only a few messages after it
+      // the question is inside the tail anyway, and the bound this pins would
+      // never be the thing keeping it.
+      ...longRun(3).slice(1),
+      say("still working"),
+    ];
+    const questionAt = messages.indexOf(question);
+
+    const plan = planSummarization(messages);
+    expect(plan).not.toBeNull();
+    // Bounded by distance from the end alone, the cut lands PAST the question.
+    expect(plan!.cutIndex).toBeLessThanOrEqual(questionAt);
+    expect(applySummary(messages, plan!, "s")).toContainEqual(question);
+  });
 });
 
 describe("applySummary", () => {

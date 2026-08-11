@@ -114,7 +114,24 @@ export function planSummarization(
   const protectedCount = protectedPrefixLength(messages);
   if (alreadySummarized(messages, protectedCount)) return null;
 
-  const maxCut = messages.length - hotTail;
+  // The protected prefix alone is no longer enough to keep the task safe. It
+  // ends at the FIRST user message, which was the whole task back when a
+  // request was [system, one user turn, …]; the chat surfaces now send
+  // [system, user(stable context), ...prior turns, user(the question), …], so
+  // the first user message is the reusable context block and the question the
+  // model is actually answering sits well inside the summarizable middle. Bound
+  // the cut by it: nothing after a user turn is ever another user turn (tool
+  // results are role "tool"), so the LAST one identifies the live question
+  // without the request builder having to announce it.
+  const question = lastUserIndex(messages);
+  const maxCut = Math.min(
+    messages.length - hotTail,
+    // Only when the newest user turn is OUTSIDE the protected prefix. On a
+    // single-turn request (the generator's analyze: system, spec, then nothing
+    // but assistant/tool traffic) it IS the prefix, and bounding by it would
+    // disable summarization on the surface that needs it most.
+    question >= protectedCount ? question : messages.length,
+  );
   if (maxCut <= protectedCount) return null;
 
   const cutIndex = safeCutIndex(messages, protectedCount, maxCut);
@@ -160,6 +177,14 @@ export function summaryMessage(summaryText: string): ModelMessage {
       `context window. The original messages are gone and re-reading the conversation will not bring them back — ` +
       `work from this summary, and use your tools to re-read anything it doesn't cover.\n\n${summaryText}`,
   };
+}
+
+/** Index of the newest user turn, or -1 when there is none. */
+function lastUserIndex(messages: ModelMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === "user") return i;
+  }
+  return -1;
 }
 
 /** Whether the transcript already carries a summary in the slot one would go. */

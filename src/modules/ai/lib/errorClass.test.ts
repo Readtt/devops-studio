@@ -259,12 +259,31 @@ describe("canOfferResume", () => {
   // The reported data loss, as a test: 24 steps of paid work, a run that
   // overflowed, and a Resume button that never rendered.
   it("offers a resume after a context overflow — the resumed request is compacted, not replayed verbatim", () => {
-    expect(canOfferResume({ kind: "error", errorKind: "context-overflow" })).toBe(
-      true,
-    );
+    const work = { stepsUsed: 24, hasTranscript: true };
     expect(
-      canOfferResume({ kind: "error" }, "maximum context length exceeded"),
+      canOfferResume({ kind: "error", errorKind: "context-overflow" }, null, work),
     ).toBe(true);
+    expect(
+      canOfferResume({ kind: "error" }, "maximum context length exceeded", work),
+    ).toBe(true);
+  });
+
+  // The other half of the same rule. Compaction is what makes an overflow
+  // resume a SUBSET of the request that failed — with nothing banked there is
+  // nothing to compact, so Resume rebuilds the identical prompt and 400s again
+  // on the spot. Every other error kind stays resumable without progress,
+  // because their transcripts were never the problem.
+  it("refuses an overflow with nothing banked — that resume is the same request again", () => {
+    expect(
+      canOfferResume({ kind: "error", errorKind: "context-overflow" }),
+    ).toBe(false);
+    expect(
+      canOfferResume({ kind: "error", errorKind: "context-overflow" }, null, {
+        stepsUsed: 0,
+        hasTranscript: false,
+      }),
+    ).toBe(false);
+    expect(canOfferResume({ kind: "error", errorKind: "rate-limit" })).toBe(true);
   });
 
   it("falls back to matchErrorKind(errorMessage) when errorKind wasn't recorded", () => {
