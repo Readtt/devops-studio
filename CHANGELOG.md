@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.21.1] - 2026-08-11
+
+### Changed
+
+- Bug report sections now use standard professional headings — SUMMARY, PRECONDITIONS, STEPS TO REPRODUCE, REQUIRED TOOLS (only when a tool is needed), EXPECTED RESULT, ACTUAL RESULT, TECHNICAL NOTES, and ENVIRONMENT — replacing the casual labels introduced in 0.21.0. PRECONDITIONS remains numbered setup steps, and technical detail remains confined to TECHNICAL NOTES.
+- Generated wording keeps the plain-language rules but is now explicitly held to a professional documentation tone.
+
 ## [0.21.0] - 2026-08-11
 
 ### Changed
