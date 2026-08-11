@@ -2,10 +2,12 @@
 // path returns markdown the user reads inline; it never rewrites the draft.
 
 import {
+  RESUME_TOPUP_TOKENS,
   SURFACE_STEP_CAPS,
   SURFACE_TOKEN_BUDGETS,
   type ModelId,
 } from "@/modules/ai/config";
+import { FINISH_NOW_NUDGE } from "@/modules/ai/lib/checkpointApi";
 import type { ModelMessage } from "ai";
 import { type LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { streamTask } from "@/modules/ai/lib/taskRunner";
@@ -181,7 +183,7 @@ export async function streamChatTask(
   // streamText directly with no tools, which is why tool calls never showed
   // and source citations couldn't be grounded in real code.
   const tools = buildSuiteChatTools(input.sourceRoot ?? null);
-  const r = await streamTask({
+  const shared = {
     modelId: input.modelId,
     keys: input.keys,
     local: input.local,
@@ -194,6 +196,21 @@ export async function streamChatTask(
       ...input.attachments,
       ...collectContextImages(input.contextBlocks ?? []),
     ],
+    onText: input.onText,
+    onToolEvent: input.onToolEvent,
+    signal: input.signal,
+  };
+
+  // Banked every step, and always — the finish pass below replays it, so the
+  // transcript is no longer only the caller's business.
+  let transcript: ModelMessage[] = [];
+  const bank = (messages: ModelMessage[]) => {
+    transcript = messages;
+    input.onTranscript?.(messages);
+  };
+
+  const r = await streamTask({
+    ...shared,
     tools: tools ?? null,
     // Explicit, not inherited. This surface used to name neither, so it silently
     // ran on the runner's MAX_AGENT_STEPS fallback with no entry in either
@@ -201,14 +218,66 @@ export async function streamChatTask(
     // tools as Suite Chat, so it gets Suite Chat's numbers.
     maxSteps: SURFACE_STEP_CAPS.draftChat,
     tokenBudget: SURFACE_TOKEN_BUDGETS.draftChat,
-    onText: input.onText,
-    onToolEvent: input.onToolEvent,
-    onCheckpoint: input.onTranscript
-      ? (cp) => input.onTranscript?.(cp.messages)
-      : undefined,
-    signal: input.signal,
+    onCheckpoint: (cp) => bank(cp.messages),
   });
-  return { text: r.text, durationMs: r.durationMs };
+
+  // `text` is every step's narration concatenated; `finalText` is what the last
+  // step actually wrote. When the second is empty and the first is not, the
+  // loop ended on a tool call and the user is looking at "I'll dig into the
+  // collect/migrate code…" presented as the answer. That is the reported bug,
+  // and it survived a follow-up asking for the explanation because the follow-up
+  // hit the same wall.
+  // `finalText` lives on the success arm only. A schema-less stream can't
+  // return the failure arm — the reasons there are all schema ones — so this
+  // narrowing is for the type checker, and it fails safe either way: an
+  // unexpected failure keeps whatever text it carried rather than buying a
+  // second call to explain it.
+  const answered = (r.ok ? (r.finalText ?? r.text) : r.text).trim().length > 0;
+  const replay = sanitizeTranscript(transcript);
+  if (answered || !hasToolResult(replay)) {
+    return { text: r.text, durationMs: r.durationMs };
+  }
+
+  // One tool-less pass over what it already read. The reading is bought and
+  // paid for; without this the user pays for twelve steps of it and gets a
+  // sentence of narration. Bounded three ways: it runs at most once, it has no
+  // tools to spend on, and it is rationed by the resume top-up rather than a
+  // second full chat budget.
+  const note = stoppedShortNote(r.stepsUsed ?? 0);
+  input.onText(note);
+  const finish = await streamTask({
+    ...shared,
+    tools: null,
+    resumeMessages: [...replay, { role: "user", content: FINISH_NOW_NUDGE }],
+    tokenBudget: RESUME_TOPUP_TOKENS,
+    onCheckpoint: (cp) => bank(cp.messages),
+  });
+  return {
+    text: `${r.text}${note}${finish.text}`,
+    durationMs: r.durationMs + finish.durationMs,
+  };
+}
+
+/** Told to the user, in the bubble, between the narration and the answer. Both
+ *  reasons a loop ends without answering — the budget stopped it, or the model
+ *  simply stopped — read the same from here and mean the same thing to a
+ *  reader, so the line names the symptom rather than guessing the cause. */
+function stoppedShortNote(steps: number): string {
+  return `\n\n_Stopped after ${steps} reading step${
+    steps === 1 ? "" : "s"
+  } without answering — finishing from what it already read._\n\n`;
+}
+
+/** Whether the turn actually read anything. A tool-less turn that returned
+ *  nothing has nothing to finish FROM, so it stays empty rather than paying for
+ *  a second call to re-ask the same question with the same context. */
+function hasToolResult(messages: ModelMessage[]): boolean {
+  return messages.some(
+    (m) =>
+      m.role === "tool" &&
+      Array.isArray(m.content) &&
+      m.content.some((p) => (p as { type?: string }).type === "tool-result"),
+  );
 }
 
 // --- Shared user-prompt builder --------------------------------------------

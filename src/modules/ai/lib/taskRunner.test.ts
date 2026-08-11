@@ -236,6 +236,51 @@ describe("streamTask", () => {
     }
   });
 
+  // A prose surface streams `text` to the user as it arrives, so a loop that
+  // narrates between tool calls and then stops leaves a bubble full of words
+  // and no answer in it. `text` alone can't tell those apart — the Ask reported
+  // "it ran 16 tool calls, and then just stopped" for exactly this shape.
+  it("separates what streamed from what the last step answered", async () => {
+    streamTextOverSteps(
+      [
+        { ...step("s1"), text: "I'll dig into the collect code." },
+        // Pure tool-call step: the loop ends here, having written nothing.
+        { ...step("s2"), text: "" },
+      ],
+      ["I'll dig into the collect code."],
+    );
+    const r = await streamTask({
+      ...baseInput,
+      tools: { read_file: {} } as never,
+      onText: () => {},
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.text).toBe("I'll dig into the collect code.");
+      expect(r.finalText).toBe("");
+    }
+  });
+
+  it("reports the last step's answer as finalText when there is one", async () => {
+    streamTextOverSteps(
+      [
+        { ...step("s1"), text: "Reading…" },
+        { ...step("s2", "stop"), text: "The bug is in migrate." },
+      ],
+      ["Reading…", "The bug is in migrate."],
+    );
+    const r = await streamTask({
+      ...baseInput,
+      tools: { read_file: {} } as never,
+      onText: () => {},
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.text).toBe("Reading…The bug is in migrate.");
+      expect(r.finalText).toBe("The bug is in migrate.");
+    }
+  });
+
   it("structured stream validates the accumulated final text against the schema", async () => {
     const schema = z.object({ a: z.number() });
     streamText.mockReturnValue({

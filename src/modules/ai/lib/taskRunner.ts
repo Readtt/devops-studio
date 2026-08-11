@@ -214,6 +214,15 @@ export type TaskResult<S extends z.ZodTypeAny | undefined = undefined> =
   | ({
       ok: true;
       text: string;
+      /** The FINAL step's answer, as opposed to `text`, which on the streaming
+       *  path is every step's text concatenated across the whole agentic loop.
+       *  The two differ exactly when the loop ended without writing an answer:
+       *  `text` is then the mid-run narration ("I'll dig into the collect
+       *  code…") and this is empty. A prose surface has to show `text` — the
+       *  user watched it stream — but must not mistake it for a reply.
+       *
+       *  Set by `streamTask` only; `runTask` has one text and no such split. */
+      finalText?: string;
       object: InferObject<S>;
       durationMs: number;
     } & TaskScalars)
@@ -1237,6 +1246,7 @@ export async function streamTask<
         return {
           ok: true,
           text: finalText,
+          finalText,
           object: parsed.value as InferObject<S>,
           durationMs: Date.now() - start,
           ...scalars,
@@ -1299,14 +1309,22 @@ export async function streamTask<
     return {
       ok: true,
       text: finalText,
+      finalText,
       object: parsed.value as InferObject<S>,
       durationMs: Date.now() - start,
       ...scalars,
     };
   }
+  // The schema-less arm is the one where the distinction bites. A prose surface
+  // gets `text` (what streamed, narration included) AND `finalText` (what the
+  // last step actually wrote), because a loop that ends on a tool call — budget
+  // stop or a model that simply stopped — leaves the two very different, and
+  // reporting `ok: true` with only the concatenation is how a run that never
+  // answered came back looking like an answer.
   return {
     ok: true,
     text: acc,
+    finalText,
     object: undefined as InferObject<S>,
     durationMs: Date.now() - start,
     ...scalars,

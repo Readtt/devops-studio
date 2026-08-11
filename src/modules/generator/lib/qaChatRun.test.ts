@@ -17,6 +17,11 @@ import {
   type ChatTaskInput,
 } from "./qaChatRun";
 import type { ModelMessage } from "ai";
+import { FINISH_NOW_NUDGE } from "@/modules/ai/lib/checkpointApi";
+import {
+  RESUME_TOPUP_TOKENS,
+  SURFACE_TOKEN_BUDGETS,
+} from "@/modules/ai/config";
 
 const base: ChatTaskInput & { onText: (d: string) => void } = {
   requirements: "Users can bulk-archive contacts.",
@@ -39,7 +44,7 @@ const turn = (role: "user" | "assistant", content: string): ChatMessage => ({
 
 beforeEach(() => {
   streamTask.mockReset();
-  streamTask.mockResolvedValue({ text: "ok", durationMs: 1 });
+  streamTask.mockResolvedValue({ ok: true, text: "ok", durationMs: 1 });
 });
 
 describe("draft-chat history — real messages, not re-inlined prose", () => {
@@ -198,7 +203,7 @@ describe("draft-chat memory — a turn remembers what it read", () => {
       }) => void;
       onCheckpoint({ messages: [toolCall("t1"), toolResult("t1")] });
       onCheckpoint({ messages: [toolCall("t1"), toolResult("t1"), say("a")] });
-      return { text: "a", durationMs: 1 };
+      return { ok: true, text: "a", durationMs: 1 };
     });
     await streamChatTask({
       ...base,
@@ -208,9 +213,118 @@ describe("draft-chat memory — a turn remembers what it read", () => {
     expect(seen[1]).toHaveLength(3);
   });
 
-  it("does not ask the runner for checkpoints when nobody is banking them", async () => {
+  it("always asks the runner for checkpoints", async () => {
+    // Not conditional on a caller wanting them: the finish pass replays the
+    // transcript, so streamChatTask needs it for itself.
     await streamChatTask({ ...base });
-    expect(streamTask.mock.calls[0][0].onCheckpoint).toBeUndefined();
+    expect(streamTask.mock.calls[0][0].onCheckpoint).toBeTypeOf("function");
+  });
+
+  // Reported: "it ran 16 tool calls, and then just stopped… then it just didnt
+  // explain." The loop ended on a tool call, so the last step wrote no answer —
+  // and a schema-less streamTask reports that as ok:true with the whole run's
+  // narration as `text`. The Ask presented the narration as the reply.
+  describe("finishing a turn that stopped without answering", () => {
+    const readSomething = [toolCall("t1"), toolResult("t1")];
+
+    /** First pass narrates and never answers; the finish pass writes the reply. */
+    const stoppedShort = (finishText = "Here is the explanation.") => {
+      let call = 0;
+      streamTask.mockImplementation(async (args: Record<string, unknown>) => {
+        call += 1;
+        const onCheckpoint = args.onCheckpoint as (c: {
+          messages: ModelMessage[];
+        }) => void;
+        if (call === 1) {
+          onCheckpoint({ messages: readSomething });
+          return {
+            ok: true,
+            text: "I'll dig into the collect/migrate code.",
+            finalText: "",
+            stepsUsed: 12,
+            durationMs: 10,
+          };
+        }
+        onCheckpoint({ messages: [...readSomething, say(finishText)] });
+        return { ok: true, text: finishText, finalText: finishText, durationMs: 5 };
+      });
+    };
+
+    it("replays what it read with no tools instead of leaving narration as the answer", async () => {
+      stoppedShort();
+      const r = await streamChatTask({ ...base });
+      expect(streamTask).toHaveBeenCalledTimes(2);
+      const finish = streamTask.mock.calls[1][0];
+      expect(finish.tools).toBeNull();
+      expect(finish.resumeMessages).toEqual([
+        ...readSomething,
+        { role: "user", content: FINISH_NOW_NUDGE },
+      ]);
+      expect(r.text).toContain("Here is the explanation.");
+    });
+
+    it("rations the finish pass by the resume top-up, not a second chat budget", async () => {
+      stoppedShort();
+      await streamChatTask({ ...base });
+      expect(streamTask.mock.calls[1][0].tokenBudget).toBe(RESUME_TOPUP_TOKENS);
+      expect(streamTask.mock.calls[0][0].tokenBudget).toBe(
+        SURFACE_TOKEN_BUDGETS.draftChat,
+      );
+    });
+
+    it("tells the user in the bubble why the answer arrives late", async () => {
+      stoppedShort();
+      const deltas: string[] = [];
+      const r = await streamChatTask({ ...base, onText: (d) => deltas.push(d) });
+      expect(deltas.join("")).toContain(
+        "Stopped after 12 reading steps without answering",
+      );
+      expect(r.text).toContain("Stopped after 12 reading steps");
+    });
+
+    it("finishes only once — the pass gets no tools, so it cannot recurse", async () => {
+      stoppedShort("");
+      await streamChatTask({ ...base });
+      expect(streamTask).toHaveBeenCalledTimes(2);
+    });
+
+    it("leaves an answered turn alone", async () => {
+      streamTask.mockResolvedValue({
+        ok: true,
+        text: "the draft covers undo",
+        finalText: "the draft covers undo",
+        durationMs: 1,
+      });
+      await streamChatTask({ ...base });
+      expect(streamTask).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not pay for a finish pass when the turn read nothing", async () => {
+      // An empty answer with no tool results has nothing to finish FROM — the
+      // second call would re-ask the same question with the same context.
+      streamTask.mockImplementation(async (args: Record<string, unknown>) => {
+        (args.onCheckpoint as (c: { messages: ModelMessage[] }) => void)({
+          messages: [say("")],
+        });
+        return { ok: true, text: "", finalText: "", stepsUsed: 1, durationMs: 1 };
+      });
+      await streamChatTask({ ...base });
+      expect(streamTask).toHaveBeenCalledTimes(1);
+    });
+
+    it("cuts a cancel's dangling tool call out of the replay", async () => {
+      streamTask.mockImplementation(async (args: Record<string, unknown>) => {
+        (args.onCheckpoint as (c: { messages: ModelMessage[] }) => void)({
+          messages: [...readSomething, toolCall("t2")],
+        });
+        return { ok: true, text: "narration", finalText: "", stepsUsed: 4, durationMs: 1 };
+      });
+      await streamChatTask({ ...base });
+      expect(streamTask.mock.calls[1][0].resumeMessages).toEqual([
+        ...readSomething,
+        { role: "user", content: FINISH_NOW_NUDGE },
+      ]);
+    });
   });
 
   describe("sanitizeTranscript", () => {
