@@ -258,8 +258,16 @@ export async function runCommitReview(
       // that arrived. NOT for `step_cap`: that loop was cut off mid-READ, so
       // anything findings-shaped in its narration is premature, and the resume
       // affordance (finish with what you have) is the honest recovery there.
+      //
+      // Scanned out of the FINAL step's text, not `text`: on the `empty` arm
+      // `text` is every step's narration concatenated, so a finding the
+      // reviewer sketched at step 4 and then ruled out would be salvaged,
+      // verified, and shown to the user as a real one with an applyable patch.
+      // `finalText` is empty exactly when no answer was written.
       const salvaged =
-        stage1.reason === "step_cap" ? [] : salvageCandidateFindings(stage1.text);
+        stage1.reason === "step_cap"
+          ? []
+          : salvageCandidateFindings(stage1.finalText ?? stage1.text);
       if (salvaged.length === 0) {
         return {
           ok: false,

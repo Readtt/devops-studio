@@ -177,6 +177,31 @@ describe("salvageDraftBatch (truncated mid-structure — finish: length)", () =>
     )},{"cut`;
     expect(salvageDraftBatch(text).cases).toHaveLength(1);
   });
+
+  // The scanner used to return on the FIRST `"cases": [` it found, so an answer
+  // that opened by restating the schema — or the suite's existing cases —
+  // salvaged the example and silently discarded everything the model actually
+  // wrote. A cut lands at the END, so the real payload is the last array.
+  it("takes the LAST array under the key, not an example echoed in front of it", () => {
+    const text =
+      `Following the shape {"cases":[{"title":"Example only","steps":[]}]}, here is the batch:\n` +
+      `{"cases":[${caseObj("First real case of the batch")},${caseObj(
+        "Second real case of the batch",
+      )},{"title":"cut here`;
+    expect(salvageDraftBatch(text).cases.map((c) => c.title)).toEqual([
+      "First real case of the batch",
+      "Second real case of the batch",
+    ]);
+  });
+
+  // …but an empty later occurrence must not displace a good earlier one, or a
+  // trailing `"cases": []` in a closing note would zero the whole salvage.
+  it("keeps the earlier array when a later one yields nothing", () => {
+    const text = `{"cases":[${caseObj(
+      "The batch that actually landed",
+    )},{"cut`.concat('\n(no more "cases": [ ] to report)');
+    expect(salvageDraftBatch(text).cases).toHaveLength(1);
+  });
 });
 
 describe("clampBugLinks", () => {

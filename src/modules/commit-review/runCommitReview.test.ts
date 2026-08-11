@@ -695,4 +695,30 @@ describe("runCommitReview — stage-1 salvage of a truncated answer", () => {
     }
     expect(mockRunTask).not.toHaveBeenCalled();
   });
+
+  // `step_cap` was the only excluded reason, but `empty` hands back the same
+  // hazard by a different route: on that arm the runner's `text` is EVERY
+  // step's narration concatenated. A reviewer that sketches a finding at step 4,
+  // keeps investigating, rules it out, and then writes nothing would have the
+  // sketch salvaged, verified, and shown to the user as a real finding with an
+  // applyable patch. Salvage reads the final step's text instead.
+  it("does not salvage findings out of mid-run narration", async () => {
+    mockStreamTask.mockResolvedValue({
+      ok: false,
+      reason: "empty",
+      finishReason: "length",
+      text: `So far I suspect: {"findings":[${JSON.stringify(
+        cand("f1"),
+      )}]}\nChecking the caller now…`,
+      finalText: "",
+      durationMs: 9,
+      stepsUsed: 12,
+    } as never);
+
+    const res = await runCommitReview(input());
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe("empty");
+    expect(mockRunTask).not.toHaveBeenCalled();
+  });
 });

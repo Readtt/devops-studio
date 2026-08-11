@@ -128,7 +128,17 @@ export type TaskInput<S extends z.ZodTypeAny | undefined = undefined> = {
    *  MIDDLE of the request every turn and a cached prefix has to be a prefix. */
   priorMessages?: ModelMessage[];
   attachments?: ImageLike[];
-  /** Read-only tool set (build*Tools). null/undefined ⇒ tool-less. */
+  /** Read-only tool set (build*Tools). null/undefined ⇒ tool-less.
+   *
+   *  There is deliberately no `toolChoice` beside this. It reads like the way
+   *  to say "declare the tools but don't call them" — what a finish pass wants
+   *  — and it does not mean the same thing twice: `@ai-sdk/anthropic`
+   *  implements `toolChoice: "none"` by returning `tools: undefined`, dropping
+   *  the definitions, which on a replayed transcript full of tool blocks IS the
+   *  400 the caller was avoiding; OpenAI and openai-compatible keep them and
+   *  forward the parameter. A knob whose meaning inverts by provider is worse
+   *  than no knob, so surfaces that need this instruct the model instead
+   *  (FINISH_NOW_NUDGE) and bound it with a token budget. */
   tools?: ToolSet | null;
   /** Explicit per call. Omit ⇒ provider default (no hidden global). */
   temperature?: number;
@@ -237,6 +247,14 @@ export type TaskResult<S extends z.ZodTypeAny | undefined = undefined> =
        *  `lastOutcome.kind`. */
       reason: "schema_violation" | "empty" | "step_cap";
       text: string;
+      /** Same split as the success arm, and load-bearing for the SALVAGE paths.
+       *  On the `empty` arm `text` is the whole run's narration, so a surface
+       *  that scans it for a JSON batch can pick up a draft the model sketched
+       *  mid-run and later abandoned — the very shadowing the final-step-only
+       *  validation above exists to prevent. Salvage from this instead: it is
+       *  the last step's text, empty exactly when there was no answer to
+       *  salvage. Set by `streamTask` only. */
+      finalText?: string;
       durationMs: number;
     } & TaskScalars);
 
@@ -1292,6 +1310,7 @@ export async function streamTask<
         ok: false,
         reason: budgetReason("empty", scalars),
         text: acc,
+        finalText,
         durationMs: Date.now() - start,
         ...scalars,
       };
@@ -1302,6 +1321,7 @@ export async function streamTask<
         ok: false,
         reason: budgetReason("schema_violation", scalars),
         text: finalText,
+        finalText,
         durationMs: Date.now() - start,
         ...scalars,
       };

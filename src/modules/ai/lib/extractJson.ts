@@ -31,27 +31,34 @@ export function completeItemsOfTruncatedArray(
   key: string,
 ): unknown[] {
   const keyToken = `"${key}"`;
+  let best: unknown[] = [];
   let from = 0;
-  // Skip occurrences of the key that aren't followed by `: [` — e.g. the model
-  // mentioning the field name inside a prose string.
+  // Every occurrence is considered, not just the first, and the LAST one that
+  // yields items wins. Returning on the first `"cases": [` silently threw away
+  // the batch whenever the answer opened with a same-keyed array — a restated
+  // schema, an echo of the suite's existing cases — and handed back the example
+  // as the run's output. Last-wins is the right tie-break for what actually
+  // reaches this function: it only runs when JSON.parse failed, which in
+  // practice means the text was CUT OFF, and a cut lands at the end. Anything
+  // preceding the real payload is preamble. An occurrence that yields nothing
+  // (a trailing `"cases": [` with no complete object after it) can't displace a
+  // good earlier one.
   while (from < text.length) {
     const k = text.indexOf(keyToken, from);
-    if (k < 0) return [];
-    let i = k + keyToken.length;
+    if (k < 0) break;
+    from = k + keyToken.length;
+    // Skip occurrences of the key that aren't followed by `: [` — e.g. the
+    // model mentioning the field name inside a prose string.
+    let i = from;
     while (i < text.length && /\s/.test(text[i])) i++;
-    if (text[i] !== ":") {
-      from = k + keyToken.length;
-      continue;
-    }
+    if (text[i] !== ":") continue;
     i++;
     while (i < text.length && /\s/.test(text[i])) i++;
-    if (text[i] !== "[") {
-      from = k + keyToken.length;
-      continue;
-    }
-    return scanArrayItems(text, i + 1);
+    if (text[i] !== "[") continue;
+    const items = scanArrayItems(text, i + 1);
+    if (items.length > 0) best = items;
   }
-  return [];
+  return best;
 }
 
 function scanArrayItems(text: string, start: number): unknown[] {
