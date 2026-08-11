@@ -17,7 +17,7 @@ const kase = (title: string, over: Partial<ReviewedCase> = {}): ReviewedCase =>
     ...over,
   }) as never;
 
-const bug = (title: string): ReviewedBug =>
+const bug = (title: string, over: Partial<ReviewedBug> = {}): ReviewedBug =>
   ({
     uid: title,
     title,
@@ -25,6 +25,7 @@ const bug = (title: string): ReviewedBug =>
     reproSteps: "PRECONDITION:\nn/a",
     severity: "3 - Medium",
     codeRefs: [],
+    ...over,
   }) as never;
 
 const base = {
@@ -36,6 +37,8 @@ const base = {
   skippedCases: [],
   keptBugs: [],
   skippedBugs: [],
+  draftCases: [kase("[Archive] kept")],
+  draftBugs: [],
   instruction: "tighten the steps",
 };
 
@@ -79,6 +82,7 @@ describe("buildRefineUserPrompt — round memory", () => {
       ...base,
       keptCases: [kase("[Archive] kept")],
       skippedCases: [kase("[Archive] user skipped this")],
+      draftCases: [kase("[Archive] kept"), kase("[Archive] user skipped this")],
       refineRounds: [round()],
       lastRefineSnapshot: {
         cases: [kase("[Archive] kept"), kase("[Archive] user skipped this")],
@@ -92,10 +96,37 @@ describe("buildRefineUserPrompt — round memory", () => {
     const prompt = buildRefineUserPrompt({
       ...base,
       keptCases: [kase("[Archive] kept"), kase("[Archive] brand new")],
+      draftCases: [kase("[Archive] kept"), kase("[Archive] brand new")],
       refineRounds: [round()],
       lastRefineSnapshot: { cases: [kase("[Archive] kept")], bugs: [bug("[A] b")] },
     });
     expect(prompt).toContain('added cases "[Archive] brand new"');
     expect(prompt).toContain('removed bugs "[A] b"');
+  });
+
+  // The regression the draft-order fields exist for. A bug links to its parent
+  // case by INDEX into the draft's own array; the history block used to resolve
+  // that index against a kept-then-skipped concatenation, so skipping any case
+  // shifted every later index and reported bugs as "reworked" that no round had
+  // touched — under an instruction telling the model not to undo earlier rounds.
+  it("resolves a bug's parent case in the draft's order, not kept-then-skipped", () => {
+    const cases = [
+      kase("[Archive] first"),
+      kase("[Archive] skipped", { decision: "skip" }),
+      kase("[Archive] parent"),
+    ];
+    const linked = bug("[A] unchanged", { linkedDraftCaseIndex: 2 });
+    const prompt = buildRefineUserPrompt({
+      ...base,
+      keptCases: [cases[0], cases[2]],
+      skippedCases: [cases[1]],
+      keptBugs: [linked],
+      skippedBugs: [],
+      draftCases: cases,
+      draftBugs: [linked],
+      refineRounds: [round()],
+      lastRefineSnapshot: { cases, bugs: [linked] },
+    });
+    expect(prompt).not.toContain("reworked bugs");
   });
 });

@@ -1,8 +1,14 @@
 import {
+  RESUME_TOPUP_TOKENS,
   SURFACE_STEP_CAPS,
   SURFACE_TOKEN_BUDGETS,
   type ModelId,
 } from "@/modules/ai/config";
+import {
+  finishPassMessages,
+  hasToolResult,
+  sanitizeTranscript,
+} from "@/modules/ai/lib/finishPass";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import type { RequestContextSignal } from "@/modules/ai/lib/contextEstimate";
 import type { BudgetLimit } from "@/modules/ai/lib/runBudget";
@@ -297,6 +303,11 @@ export async function executeQaAnalystRun(
   // model's final text against the schema; tool-less it uses generateObject.
   // Either way DraftBatchLLMSchema is enforced — which is why the
   // salvageDraftBatch fallback below exists for the validate-the-text path.
+  // Banked every step so an unanswered run can be finished from what it read
+  // without going back to the user. Forwards to the caller's checkpoint sink
+  // unchanged — that one persists the resume row; this one is for the pass
+  // below.
+  let transcript: ModelMessage[] = [];
   const task = {
     modelId: prepared.modelId,
     keys: opts.keys,
@@ -312,7 +323,10 @@ export async function executeQaAnalystRun(
     maxOutputTokens: opts.maxOutputTokens,
     schema: DraftBatchLLMSchema,
     onToolEvent: opts.onActivity,
-    onCheckpoint: opts.onCheckpoint,
+    onCheckpoint: (cp: TaskCheckpoint) => {
+      transcript = cp.messages;
+      opts.onCheckpoint?.(cp);
+    },
     onContextSignal: opts.onContextSignal,
     resumeMessages: opts.resumeMessages,
     signal: opts.signal,
@@ -322,15 +336,58 @@ export async function executeQaAnalystRun(
   // path stays on runTask so schema+no-tools keeps hitting generateObject
   // (SDK-native JSON mode) — streaming it would regress OpenAI-compatible
   // endpoints that only produce a valid batch through structured output.
-  const r = tools
+  let r = tools
     ? await streamTask({ ...task, onText: opts.onText ?? NO_OP_TEXT })
     : await runTask(task);
+
+  // The reported failure, and the reason this pass is automatic rather than a
+  // button: a run reads the codebase for twenty-odd steps, its LAST step writes
+  // nothing (on a reasoning model the thinking itself spends the output cap),
+  // and the whole spend produces an error. Everything needed to write the batch
+  // is sitting in the transcript. Replaying it with "stop reading, answer now"
+  // is the cheapest recovery there is, and making the user click Resume to get
+  // it just means paying for the reading and then deciding whether to pay a
+  // little more for the answer.
+  //
+  // Deliberately NOT extended to `step_cap`. That run hit its budget rather than
+  // fumbling the end, and topping it up without being asked is the "it burned
+  // through the credits" complaint in a new costume — that one keeps its Resume
+  // card. Bounded the same way every finish pass is: one attempt, no more
+  // budget than the resume top-up, and it never runs without banked work.
+  const replay = tools ? sanitizeTranscript(transcript) : [];
+  if (
+    !r.ok &&
+    (r.reason === "empty" || r.reason === "schema_violation") &&
+    hasToolResult(replay)
+  ) {
+    const finish = await streamTask({
+      ...task,
+      resumeMessages: finishPassMessages(replay),
+      tokenBudget: RESUME_TOPUP_TOKENS,
+      onText: opts.onText ?? NO_OP_TEXT,
+    });
+    // Only if it actually produced something. A finish pass that fails too
+    // leaves the ORIGINAL failure standing, so the error the user reads still
+    // describes the run they watched rather than the rescue attempt.
+    if (finish.ok || salvageDraftBatch(finish.finalText ?? finish.text).cases.length > 0) {
+      r = finish;
+    }
+  }
 
   // Prefer the strictly-validated object; if the model produced a batch that
   // didn't fully validate, salvage the valid cases/bugs from the raw text
   // (partial-batch acceptance) instead of dropping everything. Then null out
   // any bug→case links that point past the end of the cases array.
-  const batch = clampBugLinks(r.ok ? r.object : salvageDraftBatch(r.text));
+  //
+  // Salvage from the FINAL step's text, never `text` — on a streamed run that
+  // is every step's narration concatenated, and the salvager scans raw text for
+  // `"cases": [`. A batch the analyst sketched at step 6 and then abandoned
+  // would parse cleanly out of that narration and land in the review pane as
+  // the run's output, ready to publish to ADO. `finalText` is empty exactly
+  // when there was no answer, which is the honest outcome there.
+  const batch = clampBugLinks(
+    r.ok ? r.object : salvageDraftBatch(r.finalText ?? r.text),
+  );
   return {
     batch,
     rawText: r.text,

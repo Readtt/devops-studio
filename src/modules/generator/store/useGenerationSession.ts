@@ -98,9 +98,9 @@ import { buildRefineUserPrompt } from "../lib/qaAnalystRefinePrompt";
 import {
   streamChatTask,
   newChatMessageId,
-  sanitizeTranscript,
   type ChatMessage,
 } from "../lib/qaChatRun";
+import { sanitizeTranscript } from "@/modules/ai/lib/finishPass";
 import type { ModelMessage } from "ai";
 
 /** The transcript fields to merge onto a settled assistant message. Absent when
@@ -3034,6 +3034,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         skippedCases,
         keptBugs,
         skippedBugs,
+        draftCases: s.cases,
+        draftBugs: s.bugs,
         // Read BEFORE this round mutates anything: `refineUndoSnapshot` is
         // still the previous round's undo point, so it pairs with the draft as
         // it stands right now to describe what that round actually changed.
@@ -3543,7 +3545,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     }
 
     try {
-      await streamChatTask({
+      const run = await streamChatTask({
         requirements: s.requirements,
         changesets: s.changesets,
         attachments: s.attachments,
@@ -3589,8 +3591,13 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         },
         signal: chatAc.signal,
       });
-      // Backfill a placeholder for a genuinely empty response so the bubble
-      // doesn't render blank.
+      // What SETTLES in the thread is what the runner returns, which is not
+      // always what streamed. A turn that stalled mid-read streams its
+      // narration live — the user should see it working — and then comes back
+      // with the answer alone, so the saved message is the answer rather than
+      // "I'll dig into the collect code…" followed by it. Falls back to the
+      // streamed text, then to a placeholder, so an empty bubble never renders.
+      const settled = run.text.trim();
       set((curr) => ({
         chatBusy: false,
         chatStreamingId: null,
@@ -3598,7 +3605,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           m.id === assistantId
             ? {
                 ...m,
-                content: m.content.trim() === "" ? "(empty response)" : m.content,
+                content:
+                  settled ||
+                  (m.content.trim() === "" ? "(empty response)" : m.content),
                 ...bankTranscript(turnTranscript),
               }
             : m,

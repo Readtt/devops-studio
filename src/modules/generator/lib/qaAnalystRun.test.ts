@@ -17,9 +17,11 @@ vi.mock("@/modules/test-plans/lib/suiteChatTools", () => ({
 }));
 
 import {
+  RESUME_TOPUP_TOKENS,
   SURFACE_STEP_CAPS,
   SURFACE_TOKEN_BUDGETS,
 } from "@/modules/ai/config";
+import { FINISH_NOW_NUDGE } from "@/modules/ai/lib/checkpointApi";
 import {
   executeQaAnalystRun,
   prepareQaAnalystRun,
@@ -189,6 +191,143 @@ describe("runQaAnalyst tool wiring", () => {
     const out = await runQaAnalyst({ ...base, sourceRoot: null });
     expect(out.batch.cases).toHaveLength(1);
     err.mockRestore();
+  });
+
+  // Salvage reads the FINAL step's text, never `text` — on the runner's `empty`
+  // arm that is every step's narration concatenated. An analyst that sketches a
+  // provisional batch at step 6, keeps reading, and then writes nothing would
+  // otherwise have the sketch salvaged and presented in the review pane as the
+  // run's output, ready to publish to ADO.
+  it("does not salvage a batch out of mid-run narration", async () => {
+    streamTask.mockResolvedValue({
+      ok: false,
+      reason: "empty",
+      text:
+        'Here is what I have so far: {"cases":[{"title":"A provisional case I abandoned","steps":[{"action":"a","expected":"b"}]}],"bugs":[]}\nStill reading…',
+      finalText: "",
+      durationMs: 1,
+    });
+    const out = await runQaAnalyst({ ...base, sourceRoot: "C:/repo" });
+    expect(out.batch.cases).toEqual([]);
+  });
+
+  // The reported failure: a run reads the codebase for twenty-odd steps, its
+  // last step writes nothing (on a reasoning model the thinking itself spends
+  // the output cap), and the whole spend lands as an error. Everything needed
+  // to write the batch is already in the transcript, so it is replayed with
+  // "stop reading, answer now" automatically — the user gets cases instead of
+  // paying for the reading and then being asked to pay a little more for the
+  // answer.
+  it("finishes an empty run from what it read instead of failing", async () => {
+    const banked = [
+      {
+        role: "assistant",
+        content: [
+          { type: "tool-call", toolCallId: "t1", toolName: "read_file", input: {} },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "t1",
+            toolName: "read_file",
+            output: { type: "text", value: "source" },
+          },
+        ],
+      },
+    ];
+    let call = 0;
+    streamTask.mockImplementation(
+      async (args: { onCheckpoint?: (c: unknown) => void }) => {
+        call += 1;
+        if (call === 1) {
+          args.onCheckpoint?.({ messages: banked, stepsUsed: 22, usage: {} });
+          return { ok: false, reason: "empty", text: "narration", finalText: "", durationMs: 1 };
+        }
+        return {
+          ok: true,
+          object: {
+            cases: [
+              {
+                title: "The case it could write all along",
+                description: "",
+                steps: [{ action: "a", expected: "b" }],
+                tags: [],
+                rationale: "",
+                sourceLinks: [],
+              },
+            ],
+            bugs: [],
+          },
+          text: "{}",
+          durationMs: 1,
+        };
+      },
+    );
+
+    const out = await runQaAnalyst({ ...base, sourceRoot: "C:/repo" });
+
+    expect(streamTask).toHaveBeenCalledTimes(2);
+    const finish = streamTask.mock.calls[1][0];
+    expect(finish.tokenBudget).toBe(RESUME_TOPUP_TOKENS);
+    expect(finish.resumeMessages).toEqual([
+      ...banked,
+      { role: "user", content: FINISH_NOW_NUDGE },
+    ]);
+    expect(out.ok).toBe(true);
+    expect(out.batch.cases.map((c) => c.title)).toEqual([
+      "The case it could write all along",
+    ]);
+  });
+
+  // A budget stop is not a fumbled ending — that run wanted MORE reading, and
+  // topping it up unasked is the "it burned through the credits" complaint in a
+  // new costume. It keeps its Resume card.
+  it("does not auto-finish a run that hit its budget", async () => {
+    streamTask.mockResolvedValue({
+      ok: false,
+      reason: "step_cap",
+      text: "narration",
+      finalText: "",
+      durationMs: 1,
+      stepsUsed: 40,
+    });
+    const out = await runQaAnalyst({ ...base, sourceRoot: "C:/repo" });
+    expect(streamTask).toHaveBeenCalledTimes(1);
+    expect(out.reason).toBe("step_cap");
+  });
+
+  it("does not auto-finish a run that read nothing", async () => {
+    streamTask.mockResolvedValue({
+      ok: false,
+      reason: "empty",
+      text: "",
+      finalText: "",
+      durationMs: 1,
+    });
+    const out = await runQaAnalyst({ ...base, sourceRoot: "C:/repo" });
+    expect(streamTask).toHaveBeenCalledTimes(1);
+    expect(out.ok).toBe(false);
+  });
+
+  // …while the truncation case still salvages, because a cut answer leaves its
+  // partial JSON on the LAST step.
+  it("still salvages a final answer the output cap cut in half", async () => {
+    streamTask.mockResolvedValue({
+      ok: false,
+      reason: "schema_violation",
+      text: "ignored narration",
+      finalText:
+        '{"cases":[{"title":"The case that landed before the cut","steps":[{"action":"a","expected":"b"}]},{"title":"cut he',
+      finishReason: "length",
+      durationMs: 1,
+    });
+    const out = await runQaAnalyst({ ...base, sourceRoot: "C:/repo" });
+    expect(out.batch.cases.map((c) => c.title)).toEqual([
+      "The case that landed before the cut",
+    ]);
   });
 });
 
@@ -384,7 +523,13 @@ describe("executeQaAnalystRun passthroughs", () => {
     const arg = runnerArg();
     expect(arg.maxSteps).toBe(8);
     expect(arg.resumeMessages).toBe(resumeMessages);
-    expect(arg.onCheckpoint).toBe(onCheckpoint);
+    // Reaches the caller, rather than IS the caller's function: the run wraps
+    // this sink to keep its own copy of the transcript (what the auto-finish
+    // pass replays). Asserting identity would pin the wrapper's absence, not
+    // the forwarding this test is named for.
+    const cp = { messages: [], stepsUsed: 1, usage: {} };
+    (arg.onCheckpoint as (c: unknown) => void)(cp);
+    expect(onCheckpoint).toHaveBeenCalledWith(cp);
   });
 
   it("defaults both budgets to the generator surface entries", async () => {

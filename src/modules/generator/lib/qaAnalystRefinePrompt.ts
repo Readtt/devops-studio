@@ -40,6 +40,18 @@ export type RefinePromptInput = {
   skippedCases: ReviewedCase[];
   keptBugs: ReviewedBug[];
   skippedBugs: ReviewedBug[];
+  /** The whole draft in the store's own order — kept and skipped interleaved
+   *  exactly as `s.cases` / `s.bugs` hold them.
+   *
+   *  Not derivable from the four arrays above, which is the point. A bug's
+   *  `linkedDraftCaseIndex` indexes THIS array (that is what `clampBugLinks`
+   *  and the draft block both mean by it), so resolving a parent title against
+   *  a kept-then-skipped concatenation silently reads the wrong case the moment
+   *  the user skips anything — and the refine history then tells the model a
+   *  previous round "reworked" bugs it never touched, under an instruction not
+   *  to undo earlier rounds. */
+  draftCases: ReviewedCase[];
+  draftBugs: ReviewedBug[];
   /** Same scope hint passed to the first-pass analyst. Stays in the refine
    *  prompt so the model keeps narrowing instead of fanning back out into
    *  full coverage on a follow-up. */
@@ -70,12 +82,14 @@ export function buildRefineUserPrompt(input: RefinePromptInput): string {
   const changesetsBlock = renderChangesetsBlock(input.changesets);
   // Diffed against the WHOLE draft, kept and skipped alike — the snapshot is
   // the whole prior batch, so pairing only the kept half would report every
-  // skipped case as removed by the last round.
+  // skipped case as removed by the last round. In the draft's OWN order, not
+  // kept-then-skipped: the snapshot is in that order too, and bug→case links
+  // are indices into it.
   const historyBlock = renderRefineHistory({
     rounds: input.refineRounds ?? [],
     lastSnapshot: input.lastRefineSnapshot,
-    cases: [...input.keptCases, ...input.skippedCases],
-    bugs: [...input.keptBugs, ...input.skippedBugs],
+    cases: input.draftCases,
+    bugs: input.draftBugs,
   });
 
   const currentBatch = {
