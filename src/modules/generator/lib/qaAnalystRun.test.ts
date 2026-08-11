@@ -455,7 +455,7 @@ describe("prepareQaAnalystRun / runQaAnalyst prompt assembly", () => {
         "bugs": [
           {
             "title": "[Sign in] More than three code text messages can be requested in one minute",
-            "reproSteps": "WHAT IS BROKEN:\\nSix sign-in codes can be requested in one minute; it should stop at three.\\n\\nSETUP BEFORE YOU START:\\n1. Sign in as qa.tester@example.com / Test@123 until the 'Verify it's you' screen appears.\\n\\nSTEPS TO REPRODUCE:\\n1. Click 'Send code again' six times within one minute.\\n\\nEXPECTED RESULT:\\nAfter the third request, a message says to wait before asking for another code.\\n\\nACTUAL RESULT:\\nAll six codes arrive.\\n\\nNOTES FOR DEVELOPERS:\\nsendCode never checks the rate-limit counter (src/auth/sms.ts:42-58).\\n\\nENVIRONMENT:\\nn/a",
+            "reproSteps": "SUMMARY:\\nSix sign-in codes can be requested in one minute; the limit should be three.\\n\\nPRECONDITIONS:\\n1. Sign in as qa.tester@example.com / Test@123 until the 'Verify it's you' screen appears.\\n\\nSTEPS TO REPRODUCE:\\n1. Click 'Send code again' six times within one minute.\\n\\nEXPECTED RESULT:\\nAfter the third request, a message states that no more codes can be sent for a short period.\\n\\nACTUAL RESULT:\\nAll six codes arrive.\\n\\nTECHNICAL NOTES:\\nsendCode never checks the rate-limit counter (src/auth/sms.ts:42-58).\\n\\nENVIRONMENT:\\nn/a",
             "severity": "2 - High",
             "linkedDraftCaseIndex": 0,
             "codeRefs": [

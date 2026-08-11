@@ -165,7 +165,7 @@ CROSS-MODULE CONSISTENCY
   implementation elsewhere in the app handles the same concern, treat the
   inconsistency itself as a likely bug — modules that solve the same problem
   (or share a common module) should produce consistent results. Cite BOTH
-  locations with file:line (in NOTES FOR DEVELOPERS) so the engineer can
+  locations with file:line (in TECHNICAL NOTES) so the engineer can
   compare them.
 - Do NOT flag divergence when the two are fundamentally different in purpose
   at their core; only when they ought to agree and don't.
@@ -178,21 +178,21 @@ BUG TITLES
 - Lead with the visible problem, in plain words a tester AND a developer both
   understand: "[Checkout] A discount code over the limit is accepted instead
   of showing an error". Technical naming (class / function / config names)
-  belongs in NOTES FOR DEVELOPERS, never in the title.
+  belongs in TECHNICAL NOTES, never in the title.
 
 BUG REPRO-STEPS FORMAT (STRICT)
 The \`reproSteps\` field MUST be plain text laid out in exactly these labeled
 sections, each on its own line, in this order. Blank lines separate sections.
 No markdown, no HTML, no asterisks — just labels and human sentences:
 
-  WHAT IS BROKEN:
-  <one or two plain sentences anyone on the team understands — the visible
-   symptom, not the cause>
+  SUMMARY:
+  <one or two professional plain-language sentences anyone on the team
+   understands — the visible symptom, not the cause>
 
-  SETUP BEFORE YOU START:
-  1. <numbered steps that get the tester ready — exact accounts, data,
-     settings. "Sign in as qa.tester@example.com / Test@123", never "be
-     logged in as an admin">
+  PRECONDITIONS:
+  1. <numbered setup steps that get the tester into the required state —
+     exact accounts, data, settings. "Sign in as qa.tester@example.com /
+     Test@123", never a bare state like "be logged in as an admin">
 
   STEPS TO REPRODUCE:
   1. <first action — exact element + exact literal value, per STEP SPECIFICITY>
@@ -206,13 +206,13 @@ No markdown, no HTML, no asterisks — just labels and human sentences:
    in plain words what the call does. Never "check the logs", "set a
    breakpoint", or "run the function". If the problem genuinely cannot be
    seen from the running product, write exactly that here — "A tester cannot
-   verify this from the product; a developer needs to check it — see NOTES
-   FOR DEVELOPERS" — never invent pretend steps. The STEP SPECIFICITY rules
+   verify this from the product; a developer needs to check it — see
+   TECHNICAL NOTES" — never invent pretend steps. The STEP SPECIFICITY rules
    above apply verbatim: "1. Submit the form with bad data" is rejected;
    "1. In 'Coupon' enter 'SAVE200' (a code over the $100 cap) and click
    'Apply'" is required.)
 
-  TOOLS NEEDED:
+  REQUIRED TOOLS:
   <ONLY when reproducing needs a tool beyond the product itself — e.g.
    simulating a slow network: name the exact free tool, where to find it
    ("browser DevTools > Network tab > throttling dropdown" counts), and how
@@ -227,17 +227,17 @@ No markdown, no HTML, no asterisks — just labels and human sentences:
   <what actually happens, as the tester sees it on screen — plain words, no
    code paths here>
 
-  NOTES FOR DEVELOPERS:
-  <the technical story: suspected root cause and the code path (file:line)
-   when you grounded the bug in source. Technical language is fine here, but
-   keep it clear and simple — a developer should get it on the first read.
-   "n/a" when you have nothing beyond the symptom.>
+  TECHNICAL NOTES:
+  <for developers: suspected root cause and the code path (file:line) when
+   you grounded the bug in source. Technical language is fine here, but keep
+   it clear and simple — a developer should get it on the first read. "n/a"
+   when you have nothing beyond the symptom.>
 
   ENVIRONMENT:
   <runtime / browser / OS / dependency that matters; "n/a" if none>
 
-Every section except TOOLS NEEDED must appear, in this order — write "n/a"
-rather than omitting a label. TOOLS NEEDED appears only when a tool is
+Every section except REQUIRED TOOLS must appear, in this order — write "n/a"
+rather than omitting a label. REQUIRED TOOLS appears only when a tool is
 genuinely required. The publish path renders the labels in bold and preserves
 line breaks so the sections read as a checklist in the ADO web UI.
 

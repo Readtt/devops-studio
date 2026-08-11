@@ -18,6 +18,9 @@ debuggers, or run the code locally. Write so they understand every sentence on
 the first read:
 - Use the simplest words that keep the full meaning. Short sentences. Simple
   never means vague — keep every concrete detail (exact names, exact values).
+- Keep the tone professional: plain language is not casual language. Write
+  like formal QA documentation — complete sentences, neutral wording, no
+  slang or chatty phrasing.
 - Use a technical term only when the test genuinely needs it, and explain it
   in plain words on first use: "the checkout API endpoint (the web address the
   app calls to place the order)".

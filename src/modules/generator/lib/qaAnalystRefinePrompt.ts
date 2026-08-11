@@ -193,12 +193,11 @@ const REFINE_BATCH_SHAPE = {
     {
       title: "[Area] {what goes wrong, in plain words}",
       // reproSteps MUST use the labeled sections enforced by the system
-      // prompt: WHAT IS BROKEN / SETUP BEFORE YOU START / STEPS TO REPRODUCE
-      // / (TOOLS NEEDED only when a tool is required) / EXPECTED RESULT /
-      // ACTUAL RESULT / NOTES FOR DEVELOPERS / ENVIRONMENT — separated by
-      // blank lines.
+      // prompt: SUMMARY / PRECONDITIONS / STEPS TO REPRODUCE / (REQUIRED
+      // TOOLS only when a tool is required) / EXPECTED RESULT / ACTUAL
+      // RESULT / TECHNICAL NOTES / ENVIRONMENT — separated by blank lines.
       reproSteps:
-        "WHAT IS BROKEN:\n…\n\nSETUP BEFORE YOU START:\n1. …\n\nSTEPS TO REPRODUCE:\n1. …\n2. …\n\nEXPECTED RESULT:\n…\n\nACTUAL RESULT:\n…\n\nNOTES FOR DEVELOPERS:\n…\n\nENVIRONMENT:\nn/a",
+        "SUMMARY:\n…\n\nPRECONDITIONS:\n1. …\n\nSTEPS TO REPRODUCE:\n1. …\n2. …\n\nEXPECTED RESULT:\n…\n\nACTUAL RESULT:\n…\n\nTECHNICAL NOTES:\n…\n\nENVIRONMENT:\nn/a",
       severity: "1 - Critical | 2 - High | 3 - Medium | 4 - Low",
       linkedDraftCaseIndex: 0,
       codeRefs: [

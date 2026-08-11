@@ -203,9 +203,9 @@ describe("SUITE_CHAT_SYSTEM_PROMPT", () => {
     expect(SUITE_CHAT_SYSTEM_PROMPT).toContain("PLAIN LANGUAGE");
     expect(SUITE_CHAT_SYSTEM_PROMPT).toContain("RUNNING PRODUCT");
     // create-bug uses the same labeled sections the generator emits.
-    expect(SUITE_CHAT_SYSTEM_PROMPT).toContain("WHAT IS BROKEN");
-    expect(SUITE_CHAT_SYSTEM_PROMPT).toContain("SETUP BEFORE YOU START");
-    expect(SUITE_CHAT_SYSTEM_PROMPT).toContain("NOTES FOR DEVELOPERS");
+    expect(SUITE_CHAT_SYSTEM_PROMPT).toContain("SUMMARY:");
+    expect(SUITE_CHAT_SYSTEM_PROMPT).toContain("PRECONDITIONS:");
+    expect(SUITE_CHAT_SYSTEM_PROMPT).toContain("TECHNICAL NOTES:");
   });
 
   it("is actually the system prompt handed to the model", async () => {

@@ -71,6 +71,8 @@ describe("QA_ANALYST_PROMPT — plain language & tester-facing structure", () =>
     // Abbreviations must be explained, with the user's real pain named.
     expect(QA_ANALYST_PROMPT).toMatch(/No unexplained abbreviations/);
     expect(QA_ANALYST_PROMPT).toContain('not "CS01"');
+    // Plain reads as professional documentation, never as casual chat.
+    expect(QA_ANALYST_PROMPT).toMatch(/plain language is not casual language/);
     // Plain language beats copying the technical style of existing items.
     expect(QA_ANALYST_PROMPT).toMatch(/outrank style-matching/);
   });
@@ -82,19 +84,19 @@ describe("QA_ANALYST_PROMPT — plain language & tester-facing structure", () =>
 
   it("pins the bug section layout the publisher renders by label", () => {
     for (const label of [
-      "WHAT IS BROKEN:",
-      "SETUP BEFORE YOU START:",
+      "SUMMARY:",
+      "PRECONDITIONS:",
       "STEPS TO REPRODUCE:",
-      "TOOLS NEEDED:",
+      "REQUIRED TOOLS:",
       "EXPECTED RESULT:",
       "ACTUAL RESULT:",
-      "NOTES FOR DEVELOPERS:",
+      "TECHNICAL NOTES:",
       "ENVIRONMENT:",
     ]) {
       expect(QA_ANALYST_PROMPT).toContain(label);
     }
-    // TOOLS NEEDED is the one conditional section — present only when a tool
-    // is genuinely required, never as an "n/a" line.
+    // REQUIRED TOOLS is the one conditional section — present only when a
+    // tool is genuinely required, never as an "n/a" line.
     expect(QA_ANALYST_PROMPT).toMatch(/OMIT this whole section/);
     // Repro steps must be runnable with only the deployed product…
     expect(QA_ANALYST_PROMPT).toMatch(/ONLY the running product/);

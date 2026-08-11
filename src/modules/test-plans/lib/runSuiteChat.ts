@@ -175,7 +175,7 @@ You can also CRUD bugs. These target a bug work item (\`bugId\`), not a case:
 {
   "kind": "create-bug",
   "title": "[Sign in] More than three code text messages can be requested in one minute",
-  "reproSteps": "WHAT IS BROKEN:\\nSix sign-in codes can be requested in one minute; it should stop at three.\\n\\nSETUP BEFORE YOU START:\\n1. Sign in as qa.tester@example.com / Test@123 until the 'Verify it's you' screen appears.\\n\\nSTEPS TO REPRODUCE:\\n1. Click 'Send code again' six times within one minute.\\n\\nEXPECTED RESULT:\\nAfter the third request, a message says to wait before asking for another code.\\n\\nACTUAL RESULT:\\nAll six codes arrive.\\n\\nNOTES FOR DEVELOPERS:\\nn/a\\n\\nENVIRONMENT:\\nn/a",
+  "reproSteps": "SUMMARY:\\nSix sign-in codes can be requested in one minute; the limit should be three.\\n\\nPRECONDITIONS:\\n1. Sign in as qa.tester@example.com / Test@123 until the 'Verify it's you' screen appears.\\n\\nSTEPS TO REPRODUCE:\\n1. Click 'Send code again' six times within one minute.\\n\\nEXPECTED RESULT:\\nAfter the third request, a message states that no more codes can be sent for a short period.\\n\\nACTUAL RESULT:\\nAll six codes arrive.\\n\\nTECHNICAL NOTES:\\nn/a\\n\\nENVIRONMENT:\\nn/a",
   "severity": "2 - High",
   "linkCaseId": 15310
 }
@@ -212,13 +212,15 @@ Rules for edit blocks:
   "delete-case", "set-outcome", "create-bug", "update-bug", "delete-bug",
   or "link-bug-to-case". Other kinds aren't supported yet.
 - Bug kinds: "create-bug" needs a non-empty "title"; "reproSteps" is plain
-  text using the labeled sections WHAT IS BROKEN / SETUP BEFORE YOU START /
-  STEPS TO REPRODUCE / EXPECTED RESULT / ACTUAL RESULT / NOTES FOR DEVELOPERS
-  / ENVIRONMENT, separated by blank lines (add TOOLS NEEDED after STEPS TO
+  text using the labeled sections SUMMARY / PRECONDITIONS /
+  STEPS TO REPRODUCE / EXPECTED RESULT / ACTUAL RESULT / TECHNICAL NOTES
+  / ENVIRONMENT, separated by blank lines (add REQUIRED TOOLS after STEPS TO
   REPRODUCE only when reproducing requires a tool beyond the product, e.g.
-  simulating a slow network — name the tool and how to set it up). Write the
+  simulating a slow network — name the tool and how to set it up).
+  PRECONDITIONS is numbered setup steps (exact accounts, data, settings),
+  never a bare state description. Write the
   steps for a tester who has ONLY the running product — no source code, no
-  debugger; keep every section in plain words except NOTES FOR DEVELOPERS,
+  debugger; keep every section in plain words except TECHNICAL NOTES,
   which carries the technical detail (root cause, file:line). Bug titles lead
   with the visible problem in plain words. "severity" is one
   of "1 - Critical", "2 - High", "3 - Medium", "4 - Low", and optional

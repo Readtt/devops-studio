@@ -593,12 +593,12 @@ const DRAFT_BATCH_SHAPE = {
       title:
         "[Sign in] More than three code text messages can be requested in one minute",
       reproSteps:
-        "WHAT IS BROKEN:\nSix sign-in codes can be requested in one minute; it should stop at three.\n\n" +
-        "SETUP BEFORE YOU START:\n1. Sign in as qa.tester@example.com / Test@123 until the 'Verify it's you' screen appears.\n\n" +
+        "SUMMARY:\nSix sign-in codes can be requested in one minute; the limit should be three.\n\n" +
+        "PRECONDITIONS:\n1. Sign in as qa.tester@example.com / Test@123 until the 'Verify it's you' screen appears.\n\n" +
         "STEPS TO REPRODUCE:\n1. Click 'Send code again' six times within one minute.\n\n" +
-        "EXPECTED RESULT:\nAfter the third request, a message says to wait before asking for another code.\n\n" +
+        "EXPECTED RESULT:\nAfter the third request, a message states that no more codes can be sent for a short period.\n\n" +
         "ACTUAL RESULT:\nAll six codes arrive.\n\n" +
-        "NOTES FOR DEVELOPERS:\nsendCode never checks the rate-limit counter (src/auth/sms.ts:42-58).\n\n" +
+        "TECHNICAL NOTES:\nsendCode never checks the rate-limit counter (src/auth/sms.ts:42-58).\n\n" +
         "ENVIRONMENT:\nn/a",
       severity: "2 - High",
       linkedDraftCaseIndex: 0,
