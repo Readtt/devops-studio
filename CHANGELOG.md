@@ -7,6 +7,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.21.0] - 2026-08-11
+
+### Changed
+
+- Generated test cases and bug suggestions are now written in plain language a QA tester can follow from the running product alone — no unexplained abbreviations or codes, technical terms explained in plain words on first use, and every exact value and button name kept.
+- Test cases walk through their own setup: preconditions are numbered setup steps at the start of the case (with the exact account, data, and settings), instead of a state the tester has to figure out how to reach.
+- Bug suggestions use a new section layout: WHAT IS BROKEN, SETUP BEFORE YOU START, STEPS TO REPRODUCE (written for a tester with only the running product — no source code, no debugger), TOOLS NEEDED (only when a tool is genuinely required, with plain setup instructions), EXPECTED RESULT, ACTUAL RESULT, NOTES FOR DEVELOPERS (root cause and code references live here), and ENVIRONMENT.
+- Bug titles now lead with the visible problem in plain words, readable by both testers and developers.
+- Suite Chat follows the same plain-language rules and bug layout when it creates or rewrites cases and bugs from chat.
+
 ## [0.20.0] - 2026-08-11
 
 ### Added
