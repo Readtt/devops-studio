@@ -208,6 +208,51 @@ function historyMessages(history: ChatMessage[]): ModelMessage[] {
     .map((m) => ({ role: m.role, content: m.content }));
 }
 
+/** Repro steps are five labeled sections by contract (PRECONDITION → … →
+ *  ENVIRONMENT); at 220 chars — the old budget — the text was cut inside the
+ *  first one, so "explain this bug" reached the model as a sentence fragment.
+ *  A whole repro runs 400–900 chars, and this is the block the prompt cache
+ *  covers, so the generous bound costs a few hundred cached tokens and saves
+ *  the tool calls the model was making to recover what it had already been
+ *  told. */
+const REPRO_MAX_CHARS = 1200;
+
+function clampRepro(text: string): string {
+  return text.length > REPRO_MAX_CHARS
+    ? `${text.slice(0, REPRO_MAX_CHARS)}\n… (repro truncated)`
+    : text;
+}
+
+/** `src/a.ts:42-58 (Sym)` — the form the system prompt already asks the model
+ *  to cite in, so a bug's own anchors come back out as clickable citations. */
+function renderCodeRefs(bug: ReviewedBug): string | null {
+  const refs = (bug.codeRefs ?? []).map((r) => {
+    const span = r.endLine && r.endLine !== r.startLine
+      ? `${r.startLine}-${r.endLine}`
+      : `${r.startLine}`;
+    return `${r.file}:${span}${r.symbol ? ` (${r.symbol})` : ""}`;
+  });
+  return refs.length > 0 ? refs.join(", ") : null;
+}
+
+function renderSourceLinks(c: ReviewedCase): string | null {
+  const links = (c.sourceLinks ?? []).map(
+    (l) => `${l.filePath}${l.symbol ? ` (${l.symbol})` : ""}`,
+  );
+  return links.length > 0 ? links.join(", ") : null;
+}
+
+/** The draft as the model sees it.
+ *
+ *  Everything the generator ALREADY discovered ships with the draft: each
+ *  bug's `codeRefs`, each case's `sourceLinks`, and the full repro. Without
+ *  them a question as shallow as "explain bug 2" forced the model to re-derive
+ *  file locations it had itself written down one run earlier — a live Ask spent
+ *  16 tool calls doing exactly that and still never answered.
+ *
+ *  Items are numbered from 1 to match ORDERING & NUMBERING in the analyst
+ *  prompt and the review pane the user is reading, so "case 3" means the same
+ *  thing to both ends of the conversation. */
 function renderDraftBlock(cases: ReviewedCase[], bugs: ReviewedBug[]): string {
   if (cases.length === 0 && bugs.length === 0) {
     return "(empty draft — no cases or bugs generated yet)";
@@ -215,29 +260,40 @@ function renderDraftBlock(cases: ReviewedCase[], bugs: ReviewedBug[]): string {
   const lines: string[] = [];
   if (cases.length > 0) {
     lines.push(`Cases (${cases.length}):`);
-    for (const c of cases) {
+    cases.forEach((c, i) => {
       const status = c.decision === "keep" ? "KEEP" : "skip";
-      lines.push(`  [${status}] ${c.title}`);
+      lines.push(`  case ${i + 1} [${status}] ${c.title}`);
       if (c.rationale) lines.push(`    rationale: ${c.rationale}`);
-      for (const s of c.steps) {
-        lines.push(`    - ${s.action} → ${s.expected}`);
-      }
-    }
+      const source = renderSourceLinks(c);
+      if (source) lines.push(`    source: ${source}`);
+      c.steps.forEach((s, n) => {
+        lines.push(`    ${n + 1}. ${s.action} → ${s.expected}`);
+      });
+    });
   }
   if (bugs.length > 0) {
     if (lines.length > 0) lines.push("");
     lines.push(`Bug suggestions (${bugs.length}):`);
-    for (const b of bugs) {
+    bugs.forEach((b, i) => {
       const status = b.decision === "keep" ? "KEEP" : "skip";
-      lines.push(`  [${status}] ${b.title} (severity: ${b.severity})`);
+      const linked =
+        typeof b.linkedDraftCaseIndex === "number" &&
+        b.linkedDraftCaseIndex >= 0 &&
+        b.linkedDraftCaseIndex < cases.length
+          ? ` → case ${b.linkedDraftCaseIndex + 1}`
+          : "";
+      lines.push(
+        `  bug ${i + 1} [${status}] ${b.title} (severity: ${b.severity})${linked}`,
+      );
+      const refs = renderCodeRefs(b);
+      if (refs) lines.push(`    code: ${refs}`);
       if (b.reproSteps) {
-        // Keep repro steps compact — they're already multiline.
-        const compact = b.reproSteps.split("\n").join(" ");
-        lines.push(
-          `    ${compact.length > 220 ? compact.slice(0, 219) + "…" : compact}`,
-        );
+        lines.push("    repro:");
+        for (const line of clampRepro(b.reproSteps).split("\n")) {
+          lines.push(`      ${line}`);
+        }
       }
-    }
+    });
   }
   return lines.join("\n");
 }
