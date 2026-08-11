@@ -7,6 +7,40 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.20.0] - 2026-08-11
+
+### Added
+
+- **Runs are budgeted by what they cost, not by how many steps they take.** A generation, review, or chat run used to stop after a fixed number of reading steps — which cut a cheap run off early and let an expensive one spend far more than you'd expect. Every surface now has a token budget, priced so a cached read costs what a cached read actually costs, and the step count is only a runaway guard. The run header shows what a run has spent against that budget while it works.
+- **Long runs no longer run out of room.** The app measures the real size of every request instead of estimating it, caps what any single file read or pasted block can contribute, and — once a run gets genuinely long — replaces its oldest file reads with a short note telling the model how to fetch that file again if it still needs it. Recent reads are always kept intact. If that still isn't enough, the middle of the conversation is summarised by the cheapest model you have a key for, so the expensive one keeps working instead of hitting the wall.
+- **A run that dies can be picked up where it stopped.** Rate limits, dropped connections, a request that didn't fit, or an answer that overran the model's output limit used to lose everything the run had read. Each of those now leaves a resume point: click Resume and the model carries on from its own notes rather than re-reading your codebase. An answer cut off by the output limit retries with more room to write, and a request that was too big comes back smaller than the one that failed. Applies to the generator, its follow-up rounds, and Commit Review.
+- **The generator finishes an empty run by itself.** The worst failure this app had was a run that read your code for twenty-odd steps and then wrote nothing — all of the cost, none of the output. It now replays what it read with an instruction to stop reading and write the batch, automatically, before any error is shown. You get test cases instead of an error and a button. A run that stopped because it hit its budget still asks first, because that one wanted more reading rather than less.
+- **Follow-up rounds remember each other.** The review pane showed you every follow-up you'd sent and what each one changed, and none of it reached the model — so a round could cheerfully undo the round before it. That history is now part of the prompt, and a follow-up is metered as a continuation of the run it refines rather than as a fresh one.
+- **The Ask remembers what it read.** Asking a follow-up question about a draft used to re-read every file from scratch. The conversation now carries the model's own reads with it, and the draft it's shown includes the code references and full repro steps the generator already wrote down — so "explain bug 2" no longer costs sixteen tool calls to recover something the app already knew.
+
+### Fixed
+
+- **The default model failed on every run.** A stale provider package treated Claude 5 as a model it had never heard of, so it forwarded a sampling parameter Anthropic rejects outright, capped answers at 4,096 tokens, and quietly downgraded structured output. Output limits are now decided per model in the app's own config, where a newly launched model can be described the day it ships instead of waiting for a provider release to catch up.
+- **Every turn of a chat re-bought the entire conversation.** The thread was rebuilt as prose in the middle of each request — exactly where a prompt cache stops matching — so nothing past the system prompt could ever be a cache hit. Requests are now assembled so each turn extends the previous one, with cache markers where they pay for themselves.
+- **A chat turn that stopped without answering showed you its own thinking instead.** When the model spent its reading budget and never reached the answer, you saw "I'll dig into the collect code…" presented as the reply. It now finishes from what it already read and gives you the answer. Both the review-pane Ask and Suite Chat.
+- **A run that came back empty could hand you a draft the model had abandoned.** Anything batch-shaped in the model's mid-run thinking could be picked up and presented as the result — publishable to Azure DevOps, or shown in Commit Review as a verified finding with a patch to apply. Only the model's actual final answer is read now.
+- **Resume threw away the reads it exists to preserve.** Continuing a failed run handed the model "go read this file again" for most of what it had already read, so it spent the continuation re-reading your code. It carries the full record forward now, and only trims when the run failed because the request was too big to send.
+- **Resume was offered when it couldn't possibly work.** A first request too large to send had nothing to continue from, but still showed the button — and clicking it sent the identical request, failed on the spot, and charged you for it.
+- **A partly-broken answer no longer loses the good half.** An answer cut off mid-structure keeps the complete cases and bugs that arrived before the cut instead of dropping the batch, and an answer that restated the format before writing the real one no longer gets mistaken for the example it opened with.
+- **The generator ignored a case count you asked for.** "Give me 5 cases" produced whatever the model felt like. It also now scales how hard it investigates to the size of what you asked for, rather than always going deep.
+- **The broad "where does this live" search under-reported.** It stopped counting at a fixed number of matching lines, so a symbol used heavily in one file came back as "1 file matched" when it was used across twenty.
+- **The summariser could replace the question you asked** with a paraphrase of it, on long chat turns.
+- Turning code search off between two questions in the same chat made every later question fail with a provider error until you turned it back on.
+- A chat answer you stopped halfway was forgotten by the next question, so "keep going from where you stopped" started over.
+- A follow-up round could be told that a previous round had reworked bugs it never touched, whenever you'd unchecked a case in the draft.
+- A failed run and a silent one are now told apart: the error says whether the model hit its output ceiling, ended its turn without writing, or was cut off mid-read — instead of sending everyone to the same JSON-mode setting.
+- The context warning reflects the real size of a request rather than an estimate, so it stops crying wolf on runs with plenty of room left.
+
+### Changed
+
+- Chat answers settle to the answer. While a question is being worked on you see the model's progress and the files it's reading; once it lands, the message shows the answer alone rather than the thinking that preceded it.
+- The run header reads at a glance — model, elapsed time, what the run has spent, and what stopped it.
+
 ## [0.19.0] - 2026-08-03
 
 ### Added
