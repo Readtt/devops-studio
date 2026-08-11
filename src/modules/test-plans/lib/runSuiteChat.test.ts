@@ -7,9 +7,13 @@ vi.mock("@/modules/ai/lib/taskRunner", () => ({
   streamTask: (...a: unknown[]) => streamTask(...a),
 }));
 vi.mock("./suiteChatTools", () => ({
-  buildSuiteChatTools: () => undefined,
+  buildSuiteChatTools: (root: string | null) =>
+    root ? ({ read_file: {} } as never) : undefined,
 }));
 
+import type { ModelMessage } from "ai";
+import { FINISH_NOW_NUDGE } from "@/modules/ai/lib/checkpointApi";
+import { RESUME_TOPUP_TOKENS } from "@/modules/ai/config";
 import {
   streamSuiteChatTask,
   SUITE_CHAT_SYSTEM_PROMPT,
@@ -200,5 +204,110 @@ describe("SUITE_CHAT_SYSTEM_PROMPT", () => {
     expect(streamTask.mock.calls[0][0].systemPrompt).toBe(
       SUITE_CHAT_SYSTEM_PROMPT,
     );
+  });
+});
+
+// The same "burned its steps reading and never answered" failure the draft Ask
+// was fixed for. `text` is every step's narration; returning it unchecked put
+// "I'll check the session module next…" in the thread as the answer to a
+// question nobody ever answered.
+describe("suite chat — finishing a turn that stopped without answering", () => {
+  const toolCall = (id: string): ModelMessage =>
+    ({
+      role: "assistant",
+      content: [
+        { type: "tool-call", toolCallId: id, toolName: "read_file", input: {} },
+      ],
+    }) as never;
+  const toolResult = (id: string): ModelMessage =>
+    ({
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: id,
+          toolName: "read_file",
+          output: { type: "text", value: "file body" },
+        },
+      ],
+    }) as never;
+  const readSomething = [toolCall("t1"), toolResult("t1")];
+
+  const stoppedShort = () => {
+    let call = 0;
+    streamTask.mockImplementation(async (args: Record<string, unknown>) => {
+      call += 1;
+      // Streams like the real runner: the narration reaching the bubble live
+      // is part of what's being pinned.
+      const onText = args.onText as (d: string) => void;
+      if (call === 1) {
+        (args.onCheckpoint as (c: { messages: ModelMessage[] }) => void)({
+          messages: readSomething,
+        });
+        onText("I'll check the session module next.");
+        return {
+          ok: true,
+          text: "I'll check the session module next.",
+          finalText: "",
+          stepsUsed: 12,
+          durationMs: 10,
+        };
+      }
+      onText("Criterion 3 has no covering case.");
+      return {
+        ok: true,
+        text: "Criterion 3 has no covering case.",
+        finalText: "Criterion 3 has no covering case.",
+        durationMs: 5,
+      };
+    });
+  };
+
+  it("replays what it read and answers, instead of leaving narration as the reply", async () => {
+    stoppedShort();
+    const deltas: string[] = [];
+    const r = await streamSuiteChatTask({
+      ...base,
+      sourceRoot: "/src",
+      onText: (d) => deltas.push(d),
+    });
+    expect(streamTask).toHaveBeenCalledTimes(2);
+    const finish = streamTask.mock.calls[1][0];
+    // The tools stay declared — the replay's tool blocks are a provider 400
+    // without a `tools` field to answer to — and NOT via `toolChoice: "none"`,
+    // which @ai-sdk/anthropic implements by dropping the definitions.
+    expect(finish.tools).toBeTruthy();
+    expect(finish.toolChoice).toBeUndefined();
+    expect(finish.tokenBudget).toBe(RESUME_TOPUP_TOKENS);
+    expect(finish.resumeMessages).toEqual([
+      ...readSomething,
+      { role: "user", content: FINISH_NOW_NUDGE },
+    ]);
+    // Streams the work, settles to the answer — the thread keeps no record of
+    // the rescue. Same contract as the review-pane Ask.
+    expect(deltas.join("")).toContain("I'll check the session module next.");
+    expect(r.text).toBe("Criterion 3 has no covering case.");
+  });
+
+  it("leaves an answered turn alone", async () => {
+    streamTask.mockResolvedValue({
+      ok: true,
+      text: "criterion 3 is uncovered",
+      finalText: "criterion 3 is uncovered",
+      durationMs: 1,
+    });
+    await streamSuiteChatTask({ ...base, sourceRoot: "/src" });
+    expect(streamTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not pay for a finish pass when the turn read nothing", async () => {
+    streamTask.mockImplementation(async (args: Record<string, unknown>) => {
+      (args.onCheckpoint as (c: { messages: ModelMessage[] }) => void)?.({
+        messages: [],
+      });
+      return { ok: true, text: "", finalText: "", stepsUsed: 1, durationMs: 1 };
+    });
+    await streamSuiteChatTask({ ...base, sourceRoot: "/src" });
+    expect(streamTask).toHaveBeenCalledTimes(1);
   });
 });

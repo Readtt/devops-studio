@@ -8,6 +8,7 @@
 // codebase via Read/Glob/Grep.
 
 import {
+  RESUME_TOPUP_TOKENS,
   SURFACE_STEP_CAPS,
   SURFACE_TOKEN_BUDGETS,
   type ModelId,
@@ -15,6 +16,12 @@ import {
 import type { ModelMessage } from "ai";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import { streamTask } from "@/modules/ai/lib/taskRunner";
+import {
+  answeredThisTurn,
+  finishPassMessages,
+  hasToolResult,
+  sanitizeTranscript,
+} from "@/modules/ai/lib/finishPass";
 import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import {
   isQuerySuite,
@@ -403,7 +410,7 @@ export async function streamSuiteChatTask(
   input: SuiteChatTaskInput & { onText: (delta: string) => void },
 ): Promise<SuiteChatRunResult> {
   const tools = buildSuiteChatTools(input.sourceRoot);
-  const r = await streamTask({
+  const shared = {
     modelId: input.modelId,
     keys: input.keys,
     local: input.local ?? {},
@@ -416,15 +423,53 @@ export async function streamSuiteChatTask(
       ...(input.attachments ?? []),
       ...collectContextImages(input.contextBlocks ?? []),
     ],
-    tools: tools ?? null,
     temperature: 0,
-    maxSteps: SURFACE_STEP_CAPS.suiteChat,
-    tokenBudget: SURFACE_TOKEN_BUDGETS.suiteChat,
     onToolEvent: input.onToolEvent,
     onText: input.onText,
     signal: input.signal,
+  };
+
+  // Banked per step purely so the finish pass below has something to replay —
+  // unlike the generator's Ask, this surface doesn't persist transcripts
+  // between turns.
+  let transcript: ModelMessage[] = [];
+  const r = await streamTask({
+    ...shared,
+    tools: tools ?? null,
+    maxSteps: SURFACE_STEP_CAPS.suiteChat,
+    tokenBudget: SURFACE_TOKEN_BUDGETS.suiteChat,
+    onCheckpoint: (cp) => {
+      transcript = cp.messages;
+    },
   });
-  return { text: r.text, durationMs: r.durationMs };
+
+  // The same "read for twelve steps, never answered" recovery the review-pane
+  // Ask got. `text` is every step's narration; returning it unchecked is how a
+  // turn that ended on a tool call came back looking like a reply — the thread
+  // then shows "I'll check the session module next…" as the answer to a
+  // question nobody ever answered. See finishPass.ts.
+  const replay = sanitizeTranscript(transcript);
+  if (answeredThisTurn(r) || !hasToolResult(replay)) {
+    return { text: r.text, durationMs: r.durationMs };
+  }
+  const finish = await streamTask({
+    ...shared,
+    // The tools stay on the request: the replay is full of tool blocks, which
+    // are a provider 400 without a `tools` field to answer to. The nudge is
+    // what stops the reading — see finishPassMessages for why a `toolChoice`
+    // can't be.
+    tools: tools ?? null,
+    maxSteps: SURFACE_STEP_CAPS.suiteChat,
+    resumeMessages: finishPassMessages(replay),
+    tokenBudget: RESUME_TOPUP_TOKENS,
+  });
+  // Settles to the answer alone — see the same note in qaChatRun. Both stream
+  // live; neither reports its own plumbing into the thread.
+  const answer = (finish.finalText ?? finish.text).trim();
+  return {
+    text: answer.length > 0 ? answer : r.text,
+    durationMs: r.durationMs + finish.durationMs,
+  };
 }
 
 // --- Shared prompt builder --------------------------------------------------

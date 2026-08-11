@@ -867,7 +867,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
     }
 
     try {
-      await streamSuiteChatTask({
+      const run = await streamSuiteChatTask({
         suiteName: suite.suiteName,
         suitePath: suite.suitePath,
         planName: suite.planName,
@@ -913,9 +913,17 @@ export const useSuiteChat = create<Store>((set, get) => ({
         const next = new Map(s.byThread);
         const slice = next.get(tk);
         if (!slice) return s;
+        // The runner's returned text is what settles, not what streamed: a turn
+        // that stalled mid-read streams its narration live and then comes back
+        // with the answer alone. See streamSuiteChatTask.
+        const settled = run.text.trim();
         const messages = slice.messages.map((m) =>
-          m.id === assistantId && m.content.length === 0
-            ? { ...m, content: "(empty response)" }
+          m.id === assistantId
+            ? {
+                ...m,
+                content:
+                  settled || (m.content.length === 0 ? "(empty response)" : m.content),
+              }
             : m,
         );
         next.set(tk, {

@@ -7,7 +7,13 @@ import {
   SURFACE_TOKEN_BUDGETS,
   type ModelId,
 } from "@/modules/ai/config";
-import { FINISH_NOW_NUDGE } from "@/modules/ai/lib/checkpointApi";
+import {
+  answeredThisTurn,
+  finishPassMessages,
+  hasToolResult,
+  sanitizeTranscript,
+  withoutFinishNudge,
+} from "@/modules/ai/lib/finishPass";
 import type { ModelMessage } from "ai";
 import { type LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { streamTask } from "@/modules/ai/lib/taskRunner";
@@ -53,40 +59,6 @@ export type ChatMessage = {
    *  is what every turn used to be. */
   transcript?: ModelMessage[];
 };
-
-/** Whether a transcript can be replayed to the provider without a 400.
- *
- *  Anthropic requires every `tool-call` to be answered by a `tool-result` in
- *  the same conversation. A turn the user cancelled mid-tool ends on an
- *  unanswered call, so the transcript is cut at the first one — the reads
- *  before it are still worth carrying, and the dangling call is worth nothing
- *  to anyone. A completed turn is always balanced and passes through whole. */
-export function sanitizeTranscript(messages: ModelMessage[]): ModelMessage[] {
-  const parts = (content: unknown): { type?: string; toolCallId?: string }[] =>
-    Array.isArray(content) ? (content as { type?: string; toolCallId?: string }[]) : [];
-
-  const answered = new Set<string>();
-  for (const m of messages) {
-    if (m.role !== "tool") continue;
-    for (const p of parts(m.content)) {
-      if (p.type === "tool-result" && p.toolCallId) answered.add(p.toolCallId);
-    }
-  }
-
-  let safeEnd = 0;
-  let dangling = false;
-  messages.forEach((m, i) => {
-    if (m.role === "assistant") {
-      for (const p of parts(m.content)) {
-        if (p.type === "tool-call" && p.toolCallId && !answered.has(p.toolCallId)) {
-          dangling = true;
-        }
-      }
-    }
-    if (!dangling) safeEnd = i + 1;
-  });
-  return safeEnd === messages.length ? messages : messages.slice(0, safeEnd);
-}
 
 export const CHAT_SYSTEM_PROMPT = `You are a senior QA test analyst chatting with the user about a draft test plan they have on screen. The plan was already generated; this conversation is for *understanding and improving* the draft, NOT for editing it. The user has a separate "refine" action when they want changes applied.
 
@@ -198,7 +170,15 @@ export async function streamChatTask(
     systemPrompt: CHAT_SYSTEM_PROMPT,
     customInstructions: input.customInstructions,
     contextPrompt: buildChatContext(input),
-    priorMessages: historyMessages(input.history),
+    // A banked transcript is only replayable while the tools that produced it
+    // are still on the request. `sourceRoot` is re-read from preferences every
+    // turn, so turning code search off — or clearing the source directory —
+    // between two questions in the same draft chat left the history carrying
+    // tool-call/tool-result blocks with no tool definitions behind them, and
+    // every follow-up failed with a provider 400 until the user turned it back
+    // on. Without tools the turns replay as the prose they ended with, which is
+    // what every turn was before transcripts existed.
+    priorMessages: historyMessages(input.history, tools !== undefined),
     prompt: buildChatQuestion(input),
     attachments: [
       ...input.attachments,
@@ -229,63 +209,52 @@ export async function streamChatTask(
     onCheckpoint: (cp) => bank(cp.messages),
   });
 
-  // `text` is every step's narration concatenated; `finalText` is what the last
-  // step actually wrote. When the second is empty and the first is not, the
-  // loop ended on a tool call and the user is looking at "I'll dig into the
-  // collect/migrate code…" presented as the answer. That is the reported bug,
-  // and it survived a follow-up asking for the explanation because the follow-up
-  // hit the same wall.
-  // `finalText` lives on the success arm only. A schema-less stream can't
-  // return the failure arm — the reasons there are all schema ones — so this
-  // narrowing is for the type checker, and it fails safe either way: an
-  // unexpected failure keeps whatever text it carried rather than buying a
-  // second call to explain it.
-  const answered = (r.ok ? (r.finalText ?? r.text) : r.text).trim().length > 0;
+  // When the last step wrote nothing and the narration did, the loop ended on a
+  // tool call and the user is looking at "I'll dig into the collect/migrate
+  // code…" presented as the answer. That is the reported bug, and it survived a
+  // follow-up asking for the explanation because the follow-up hit the same
+  // wall.
   const replay = sanitizeTranscript(transcript);
-  if (answered || !hasToolResult(replay)) {
+  if (answeredThisTurn(r) || !hasToolResult(replay)) {
     return { text: r.text, durationMs: r.durationMs };
   }
 
-  // One tool-less pass over what it already read. The reading is bought and
-  // paid for; without this the user pays for twelve steps of it and gets a
-  // sentence of narration. Bounded three ways: it runs at most once, it has no
-  // tools to spend on, and it is rationed by the resume top-up rather than a
-  // second full chat budget.
-  const note = stoppedShortNote(r.stepsUsed ?? 0);
-  input.onText(note);
+  // One more pass over what it already read. The reading is bought and paid
+  // for; without this the user pays for twelve steps of it and gets a sentence
+  // of narration. Bounded two ways: it runs at most once, and it is rationed by
+  // the resume top-up rather than a second full chat budget — the same way the
+  // generator's resume bounds the same replay.
+  //
+  // The tools ride along deliberately — see finishPassMessages. Sending
+  // `tools: null` here (what "tool-less finish pass" reads like) puts
+  // tool_use/tool_result blocks in a request with no tools to answer to, which
+  // Anthropic rejects with a 400, turning the recovery into a second failure
+  // the user still pays for.
   const finish = await streamTask({
     ...shared,
-    tools: null,
-    resumeMessages: [...replay, { role: "user", content: FINISH_NOW_NUDGE }],
+    tools: tools ?? null,
+    // Named, not inherited: without it this call falls through to the runner's
+    // MAX_AGENT_STEPS default — a bigger step ceiling than the turn it is
+    // finishing.
+    maxSteps: SURFACE_STEP_CAPS.draftChat,
+    resumeMessages: finishPassMessages(replay),
     tokenBudget: RESUME_TOPUP_TOKENS,
-    onCheckpoint: (cp) => bank(cp.messages),
+    // Banked WITHOUT the nudge: this transcript is persisted and replayed as
+    // conversation history, and a banked "do not call any more tools" turns one
+    // turn's instruction into every later turn's standing order.
+    onCheckpoint: (cp) => bank(withoutFinishNudge(cp.messages)),
   });
+  // The narration and the rescue are BOTH streamed live — the user watches it
+  // work — but what settles into the thread is the answer alone. Reporting the
+  // machinery ("stopped after 12 reading steps…") describes our plumbing, not
+  // their question, and it is what the reading strip is for. If the rescue
+  // produced nothing either, the narration stays rather than leaving a blank
+  // bubble.
+  const answer = (finish.finalText ?? finish.text).trim();
   return {
-    text: `${r.text}${note}${finish.text}`,
+    text: answer.length > 0 ? answer : r.text,
     durationMs: r.durationMs + finish.durationMs,
   };
-}
-
-/** Told to the user, in the bubble, between the narration and the answer. Both
- *  reasons a loop ends without answering — the budget stopped it, or the model
- *  simply stopped — read the same from here and mean the same thing to a
- *  reader, so the line names the symptom rather than guessing the cause. */
-function stoppedShortNote(steps: number): string {
-  return `\n\n_Stopped after ${steps} reading step${
-    steps === 1 ? "" : "s"
-  } without answering — finishing from what it already read._\n\n`;
-}
-
-/** Whether the turn actually read anything. A tool-less turn that returned
- *  nothing has nothing to finish FROM, so it stays empty rather than paying for
- *  a second call to re-ask the same question with the same context. */
-function hasToolResult(messages: ModelMessage[]): boolean {
-  return messages.some(
-    (m) =>
-      m.role === "tool" &&
-      Array.isArray(m.content) &&
-      m.content.some((p) => (p as { type?: string }).type === "tool-result"),
-  );
 }
 
 // --- Shared user-prompt builder --------------------------------------------
@@ -347,16 +316,55 @@ function buildChatQuestion(input: ChatRunInput): string {
  *  nothing about the sixteen files it had open a moment ago, so a follow-up as
  *  small as "you didn't explain" re-ran every one of those reads from scratch.
  *  The transcript already contains the assistant's own text, so it replaces
- *  that message rather than joining it. */
-function historyMessages(history: ChatMessage[]): ModelMessage[] {
+ *  that message rather than joining it — EXCEPT where it doesn't; see below.
+ *
+ *  `replayTools` is the caller saying whether this turn has the tools that
+ *  transcript's blocks refer to. Without them the transcript is unsendable, so
+ *  the turns fall back to prose. */
+function historyMessages(
+  history: ChatMessage[],
+  replayTools: boolean,
+): ModelMessage[] {
   const out: ModelMessage[] = [];
   for (const m of history) {
-    if (m.role === "assistant" && m.transcript && m.transcript.length > 0) {
-      out.push(...m.transcript);
+    const transcript = replayTools ? m.transcript : undefined;
+    if (m.role === "assistant" && transcript && transcript.length > 0) {
+      out.push(...transcript);
+      // A transcript holds COMPLETED steps only. A turn the user stopped
+      // mid-answer has its visible prose in `content` and nowhere else — the
+      // store keeps that partial bubble deliberately ("that text is still
+      // useful to the user") — so replacing the message wholesale dropped
+      // exactly the text the user is looking at. "Keep going from where you
+      // stopped" then reached a model with no record of having written
+      // anything, and it started the answer over.
+      const visible = m.content.trim();
+      if (visible && !assistantText(transcript).includes(visible)) {
+        out.push({ role: "assistant", content: m.content });
+      }
       continue;
     }
     if (m.content.trim().length === 0) continue;
     out.push({ role: m.role, content: m.content });
+  }
+  return out;
+}
+
+/** Everything the assistant WROTE in a transcript, tool traffic excluded — used
+ *  only to tell "the transcript already has this text" from "the bubble has
+ *  text the transcript never banked". */
+function assistantText(messages: ModelMessage[]): string {
+  let out = "";
+  for (const m of messages) {
+    if (m.role !== "assistant") continue;
+    if (typeof m.content === "string") {
+      out += m.content;
+      continue;
+    }
+    if (!Array.isArray(m.content)) continue;
+    for (const p of m.content) {
+      const part = p as { type?: string; text?: string };
+      if (part.type === "text" && typeof part.text === "string") out += part.text;
+    }
   }
   return out;
 }

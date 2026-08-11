@@ -6,16 +6,20 @@ const streamTask = vi.fn();
 vi.mock("@/modules/ai/lib/taskRunner", () => ({
   streamTask: (...a: unknown[]) => streamTask(...a),
 }));
+// Mirrors the real contract: a tool set when there's a source dir to read,
+// nothing when there isn't. Which one it is now decides whether a banked
+// transcript can be replayed at all, so a flat `undefined` would hide that.
 vi.mock("@/modules/test-plans/lib/suiteChatTools", () => ({
-  buildSuiteChatTools: () => undefined,
+  buildSuiteChatTools: (root: string | null) =>
+    root ? ({ read_file: {} } as never) : undefined,
 }));
 
 import {
-  sanitizeTranscript,
   streamChatTask,
   type ChatMessage,
   type ChatTaskInput,
 } from "./qaChatRun";
+import { sanitizeTranscript } from "@/modules/ai/lib/finishPass";
 import type { ModelMessage } from "ai";
 import { FINISH_NOW_NUDGE } from "@/modules/ai/lib/checkpointApi";
 import {
@@ -32,6 +36,7 @@ const base: ChatTaskInput & { onText: (d: string) => void } = {
   newQuestion: "does the draft cover the undo path?",
   modelId: "gpt-5.4-mini" as never,
   keys: {} as never,
+  sourceRoot: "/src",
   onText: () => undefined,
 };
 
@@ -195,6 +200,52 @@ describe("draft-chat memory — a turn remembers what it read", () => {
     ]);
   });
 
+  // `sourceRoot` is re-read from preferences on every Ask, so code search can
+  // go off between two questions in the same chat. The banked transcript's
+  // tool blocks then have no tool definitions behind them and the provider
+  // rejects the whole request — every follow-up failing until the user turns
+  // code search back on.
+  it("replays prose, not tool blocks, when this turn has no tools", async () => {
+    await streamChatTask({
+      ...base,
+      sourceRoot: null,
+      history: [
+        turn("user", "q1"),
+        {
+          ...turn("assistant", "a1"),
+          transcript: [toolCall("t1"), toolResult("t1"), say("a1")],
+        },
+      ],
+    });
+    expect(streamTask.mock.calls[0][0].tools).toBeNull();
+    expect(streamTask.mock.calls[0][0].priorMessages).toEqual([
+      { role: "user", content: "q1" },
+      { role: "assistant", content: "a1" },
+    ]);
+  });
+
+  // A transcript banks COMPLETED steps only, so a turn the user stopped
+  // mid-answer has its visible prose in `content` and nowhere else — and the
+  // store keeps that partial bubble on purpose. Replacing the message with the
+  // transcript dropped exactly the text on screen, so "keep going from where
+  // you stopped" reached a model with no record of having written anything.
+  it("keeps a cancelled turn's partial answer alongside its transcript", async () => {
+    const transcript = [toolCall("t1"), toolResult("t1")];
+    await streamChatTask({
+      ...base,
+      history: [
+        turn("user", "q1"),
+        { ...turn("assistant", "half an answer"), transcript },
+      ],
+      newQuestion: "keep going from where you stopped",
+    });
+    expect(streamTask.mock.calls[0][0].priorMessages).toEqual([
+      { role: "user", content: "q1" },
+      ...transcript,
+      { role: "assistant", content: "half an answer" },
+    ]);
+  });
+
   it("feeds each step's transcript out so a cancelled turn still banks it", async () => {
     const seen: ModelMessage[][] = [];
     streamTask.mockImplementation(async (args: Record<string, unknown>) => {
@@ -235,8 +286,13 @@ describe("draft-chat memory — a turn remembers what it read", () => {
         const onCheckpoint = args.onCheckpoint as (c: {
           messages: ModelMessage[];
         }) => void;
+        // Streams like the real runner does — the narration reaching the
+        // bubble live is the behaviour being pinned, so a mock that only
+        // returns text would make that assertion vacuous.
+        const onText = args.onText as (d: string) => void;
         if (call === 1) {
           onCheckpoint({ messages: readSomething });
+          onText("I'll dig into the collect/migrate code.");
           return {
             ok: true,
             text: "I'll dig into the collect/migrate code.",
@@ -245,22 +301,60 @@ describe("draft-chat memory — a turn remembers what it read", () => {
             durationMs: 10,
           };
         }
-        onCheckpoint({ messages: [...readSomething, say(finishText)] });
+        onText(finishText);
+        // What the real accumulator emits: [...resumeMessages, ...this call's
+        // own messages] — so the finish pass's checkpoint carries the nudge
+        // that was handed to it. Building the array without it would hide the
+        // banking bug entirely.
+        onCheckpoint({
+          messages: [
+            ...((args.resumeMessages as ModelMessage[]) ?? []),
+            say(finishText),
+          ],
+        });
         return { ok: true, text: finishText, finalText: finishText, durationMs: 5 };
       });
     };
 
-    it("replays what it read with no tools instead of leaving narration as the answer", async () => {
+    it("replays what it read and forbids more reading, instead of leaving narration as the answer", async () => {
       stoppedShort();
       const r = await streamChatTask({ ...base });
       expect(streamTask).toHaveBeenCalledTimes(2);
       const finish = streamTask.mock.calls[1][0];
-      expect(finish.tools).toBeNull();
+      // The tools STAY on the request. Sending `tools: null` — the literal
+      // reading of "tool-less finish pass" — puts the replay's
+      // tool_use/tool_result blocks in a request with no tools to answer to,
+      // which Anthropic rejects with a 400: the recovery becomes a second
+      // failure the user still pays for.
+      expect(finish.tools).toBeTruthy();
+      // And NOT via `toolChoice: "none"`, which reads like the right way to
+      // declare tools without allowing them and isn't: @ai-sdk/anthropic
+      // implements that value by dropping the tool definitions, rebuilding the
+      // same invalid request on the default provider. The nudge below is the
+      // mechanism; the token top-up is the bound.
+      expect(finish.toolChoice).toBeUndefined();
       expect(finish.resumeMessages).toEqual([
         ...readSomething,
         { role: "user", content: FINISH_NOW_NUDGE },
       ]);
       expect(r.text).toContain("Here is the explanation.");
+    });
+
+    it("does not bank the finish nudge into the turn's saved transcript", async () => {
+      // The checkpoint a finish pass emits is [...resumeMessages, ...answer],
+      // nudge included. Banked, it is persisted on the assistant message and
+      // replayed by every LATER question as a prior user turn ordering the
+      // model not to call tools — so one stalled Ask silently disabled code
+      // search for the rest of the conversation.
+      stoppedShort();
+      const seen: ModelMessage[][] = [];
+      await streamChatTask({ ...base, onTranscript: (m) => seen.push(m) });
+      const banked = seen[seen.length - 1];
+      expect(banked).not.toContainEqual({
+        role: "user",
+        content: FINISH_NOW_NUDGE,
+      });
+      expect(banked).toEqual([...readSomething, say("Here is the explanation.")]);
     });
 
     it("rations the finish pass by the resume top-up, not a second chat budget", async () => {
@@ -272,17 +366,31 @@ describe("draft-chat memory — a turn remembers what it read", () => {
       );
     });
 
-    it("tells the user in the bubble why the answer arrives late", async () => {
+    // The rescue is plumbing, and the user asked for it not to be narrated at
+    // them: "Claude Code wouldn't stop reading the code, it would read what it
+    // needs then tell me the answer." The narration still STREAMS (that is the
+    // live sense of it working, and the reading strip beside it), but what
+    // settles into the thread is the answer alone.
+    it("settles to the answer alone — no narration, no note about reading steps", async () => {
       stoppedShort();
       const deltas: string[] = [];
       const r = await streamChatTask({ ...base, onText: (d) => deltas.push(d) });
-      expect(deltas.join("")).toContain(
-        "Stopped after 12 reading steps without answering",
-      );
-      expect(r.text).toContain("Stopped after 12 reading steps");
+      expect(r.text).toBe("Here is the explanation.");
+      expect(r.text).not.toContain("Stopped after");
+      expect(r.text).not.toContain("I'll dig into");
+      // …and the user still watched it work.
+      expect(deltas.join("")).toContain("I'll dig into the collect/migrate code.");
+      expect(deltas.join("")).not.toContain("Stopped after");
     });
 
-    it("finishes only once — the pass gets no tools, so it cannot recurse", async () => {
+    it("keeps the narration when the rescue answers nothing either", async () => {
+      // Settling to an empty answer would blank a bubble the user watched fill.
+      stoppedShort("");
+      const r = await streamChatTask({ ...base });
+      expect(r.text).toBe("I'll dig into the collect/migrate code.");
+    });
+
+    it("finishes only once — a finish pass never triggers another", async () => {
       stoppedShort("");
       await streamChatTask({ ...base });
       expect(streamTask).toHaveBeenCalledTimes(2);
