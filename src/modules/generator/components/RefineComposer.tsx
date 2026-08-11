@@ -39,6 +39,8 @@ import {
   type SessionState,
 } from "../store/useGenerationSession";
 import { AnalyzeActivityLog } from "./AnalyzeActivityLog";
+import { RunBudgetReadout, useElapsed } from "./RunBudgetReadout";
+import { CacheHitReadout } from "@/modules/ai/components/CacheHitReadout";
 import { InlineNotice } from "./InlineNotice";
 import { relativeTime, ResumeCard } from "@/modules/ai/components/ResumeCard";
 import {
@@ -162,6 +164,8 @@ export function RefineComposer({ isRefining }: Props) {
     (s) => s.probeRefineCheckpoint,
   );
   const runId = useGenerationSession((s) => s.runId);
+  const refineSpend = useGenerationSession((s) => s.refineSpend);
+  const elapsed = useElapsed(refineSpend?.startedAt ?? null);
   const attachments = useGenerationSession((s) => s.attachments);
   const addRichAttachment = useGenerationSession((s) => s.addRichAttachment);
   const removeAttachment = useGenerationSession((s) => s.removeAttachment);
@@ -396,6 +400,24 @@ export function RefineComposer({ isRefining }: Props) {
               {stepLabel || "Reading current draft…"}
             </span>
             <div className="flex shrink-0 items-center gap-1.5">
+              {/* What this round is costing, in the same units and the same
+                  component the analyze phase uses. The follow-up runs the same
+                  engine on the same budget and used to show none of it — the
+                  user could watch it read files with no idea what that was
+                  buying. */}
+              {refineSpend ? (
+                <RunBudgetReadout
+                  tokensUsed={refineSpend.tokensUsed}
+                  tokenBudget={refineSpend.tokenBudget}
+                  tokensInput={refineSpend.tokensInput}
+                  tokensCached={refineSpend.tokensCached}
+                  peakPromptTokens={refineSpend.peakPromptTokens}
+                  stepsUsed={refineSpend.stepsUsed}
+                  stepCap={refineSpend.stepCap}
+                  modelId={activeModelId}
+                  elapsed={elapsed}
+                />
+              ) : null}
               <Kbd>Esc</Kbd>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -948,6 +970,7 @@ function RefineRoundsDialog({
                     {r.beforeBugs} → {r.afterBugs} bugs
                   </span>
                 </header>
+                <RoundSpend round={r} />
                 <div className="rounded-sm border border-border/40 bg-foreground/[0.025] p-2">
                   <p className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
                     follow-up
@@ -996,6 +1019,38 @@ function RefineRoundsDialog({
         </ScrollArea>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** What one past round cost, under its header. The live strip shows this while
+ *  a round runs; without it here the number vanished the moment the round
+ *  finished, which is precisely when the user goes looking for it.
+ *
+ *  Rounds recorded before follow-ups were metered — and rounds on endpoints
+ *  that report no usage — carry no spend and render nothing, rather than a
+ *  zero that would read as free. */
+function RoundSpend({ round }: { round: SessionState["refineRounds"][number] }) {
+  const overrideModelId = useGenerationSession((s) => s.overrideModelId);
+  const defaultModelId = useChatStore((s) => s.selectedModelId);
+  const spend = round.spend;
+  if (!spend || !spend.tokensInput) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 pb-2 font-mono text-[10px] text-muted-foreground/85">
+      <span className="tabular-nums">
+        ~{formatTokens(spend.tokensInput)} tokens
+      </span>
+      <span className="text-muted-foreground/40">·</span>
+      <span className="tabular-nums">
+        {spend.stepsUsed} step{spend.stepsUsed === 1 ? "" : "s"}
+      </span>
+      <span className="text-muted-foreground/40">·</span>
+      <CacheHitReadout
+        inputTokens={spend.tokensInput}
+        cacheReadTokens={spend.tokensCached}
+        peakPromptTokens={spend.peakPromptTokens}
+        modelId={overrideModelId ?? defaultModelId}
+      />
+    </div>
   );
 }
 

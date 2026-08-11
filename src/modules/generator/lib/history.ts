@@ -32,6 +32,19 @@ export type RefineRound = {
   /** Surface the error text on failures so the user can still inspect
    *  what went wrong without re-running. Null on success/empty. */
   error?: string | null;
+  /** What this round cost. Optional because rounds recorded before follow-ups
+   *  were metered carry none, and a provider that reports no usage never
+   *  produces one — both render as "no spend reported" rather than as free. */
+  spend?: {
+    stepsUsed: number;
+    /** Budget-unit spend, the number the round was rationed by. */
+    tokensUsed: number;
+    /** Raw provider counts; null when unreported. `tokensCached / tokensInput`
+     *  is the cache hit ratio the row shows. */
+    tokensInput: number | null;
+    tokensCached: number | null;
+    peakPromptTokens: number | null;
+  };
 };
 
 /**

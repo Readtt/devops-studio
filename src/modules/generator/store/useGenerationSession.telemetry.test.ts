@@ -160,3 +160,117 @@ describe("useGenerationSession — run cost telemetry", () => {
     expect(store.getState().tokensCached).toBeNull();
   });
 });
+
+// Reported: "in the refine input area in review tab, i dont see any cache stuff
+// there or token stuff or anything." There was nothing to see — refine() ran
+// the same engine on the same budget and wrote none of its usage anywhere, so
+// the dock could show a live tool-call log with no cost beside it.
+describe("useGenerationSession — follow-up cost telemetry", () => {
+  /** Analyze once (to reach review), then run one follow-up with a scripted
+   *  engine. Returns the store after the round settles. */
+  async function refineWith(
+    script: (opts: ExecuteAnalystOptions) => void,
+  ): Promise<ReturnType<typeof createGenerationSessionStore>> {
+    const store = (await analyzeWith(() => {})) as ReturnType<
+      typeof createGenerationSessionStore
+    >;
+    executeQaAnalystRun.mockImplementation(
+      async (_p: unknown, opts: ExecuteAnalystOptions) => {
+        script(opts);
+        return OK_BATCH;
+      },
+    );
+    await store.getState().refine("tighten the steps");
+    return store;
+  }
+
+  it("records what the round spent, in the same units analyze uses", async () => {
+    const store = await refineWith((opts) => {
+      opts.onCheckpoint?.({
+        messages: [],
+        stepsUsed: 3,
+        usage: { inputTokens: 100_000, cacheReadTokens: 90_000 },
+      });
+    });
+    const spend = store.getState().refineSpend;
+    expect(spend?.stepsUsed).toBe(3);
+    expect(spend?.tokensInput).toBe(100_000);
+    expect(spend?.tokensCached).toBe(90_000);
+    // Same cost-equivalent arithmetic as the analyze path: 10k fresh + 90k
+    // cached at a tenth.
+    expect(spend?.tokensUsed).toBe(19_000);
+  });
+
+  it("keeps the follow-up's spend OUT of the analyze readout", async () => {
+    // The review header shows the analyze run's tokens beside that run's
+    // duration and case count. A refine writing into those would silently
+    // redefine what the header means, and blend two cache ratios into one that
+    // describes neither.
+    const store = await refineWith((opts) => {
+      opts.onCheckpoint?.({
+        messages: [],
+        stepsUsed: 1,
+        usage: { inputTokens: 400_000, cacheReadTokens: 10_000 },
+      });
+    });
+    expect(store.getState().refineSpend?.tokensInput).toBe(400_000);
+    expect(store.getState().tokensInput).not.toBe(400_000);
+  });
+
+  it("keeps the round's largest request, not its last", async () => {
+    const store = await refineWith((opts) => {
+      opts.onContextSignal?.(signal(40_000));
+      opts.onContextSignal?.(signal(120_000));
+      opts.onContextSignal?.(signal(90_000));
+    });
+    expect(store.getState().refineSpend?.peakPromptTokens).toBe(120_000);
+    // And it did not leak into the analyze peak.
+    expect(store.getState().peakPromptTokens).toBeNull();
+  });
+
+  it("leaves the cache count absent when the endpoint reports none", async () => {
+    const store = await refineWith((opts) => {
+      opts.onCheckpoint?.({
+        messages: [],
+        stepsUsed: 1,
+        usage: { inputTokens: 50_000 },
+      });
+    });
+    expect(store.getState().refineSpend?.tokensCached).toBeNull();
+    expect(store.getState().refineSpend?.tokensUsed).toBe(50_000);
+  });
+
+  it("stamps the spend onto the round so the thinking history can price it", async () => {
+    const store = await refineWith((opts) => {
+      opts.onCheckpoint?.({
+        messages: [],
+        stepsUsed: 2,
+        usage: { inputTokens: 80_000, cacheReadTokens: 60_000 },
+      });
+    });
+    const rounds = store.getState().refineRounds;
+    const round = rounds[rounds.length - 1];
+    expect(round?.spend).toMatchObject({
+      stepsUsed: 2,
+      tokensInput: 80_000,
+      tokensCached: 60_000,
+    });
+  });
+
+  it("zeroes the meter at the start of the next round", async () => {
+    const store = await refineWith((opts) => {
+      opts.onCheckpoint?.({
+        messages: [],
+        stepsUsed: 5,
+        usage: { inputTokens: 300_000 },
+      });
+    });
+    expect(store.getState().refineSpend?.tokensInput).toBe(300_000);
+    // A round that opens on the previous one's total reads as having spent it
+    // before making a single request.
+    executeQaAnalystRun.mockImplementation(async () => OK_BATCH);
+    await store.getState().refine("and again");
+    expect(store.getState().refineSpend?.tokensInput).toBeNull();
+    expect(store.getState().refineSpend?.tokensUsed).toBe(0);
+  });
+});

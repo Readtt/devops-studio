@@ -271,6 +271,31 @@ export type SessionState = {
   peakPromptTokens: number | null;
   /** Date.now() when the current/last analyze started, for the elapsed timer. */
   analyzeStartedAt: number | null;
+  /** What the current (or most recent) follow-up round spent, in the same units
+   *  as the analyze fields above.
+   *
+   *  Deliberately its own object rather than reusing `tokensUsed` and friends.
+   *  A refine that wrote into those would silently redefine the review header,
+   *  which reads them beside the analyze run's duration and case count and
+   *  means "what the run that produced this draft cost". A follow-up is a
+   *  separate call with a separate budget; blending them would also blend the
+   *  cache ratios, and a ratio averaged across two runs describes neither.
+   *
+   *  Null before the first round of a session. Reset at the start of each
+   *  round, so the strip shows THIS round rather than the last one's total. */
+  refineSpend: {
+    stepsUsed: number;
+    stepCap: number;
+    /** Budget-unit spend — what the round is rationed by. */
+    tokensUsed: number;
+    tokenBudget: number;
+    /** Raw provider counts, for the cache ratio. Null ⇒ not reported. */
+    tokensInput: number | null;
+    tokensCached: number | null;
+    peakPromptTokens: number | null;
+    /** Date.now() the round started, for the elapsed timer. */
+    startedAt: number;
+  } | null;
   /** Set when a failed / cancelled analyze left a checkpoint worth continuing.
    *  Null when there's nothing to resume (never ran, ran to completion, or the
    *  user discarded it). */
@@ -636,7 +661,23 @@ function recordRound(
   rounds: RefineRound[],
   next: RefineRound,
   resumed: boolean,
+  /** The live round's meter, stamped onto the entry so the thinking history
+   *  can price a past round. Absent ⇒ nothing was reported and the row says
+   *  so, rather than showing a confident zero. */
+  spend?: SessionState["refineSpend"],
 ): RefineRound[] {
+  next = spend
+    ? {
+        ...next,
+        spend: {
+          stepsUsed: spend.stepsUsed,
+          tokensUsed: spend.tokensUsed,
+          tokensInput: spend.tokensInput,
+          tokensCached: spend.tokensCached,
+          peakPromptTokens: spend.peakPromptTokens,
+        },
+      }
+    : next;
   const i = resumed
     ? rounds.findIndex(
         (r) =>
@@ -790,6 +831,7 @@ const initialState: Omit<
   tokensCached: null,
   peakPromptTokens: null,
   analyzeStartedAt: null,
+  refineSpend: null,
   resumable: null,
   cases: [],
   bugs: [],
@@ -827,6 +869,48 @@ function peakFrom(promptTokens: number) {
   return (s: { peakPromptTokens: number | null }) => ({
     peakPromptTokens: Math.max(s.peakPromptTokens ?? 0, promptTokens),
   });
+}
+
+/** Fold one completed step's usage into the live round's spend. Mirrors what
+ *  analyze() writes into the top-level token fields — the follow-up used to
+ *  write none of it, which is why the refine dock could show a live activity
+ *  log and no cost beside it. */
+function refineSpendFrom(cp: {
+  stepsUsed: number;
+  usage: { inputTokens?: number; cacheReadTokens?: number };
+}) {
+  return (s: { refineSpend: SessionState["refineSpend"] }) =>
+    s.refineSpend
+      ? {
+          refineSpend: {
+            ...s.refineSpend,
+            stepsUsed: cp.stepsUsed,
+            tokensUsed: stepSpend(cp.usage),
+            // Absent (not 0) when the provider reported nothing — rendering an
+            // unreported cache count as 0% accuses a healthy run of a
+            // regression it didn't have.
+            tokensInput: cp.usage.inputTokens ?? null,
+            tokensCached: cp.usage.cacheReadTokens ?? null,
+          },
+        }
+      : {};
+}
+
+/** The refine-side twin. Same reason for being an updater, and a no-op once the
+ *  round has been cleared out from under a late-landing step. */
+function refinePeakFrom(promptTokens: number) {
+  return (s: { refineSpend: SessionState["refineSpend"] }) =>
+    s.refineSpend
+      ? {
+          refineSpend: {
+            ...s.refineSpend,
+            peakPromptTokens: Math.max(
+              s.refineSpend.peakPromptTokens ?? 0,
+              promptTokens,
+            ),
+          },
+        }
+      : {};
 }
 
 /** Sum two counts that are ABSENT when the provider never reported them. Adding
@@ -1287,6 +1371,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
               "Ran out of steps before writing the revised draft.",
             ),
             args.resumed,
+            curr.refineSpend,
           ),
         }));
         if (cp && payload) await cp.writer.flush(payload);
@@ -1331,6 +1416,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
             curr.refineRounds,
             unchangedRound(round, curr.activityLog, "empty", null),
             args.resumed,
+            curr.refineSpend,
           ),
         }));
         if (canContinue && cp && payload) await cp.writer.flush(payload);
@@ -1416,6 +1502,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
             error: null,
           },
           args.resumed,
+          curr.refineSpend,
         ),
       }));
       // Arms the debounced draft write. Unlike settleAnalyzeRun — which awaits
@@ -1479,6 +1566,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
             cancelled ? "Cancelled before completion." : errorText,
           ),
           args.resumed,
+          curr.refineSpend,
         ),
       }));
       if (cp && payload) await cp.writer.flush(payload);
@@ -2884,6 +2972,19 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       errorPhase: null,
       refineError: null,
       refineResumable: null,
+      // Zeroed, not left from the last round: the strip is reporting THIS
+      // follow-up, and a round that starts at the previous one's total reads
+      // as having spent it before making a request.
+      refineSpend: {
+        stepsUsed: 0,
+        stepCap: GENERATOR_BUDGET.steps,
+        tokensUsed: 0,
+        tokenBudget: GENERATOR_BUDGET.tokens,
+        tokensInput: null,
+        tokensCached: null,
+        peakPromptTokens: null,
+        startedAt: Date.now(),
+      },
     });
 
     // Minted before the prep awaits so a cancel during them already-aborts
@@ -3039,9 +3140,18 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           // A step finishing in the same tick as a cancel (or after a newer
           // round took over) must not queue a live payload on top of the
           // terminal outcome that was just written.
-          if (seq !== refineSeq || !liveCp) return;
+          if (seq !== refineSeq) return;
+          set(refineSpendFrom(checkpoint));
+          // Metering is guarded on the round only, NOT on `liveCp`: a draft
+          // with no runId can't be checkpointed but still spends real money,
+          // and that is exactly the round whose cost was invisible.
+          if (!liveCp) return;
           transcript = toTranscript(checkpoint, null);
           liveCp.writer.save(liveCp.buildPayload(null));
+        },
+        onContextSignal: (sig) => {
+          if (seq !== refineSeq) return;
+          set(refinePeakFrom(sig.promptTokens));
         },
         signal: refineAc.signal,
       });
@@ -3085,6 +3195,19 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       errorPhase: null,
       refineError: null,
       refineResumable: null,
+      // A resume is a fresh call under its own (topped-up) grant, so the strip
+      // reports what THIS attempt spends. What the interrupted attempt cost is
+      // already on the resume card the user just clicked.
+      refineSpend: {
+        stepsUsed: 0,
+        stepCap: GENERATOR_BUDGET.steps,
+        tokensUsed: 0,
+        tokenBudget: GENERATOR_BUDGET.tokens,
+        tokensInput: null,
+        tokensCached: null,
+        peakPromptTokens: null,
+        startedAt: Date.now(),
+      },
     });
     // Minted before the checkpoint read, like refine() does before its prep:
     // ESC during that read has to have something to abort, or the round would
@@ -3147,6 +3270,16 @@ export function createGenerationSessionStore(): GenerationSessionStore {
 
     const { cap, tokens, resumeMessages, maxOutputTokens } =
       resumeBudget(payload);
+    // Known only now, and usually NOT the surface budget: a round that stopped
+    // without answering resumes on a top-up. The strip has to show the grant
+    // THIS attempt has, or its meter reads a fraction of the wrong ceiling.
+    set((s) =>
+      s.refineSpend
+        ? {
+            refineSpend: { ...s.refineSpend, stepCap: cap, tokenBudget: tokens },
+          }
+        : {},
+    );
     const base = payload.transcript;
     // Re-read: the draft is what the user sees NOW, which is the undo point a
     // completed resume should restore, and the basis for carrying verdicts /
@@ -3200,10 +3333,15 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         onActivity: onRunActivity,
         onCheckpoint: (checkpoint) => {
           if (seq !== refineSeq) return;
+          set(refineSpendFrom(checkpoint));
           // checkpoint.messages already carries the resumed prefix (the runner
           // prepends it), so only the COUNTERS need the earlier totals added.
           transcript = toTranscript(checkpoint, base);
           writer.save(buildPayload(null));
+        },
+        onContextSignal: (sig) => {
+          if (seq !== refineSeq) return;
+          set(refinePeakFrom(sig.promptTokens));
         },
         signal: refineAc.signal,
       });
