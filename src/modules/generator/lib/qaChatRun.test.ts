@@ -10,7 +10,13 @@ vi.mock("@/modules/test-plans/lib/suiteChatTools", () => ({
   buildSuiteChatTools: () => undefined,
 }));
 
-import { streamChatTask, type ChatMessage, type ChatTaskInput } from "./qaChatRun";
+import {
+  sanitizeTranscript,
+  streamChatTask,
+  type ChatMessage,
+  type ChatTaskInput,
+} from "./qaChatRun";
+import type { ModelMessage } from "ai";
 
 const base: ChatTaskInput & { onText: (d: string) => void } = {
   requirements: "Users can bulk-archive contacts.",
@@ -110,6 +116,125 @@ describe("draft-chat history — real messages, not re-inlined prose", () => {
     expect(call.prompt).toContain("Attachments:");
     expect(call.prompt).toContain("notes.md");
     expect(call.contextPrompt).not.toContain("notes.md");
+  });
+});
+
+// Reported: the Ask ran a pile of tool calls, didn't answer, and the follow-up
+// "you didn't explain" re-ran every one of them. Replaying an assistant turn as
+// the prose it ended with tells the model nothing about the files it had just
+// read, so each turn started blind. These pin the transcript replay.
+describe("draft-chat memory — a turn remembers what it read", () => {
+  const toolCall = (id: string): ModelMessage => ({
+    role: "assistant",
+    content: [
+      { type: "tool-call", toolCallId: id, toolName: "read_file", input: {} },
+    ],
+  }) as never;
+  const toolResult = (id: string): ModelMessage => ({
+    role: "tool",
+    content: [
+      {
+        type: "tool-result",
+        toolCallId: id,
+        toolName: "read_file",
+        output: { type: "text", value: "file body" },
+      },
+    ],
+  }) as never;
+  const say = (text: string): ModelMessage => ({
+    role: "assistant",
+    content: [{ type: "text", text }],
+  }) as never;
+
+  it("replays the prior turn's tool calls and results, not just its prose", async () => {
+    const transcript = [toolCall("t1"), toolResult("t1"), say("a1")];
+    await streamChatTask({
+      ...base,
+      history: [
+        turn("user", "q1"),
+        { ...turn("assistant", "a1"), transcript },
+      ],
+      newQuestion: "you didn't explain",
+    });
+    const call = streamTask.mock.calls[0][0];
+    expect(call.priorMessages).toEqual([
+      { role: "user", content: "q1" },
+      ...transcript,
+    ]);
+  });
+
+  it("replaces the assistant's text message rather than duplicating it", async () => {
+    await streamChatTask({
+      ...base,
+      history: [
+        turn("user", "q1"),
+        { ...turn("assistant", "a1"), transcript: [say("a1")] },
+      ],
+    });
+    const prior = streamTask.mock.calls[0][0].priorMessages as ModelMessage[];
+    expect(prior).toHaveLength(2);
+    // The transcript's own message, not a re-serialization of the display
+    // text beside it — asserting only the COUNT would also hold for the
+    // text-only replay this replaced.
+    expect(prior[1]).toEqual(say("a1"));
+  });
+
+  it("falls back to plain text for a turn that banked no transcript", async () => {
+    await streamChatTask({
+      ...base,
+      history: [turn("user", "q1"), turn("assistant", "a1")],
+    });
+    expect(streamTask.mock.calls[0][0].priorMessages).toEqual([
+      { role: "user", content: "q1" },
+      { role: "assistant", content: "a1" },
+    ]);
+  });
+
+  it("feeds each step's transcript out so a cancelled turn still banks it", async () => {
+    const seen: ModelMessage[][] = [];
+    streamTask.mockImplementation(async (args: Record<string, unknown>) => {
+      const onCheckpoint = args.onCheckpoint as (c: {
+        messages: ModelMessage[];
+      }) => void;
+      onCheckpoint({ messages: [toolCall("t1"), toolResult("t1")] });
+      onCheckpoint({ messages: [toolCall("t1"), toolResult("t1"), say("a")] });
+      return { text: "a", durationMs: 1 };
+    });
+    await streamChatTask({
+      ...base,
+      onTranscript: (m) => seen.push(m),
+    });
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toHaveLength(3);
+  });
+
+  it("does not ask the runner for checkpoints when nobody is banking them", async () => {
+    await streamChatTask({ ...base });
+    expect(streamTask.mock.calls[0][0].onCheckpoint).toBeUndefined();
+  });
+
+  describe("sanitizeTranscript", () => {
+    it("keeps a balanced transcript whole", () => {
+      const t = [toolCall("t1"), toolResult("t1"), say("done")];
+      expect(sanitizeTranscript(t)).toBe(t);
+    });
+
+    it("cuts at a tool call the cancel left unanswered", () => {
+      // Anthropic 400s on a tool_use with no tool_result. The completed read
+      // before it is still worth carrying — that's the whole point.
+      const t = [toolCall("t1"), toolResult("t1"), toolCall("t2")];
+      expect(sanitizeTranscript(t)).toEqual([toolCall("t1"), toolResult("t1")]);
+    });
+
+    it("drops everything after the first dangling call, not just the call", () => {
+      const t = [toolCall("t1"), say("narration"), toolCall("t2"), toolResult("t2")];
+      expect(sanitizeTranscript(t)).toEqual([]);
+    });
+
+    it("passes a text-only transcript through untouched", () => {
+      const t = [say("hello")];
+      expect(sanitizeTranscript(t)).toBe(t);
+    });
   });
 });
 

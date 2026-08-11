@@ -98,8 +98,21 @@ import { buildRefineUserPrompt } from "../lib/qaAnalystRefinePrompt";
 import {
   streamChatTask,
   newChatMessageId,
+  sanitizeTranscript,
   type ChatMessage,
 } from "../lib/qaChatRun";
+import type { ModelMessage } from "ai";
+
+/** The transcript fields to merge onto a settled assistant message. Absent when
+ *  the turn banked nothing replayable — a provider that reported no steps, or a
+ *  cancel that landed before the first one finished — so the message keeps the
+ *  plain-text replay it would have had. */
+function bankTranscript(
+  messages: ModelMessage[],
+): { transcript?: ModelMessage[] } {
+  const safe = sanitizeTranscript(messages);
+  return safe.length > 0 ? { transcript: safe } : {};
+}
 
 export type Phase =
   | "input"
@@ -3334,6 +3347,12 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         ),
       }));
 
+    // The model-facing record of this turn, refreshed after every step. Kept in
+    // a local rather than written straight to the message so a cancelled turn
+    // banks whatever it had read at the moment it stopped — the terminal paths
+    // below decide what to keep.
+    let turnTranscript: ModelMessage[] = [];
+
     // Tool activity (Read/Glob/Grep) → upsert onto the assistant message by id
     // so a running tool later completes in place. Surfaces the same live strip
     // the other chats use.
@@ -3417,6 +3436,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         customInstructions: prefs.customInstructions || undefined,
         onText: appendDelta,
         onToolEvent: mergeToolEvent,
+        onTranscript: (messages) => {
+          turnTranscript = messages;
+        },
         signal: chatAc.signal,
       });
       // Backfill a placeholder for a genuinely empty response so the bubble
@@ -3425,8 +3447,12 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         chatBusy: false,
         chatStreamingId: null,
         chatMessages: curr.chatMessages.map((m) =>
-          m.id === assistantId && m.content.trim() === ""
-            ? { ...m, content: "(empty response)" }
+          m.id === assistantId
+            ? {
+                ...m,
+                content: m.content.trim() === "" ? "(empty response)" : m.content,
+                ...bankTranscript(turnTranscript),
+              }
             : m,
         ),
       }));
@@ -3434,13 +3460,17 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       const cancelled = isCancelledError(e);
       if (!cancelled) console.error("[generator] chat failed:", e);
       // Drop the placeholder if nothing streamed (keep a partial answer on
-      // cancel — that text is still useful to the user).
+      // cancel — that text is still useful to the user). A turn that survives
+      // keeps its transcript too: the reads are paid for either way, and
+      // carrying them is what stops the retry from making all of them again.
       set((curr) => ({
         chatBusy: false,
         chatStreamingId: null,
-        chatMessages: curr.chatMessages.filter(
-          (m) => m.id !== assistantId || m.content.trim() !== "",
-        ),
+        chatMessages: curr.chatMessages.flatMap((m) => {
+          if (m.id !== assistantId) return [m];
+          if (m.content.trim() === "") return [];
+          return [{ ...m, ...bankTranscript(turnTranscript) }];
+        }),
         chatError: cancelled ? null : errToString(e),
       }));
     } finally {

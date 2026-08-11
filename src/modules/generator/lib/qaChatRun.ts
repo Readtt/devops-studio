@@ -39,7 +39,50 @@ export type ChatMessage = {
    *  only (the BYOK path here is text-only). Persisted with the draft chat so a
    *  reopened session still shows them. Assistant messages only. */
   toolEvents?: ActivityEntry[];
+  /** The MODEL-facing record of this assistant turn: its text, the tool calls
+   *  it made, and the results those calls returned, exactly as the provider
+   *  emitted them. `toolEvents` is the display twin of this and is not
+   *  interchangeable — it's shaped for the activity strip and carries no
+   *  toolCallId pairing, so it can't be replayed.
+   *
+   *  Assistant messages only. Absent ⇒ the turn is replayed as plain text, which
+   *  is what every turn used to be. */
+  transcript?: ModelMessage[];
 };
+
+/** Whether a transcript can be replayed to the provider without a 400.
+ *
+ *  Anthropic requires every `tool-call` to be answered by a `tool-result` in
+ *  the same conversation. A turn the user cancelled mid-tool ends on an
+ *  unanswered call, so the transcript is cut at the first one — the reads
+ *  before it are still worth carrying, and the dangling call is worth nothing
+ *  to anyone. A completed turn is always balanced and passes through whole. */
+export function sanitizeTranscript(messages: ModelMessage[]): ModelMessage[] {
+  const parts = (content: unknown): { type?: string; toolCallId?: string }[] =>
+    Array.isArray(content) ? (content as { type?: string; toolCallId?: string }[]) : [];
+
+  const answered = new Set<string>();
+  for (const m of messages) {
+    if (m.role !== "tool") continue;
+    for (const p of parts(m.content)) {
+      if (p.type === "tool-result" && p.toolCallId) answered.add(p.toolCallId);
+    }
+  }
+
+  let safeEnd = 0;
+  let dangling = false;
+  messages.forEach((m, i) => {
+    if (m.role === "assistant") {
+      for (const p of parts(m.content)) {
+        if (p.type === "tool-call" && p.toolCallId && !answered.has(p.toolCallId)) {
+          dangling = true;
+        }
+      }
+    }
+    if (!dangling) safeEnd = i + 1;
+  });
+  return safeEnd === messages.length ? messages : messages.slice(0, safeEnd);
+}
 
 export const CHAT_SYSTEM_PROMPT = `You are a senior QA test analyst chatting with the user about a draft test plan they have on screen. The plan was already generated; this conversation is for *understanding and improving* the draft, NOT for editing it. The user has a separate "refine" action when they want changes applied.
 
@@ -95,6 +138,12 @@ export type ChatRunInput = {
   contextBlocks?: ContextBlock[];
   /** Tool-activity callback for the live strip. Entries upsert by id. */
   onToolEvent?: (e: ActivityEntry) => void;
+  /** Called after every completed step with the turn's transcript so far. The
+   *  caller keeps the latest and hangs it on the assistant message, which is
+   *  what makes the NEXT turn a continuation instead of a restart. Fed
+   *  per-step rather than once at the end so a turn that is cancelled — or
+   *  fails — still banks the reads it already paid for. */
+  onTranscript?: (messages: ModelMessage[]) => void;
   /** Source directory for the read-only tools. null ⇒ run tool-less (code
    *  search disabled or no source set). */
   sourceRoot?: string | null;
@@ -154,6 +203,9 @@ export async function streamChatTask(
     tokenBudget: SURFACE_TOKEN_BUDGETS.draftChat,
     onText: input.onText,
     onToolEvent: input.onToolEvent,
+    onCheckpoint: input.onTranscript
+      ? (cp) => input.onTranscript?.(cp.messages)
+      : undefined,
     signal: input.signal,
   });
   return { text: r.text, durationMs: r.durationMs };
@@ -201,11 +253,27 @@ function buildChatQuestion(input: ChatRunInput): string {
 
 /** The thread so far as real conversation turns — the roles carry what the
  *  `USER:` / `ASSISTANT:` labels used to. Empty turns are dropped: harmless as a
- *  blank line of prose, a 400 from Anthropic as a text block with no text. */
+ *  blank line of prose, a 400 from Anthropic as a text block with no text.
+ *
+ *  An assistant turn that carries a transcript is replayed AS the transcript —
+ *  its tool calls and their results included — rather than as the prose it
+ *  ended with. This is the difference between a conversation that remembers
+ *  what it read and one that doesn't: replaying text alone told the model
+ *  nothing about the sixteen files it had open a moment ago, so a follow-up as
+ *  small as "you didn't explain" re-ran every one of those reads from scratch.
+ *  The transcript already contains the assistant's own text, so it replaces
+ *  that message rather than joining it. */
 function historyMessages(history: ChatMessage[]): ModelMessage[] {
-  return history
-    .filter((m) => m.content.trim().length > 0)
-    .map((m) => ({ role: m.role, content: m.content }));
+  const out: ModelMessage[] = [];
+  for (const m of history) {
+    if (m.role === "assistant" && m.transcript && m.transcript.length > 0) {
+      out.push(...m.transcript);
+      continue;
+    }
+    if (m.content.trim().length === 0) continue;
+    out.push({ role: m.role, content: m.content });
+  }
+  return out;
 }
 
 /** Repro steps are five labeled sections by contract (PRECONDITION → … →
