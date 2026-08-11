@@ -832,13 +832,10 @@ export const useSuiteChat = create<Store>((set, get) => ({
     const priorMessages = curr.messages;
     // Best-practices standards injected as context; vision support depends on
     // the chosen model.
-    const { blocks: bpBlocks, warnings: bpWarnings } =
-      await loadBestPracticeBlocks(prefs.bestPracticeFiles, {
-        visionCapable: supportsVision(modelId),
-      });
-    if (bpWarnings.length > 0) {
-      console.warn("[suite-chat] best-practices skipped:", bpWarnings);
-    }
+    const { blocks: bpBlocks } = await loadBestPracticeBlocks(
+      prefs.bestPracticeFiles,
+      { visionCapable: supportsVision(modelId) },
+    );
     // Bugs LINKED to the in-scope cases are auto-injected as context the same
     // way the cases themselves are — the model sees the open defects without
     // the user attaching anything. Merged with any work items the user

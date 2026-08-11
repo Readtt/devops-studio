@@ -5,11 +5,28 @@
 
 import { create } from "zustand";
 import {
+  getModelOutputCeiling,
   isKnownModelId,
-  RESUME_TOPUP_STEPS,
+  RESUME_TOPUP_TOKENS,
+  SURFACE_STEP_CAPS,
+  SURFACE_TOKEN_BUDGETS,
   supportsVision,
   type ModelId,
 } from "@/modules/ai/config";
+import { formatTokens } from "@/modules/ai/lib/contextEstimate";
+import {
+  budgetSpentPhrase,
+  type BudgetLimit,
+  type RunBudget,
+} from "@/modules/ai/lib/runBudget";
+
+/** What Commit Review's investigate pass runs on. Only that stage can surface a
+ *  budget failure to the user — a verify-stage one degrades to unverified
+ *  findings — so this is the budget the failure copy names. */
+const INVESTIGATE_BUDGET: RunBudget = {
+  tokens: SURFACE_TOKEN_BUDGETS.commitReviewInvestigate,
+  steps: SURFACE_STEP_CAPS.commitReviewInvestigate,
+};
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import {
   localProviderConfig,
@@ -22,6 +39,7 @@ import {
   createCheckpointWriter,
   deleteCheckpoint,
   getCheckpoint,
+  hasReplayableTranscript,
   listCheckpoints,
   sanitizeTranscriptMessages,
   type CheckpointOutcome,
@@ -29,8 +47,17 @@ import {
   type CommitReviewCheckpointV1,
   type TranscriptCheckpoint,
 } from "@/modules/ai/lib/checkpointApi";
-import { canOfferResume, classifyForResume } from "@/modules/ai/lib/errorClass";
-import { sumUsage } from "@/modules/generator/lib/resumePolicy";
+import {
+  canOfferResume,
+  canRaiseOutputCap,
+  classifyForResume,
+  emptyAnswerCause,
+} from "@/modules/ai/lib/errorClass";
+import {
+  diedOfContextOverflow,
+  resumesByFinishing,
+  sumUsage,
+} from "@/modules/generator/lib/resumePolicy";
 import type { TaskCheckpoint } from "@/modules/ai/lib/taskRunner";
 import type { ContextBlock } from "@/modules/ai/lib/contextBlocks";
 import type { Attachment } from "@/components/chat/attachments";
@@ -92,6 +119,13 @@ export type CommitReviewSlice = {
   stage: RunStage | null;
   activity: ActivityEntry[];
   findings: Finding[];
+  /** Stage 1's raw output, kept alongside `findings` from the moment it parses.
+   *  These are real, paid-for results that used to exist only inside the
+   *  checkpoint blob: a run stopped, crashed or rate-limited during the VERIFY
+   *  pass had them on disk and rendered nothing, so the pane showed an activity
+   *  log and the spend read as a total loss. Cleared once a run produces real
+   *  `findings` (which supersede them) or the reviewed set changes. */
+  stage1Candidates: CandidateFinding[] | null;
   appliedPatches: AppliedPatchesMap;
   busy: boolean;
   abort: AbortController | null;
@@ -99,18 +133,30 @@ export type CommitReviewSlice = {
   /** Structural failure reason when the run RESOLVED unusable (vs threw) —
    *  what the error card classifies on, so copy never string-matches. */
   errorReason: "step_cap" | "empty" | "schema_violation" | null;
+  /** Which budget guard bound a `step_cap` failure, so the card names the one
+   *  that actually stopped the run rather than always blaming steps. */
+  errorLimit: BudgetLimit | null;
   /** Raw model text when stage 1 didn't return parseable findings. */
   schemaViolationRaw: string | null;
   runId: string | null;
   createdAt: string | null;
   durationMs: number | null;
   modelId: ModelId | null;
-  /** Set when a failed / cancelled run left a checkpoint worth continuing.
-   *  Null when there's nothing to resume (never ran, ran to completion, or the
-   *  model answered — badly — so a resume would just re-fail). */
+  /** Set when a failed / cancelled run left a checkpoint. Null when there's
+   *  nothing on disk at all (never ran, or ran to completion). Whether a resume
+   *  is on OFFER is `canOfferResume`'s call, which is why the progress fields
+   *  live here: an answered-badly run that had already investigated is
+   *  continuable, one that answered badly having read nothing is not. */
   resumable: {
     stage: RunStage;
     stepsUsed: number;
+    /** Whether the checkpoint kept a transcript worth replaying. */
+    hasTranscript: boolean;
+    /** Whether a `finish: length` failure has anywhere to go on retry — a known
+     *  output ceiling above the cap the attempt ran at. `canOfferResume` fails
+     *  CLOSED without it, which is why a truncated review offered no resume at
+     *  all while the generator, which passes it, offered one. */
+    outputCapRaisable: boolean;
     totalTokens: number | null;
     updatedAt: string;
     outcome: CheckpointOutcome | null;
@@ -257,6 +303,8 @@ function resumableFrom(
   return {
     stage: payload.stage,
     stepsUsed: payload.transcript?.stepsUsed ?? 0,
+    hasTranscript: hasReplayableTranscript(payload.transcript),
+    outputCapRaisable: canRaiseOutputCap(payload.modelId, outcome),
     totalTokens: payload.transcript?.usage?.totalTokens ?? null,
     updatedAt: outcome.at,
     outcome,
@@ -283,15 +331,34 @@ async function settleResult(
   tabId: number,
   cp: CheckpointCtx,
   result: RunCommitReviewResult,
+  /** The budget the failing stage actually ran under — the investigate pass's,
+   *  or the smaller grant a resume runs on. Named in the failure copy, so it has
+   *  to be the live one rather than the table's. */
+  budget: RunBudget,
 ): Promise<void> {
   if (!result.ok) {
     const at = new Date().toISOString();
     // A loop that burned its whole budget still calling tools never reached the
-    // point of writing its findings — continuable, unlike a model that answered
-    // with something unusable (resuming that transcript just re-fails).
+    // point of writing its findings — continuable. So, for the same reason, is
+    // one that answered with something unusable AFTER investigating: the
+    // transcript is the expensive half of the review and only the last hop
+    // failed. What isn't continuable is answering badly with nothing banked, and
+    // that's the line `canOfferResume` draws below.
     const stepCapped = result.reason === "step_cap";
-    const outcome: CheckpointOutcome = { at, kind: result.reason };
+    const outcome: CheckpointOutcome = {
+      at,
+      kind: result.reason,
+      ...(result.limit ? { limit: result.limit } : {}),
+      ...(result.finishReason ? { finishReason: result.finishReason } : {}),
+      // Persisted so a later `finish: length` resume can compare what the
+      // attempt ran at against the model's ceiling. The generator has recorded
+      // this since d9dca77; Commit Review dropped it, which is the other half
+      // of why its truncation resume could only ever fail closed.
+      ...(result.outputCap !== undefined ? { outputCap: result.outputCap } : {}),
+    };
     const payload = cp.buildPayload(outcome);
+    const resumable = resumableFrom(payload, outcome);
+    const canContinue = canOfferResume(outcome, outcome.message ?? null, resumable);
     patch(set, tabId, {
       busy: false,
       abort: null,
@@ -299,11 +366,18 @@ async function settleResult(
       status: "error",
       durationMs: result.durationMs,
       error: stepCapped
-        ? `The review hit its step budget before it could write its findings. Resume grants ${RESUME_TOPUP_STEPS} more steps and asks the model to finish with what it has already read.`
-        : "The model didn't return findings in the expected format. Re-run, or try a more capable model.",
+        ? `The review spent ${budgetSpentPhrase(result.limit, budget, formatTokens)} before it could write its findings. Resume adds ~${formatTokens(RESUME_TOPUP_TOKENS)} more tokens and asks the model to finish with what it has already read.`
+        : canContinue
+          ? `${emptyAnswerCause(result.reason === "schema_violation" ? "schema_violation" : "empty", result.finishReason)} It had already investigated over ${resumable.stepsUsed} step${resumable.stepsUsed === 1 ? "" : "s"} — resuming asks it to write the findings up from what it has instead of reviewing again.`
+          : `${emptyAnswerCause(result.reason === "schema_violation" ? "schema_violation" : "empty", result.finishReason)} Re-run, or try a more capable model.`,
       errorReason: result.reason,
+      errorLimit: stepCapped ? (result.limit ?? null) : null,
       schemaViolationRaw: stepCapped ? null : result.rawText,
-      resumable: stepCapped ? resumableFrom(payload, outcome) : null,
+      // Set whether or not a resume is on offer — the row is written below
+      // either way, and this is the handle Discard hangs off. The pane asks
+      // `canOfferResume` for the button; nulling it here is what once left an
+      // unresumable checkpoint both unreachable and undeletable.
+      resumable,
     });
     await cp.writer.flush(payload);
     await persistRow(tabId, {
@@ -319,6 +393,9 @@ async function settleResult(
     stage: null,
     status: "done",
     findings: result.findings,
+    // The merged findings ARE the candidates, verified — keeping both would
+    // render the same issues twice, once as a partial-result warning.
+    stage1Candidates: null,
     durationMs: result.durationMs,
     resumable: null,
   });
@@ -360,6 +437,7 @@ async function settleFailure(
     error: aborted ? null : errStr(e),
     // A thrown failure is a provider/runtime error, never a parse outcome.
     errorReason: null,
+    errorLimit: null,
     resumable: payload ? resumableFrom(payload, outcome) : null,
   });
   if (cp && payload) await cp.writer.flush(payload);
@@ -407,9 +485,17 @@ async function adoptInterruptedRun(
     }
     if (!cp || cp.payload.surface !== "commit-review") continue;
     const p = cp.payload;
-    // Same gate as every Resume affordance: a run that answered badly
-    // (schema_violation / empty) or died non-resumably would just re-fail.
-    if (!canOfferResume(p.lastOutcome, p.lastOutcome?.message ?? null)) continue;
+    // Same gate as every Resume affordance: a run that died non-resumably, or
+    // answered badly with nothing banked, would just re-fail.
+    if (
+      !canOfferResume(p.lastOutcome, p.lastOutcome?.message ?? null, {
+        stepsUsed: p.transcript?.stepsUsed ?? 0,
+        hasTranscript: hasReplayableTranscript(p.transcript),
+        outputCapRaisable: canRaiseOutputCap(p.modelId, p.lastOutcome),
+      })
+    ) {
+      continue;
+    }
     // A finished review's checkpoint is an orphan (delete-on-success swallows
     // IPC failures), not a resume point — the persisted row is the truth.
     let row: Awaited<ReturnType<typeof getCommitReview>> = null;
@@ -452,11 +538,15 @@ async function adoptInterruptedRun(
             row?.error === "schema_violation"
           ? row.error
           : null;
+    // Undefined on a checkpoint written before budgets were denominated in
+    // tokens; the panel then falls back to budget-neutral copy.
+    const limit = p.lastOutcome?.limit ?? null;
     patch(set, tabId, {
       runId: p.runId,
       createdAt: p.createdAt,
       status,
       errorReason: status === "error" ? reason : null,
+      errorLimit: status === "error" ? limit : null,
       error:
         status === "error"
           ? (p.lastOutcome?.message ??
@@ -472,9 +562,14 @@ async function adoptInterruptedRun(
       // immutable, and a fresh run() re-reads the live working tree anyway —
       // only resume() deliberately replays this snapshot.
       diffBySha: snapshotDiffs,
+      // The verify-stage spend that was stranded: stage 1 parsed, its findings
+      // went to disk, and the run died before anything rendered them.
+      stage1Candidates: p.stage1Candidates,
       resumable: {
         stage: p.stage,
         stepsUsed: p.transcript?.stepsUsed ?? 0,
+        hasTranscript: hasReplayableTranscript(p.transcript),
+        outputCapRaisable: canRaiseOutputCap(p.modelId, p.lastOutcome),
         totalTokens: p.transcript?.usage?.totalTokens ?? null,
         updatedAt: cp.updatedAt,
         outcome: p.lastOutcome,
@@ -503,11 +598,13 @@ function emptySlice(cwd: string, modelId: ModelId | null): CommitReviewSlice {
     stage: null,
     activity: [],
     findings: [],
+    stage1Candidates: null,
     appliedPatches: {},
     busy: false,
     abort: null,
     error: null,
     errorReason: null,
+    errorLimit: null,
     schemaViolationRaw: null,
     runId: null,
     createdAt: null,
@@ -557,6 +654,10 @@ export const useCommitReview = create<State>((set, get) => ({
             row.error === "schema_violation"
               ? row.error
               : null;
+          // The saved row keeps only the reason token, never which guard bound
+          // the loop — a reopened history entry gets budget-neutral copy rather
+          // than a guess.
+          const rowLimit = null;
           patch(set, tabId, {
             selectedShas: safeParseCommitShas(row.commits, row.commitSha),
             context: row.context ?? "",
@@ -567,6 +668,7 @@ export const useCommitReview = create<State>((set, get) => ({
             createdAt: row.createdAt,
             durationMs: row.durationMs,
             errorReason: row.status === "error" ? rowReason : null,
+            errorLimit: row.status === "error" ? rowLimit : null,
             error:
               row.status === "error"
                 ? (row.error ?? "This review ended with an error.")
@@ -588,7 +690,6 @@ export const useCommitReview = create<State>((set, get) => ({
         if (cp && cp.payload.surface === "commit-review") {
           const p = cp.payload;
           const curr = get().byTab.get(tabId);
-          const spent = p.lastOutcome?.kind;
           // A FINISHED review's checkpoint is an orphan, not a resume point:
           // writer.delete() swallows IPC failures by design, so a run that
           // wrote status "done" can still leave a payload behind with
@@ -606,19 +707,28 @@ export const useCommitReview = create<State>((set, get) => ({
             workItems: curr?.workItems.length
               ? curr.workItems
               : p.inputs.workItems,
-            // A run that ANSWERED — badly — isn't worth resuming: continuing a
-            // transcript that ends in garbage just re-fails. Re-run is the
-            // right affordance there.
-            resumable:
-              done || spent === "schema_violation" || spent === "empty"
-                ? null
-                : {
-                    stage: p.stage,
-                    stepsUsed: p.transcript?.stepsUsed ?? 0,
-                    totalTokens: p.transcript?.usage?.totalTokens ?? null,
-                    updatedAt: cp.updatedAt,
-                    outcome: p.lastOutcome,
-                  },
+            // Only when the row carried no findings of its own: a completed
+            // review's merged findings supersede the candidates they came from.
+            stage1Candidates:
+              done || curr?.findings.length ? null : p.stage1Candidates,
+            // A finished run has nothing to continue. An answered-badly one
+            // might: `canOfferResume` (via the pane) decides on what the
+            // attempt banked, so this only has to hand it the checkpoint —
+            // which is also the handle Discard hangs off.
+            resumable: done
+              ? null
+              : {
+                  stage: p.stage,
+                  stepsUsed: p.transcript?.stepsUsed ?? 0,
+                  hasTranscript: hasReplayableTranscript(p.transcript),
+                  outputCapRaisable: canRaiseOutputCap(
+                    p.modelId,
+                    p.lastOutcome,
+                  ),
+                  totalTokens: p.transcript?.usage?.totalTokens ?? null,
+                  updatedAt: cp.updatedAt,
+                  outcome: p.lastOutcome,
+                },
           });
         }
       } catch (e) {
@@ -735,10 +845,12 @@ export const useCommitReview = create<State>((set, get) => ({
     patch(set, tabId, {
       selectedShas: nextShas,
       findings: [],
+      stage1Candidates: null,
       activity: [],
       status: "idle",
       error: null,
       errorReason: null,
+      errorLimit: null,
       schemaViolationRaw: null,
       runId: null,
       durationMs: null,
@@ -767,10 +879,12 @@ export const useCommitReview = create<State>((set, get) => ({
       selectedShas: nextShas,
       diffBySha: nextDiffs,
       findings: [],
+      stage1Candidates: null,
       activity: [],
       status: "idle",
       error: null,
       errorReason: null,
+      errorLimit: null,
       schemaViolationRaw: null,
       runId: null,
       durationMs: null,
@@ -793,10 +907,12 @@ export const useCommitReview = create<State>((set, get) => ({
       diffLoading: false,
       diffError: null,
       findings: [],
+      stage1Candidates: null,
       activity: [],
       status: "idle",
       error: null,
       errorReason: null,
+      errorLimit: null,
       schemaViolationRaw: null,
       runId: null,
       durationMs: null,
@@ -994,8 +1110,10 @@ export const useCommitReview = create<State>((set, get) => ({
         stage: "investigate",
         activity: [],
         findings: [],
+        stage1Candidates: null,
         error: null,
         errorReason: null,
+        errorLimit: null,
         schemaViolationRaw: null,
         abort,
         runId,
@@ -1026,13 +1144,10 @@ export const useCommitReview = create<State>((set, get) => ({
 
     try {
       const visionCapable = supportsVision(effectiveModelId);
-      const { blocks: bpBlocks, warnings } = await loadBestPracticeBlocks(
+      const { blocks: bpBlocks } = await loadBestPracticeBlocks(
         prefs.bestPracticeFiles,
         { visionCapable },
       );
-      if (warnings.length > 0) {
-        console.warn("[commit-review] best-practices skipped:", warnings);
-      }
       const contextBlocks: ContextBlock[] = [];
       if (slice.context.trim()) {
         contextBlocks.push({
@@ -1118,6 +1233,11 @@ export const useCommitReview = create<State>((set, get) => ({
         onStage1Candidates: (cands) => {
           cpStage = "verify";
           cpCandidates = cands;
+          // Render them NOW, before the (independently failable) verify pass —
+          // this is the moment they stop being hypothetical spend.
+          if (isLiveRun(get, tabId, runId)) {
+            patch(set, tabId, { stage1Candidates: cands });
+          }
           // Verify starts from its own prompt, so the investigate transcript
           // must not be handed to it on resume.
           transcript = null;
@@ -1128,7 +1248,13 @@ export const useCommitReview = create<State>((set, get) => ({
         signal: abort.signal,
       });
 
-      await settleResult(set, tabId, { writer: w, buildPayload: build }, result);
+      await settleResult(
+        set,
+        tabId,
+        { writer: w, buildPayload: build },
+        result,
+        INVESTIGATE_BUDGET,
+      );
     } catch (e) {
       await settleFailure(
         set,
@@ -1189,8 +1315,11 @@ export const useCommitReview = create<State>((set, get) => ({
         // Only an investigate resume re-derives findings; a verify resume never
         // had any on screen to clear.
         findings: payload.stage === "investigate" ? [] : curr.findings,
+        stage1Candidates:
+          payload.stage === "investigate" ? null : payload.stage1Candidates,
         error: null,
         errorReason: null,
+        errorLimit: null,
         schemaViolationRaw: null,
         abort,
         runId,
@@ -1264,6 +1393,9 @@ export const useCommitReview = create<State>((set, get) => ({
         onStage1Candidates: (cands) => {
           cpStage = "verify";
           cpCandidates = cands;
+          if (isLiveRun(get, tabId, runId)) {
+            patch(set, tabId, { stage1Candidates: cands });
+          }
           // Crossing into verify starts a new transcript, so the investigate
           // one (and its totals) stop applying.
           transcript = null;
@@ -1274,12 +1406,39 @@ export const useCommitReview = create<State>((set, get) => ({
           stage: payload.stage,
           stage1Candidates: payload.stage1Candidates,
           resumeMessages: payload.transcript?.messages ?? null,
-          stepCapNudge: payload.lastOutcome?.kind === "step_cap",
+          // Budget-exhausted OR answered-badly: both stopped without findings
+          // and both want the same "stop reading, write it up" pass.
+          stepCapNudge: resumesByFinishing(
+            payload.lastOutcome,
+            hasReplayableTranscript(payload.transcript),
+          ),
+          afterOverflow: diedOfContextOverflow(payload.lastOutcome),
+          // A truncated answer resumes at the model's output CEILING with the
+          // truncation nudge, or — when no higher ceiling is known — not at
+          // all: canOfferResume already refused it, and this keeps the two
+          // gates reading the same field.
+          ...(payload.lastOutcome?.finishReason === "length" &&
+          canRaiseOutputCap(payload.modelId, payload.lastOutcome)
+            ? { raisedOutputCap: getModelOutputCeiling(payload.modelId) }
+            : {}),
         },
         signal: abort.signal,
       });
 
-      await settleResult(set, tabId, { writer: w, buildPayload: build }, result);
+      await settleResult(
+        set,
+        tabId,
+        { writer: w, buildPayload: build },
+        result,
+        // A budget-exhausted resume runs on the top-up, not the full pass — see
+        // runCommitReview's resumeArgs.
+        resumesByFinishing(
+          payload.lastOutcome,
+          hasReplayableTranscript(payload.transcript),
+        )
+          ? { ...INVESTIGATE_BUDGET, tokens: RESUME_TOPUP_TOKENS }
+          : INVESTIGATE_BUDGET,
+      );
     } catch (e) {
       await settleFailure(set, tabId, { writer: w, buildPayload: build }, e);
     }

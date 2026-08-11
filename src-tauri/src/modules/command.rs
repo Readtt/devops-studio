@@ -25,7 +25,14 @@ use serde::Serialize;
 use tokio::process::Command;
 use tokio::time::timeout;
 
-const OUTPUT_CAP: usize = 30_000;
+const OUTPUT_CAP: usize = 16_000;
+/// How much of the cap comes from the head; the rest is the tail. `git log` /
+/// `git diff` / `git show` are the densest evidence Commit Review has, and a
+/// head-only clip silently drops the end of the range — which reads to both
+/// the model and the reviewer as though the range simply ended there.
+const HEAD_SHARE: usize = OUTPUT_CAP * 5 / 8;
+/// How far either cut may drift to land on a line break rather than mid-hunk.
+const LINE_SNAP: usize = 400;
 const RUN_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Serialize)]
@@ -33,7 +40,8 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(20);
 pub struct CommandResult {
     /// Process exit code (-1 if the process was killed / produced no code).
     pub returncode: i32,
-    /// Combined stdout + stderr, capped at OUTPUT_CAP chars.
+    /// Combined stdout + stderr. Over OUTPUT_CAP it keeps the head and the
+    /// tail with an elision marker between them.
     pub output: String,
     /// True when output was clipped to the cap.
     pub truncated: bool,
@@ -126,21 +134,81 @@ pub async fn run_readonly_command(root: &str, command: &str) -> Result<CommandRe
         }
         text.push_str(&stderr);
     }
-    let mut truncated = false;
-    if text.len() > OUTPUT_CAP {
-        let mut end = OUTPUT_CAP;
-        while end > 0 && !text.is_char_boundary(end) {
-            end -= 1;
+    let truncated = match clip_output(&text) {
+        Some(clipped) => {
+            text = clipped;
+            true
         }
-        text.truncate(end);
-        truncated = true;
-    }
+        None => false,
+    };
 
     Ok(CommandResult {
         returncode: out.status.code().unwrap_or(-1),
         output: text,
         truncated,
     })
+}
+
+/// Clip output over `OUTPUT_CAP`, keeping BOTH ends with an explicit marker
+/// between them. Returns None when nothing needed clipping. The marker names
+/// the recovery move, so the model narrows the command instead of concluding
+/// the output ended where we cut it.
+fn clip_output(text: &str) -> Option<String> {
+    if text.len() <= OUTPUT_CAP {
+        return None;
+    }
+    let head_end = snap_back(text, HEAD_SHARE);
+    let tail_start = snap_forward(text, text.len() - (OUTPUT_CAP - HEAD_SHARE));
+    if tail_start <= head_end {
+        return None;
+    }
+
+    let elided = text[head_end..tail_start].chars().count();
+    let mut out = String::with_capacity(OUTPUT_CAP + 256);
+    out.push_str(&text[..head_end]);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&format!(
+        "…[{elided} chars omitted from the middle — narrow the command (add a path, \
+         `-n`, or a smaller range) to see them]…\n"
+    ));
+    out.push_str(&text[tail_start..]);
+    Some(out)
+}
+
+/// Walk `idx` back to a char boundary, preferring a line break within
+/// LINE_SNAP so a diff hunk isn't cut mid-row.
+fn snap_back(text: &str, idx: usize) -> usize {
+    let mut i = idx.min(text.len());
+    while i > 0 && !text.is_char_boundary(i) {
+        i -= 1;
+    }
+    let floor = i.saturating_sub(LINE_SNAP);
+    let mut j = i;
+    while j > floor {
+        if text.as_bytes()[j - 1] == b'\n' {
+            return j;
+        }
+        j -= 1;
+    }
+    i
+}
+
+fn snap_forward(text: &str, idx: usize) -> usize {
+    let mut i = idx.min(text.len());
+    while i < text.len() && !text.is_char_boundary(i) {
+        i += 1;
+    }
+    let ceiling = (i + LINE_SNAP).min(text.len());
+    let mut j = i;
+    while j < ceiling {
+        if text.as_bytes()[j] == b'\n' {
+            return j + 1;
+        }
+        j += 1;
+    }
+    i
 }
 
 /// Validate the tokenized command against the read-only contract.
@@ -442,5 +510,51 @@ mod tests {
 
     fn toks(s: &str) -> Vec<String> {
         tokenize(s).unwrap()
+    }
+
+    #[test]
+    fn leaves_output_under_the_cap_alone() {
+        assert!(clip_output("small\n").is_none());
+        assert!(clip_output(&"a\n".repeat(OUTPUT_CAP / 2)).is_none());
+    }
+
+    /// Head-only truncation drops the end of a `git log` / `git diff`, which
+    /// reads as "the range ended here". Both ends have to survive.
+    #[test]
+    fn keeps_both_ends_of_oversized_output() {
+        let body: String = (0..4000).map(|i| format!("line {i}\n")).collect();
+        let text = format!("FIRST_LINE\n{body}LAST_LINE\n");
+        assert!(text.len() > OUTPUT_CAP);
+
+        let out = clip_output(&text).expect("oversized output should clip");
+        assert!(out.starts_with("FIRST_LINE\n"), "head lost");
+        assert!(out.ends_with("LAST_LINE\n"), "tail lost");
+        assert!(out.contains("omitted from the middle"), "no elision marker");
+        assert!(out.contains("narrow the command"), "no recovery hint");
+        assert!(out.len() <= OUTPUT_CAP + 256, "got {} bytes", out.len());
+    }
+
+    /// The cuts land on line breaks, so the marker sits on its own row rather
+    /// than splicing two half-lines together.
+    #[test]
+    fn cuts_on_line_boundaries() {
+        let text: String = (0..4000).map(|i| format!("line {i}\n")).collect();
+        let out = clip_output(&text).unwrap();
+        for line in out.lines() {
+            assert!(
+                line.starts_with("line ") || line.starts_with('…'),
+                "spliced a partial line: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn clips_multibyte_output_on_a_char_boundary() {
+        // No line breaks, so the snap can't help and the cut lands mid-`é`
+        // unless the char-boundary walk catches it.
+        let text = "é".repeat(OUTPUT_CAP);
+        let out = clip_output(&text).unwrap();
+        assert!(out.starts_with('é') && out.ends_with('é'));
+        assert!(out.contains("omitted from the middle"));
     }
 }

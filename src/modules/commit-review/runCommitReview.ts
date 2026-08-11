@@ -3,11 +3,13 @@
 // temperature 0. See commitReviewPrompts.ts for the strategy rationale.
 
 import {
-  RESUME_TOPUP_STEPS,
+  RESUME_TOPUP_TOKENS,
   SURFACE_STEP_CAPS,
+  SURFACE_TOKEN_BUDGETS,
   type ModelId,
 } from "@/modules/ai/config";
 import { type ProviderKeys } from "@/modules/ai/lib/keyring";
+import type { BudgetLimit } from "@/modules/ai/lib/runBudget";
 import {
   runTask,
   streamTask,
@@ -15,7 +17,12 @@ import {
 } from "@/modules/ai/lib/taskRunner";
 // The nudge text only — the engine never reads or writes a checkpoint itself;
 // it reports through callbacks and the store owns persistence.
-import { FINISH_NOW_NUDGE } from "@/modules/ai/lib/checkpointApi";
+import {
+  FINISH_NOW_NUDGE,
+  TRUNCATED_ANSWER_NUDGE,
+} from "@/modules/ai/lib/checkpointApi";
+import { compactForResume } from "@/modules/ai/lib/compactTranscript";
+import { focusPathsFromCandidates, focusPatchOnFiles } from "./verifyFocus";
 import type { ModelMessage } from "ai";
 import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
@@ -31,6 +38,7 @@ import {
   Stage1Schema,
   Stage2Schema,
   compareFindings,
+  salvageCandidateFindings,
   type CandidateFinding,
   type Finding,
 } from "./schema";
@@ -49,8 +57,21 @@ export type CommitReviewResume = {
   /** Transcript for the in-flight stage (null ⇒ restart that stage's call
    *  from its rebuilt prompt alone). */
   resumeMessages: ModelMessage[] | null;
-  /** Append FINISH_NOW_NUDGE and run the resumed stage with RESUME_TOPUP_STEPS. */
+  /** Append FINISH_NOW_NUDGE and run the resumed stage on RESUME_TOPUP_TOKENS
+   *  instead of the stage's full budget. */
   stepCapNudge?: boolean;
+  /** The previous attempt died because the request didn't fit. Replays the
+   *  transcript at a much tighter eviction budget so the resumed request is a
+   *  SUBSET of the one that overflowed rather than a superset of it. */
+  afterOverflow?: boolean;
+  /** The previous attempt's answer was cut off by the OUTPUT cap
+   *  (`finish: length`), and a higher ceiling exists to retry at. Swaps
+   *  FINISH_NOW_NUDGE — which diagnoses a wandering run, not a truncated one,
+   *  and invites the same overrun — for TRUNCATED_ANSWER_NUDGE, and runs the
+   *  retry AT the ceiling. Without both, the retry is the failed attempt again
+   *  and bills the user twice for one failure, which is why the resume was
+   *  refused outright until now. Same treatment b7a2724 gave the generator. */
+  raisedOutputCap?: number;
 };
 
 export type RunCommitReviewInput = {
@@ -85,10 +106,22 @@ export type RunCommitReviewResult =
   | { ok: true; findings: Finding[]; durationMs: number }
   | {
       /** Stage 1 didn't return usable findings — surface the raw text.
-       *  `step_cap` means the loop never got to write them (resumable);
-       *  the other two mean it answered with something unusable. */
+       *  `step_cap` means the loop ran into a run budget before it got to write
+       *  them (resumable); the other two mean it answered with something
+       *  unusable. */
       ok: false;
       reason: "schema_violation" | "empty" | "step_cap";
+      /** Which budget guard bound the loop, when one did. */
+      limit?: BudgetLimit;
+      /** Why the provider ended the model's last step — `length` (output cap),
+       *  `stop` (wrote nothing), `tool-calls` (cut off mid-read). The three
+       *  need different sentences; see `emptyAnswerCause`. */
+      finishReason?: string;
+      /** The output cap this attempt's requests actually asked for. What a
+       *  `finish: length` resume needs to tell whether a HIGHER cap even
+       *  exists to retry at — `canRaiseOutputCap` fails closed without it, so
+       *  dropping it here is what made every truncated review unresumable. */
+      outputCap?: number;
       rawText: string;
       durationMs: number;
     };
@@ -97,7 +130,7 @@ export type RunCommitReviewResult =
  *  Each commit's patch is capped at 30 KiB (PATCH_MAX_BYTES in git.rs), sized
  *  so a single diff plus the system prompt fits the cheaper BYOK models. A
  *  multi-commit review concatenates them unbounded, so past this combined size
- *  the prompt risks overflowing the model's context or exhausting the step caps
+ *  the prompt risks overflowing the model's context or exhausting the run budget
  *  and degrading (or failing) silently. Advisory only — the pane warns, the run
  *  still proceeds. */
 export const COMBINED_DIFF_WARN_BYTES = 96 * 1024;
@@ -109,6 +142,15 @@ export function combinedPatchBytes(diffs: CommitDiff[]): number {
     (sum, d) => sum + new TextEncoder().encode(d.rawPatch).length,
     0,
   );
+}
+
+/** Stage 1's candidates as renderable findings, flagged unverified. The engine
+ *  degrades to this whenever the verify pass fails; the pane renders the same
+ *  thing when the run never reached a verify pass at all (the user stopped it,
+ *  the app quit, the provider died). One function so "unverified" means the
+ *  same shape and the same order in both places. */
+export function unverifiedFindings(candidates: CandidateFinding[]): Finding[] {
+  return candidates.map((c) => ({ ...c, verified: false })).sort(compareFindings);
 }
 
 export async function runCommitReview(
@@ -126,24 +168,48 @@ export async function runCommitReview(
       ? undefined
       : input.resume;
   /** Budget + continuation transcript for `stage`. Only the stage the resume
-   *  targets continues anything; the other one runs from scratch as always. */
+   *  targets continues anything; the other one runs from scratch as always.
+   *
+   *  The transcript is compacted on the way in — a no-op at the live budget for
+   *  anything a healthy run produced, and an aggressive squeeze when the reason
+   *  we're here is that the request didn't fit.
+   *
+   *  A budget-exhausted resume tops up TOKENS and keeps the full step ceiling:
+   *  the ceiling is a runaway guard, and cutting it to a top-up (which is what
+   *  this did) starved a model that only needed a handful of cheap turns to
+   *  write out findings it had already investigated. */
   const resumeArgs = (
     stage: RunStage,
     surfaceCap: number,
-  ): { maxSteps: number; resumeMessages: ModelMessage[] | undefined } => {
+    surfaceTokens: number,
+  ): {
+    maxSteps: number;
+    tokenBudget: number;
+    resumeMessages: ModelMessage[] | undefined;
+    maxOutputTokens?: number;
+  } => {
+    const full = { maxSteps: surfaceCap, tokenBudget: surfaceTokens };
     if (!resume || resume.stage !== stage) {
-      return { maxSteps: surfaceCap, resumeMessages: undefined };
+      return { ...full, resumeMessages: undefined };
     }
-    const prior = resume.resumeMessages ?? undefined;
+    const prior = resume.resumeMessages
+      ? compactForResume(resume.resumeMessages, resume.afterOverflow === true)
+      : undefined;
     if (!resume.stepCapNudge) {
-      return { maxSteps: surfaceCap, resumeMessages: prior };
+      return { ...full, resumeMessages: prior };
     }
+    const truncated = resume.raisedOutputCap !== undefined;
     return {
-      maxSteps: RESUME_TOPUP_STEPS,
+      maxSteps: surfaceCap,
+      tokenBudget: RESUME_TOPUP_TOKENS,
       resumeMessages: [
         ...(prior ?? []),
-        { role: "user", content: FINISH_NOW_NUDGE },
+        {
+          role: "user",
+          content: truncated ? TRUNCATED_ANSWER_NUDGE : FINISH_NOW_NUDGE,
+        },
       ],
+      ...(truncated ? { maxOutputTokens: resume.raisedOutputCap } : {}),
     };
   };
 
@@ -159,6 +225,7 @@ export async function runCommitReview(
     const stage1Args = resumeArgs(
       "investigate",
       SURFACE_STEP_CAPS.commitReviewInvestigate,
+      SURFACE_TOKEN_BUDGETS.commitReviewInvestigate,
     );
     const stage1 = await streamTask({
       modelId: input.modelId,
@@ -171,6 +238,10 @@ export async function runCommitReview(
       tools: tools ?? null,
       temperature: 0,
       maxSteps: stage1Args.maxSteps,
+      ...(stage1Args.maxOutputTokens !== undefined
+        ? { maxOutputTokens: stage1Args.maxOutputTokens }
+        : {}),
+      tokenBudget: stage1Args.tokenBudget,
       resumeMessages: stage1Args.resumeMessages,
       schema: Stage1Schema,
       onToolEvent: input.onToolEvent,
@@ -181,15 +252,31 @@ export async function runCommitReview(
     });
 
     if (!stage1.ok) {
-      return {
-        ok: false,
-        reason: stage1.reason,
-        rawText: stage1.text,
-        durationMs: stage1.durationMs,
-      };
+      // An answer that BROKE (cut off by the output cap, or item-wise invalid)
+      // still carries the complete findings that landed before the break —
+      // salvage those and continue, exactly as the generator keeps the cases
+      // that arrived. NOT for `step_cap`: that loop was cut off mid-READ, so
+      // anything findings-shaped in its narration is premature, and the resume
+      // affordance (finish with what you have) is the honest recovery there.
+      const salvaged =
+        stage1.reason === "step_cap" ? [] : salvageCandidateFindings(stage1.text);
+      if (salvaged.length === 0) {
+        return {
+          ok: false,
+          reason: stage1.reason,
+          ...(stage1.limit ? { limit: stage1.limit } : {}),
+          ...(stage1.finishReason ? { finishReason: stage1.finishReason } : {}),
+          ...(stage1.outputCap !== undefined
+            ? { outputCap: stage1.outputCap }
+            : {}),
+          rawText: stage1.text,
+          durationMs: stage1.durationMs,
+        };
+      }
+      candidates = salvaged;
+    } else {
+      candidates = stage1.object.findings;
     }
-
-    candidates = stage1.object.findings;
     stage1Ms = stage1.durationMs;
     // The one moment the expensive investigate pass becomes durable — fired
     // before the (independently failable) verify pass, and before the
@@ -210,7 +297,11 @@ export async function runCommitReview(
   // investigate pass is the common case) — degrades to returning them
   // unverified instead of torching the whole run. Only a user abort propagates.
   let stage2;
-  const stage2Args = resumeArgs("verify", SURFACE_STEP_CAPS.commitReviewVerify);
+  const stage2Args = resumeArgs(
+    "verify",
+    SURFACE_STEP_CAPS.commitReviewVerify,
+    SURFACE_TOKEN_BUDGETS.commitReviewVerify,
+  );
   try {
     stage2 = await runTask({
       modelId: input.modelId,
@@ -223,6 +314,10 @@ export async function runCommitReview(
       tools: tools ?? null,
       temperature: 0,
       maxSteps: stage2Args.maxSteps,
+      ...(stage2Args.maxOutputTokens !== undefined
+        ? { maxOutputTokens: stage2Args.maxOutputTokens }
+        : {}),
+      tokenBudget: stage2Args.tokenBudget,
       resumeMessages: stage2Args.resumeMessages,
       schema: Stage2Schema,
       onToolEvent: input.onToolEvent,
@@ -232,10 +327,7 @@ export async function runCommitReview(
   } catch (e) {
     if ((e as { name?: string } | null)?.name === "AbortError") throw e;
     console.warn("[commit-review] verify pass failed, returning unverified:", e);
-    const findings: Finding[] = candidates
-      .map((c) => ({ ...c, verified: false }))
-      .sort(compareFindings);
-    return { ok: true, findings, durationMs: stage1Ms };
+    return { ok: true, findings: unverifiedFindings(candidates), durationMs: stage1Ms };
   }
 
   const totalMs = stage1Ms + stage2.durationMs;
@@ -243,10 +335,7 @@ export async function runCommitReview(
   // Verify failed to parse → fall back to the unfiltered candidates rather
   // than dropping everything; the confidence filter in the UI still applies.
   if (!stage2.ok) {
-    const findings: Finding[] = candidates
-      .map((c) => ({ ...c, verified: false }))
-      .sort(compareFindings);
-    return { ok: true, findings, durationMs: totalMs };
+    return { ok: true, findings: unverifiedFindings(candidates), durationMs: totalMs };
   }
 
   const verdicts = new Map(stage2.object.verdicts.map((v) => [v.id, v]));
@@ -311,33 +400,62 @@ export function isOldCommit(diff: CommitDiff): boolean {
   );
 }
 
+/** The patch body for one commit plus the label above it. `focusPaths` (the
+ *  verify stage only) narrows it to the files the candidate findings cite — see
+ *  verifyFocus.ts for why that's a deterministic slice rather than a summary
+ *  call, and for the guards that make it a no-op whenever narrowing wouldn't
+ *  help or would leave the verifier blind. */
+function patchBlock(
+  d: CommitDiff,
+  focusPaths: readonly string[] | undefined,
+): { label: string; body: string } {
+  const scope = d.isLocal ? "all uncommitted changes" : "this commit's own change";
+  const focused = focusPaths ? focusPatchOnFiles(d.rawPatch, focusPaths) : null;
+  if (!focused) {
+    return { label: `RAW PATCH (${scope}):`, body: d.rawPatch || "(empty)" };
+  }
+  const n = focused.omitted.length;
+  const where = d.isLocal
+    ? "read_file (they're uncommitted, so the working tree is their content)"
+    : `\`git show ${d.shortSha} -- <path>\` via run_command`;
+  return {
+    label:
+      `RAW PATCH (${scope}) — only the hunks for files the candidate findings cite. ` +
+      `${n} other changed file${n === 1 ? "" : "s"} omitted (${focused.omitted.join(", ")}); ` +
+      `read ${n === 1 ? "it" : "them"} with ${where} if a verdict needs it.`,
+    body: focused.text,
+  };
+}
+
 /** Each commit's metadata + raw patch, as one labelled section per commit. */
-function commitSections(diffs: CommitDiff[]): string {
+function commitSections(
+  diffs: CommitDiff[],
+  focusPaths?: readonly string[],
+): string {
   if (diffs.length === 1) {
     const d = diffs[0];
-    const patchLabel = d.isLocal
-      ? "RAW PATCH (all uncommitted changes):"
-      : "RAW PATCH (this commit's own change):";
+    const { label, body } = patchBlock(d, focusPaths);
     return `${diffHeader(d)}
 
 ---
-${patchLabel}
+${label}
 
 \`\`\`diff
-${d.rawPatch || "(empty)"}
+${body}
 \`\`\``;
   }
   return diffs
-    .map(
-      (d, i) => `### COMMIT ${i + 1} of ${diffs.length}
+    .map((d, i) => {
+      const { label, body } = patchBlock(d, focusPaths);
+      return `### COMMIT ${i + 1} of ${diffs.length}
 ${diffHeader(d)}
 
-RAW PATCH (this commit's own change):
+${label}
 
 \`\`\`diff
-${d.rawPatch || "(empty)"}
-\`\`\``,
-    )
+${body}
+\`\`\``;
+    })
     .join("\n\n---\n\n");
 }
 
@@ -365,16 +483,20 @@ export function buildInvestigatePrompt(input: RunCommitReviewInput): string {
 Investigate ${diffs.length > 1 ? "these commits'" : "this commit's"} change and its blast radius, then return the findings JSON.`;
 }
 
-function buildVerifyPrompt(
+/** Verify's user turn. The candidates ARE the task here, so the diff is scoped
+ *  to the files they cite instead of re-sent whole: the change was already paid
+ *  for once by the investigate pass, and verify re-sends its prompt on every one
+ *  of its agentic steps. */
+export function buildVerifyPrompt(
   input: RunCommitReviewInput,
-  candidates: unknown,
+  candidates: CandidateFinding[],
 ): string {
   const { diffs } = input;
   const contextText = formatContextBlocks(input.contextBlocks);
   const contextSection = contextText
     ? `\n\n---\nDEVELOPER CONTEXT (ticket / requirements):\n${contextText}`
     : "";
-  return `${commitSections(diffs)}${contextSection}
+  return `${commitSections(diffs, focusPathsFromCandidates(candidates))}${contextSection}
 
 ---
 CANDIDATE FINDINGS from the first pass — verify each by trying to refute it, then return verdicts keyed by id:

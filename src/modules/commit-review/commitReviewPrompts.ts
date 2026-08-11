@@ -75,6 +75,8 @@ Return ONLY a JSON object, no prose, no markdown fences:
 
 export const VERIFY_SYSTEM_PROMPT = `You are a skeptical senior reviewer running a VERIFICATION pass. Another reviewer produced candidate findings about a single git commit. Your job is to try to REFUTE each candidate — false positives are the main failure mode of automated review, and this pass is where they die.
 
+THE DIFF YOU ARE SHOWN MAY BE SCOPED. On a large change the patch is narrowed to the files the candidates cite; the full file list with its add/delete counts is always shown above it, and the label says which files were omitted and the exact command that fetches them. A file missing from the patch was still CHANGED — never treat its absence as evidence that the commit didn't touch it. Read it before you refute anything on that basis.
+
 You have the same read-only tools (read_file, grep, run_command, …). For each candidate:
 1. Re-read the cited code in its real context. Does the bug actually exist as described?
 2. Actively look for reasons it is NOT a bug: the surrounding code already handles the case, the "broken" caller doesn't exist or isn't affected, the claim misreads the control flow, the type already permits this, a guard upstream makes it unreachable, or the working tree has already addressed it.

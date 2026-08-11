@@ -17,9 +17,11 @@ import {
   type BestPracticeFile,
 } from "@/modules/settings/store";
 import { MODELS, estimateCost, getModelContextLimit } from "@/modules/ai/config";
+import { BEST_PRACTICE_FILE_CAP } from "@/modules/ai/lib/bestPractices";
 import { useContextBaseline } from "@/modules/ai/lib/useContextBaseline";
 import { formatCostUsd, formatTokens } from "@/modules/ai/lib/contextEstimate";
 import {
+  AlertCircleIcon,
   Cancel01Icon,
   CheckmarkCircle02Icon,
   Delete02Icon,
@@ -30,11 +32,23 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useEffect, useState } from "react";
 
-type ReadStatus = "checking" | "ok" | "error";
+/** `oversized` is readable but past BEST_PRACTICE_FILE_CAP, so only its head
+ *  reaches the model. Flagged HERE, before any run, because the alternative is
+ *  the AI silently ignoring house rules the user believes are being applied —
+ *  and this is the screen where they can actually fix it. Compared on `fs_stat`
+ *  BYTES against a character cap, so a multibyte file warns slightly early;
+ *  erring toward the warning is the right direction for a silent-drop guard. */
+type ReadStatus = "checking" | "ok" | "error" | "oversized";
 
 function baseName(path: string): string {
   const parts = path.replace(/\\/g, "/").split("/");
   return parts[parts.length - 1] || path;
+}
+
+function formatKb(bytes: number): string {
+  return bytes >= 1024 * 1024
+    ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    : `${Math.round(bytes / 1024)} KB`;
 }
 
 /**
@@ -47,6 +61,7 @@ export function BestPracticesPanel() {
   const files = usePreferencesStore((s) => s.bestPracticeFiles);
   const customInstructions = usePreferencesStore((s) => s.customInstructions);
   const [status, setStatus] = useState<Record<string, ReadStatus>>({});
+  const [sizes, setSizes] = useState<Record<string, number>>({});
 
   // Re-check readability whenever the SET of paths changes. A best-practices
   // file may live on a network share that's currently offline — surfacing that
@@ -57,9 +72,14 @@ export function BestPracticesPanel() {
     let alive = true;
     for (const f of files) {
       setStatus((s) => ({ ...s, [f.path]: "checking" }));
-      void invoke("fs_stat", { path: f.path })
-        .then(() => {
-          if (alive) setStatus((s) => ({ ...s, [f.path]: "ok" }));
+      void invoke<{ size: number }>("fs_stat", { path: f.path })
+        .then((stat) => {
+          if (!alive) return;
+          setSizes((s) => ({ ...s, [f.path]: stat.size }));
+          setStatus((s) => ({
+            ...s,
+            [f.path]: stat.size > BEST_PRACTICE_FILE_CAP ? "oversized" : "ok",
+          }));
         })
         .catch(() => {
           if (alive) setStatus((s) => ({ ...s, [f.path]: "error" }));
@@ -184,6 +204,7 @@ export function BestPracticesPanel() {
                 key={f.path}
                 file={f}
                 status={status[f.path] ?? "checking"}
+                sizeBytes={sizes[f.path]}
                 onToggle={(enabled) => updateAt(i, { enabled })}
                 onLabel={(label) => updateAt(i, { label })}
                 onRemove={() => removeAt(i)}
@@ -266,12 +287,14 @@ function ContextBudgetCard() {
 function FileRow({
   file,
   status,
+  sizeBytes,
   onToggle,
   onLabel,
   onRemove,
 }: {
   file: BestPracticeFile;
   status: ReadStatus;
+  sizeBytes?: number;
   onToggle: (enabled: boolean) => void;
   onLabel: (label: string) => void;
   onRemove: () => void;
@@ -333,6 +356,13 @@ function FileRow({
           {file.path}
         </TooltipContent>
       </Tooltip>
+      {status === "oversized" ? (
+        <p className="pl-1 text-[10.5px] leading-relaxed text-amber-600 dark:text-amber-500">
+          {sizeBytes != null ? <>{formatKb(sizeBytes)} — only</> : "Only"} the first{" "}
+          {formatKb(BEST_PRACTICE_FILE_CAP)} will be sent, so rules below that point
+          won&rsquo;t be applied. Trim this file or split it into a smaller one.
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -340,6 +370,22 @@ function FileRow({
 function StatusIndicator({ status }: { status: ReadStatus }) {
   if (status === "checking") {
     return <Skeleton className="h-3.5 w-3.5 shrink-0 rounded-full" />;
+  }
+  if (status === "oversized") {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex shrink-0 text-amber-500">
+            <HugeiconsIcon icon={AlertCircleIcon} size={14} strokeWidth={1.75} />
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
+          Bigger than the {formatKb(BEST_PRACTICE_FILE_CAP)} injection cap — only the
+          start of this file reaches the AI. It's never dropped silently: the model
+          is told it was cut and given the path.
+        </TooltipContent>
+      </Tooltip>
+    );
   }
   if (status === "ok") {
     return (

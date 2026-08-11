@@ -114,6 +114,71 @@ describe("salvageDraftBatch (partial-batch acceptance)", () => {
   });
 });
 
+// The `finish: length` shape: the provider cut the answer at the output-token
+// cap, so the JSON ends mid-structure and JSON.parse throws on all of it. The
+// complete case objects that arrived before the cut are real, publishable work
+// — "3 of 5 cases, truncated" instead of nothing.
+describe("salvageDraftBatch (truncated mid-structure — finish: length)", () => {
+  const caseObj = (title: string) =>
+    `{"title":"${title}","steps":[{"action":"do a","expected":"see b"}]}`;
+
+  it("keeps the complete cases when the cut lands inside a later case", () => {
+    const text = `{"cases":[${caseObj("First complete case title")},${caseObj(
+      "Second complete case title",
+    )},{"title":"Third case the cut landed i`;
+    const batch = salvageDraftBatch(text);
+    expect(batch.cases.map((c) => c.title)).toEqual([
+      "First complete case title",
+      "Second complete case title",
+    ]);
+    expect(batch.bugs).toEqual([]);
+  });
+
+  it("keeps all cases and the complete bugs when the cut lands inside bugs", () => {
+    const bug = `{"title":"A complete bug title","reproSteps":"PRECONDITION:\\nn/a","severity":"2 - High"}`;
+    const text = `{"cases":[${caseObj(
+      "The only complete case here",
+    )}],"bugs":[${bug},{"title":"Bug the cut land`;
+    const batch = salvageDraftBatch(text);
+    expect(batch.cases).toHaveLength(1);
+    expect(batch.bugs).toHaveLength(1);
+    expect(batch.bugs[0].title).toBe("A complete bug title");
+  });
+
+  it("is not fooled by braces and escaped quotes inside string values", () => {
+    const tricky = `{"title":"Handles {braces} and \\"quotes\\" in values","steps":[{"action":"type {x} then \\"y\\"","expected":"renders ]}"}]}`;
+    const text = `{"cases":[${tricky},{"title":"cut here`;
+    const batch = salvageDraftBatch(text);
+    expect(batch.cases).toHaveLength(1);
+    expect(batch.cases[0].title).toBe('Handles {braces} and "quotes" in values');
+  });
+
+  it("recovers from a fenced block whose closing fence never arrived", () => {
+    const text =
+      '```json\n{"cases":[' + caseObj("Fenced but complete case title") + ',{"ti';
+    expect(salvageDraftBatch(text).cases).toHaveLength(1);
+  });
+
+  it("drops truncated-and-invalid items but keeps valid ones (per-item safeParse still applies)", () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    // Second case is COMPLETE but invalid (short title) — dropped by schema,
+    // not by the scanner; third is cut — dropped by the scanner.
+    const text = `{"cases":[${caseObj(
+      "Valid and complete case title",
+    )},{"title":"x","steps":[]},{"title":"cut mid`;
+    const batch = salvageDraftBatch(text);
+    expect(batch.cases).toHaveLength(1);
+    err.mockRestore();
+  });
+
+  it("a mention of the key inside prose doesn't derail the scan", () => {
+    const text = `The "cases" I found are below.\n{"cases":[${caseObj(
+      "Case after a prose mention",
+    )},{"cut`;
+    expect(salvageDraftBatch(text).cases).toHaveLength(1);
+  });
+});
+
 describe("clampBugLinks", () => {
   const mk = (linkedDraftCaseIndex: number | null): DraftBatchLLM => ({
     cases: [

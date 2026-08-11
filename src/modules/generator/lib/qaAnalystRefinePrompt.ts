@@ -14,13 +14,15 @@ import type { ReviewedBug, ReviewedCase } from "./draftBatchSchema";
 import {
   renderChangesetsBlock,
   renderTargetContext,
-  formatAttachmentBlock,
+  renderAttachmentBlocks,
   type Coverage,
   type RunAttachment,
   type TargetContext,
 } from "./qaAnalystRun";
 import { renderRelatedCases, type RelatedCase } from "./relatedCases";
 import { DraftBatchLLMSchema } from "./draftBatchSchema";
+import { renderRefineHistory } from "./refineDiff";
+import type { RefineRound } from "./history";
 
 export type RefinePromptInput = {
   /** Original spec the first generation was anchored against. */
@@ -42,6 +44,14 @@ export type RefinePromptInput = {
    *  prompt so the model keeps narrowing instead of fanning back out into
    *  full coverage on a follow-up. */
   changesets?: string;
+  /** Every follow-up already sent on this draft, oldest first. The review pane
+   *  shows these to the user; without them here, round N had no idea round N-1
+   *  had happened and could undo it while "helpfully" answering the new ask. */
+  refineRounds?: RefineRound[];
+  /** The batch as it stood before the most recent round — the store's undo
+   *  point. Diffed against the current draft so the newest round is described
+   *  by what it CHANGED, not just by how the counts moved. */
+  lastRefineSnapshot?: { cases: ReviewedCase[]; bugs: ReviewedBug[] } | null;
   /** What the user asked for, verbatim. */
   instruction: string;
 };
@@ -58,6 +68,15 @@ export function buildRefineUserPrompt(input: RefinePromptInput): string {
   const targetBlock = renderTargetContext(input.targetContext);
   const relatedBlock = renderRelatedCases(input.relatedCases ?? []);
   const changesetsBlock = renderChangesetsBlock(input.changesets);
+  // Diffed against the WHOLE draft, kept and skipped alike — the snapshot is
+  // the whole prior batch, so pairing only the kept half would report every
+  // skipped case as removed by the last round.
+  const historyBlock = renderRefineHistory({
+    rounds: input.refineRounds ?? [],
+    lastSnapshot: input.lastRefineSnapshot,
+    cases: [...input.keptCases, ...input.skippedCases],
+    bugs: [...input.keptBugs, ...input.skippedBugs],
+  });
 
   const currentBatch = {
     cases: input.keptCases.map(stripUiOnly),
@@ -78,7 +97,7 @@ export function buildRefineUserPrompt(input: RefinePromptInput): string {
     input.attachments.length === 0
       ? ""
       : "\n\nSource code attached for grounding:\n\n" +
-        input.attachments.map(formatAttachmentBlock).join("\n\n");
+        renderAttachmentBlocks(input.attachments);
 
   return [
     coverageLine,
@@ -100,6 +119,8 @@ export function buildRefineUserPrompt(input: RefinePromptInput): string {
     relatedBlock ? "" : null,
     changesetsBlock || null,
     changesetsBlock ? "" : null,
+    historyBlock || null,
+    historyBlock ? "" : null,
     "Current draft (kept by the user — your starting point):",
     "```json",
     JSON.stringify(currentBatch, null, 2),

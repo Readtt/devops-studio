@@ -24,9 +24,15 @@ import { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   FINISH_NOW_NUDGE,
+  TRUNCATED_ANSWER_NUDGE,
   type GeneratorCheckpointV1,
 } from "@/modules/ai/lib/checkpointApi";
-import { RESUME_TOPUP_STEPS, type ModelId } from "@/modules/ai/config";
+import { canOfferResume } from "@/modules/ai/lib/errorClass";
+import {
+  RESUME_TOPUP_TOKENS,
+  SURFACE_STEP_CAPS,
+  type ModelId,
+} from "@/modules/ai/config";
 import type {
   ExecuteAnalystOptions,
   PreparedAnalystRun,
@@ -161,6 +167,8 @@ describe("useGenerationSession — resumeAnalyze replays the paid-for transcript
       runId: payload.runId,
       resumable: {
         stepsUsed: 5,
+        hasTranscript: true,
+        outputCapRaisable: false,
         totalTokens: 1234,
         updatedAt: "2026-06-11T00:05:00.000Z",
         outcome: { at: "2026-06-11T00:05:00.000Z", kind: "step_cap" },
@@ -177,7 +185,7 @@ describe("useGenerationSession — resumeAnalyze replays the paid-for transcript
     // The checkpointed prompt is reused verbatim — no re-assembly.
     expect(prepared.userPrompt).toBe("prompt");
     // The transcript IS the savings: prior steps ride along instead of
-    // being re-run. A step-cap resume also gets the smaller top-up budget
+    // being re-run. A budget-stopped resume also gets the smaller TOKEN top-up
     // and the explicit "finish now" user turn appended after the transcript.
     const resume = opts.resumeMessages ?? [];
     expect(resume[0]).toEqual(messages[0]);
@@ -185,10 +193,96 @@ describe("useGenerationSession — resumeAnalyze replays the paid-for transcript
       role: "user",
       content: FINISH_NOW_NUDGE,
     });
-    expect(opts.maxSteps).toBe(RESUME_TOPUP_STEPS);
+    expect(opts.tokenBudget).toBe(RESUME_TOPUP_TOKENS);
+    expect(opts.maxSteps).toBe(SURFACE_STEP_CAPS.generator);
     // Resume never re-reads the suite — the paid-for prompt already has it.
     expect(invokedCommands()).not.toContain("ado_list_suite_cases");
     expect(store.getState().phase).toBe("review");
+  });
+
+  // The "step 27/8" class of bug, in the unit that now rations the run. Both
+  // counters keep climbing cumulatively across resumes, so the readout's ceiling
+  // has to be the prior total plus this call's grant — hand it the raw grant and
+  // a run with plenty of room left renders as 240% of budget.
+  it("a resumed run's budget readout stays coherent (prior spend + top-up)", async () => {
+    const store = createGenerationSessionStore();
+    const spentBefore = 1_200_000; // more than this call's whole top-up
+    const payload = mkCheckpointPayload({
+      transcript: {
+        messages: [{ role: "assistant" as const, content: "read a lot" }],
+        stepsUsed: 26,
+        usage: { inputTokens: spentBefore, outputTokens: 0 },
+      },
+    });
+    invoke.mockImplementation(async (cmd: unknown) =>
+      cmd === "ai_checkpoint_get"
+        ? {
+            runId: payload.runId,
+            surface: "generator",
+            cwd: null,
+            payload: JSON.stringify(payload),
+            createdAt: payload.createdAt,
+            updatedAt: "2026-06-11T00:05:00.000Z",
+          }
+        : undefined,
+    );
+
+    const seen: { used: number | null; budget: number | null }[] = [];
+    executeQaAnalystRun.mockImplementation(
+      async (_p: unknown, opts: ExecuteAnalystOptions) => {
+        seen.push({
+          used: store.getState().tokensUsed,
+          budget: store.getState().tokenBudget,
+        });
+        opts.onCheckpoint?.({
+          messages: [],
+          stepsUsed: 1,
+          usage: { inputTokens: 90_000, outputTokens: 1_000 },
+        });
+        seen.push({
+          used: store.getState().tokensUsed,
+          budget: store.getState().tokenBudget,
+        });
+        return {
+          batch: { cases: [], bugs: [] },
+          rawText: "{}",
+          durationMs: 1,
+          ok: false,
+          reason: "empty" as const,
+          stepsUsed: 1,
+          usage: {},
+        };
+      },
+    );
+    store.setState({
+      phase: "input",
+      runId: payload.runId,
+      resumable: {
+        stepsUsed: 26,
+        hasTranscript: true,
+        outputCapRaisable: false,
+        totalTokens: spentBefore,
+        updatedAt: "2026-06-11T00:05:00.000Z",
+        outcome: { at: "2026-06-11T00:05:00.000Z", kind: "step_cap" },
+      },
+    });
+
+    await store.getState().resumeAnalyze();
+
+    // At the moment the resumed call starts: everything the earlier attempts
+    // spent, against that plus the top-up.
+    expect(seen[0]).toEqual({
+      used: spentBefore,
+      budget: spentBefore + RESUME_TOPUP_TOKENS,
+    });
+    // And after a step of the resumed call, still under its own ceiling. The
+    // step reported 90k input (no cache detail ⇒ all fresh) and 1k output at
+    // 5x, so it costs 95k of budget rather than the 91k a raw sum would give.
+    expect(seen[1]).toEqual({
+      used: spentBefore + 95_000,
+      budget: spentBefore + RESUME_TOPUP_TOKENS,
+    });
+    for (const s of seen) expect(s.used!).toBeLessThan(s.budget!);
   });
 });
 
@@ -236,6 +330,8 @@ describe("useGenerationSession — a failed resume keeps the transcript for the 
         runId: payload.runId,
         resumable: {
           stepsUsed: 5,
+          hasTranscript: true,
+          outputCapRaisable: false,
           totalTokens: 999,
           updatedAt: "2026-06-11T00:05:00.000Z",
           outcome: { at: "2026-06-11T00:05:00.000Z", kind: "cancelled" },
@@ -298,6 +394,212 @@ describe("useGenerationSession — a failed resume keeps the transcript for the 
   });
 });
 
+// The reported failure, end to end: 22 steps and ~1.7M tokens of codebase
+// reading, then a final message that carried no batch. The run "COMPLETED", so
+// the store offered Discard and nothing else — and 22 steps of paid research
+// went in the bin. The research is in the transcript; only the last hop failed.
+/** Drive analyze() to a terminal `reason`, having banked `stepsUsed` steps
+ *  and (optionally) a transcript, exactly as the engine would. Module-scoped:
+ *  both the answered-badly describe and the length-resume describe drive runs
+ *  through it. */
+async function analyzeEndingWith(
+  reason: "empty" | "schema_violation",
+  opts: {
+    stepsUsed: number;
+    withTranscript: boolean;
+    finishReason?: string;
+    outputCap?: number;
+  },
+) {
+    const store = createGenerationSessionStore();
+    executeQaAnalystRun.mockImplementation(
+      async (_p: unknown, o: ExecuteAnalystOptions) => {
+        o.onCheckpoint?.({
+          messages: opts.withTranscript
+            ? [{ role: "assistant", content: "I read 40 files." }]
+            : [],
+          stepsUsed: opts.stepsUsed,
+          usage: { inputTokens: 1_700_000, outputTokens: 500 },
+        });
+        return {
+          batch: { cases: [], bugs: [] },
+          rawText: "",
+          durationMs: 1,
+          ok: false,
+          reason,
+          stepsUsed: opts.stepsUsed,
+          usage: {},
+          ...(opts.finishReason ? { finishReason: opts.finishReason } : {}),
+          ...(opts.outputCap !== undefined ? { outputCap: opts.outputCap } : {}),
+        };
+      },
+    );
+    store.setState({ requirements: "Users can reset a forgotten password." });
+    await store.getState().analyze();
+    return store;
+}
+
+describe("useGenerationSession — an empty answer AFTER real work is resumable", () => {
+  it.each(["empty", "schema_violation"] as const)(
+    "offers a resume after a %s answer that followed 22 steps",
+    async (reason) => {
+      const store = await analyzeEndingWith(reason, {
+        stepsUsed: 22,
+        withTranscript: true,
+      });
+      const s = store.getState();
+      expect(s.phase).toBe("error");
+      expect(s.resumable).not.toBeNull();
+      expect(
+        canOfferResume(s.resumable?.outcome, null, s.resumable),
+      ).toBe(true);
+      // …and the checkpoint that resume needs is on disk, not deleted.
+      expect(invokedCommands()).toContain("ai_checkpoint_save");
+      expect(invokedCommands()).not.toContain("ai_checkpoint_delete");
+    },
+  );
+
+  // The instrument P0-B is really about: the run already knew why it ended and
+  // nothing carried it. It goes into the outcome (so a reopened checkpoint
+  // still knows) and into the leading sentence (so the user isn't sent to a
+  // JSON-mode setting for a run that hit its output ceiling).
+  it("persists the provider's finish reason and leads with the matching cause", async () => {
+    const store = await analyzeEndingWith("empty", {
+      stepsUsed: 22,
+      withTranscript: true,
+      finishReason: "length",
+    });
+    const s = store.getState();
+    expect(s.resumable?.outcome?.finishReason).toBe("length");
+    expect(String(s.error)).toMatch(/output-token ceiling/);
+    expect(String(s.error)).not.toMatch(/JSON mode/);
+  });
+
+  it("keeps the connector wording when no finish reason was reported", async () => {
+    const store = await analyzeEndingWith("empty", {
+      stepsUsed: 0,
+      withTranscript: false,
+    });
+    expect(String(store.getState().error)).toMatch(/JSON mode/);
+  });
+
+  it("records the real reason rather than flattening both to 'empty'", async () => {
+    const store = await analyzeEndingWith("schema_violation", {
+      stepsUsed: 22,
+      withTranscript: true,
+    });
+    expect(store.getState().resumable?.outcome?.kind).toBe("schema_violation");
+  });
+
+  it("still refuses a run that answered nothing having read nothing", async () => {
+    const store = await analyzeEndingWith("empty", {
+      stepsUsed: 0,
+      withTranscript: false,
+    });
+    const s = store.getState();
+    // The checkpoint is still surfaced — it's the handle Discard hangs off —
+    // but the gate says no, which is the pre-existing behaviour for this case.
+    expect(s.resumable).not.toBeNull();
+    expect(canOfferResume(s.resumable?.outcome, null, s.resumable)).toBe(false);
+  });
+});
+
+// The addendum defect: a `finish: length` failure was offered the SAME resume
+// as a wandering one — replay + "answer now" — which runs straight back into
+// the output ceiling and bills the failure twice. A truncation resume is only
+// on offer when the retry differs (a recorded cap below the model's known
+// ceiling), it says so, and it actually runs at that ceiling with the
+// truncation nudge.
+describe("useGenerationSession — a length-cut answer resumes with a raised cap or not at all", () => {
+  it("offers the resume when the attempt ran below the ceiling, and says what it retries with", async () => {
+    const store = await analyzeEndingWith("schema_violation", {
+      stepsUsed: 14,
+      withTranscript: true,
+      finishReason: "length",
+      outputCap: 64_000,
+    });
+    const s = store.getState();
+    expect(s.resumable?.outcome?.outputCap).toBe(64_000);
+    expect(s.resumable?.outputCapRaisable).toBe(true);
+    expect(canOfferResume(s.resumable?.outcome, null, s.resumable)).toBe(true);
+    expect(String(s.error)).toMatch(/raised output-token limit/);
+  });
+
+  it("refuses when no cap was recorded (a pre-cap attempt ran at the ceiling already)", async () => {
+    const store = await analyzeEndingWith("schema_violation", {
+      stepsUsed: 14,
+      withTranscript: true,
+      finishReason: "length",
+    });
+    const s = store.getState();
+    expect(s.resumable?.outputCapRaisable).toBe(false);
+    expect(canOfferResume(s.resumable?.outcome, null, s.resumable)).toBe(false);
+    // No dangling promise of a resume in the copy for a button that isn't there.
+    expect(String(s.error)).not.toMatch(/resuming/);
+  });
+
+  it("the resumed call actually runs at the ceiling with the truncation nudge", async () => {
+    const store = createGenerationSessionStore();
+    const messages = [
+      { role: "assistant" as const, content: "the truncated batch text" },
+    ];
+    const payload = mkCheckpointPayload({
+      transcript: { messages, stepsUsed: 14, usage: { totalTokens: 640_000 } },
+      lastOutcome: {
+        at: "2026-06-11T00:05:00.000Z",
+        kind: "schema_violation",
+        finishReason: "length",
+        outputCap: 64_000,
+      },
+    });
+    invoke.mockImplementation(async (cmd: unknown) => {
+      if (cmd === "ai_checkpoint_get") {
+        return {
+          runId: payload.runId,
+          surface: "generator",
+          cwd: null,
+          payload: JSON.stringify(payload),
+          createdAt: payload.createdAt,
+          updatedAt: "2026-06-11T00:06:00.000Z",
+        };
+      }
+      return undefined;
+    });
+    store.setState({
+      phase: "input",
+      runId: payload.runId,
+      resumable: {
+        stepsUsed: 14,
+        hasTranscript: true,
+        outputCapRaisable: true,
+        totalTokens: 640_000,
+        updatedAt: "2026-06-11T00:05:00.000Z",
+        outcome: payload.lastOutcome,
+      },
+    });
+    executeQaAnalystRun.mockResolvedValue({
+      batch: { cases: [], bugs: [] },
+      rawText: "",
+      durationMs: 1,
+      ok: false,
+      reason: "empty",
+      stepsUsed: 1,
+      usage: {},
+    });
+
+    await store.getState().resumeAnalyze();
+
+    const [, opts] = executeQaAnalystRun.mock.calls[0] as [
+      PreparedAnalystRun,
+      ExecuteAnalystOptions,
+    ];
+    // The ceiling config reserves for exactly this retry (claude-sonnet-5).
+    expect(opts.maxOutputTokens).toBe(128_000);
+    const last = opts.resumeMessages?.[opts.resumeMessages.length - 1];
+    expect(last).toEqual({ role: "user", content: TRUNCATED_ANSWER_NUDGE });
+  });
+});
+
 describe("useGenerationSession — resumeAnalyze against a retired model", () => {
   it("errors and clears resumable instead of leaving the Resume button looping, and keeps the checkpoint row", async () => {
     const store = createGenerationSessionStore();
@@ -320,6 +622,8 @@ describe("useGenerationSession — resumeAnalyze against a retired model", () =>
       runId: payload.runId,
       resumable: {
         stepsUsed: 5,
+        hasTranscript: true,
+        outputCapRaisable: false,
         totalTokens: null,
         updatedAt: "2026-06-11T00:05:00.000Z",
         outcome: { at: "2026-06-11T00:05:00.000Z", kind: "step_cap" },

@@ -162,6 +162,62 @@ describe("runTask mode dispatch", () => {
   });
 });
 
+// The output cap is a per-model decision made in config.ts, NOT delegated to
+// the provider SDKs — @ai-sdk/anthropic's own per-model table filled in 128k
+// for Claude 5 (and 4096 for anything it didn't recognise), which is how a
+// thinking spiral got to burn the full ceiling in one step and still die with
+// `finish: length`. These pin: catalogued models send OUR number, uncatalogued
+// models send nothing (endpoint decides, byte-identical to before), and the
+// result records what was asked for so a truncation resume can reason about it.
+describe("per-model output caps (maxOutputTokens)", () => {
+  const capped = { ...baseInput, modelId: "claude-sonnet-5" as never };
+
+  it("a catalogued model's request carries the config cap, and the result records it", async () => {
+    generateText.mockResolvedValue({ text: "prose" });
+    const r = await runTask(capped);
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.maxOutputTokens).toBe(64_000);
+    expect(r.outputCap).toBe(64_000);
+  });
+
+  it("an uncatalogued model sends no maxOutputTokens at all", async () => {
+    generateText.mockResolvedValue({ text: "prose" });
+    const r = await runTask({ ...baseInput });
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    expect("maxOutputTokens" in arg).toBe(false);
+    expect(r.outputCap).toBeUndefined();
+  });
+
+  it("an explicit TaskInput.maxOutputTokens overrides the config cap", async () => {
+    generateText.mockResolvedValue({ text: "prose" });
+    const r = await runTask({ ...capped, maxOutputTokens: 128_000 });
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.maxOutputTokens).toBe(128_000);
+    expect(r.outputCap).toBe(128_000);
+  });
+
+  it("the structured tool-less (generateObject) path carries the cap too", async () => {
+    const schema = z.object({ a: z.number() });
+    generateObject.mockResolvedValue({ object: { a: 1 } });
+    const r = await runTask({ ...capped, schema });
+    const arg = generateObject.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.maxOutputTokens).toBe(64_000);
+    expect(r.outputCap).toBe(64_000);
+  });
+
+  it("the streaming path carries the cap and records it on the result", async () => {
+    streamText.mockReturnValue({
+      textStream: (async function* () {
+        yield "x";
+      })(),
+    });
+    const r = await streamTask({ ...capped, onText: () => {} });
+    const arg = streamText.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.maxOutputTokens).toBe(64_000);
+    expect(r.outputCap).toBe(64_000);
+  });
+});
+
 describe("streamTask", () => {
   it("streams prose deltas and resolves accumulated text", async () => {
     streamText.mockReturnValue({
@@ -177,6 +233,51 @@ describe("streamTask", () => {
     if (r.ok) {
       expect(r.text).toBe("ab");
       expect(r.object).toBeUndefined();
+    }
+  });
+
+  // A prose surface streams `text` to the user as it arrives, so a loop that
+  // narrates between tool calls and then stops leaves a bubble full of words
+  // and no answer in it. `text` alone can't tell those apart — the Ask reported
+  // "it ran 16 tool calls, and then just stopped" for exactly this shape.
+  it("separates what streamed from what the last step answered", async () => {
+    streamTextOverSteps(
+      [
+        { ...step("s1"), text: "I'll dig into the collect code." },
+        // Pure tool-call step: the loop ends here, having written nothing.
+        { ...step("s2"), text: "" },
+      ],
+      ["I'll dig into the collect code."],
+    );
+    const r = await streamTask({
+      ...baseInput,
+      tools: { read_file: {} } as never,
+      onText: () => {},
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.text).toBe("I'll dig into the collect code.");
+      expect(r.finalText).toBe("");
+    }
+  });
+
+  it("reports the last step's answer as finalText when there is one", async () => {
+    streamTextOverSteps(
+      [
+        { ...step("s1"), text: "Reading…" },
+        { ...step("s2", "stop"), text: "The bug is in migrate." },
+      ],
+      ["Reading…", "The bug is in migrate."],
+    );
+    const r = await streamTask({
+      ...baseInput,
+      tools: { read_file: {} } as never,
+      onText: () => {},
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.text).toBe("Reading…The bug is in migrate.");
+      expect(r.finalText).toBe("The bug is in migrate.");
     }
   });
 
@@ -356,6 +457,115 @@ describe("prompt caching (Anthropic breakpoint)", () => {
   });
 });
 
+describe("conversation turns (contextPrompt + priorMessages)", () => {
+  const anthropic = { ...baseInput, modelId: "claude-opus-5" as never };
+  const history = [
+    { role: "user" as const, content: "q1" },
+    { role: "assistant" as const, content: "a1" },
+  ];
+
+  it("orders the request stable-context → history → new question", async () => {
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({
+      ...baseInput,
+      contextPrompt: "CTX",
+      priorMessages: history,
+    });
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    // Non-Anthropic keeps the top-level system; only the user side becomes
+    // messages.
+    expect(arg.system).toBe("SYS");
+    expect(arg.prompt).toBeUndefined();
+    expect(arg.messages).toEqual([
+      { role: "user", content: "CTX" },
+      { role: "user", content: "q1" },
+      { role: "assistant", content: "a1" },
+      { role: "user", content: "hello" },
+    ]);
+  });
+
+  it("a later turn's request is the earlier one plus two messages", async () => {
+    // THE cache property. Anthropic matches a cached PREFIX, so a turn is only
+    // cheap when its request is the previous request with turns appended — not
+    // when it is the same content rebuilt with the conversation spliced into
+    // the middle, which is what the prose history block did.
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({ ...baseInput, contextPrompt: "CTX", priorMessages: history });
+    await runTask({
+      ...baseInput,
+      prompt: "third question",
+      contextPrompt: "CTX",
+      priorMessages: [
+        ...history,
+        { role: "user" as const, content: "hello" },
+        { role: "assistant" as const, content: "a2" },
+      ],
+    });
+    const first = (generateText.mock.calls[0][0] as { messages: unknown[] })
+      .messages;
+    const second = (generateText.mock.calls[1][0] as { messages: unknown[] })
+      .messages;
+    expect(second.length).toBe(first.length + 2);
+    expect(second.slice(0, first.length)).toEqual(first);
+  });
+
+  it("Anthropic's cache breakpoint still lands on the newest turn", async () => {
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({
+      ...anthropic,
+      tools: { read_file: {} } as never,
+      contextPrompt: "CTX",
+      priorMessages: history,
+    });
+    const prepare = (
+      generateText.mock.calls[0][0] as {
+        prepareStep: (a: { messages: unknown[] }) => { messages: unknown[] };
+      }
+    ).prepareStep;
+    const sent = (generateText.mock.calls[0][0] as { messages: unknown[] })
+      .messages;
+    const out = prepare({ messages: sent }).messages as Array<
+      Record<string, unknown>
+    >;
+    expect(out[0]).toMatchObject({ role: "system" });
+    expect(out[out.length - 1]).toMatchObject({
+      role: "user",
+      content: "hello",
+      providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+    });
+  });
+
+  it("images ride the newest turn, not the stable context", async () => {
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({
+      ...anthropic,
+      contextPrompt: "CTX",
+      priorMessages: history,
+      attachments: [
+        { kind: "image", content: "data:image/png;base64,AAA", mime: "image/png" },
+      ] as never,
+    });
+    const messages = (
+      generateText.mock.calls[0][0] as { messages: Array<Record<string, unknown>> }
+    ).messages;
+    expect(messages[1]).toEqual({ role: "user", content: "CTX" });
+    const last = messages[messages.length - 1] as {
+      content: Array<Record<string, unknown>>;
+    };
+    expect(last.content.some((p) => p.type === "image")).toBe(true);
+  });
+
+  it("a surface that passes neither sends exactly what it sent before", async () => {
+    // The whole feature has to be inert for single-turn surfaces: a bare
+    // `{ prompt }` string, not a one-element messages array that would change
+    // the bytes every auto-caching provider matches on.
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({ ...baseInput, contextPrompt: "   ", priorMessages: [] });
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    expect(promptShape(arg)).toEqual({ system: "SYS", prompt: "hello" });
+  });
+});
+
 describe("rate-limit resilience", () => {
   const anthropic = { ...baseInput, modelId: "claude-opus-5" as never };
   type Msg = {
@@ -391,7 +601,11 @@ describe("rate-limit resilience", () => {
     ).toBe(6);
   });
 
-  it("Anthropic + tools gets a per-step cache prepareStep; other providers don't", async () => {
+  it("every tool-bearing run gets a prepareStep; tool-less runs never do", async () => {
+    // Compaction has to run for EVERY provider (they all have a window), so
+    // prepareStep is no longer Anthropic-only. For a non-Anthropic run with
+    // nothing to evict it returns undefined, which leaves the request exactly
+    // as it was — see "leaves a non-Anthropic request untouched" below.
     generateText.mockResolvedValue({ text: "ok" });
     await runTask({ ...anthropic, tools: { read_file: {} } as never });
     const anthropicArg = generateText.mock.calls[0][0] as {
@@ -405,9 +619,10 @@ describe("rate-limit resilience", () => {
     const openaiArg = generateText.mock.calls[0][0] as {
       prepareStep?: PrepareStep;
     };
-    expect(openaiArg.prepareStep).toBeUndefined();
+    expect(typeof openaiArg.prepareStep).toBe("function");
 
-    // Tool-less runs are single-request — no step loop, no prepareStep.
+    // Tool-less runs are single-request — no step loop, no tool results to
+    // evict, no prepareStep.
     generateText.mockClear();
     generateText.mockResolvedValue({ text: "ok" });
     await runTask({ ...anthropic });
@@ -597,6 +812,572 @@ describe("checkpoints (transcript capture)", () => {
     expect(onCheckpoint).not.toHaveBeenCalled();
     expect(r.stepsUsed).toBe(0);
     expect(r.usage).toEqual({ inputTokens: 3, outputTokens: 4, totalTokens: 7 });
+  });
+});
+
+// The provider already tells us the true size of every request it answers;
+// before this it was accumulated for billing and never compared to the window.
+// This is the measurement Phase 3's eviction decision hangs off.
+describe("in-run context signal", () => {
+  // claude-haiku-4-5 → a 200k window, so the arithmetic below is legible.
+  const toolInput = {
+    ...baseInput,
+    modelId: "claude-haiku-4-5" as never,
+    tools: { read_file: {} } as never,
+  };
+
+  it("measures each step's OWN request, not the running billed sum", async () => {
+    generateTextOverSteps(
+      [
+        step("s1", "tool-calls", { inputTokens: 40_000 }),
+        step("s2", "stop", { inputTokens: 55_000 }),
+      ],
+      "done",
+    );
+    const seen: Array<{ promptTokens: number }> = [];
+    const r = await runTask({
+      ...toolInput,
+      onContextSignal: (s) => seen.push(s),
+    });
+    // Summing would report 95k — what was billed, not what has to fit.
+    expect(seen.map((s) => s.promptTokens)).toEqual([40_000, 55_000]);
+    expect(r.usage?.inputTokens).toBe(95_000);
+    expect(r.context?.promptTokens).toBe(55_000);
+    expect(r.context?.windowTokens).toBe(200_000);
+    expect(r.context?.shouldCompact).toBe(false);
+  });
+
+  it("rides along on every checkpoint so a resumed run knows where it was", async () => {
+    generateTextOverSteps(
+      [step("s1", "tool-calls", { inputTokens: 40_000 })],
+      "done",
+    );
+    const seen: TaskCheckpoint[] = [];
+    await runTask({ ...toolInput, onCheckpoint: (cp) => seen.push(cp) });
+    expect(seen[0].context?.promptTokens).toBe(40_000);
+  });
+
+  it("raises shouldCompact once the request is inside the buffer", async () => {
+    generateTextOverSteps(
+      [step("s1", "stop", { inputTokens: 190_000 })],
+      "done",
+    );
+    const r = await runTask(toolInput);
+    expect(r.context?.shouldCompact).toBe(true);
+    expect(r.context?.headroomTokens).toBeLessThan(13_000);
+  });
+
+  it("stays absent when the provider reports no input count", async () => {
+    generateTextOverSteps([step("s1", "stop", { outputTokens: 12 })], "done");
+    const onContextSignal = vi.fn();
+    const r = await runTask({ ...toolInput, onContextSignal });
+    expect(onContextSignal).not.toHaveBeenCalled();
+    expect(r.context).toBeUndefined();
+  });
+
+  it("keeps the last real reading when a later step reports nothing", async () => {
+    generateTextOverSteps(
+      [
+        step("s1", "tool-calls", { inputTokens: 40_000 }),
+        step("s2", "stop", { outputTokens: 9 }),
+      ],
+      "done",
+    );
+    const r = await runTask(toolInput);
+    expect(r.context?.promptTokens).toBe(40_000);
+  });
+
+  it("streamTask measures the same way", async () => {
+    streamTextOverSteps(
+      [
+        step("s1", "tool-calls", { inputTokens: 40_000 }),
+        step("s2", "stop", {
+          inputTokens: 60_000,
+          inputTokenDetails: { cacheReadTokens: 48_000 },
+        }),
+      ],
+      ["a", "b"],
+    );
+    const r = await streamTask({ ...toolInput, onText: () => {} });
+    expect(r.context?.promptTokens).toBe(60_000);
+    expect(r.context?.cacheHitRatio).toBeCloseTo(0.8);
+  });
+});
+
+// Phase 3: tool-result eviction. compactTranscript.test.ts owns the eviction
+// RULE; this owns the wiring — when it arms, that it composes with the Anthropic
+// cache breakpoint rather than replacing it, and that a run which never fills
+// the window keeps sending exactly the bytes it sent before eviction existed.
+describe("context compaction (tool-result eviction)", () => {
+  type Msg = Record<string, unknown>;
+  type Prepared = { messages: Msg[] } | undefined;
+
+  /** 120,000 chars ⇒ 30,000 tokens: two of them blow the 50,000-token
+   *  tool-result budget, so a three-turn transcript evicts its two oldest. */
+  const HUGE = 120_000;
+  let seq = 0;
+  function bigTurn(tool: string, input: Record<string, unknown>, tag: string): Msg[] {
+    const toolCallId = `c${++seq}`;
+    return [
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId, toolName: tool, input }],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId,
+            toolName: tool,
+            output: { type: "text", value: `// ${tag}\n${"y".repeat(HUGE)}` },
+          },
+        ],
+      },
+    ];
+  }
+
+  /** A turn whose result is far too small to move the eviction boundary. */
+  function smallTurn(tool: string, input: Record<string, unknown>, out: string): Msg[] {
+    const toolCallId = `c${++seq}`;
+    return [
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId, toolName: tool, input }],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId,
+            toolName: tool,
+            output: { type: "text", value: out },
+          },
+        ],
+      },
+    ];
+  }
+
+  const promptMessages: Msg[] = [
+    { role: "system", content: "SYS" },
+    { role: "user", content: "hello" },
+  ];
+
+  function transcript(turns: number): Msg[] {
+    const out = [...promptMessages];
+    for (let i = 0; i < turns; i++) {
+      out.push(...bigTurn("read_file", { path: `src/f${i}.ts` }, `f${i}`));
+    }
+    return out;
+  }
+
+  const stubCount = (messages: Msg[]) =>
+    JSON.stringify(messages).split("[evicted-tool-result #").length - 1;
+
+  /** generateText that drives the loop the way the SDK does: prepareStep runs
+   *  BEFORE each request, onStepFinish after it. `transcripts[i]` stands in for
+   *  the `[...initialMessages, ...responseMessages]` the SDK rebuilds each step. */
+  function loopWithPrepare(steps: FakeStep[], transcripts: Msg[][]) {
+    const prepared: Prepared[] = [];
+    generateText.mockImplementation(
+      async (opts: {
+        prepareStep?: (i: { messages: Msg[]; stepNumber: number }) => Prepared;
+        onStepFinish?: (s: FakeStep) => void;
+      }) => {
+        for (let i = 0; i < steps.length; i++) {
+          prepared.push(opts.prepareStep?.({ messages: transcripts[i], stepNumber: i }));
+          opts.onStepFinish?.(steps[i]);
+        }
+        return { text: "done" };
+      },
+    );
+    return prepared;
+  }
+
+  // claude-haiku-4-5 → 200k window ⇒ 192k usable ⇒ shouldCompact past 179k.
+  const haiku = {
+    ...baseInput,
+    modelId: "claude-haiku-4-5" as never,
+    tools: { read_file: {} } as never,
+  };
+  const CALM = { inputTokens: 40_000 };
+  const TIGHT = { inputTokens: 190_000 };
+
+  it("stays dormant until a step's MEASURED prompt lands inside the compaction buffer", async () => {
+    // This is the property that makes eviction safe by construction: after the
+    // Phase 1 caps an ordinary run never gets within 13,000 tokens of the
+    // window, so an ordinary run's transcript is never touched at all.
+    const t = transcript(3);
+    const prepared = loopWithPrepare(
+      [step("s1", "tool-calls", CALM), step("s2", "tool-calls", CALM), step("s3", "stop", CALM)],
+      [t, t, t],
+    );
+    await runTask(haiku);
+    for (const p of prepared) expect(stubCount(p?.messages ?? [])).toBe(0);
+  });
+
+  it("evicts from the step AFTER the one that reported the pressure", async () => {
+    const t = transcript(3);
+    const prepared = loopWithPrepare(
+      [step("s1", "tool-calls", CALM), step("s2", "tool-calls", TIGHT), step("s3", "stop", TIGHT)],
+      [t, t, t],
+    );
+    await runTask(haiku);
+    // step 0: no reading yet. step 1: last reading was 40k. step 2: 190k → armed.
+    expect(stubCount(prepared[0]?.messages ?? [])).toBe(0);
+    expect(stubCount(prepared[1]?.messages ?? [])).toBe(0);
+    expect(stubCount(prepared[2]!.messages)).toBe(2);
+  });
+
+  it("stays armed once it fires — a smaller follow-up request must not un-evict", async () => {
+    // Eviction shrinks the next request, which drops it back under the buffer.
+    // Without the latch that un-compacts, re-compacts, and rewrites the prefix
+    // on EVERY step — the cache-invalidation failure this phase exists to avoid.
+    const t = transcript(3);
+    const prepared = loopWithPrepare(
+      [step("s1", "tool-calls", TIGHT), step("s2", "tool-calls", CALM), step("s3", "stop", CALM)],
+      [t, t, t],
+    );
+    await runTask(haiku);
+    expect(stubCount(prepared[0]?.messages ?? [])).toBe(0);
+    expect(stubCount(prepared[1]!.messages)).toBe(2);
+    expect(stubCount(prepared[2]!.messages)).toBe(2);
+    expect(JSON.stringify(prepared[2]!.messages)).toBe(
+      JSON.stringify(prepared[1]!.messages),
+    );
+  });
+
+  it("compactContext: false turns it off entirely (the bisect switch)", async () => {
+    const t = transcript(3);
+    const prepared = loopWithPrepare(
+      [step("s1", "tool-calls", TIGHT), step("s2", "stop", TIGHT)],
+      [t, t],
+    );
+    await runTask({ ...haiku, compactContext: false });
+    for (const p of prepared) expect(stubCount(p?.messages ?? [])).toBe(0);
+  });
+
+  it("composes with the Anthropic breakpoint rather than being replaced by it", async () => {
+    // buildRequestPrompt hands Anthropic an already-tagged system message; the
+    // fixture mirrors that so the sweep has something real to preserve.
+    const t = transcript(3);
+    t[0] = {
+      ...t[0],
+      providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+    };
+    const prepared = loopWithPrepare(
+      [step("s1", "tool-calls", TIGHT), step("s2", "stop", TIGHT)],
+      [t, t],
+    );
+    await runTask(haiku);
+    const out = prepared[1]!.messages;
+    expect(stubCount(out)).toBe(2);
+    // System breakpoint kept, breakpoint on the LAST message — and that last
+    // message is the compacted one, not a pre-compaction copy.
+    expect(out[0].providerOptions).toMatchObject({
+      anthropic: { cacheControl: { type: "ephemeral" } },
+    });
+    expect(out[out.length - 1].providerOptions).toMatchObject({
+      anthropic: { cacheControl: { type: "ephemeral" } },
+    });
+    expect(out[1].providerOptions).toBeUndefined();
+    // The tagged tail is the newest tool result, kept verbatim — a breakpoint
+    // over a message whose bytes changed after tagging would cache the wrong thing.
+    expect(JSON.stringify(out[out.length - 1])).toContain("y".repeat(1_000));
+  });
+
+  it("leaves a non-Anthropic request untouched when nothing was evicted", async () => {
+    // Providers other than Anthropic cache on a byte-identical prefix, so an
+    // override that changes nothing must not be sent at all.
+    const t = transcript(1);
+    const prepared = loopWithPrepare([step("s1", "stop", { inputTokens: 390_000 })], [t]);
+    await runTask({ ...baseInput, tools: { read_file: {} } as never }); // gpt-5.4-mini
+    expect(prepared[0]).toBeUndefined();
+  });
+
+  it("keeps the prefix byte-identical across steps once armed (the cache-hit property)", async () => {
+    // gpt-5.4-mini → 400k window ⇒ 392k usable ⇒ shouldCompact past 379k. No
+    // cache tagging on this path, so what comes back is pure compaction.
+    const stepN = transcript(3);
+    const stepN1 = [
+      ...stepN,
+      { role: "assistant", content: "One more check." },
+      ...smallTurn("run_command", { command: "git status" }, "clean"),
+    ];
+    const armed = { inputTokens: 390_000 };
+    const prepared = loopWithPrepare(
+      [step("s1", "tool-calls", armed), step("s2", "tool-calls", armed), step("s3", "stop", armed)],
+      [stepN, stepN, stepN1],
+    );
+    await runTask({ ...baseInput, tools: { read_file: {} } as never });
+
+    const atN = prepared[1]!.messages;
+    const atN1 = prepared[2]!.messages;
+    expect(stubCount(atN)).toBe(2);
+    // The whole previously-sent prefix survives byte for byte; only the newly
+    // appended messages are new. This is the assertion that fails the moment
+    // eviction is rewritten as a sliding window.
+    expect(JSON.stringify(atN1.slice(0, atN.length))).toBe(JSON.stringify(atN));
+  });
+
+  it("streamTask compacts the same way, with a fresh latch per attempt", async () => {
+    const t = transcript(3);
+    const prepared: Prepared[] = [];
+    streamText.mockImplementation(
+      (opts: {
+        prepareStep?: (i: { messages: Msg[]; stepNumber: number }) => Prepared;
+        onStepFinish?: (s: FakeStep) => void;
+      }) => ({
+        textStream: (async function* () {
+          for (let i = 0; i < 2; i++) {
+            prepared.push(opts.prepareStep?.({ messages: t, stepNumber: i }));
+            opts.onStepFinish?.(step(`s${i}`, i === 1 ? "stop" : "tool-calls", TIGHT));
+          }
+          yield "ok";
+        })(),
+      }),
+    );
+    await streamTask({ ...haiku, onText: () => {} });
+    expect(stubCount(prepared[0]?.messages ?? [])).toBe(0);
+    expect(stubCount(prepared[1]!.messages)).toBe(2);
+  });
+});
+
+// Summarization is the rung BELOW eviction and the only control in the phase
+// that spends money, so what's under test is mostly restraint: it must not fire
+// while the free mechanism still has something to give, and it must never fire
+// twice.
+describe("context summarization (the last resort)", () => {
+  type Msg = Record<string, unknown>;
+  type Prepared = { messages: Msg[] } | undefined;
+
+  let seq = 0;
+
+  /** A turn whose result is already an eviction stub — nothing left to evict —
+   *  wrapped in enough narration for a summary to be worth a request. */
+  function spentTurn(): Msg[] {
+    const toolCallId = `s${++seq}`;
+    return [
+      {
+        role: "assistant",
+        content: `Reasoning about the auth module in detail. ${"Considered the caller graph. ".repeat(120)}`,
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId,
+            toolName: "read_file",
+            input: { path: `src/f${toolCallId}.ts` },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId,
+            toolName: "read_file",
+            output: {
+              type: "text",
+              value: "[evicted-tool-result #deadbeef] 120000 characters dropped",
+            },
+          },
+        ],
+      },
+    ];
+  }
+
+  /** A turn whose result is fat enough that eviction still has work to do. */
+  function liveTurn(): Msg[] {
+    const toolCallId = `l${++seq}`;
+    return [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId,
+            toolName: "read_file",
+            input: { path: `src/g${toolCallId}.ts` },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId,
+            toolName: "read_file",
+            output: { type: "text", value: "z".repeat(120_000) },
+          },
+        ],
+      },
+    ];
+  }
+
+  function spentTranscript(turns: number): Msg[] {
+    const out: Msg[] = [
+      { role: "system", content: "SYS" },
+      { role: "user", content: "hello" },
+    ];
+    for (let i = 0; i < turns; i++) out.push(...spentTurn());
+    return out;
+  }
+
+  /** Splits the one `generateText` mock between the agentic loop (which passes
+   *  onStepFinish) and the summarizer (which doesn't). */
+  function loopWithSummarizer(
+    steps: FakeStep[],
+    transcripts: Msg[][],
+    summary: string | Error = "HANDOVER NOTE",
+  ) {
+    const prepared: Prepared[] = [];
+    const summarizerCalls: Record<string, unknown>[] = [];
+    generateText.mockImplementation(
+      async (opts: {
+        prepareStep?: (i: {
+          messages: Msg[];
+          stepNumber: number;
+        }) => Prepared | Promise<Prepared>;
+        onStepFinish?: (s: FakeStep) => void;
+      }) => {
+        if (!opts.onStepFinish) {
+          summarizerCalls.push(opts as Record<string, unknown>);
+          if (summary instanceof Error) throw summary;
+          return { text: summary };
+        }
+        for (let i = 0; i < steps.length; i++) {
+          prepared.push(
+            await opts.prepareStep?.({ messages: transcripts[i], stepNumber: i }),
+          );
+          opts.onStepFinish?.(steps[i]);
+        }
+        return { text: "done" };
+      },
+    );
+    return { prepared, summarizerCalls };
+  }
+
+  const haiku = {
+    ...baseInput,
+    modelId: "claude-haiku-4-5" as never,
+    keys: { anthropic: "k", openai: "k" } as never,
+    tools: { read_file: {} } as never,
+  };
+  const CALM = { inputTokens: 40_000 };
+  const TIGHT = { inputTokens: 190_000 };
+  const summaryCount = (messages: Msg[]) =>
+    JSON.stringify(messages).split("[context-summary]").length - 1;
+
+  it("does not fire while eviction still has something to take", async () => {
+    // The free mechanism first, always. Two fat results blow the tool-result
+    // budget, so eviction has work — no model call may be made here.
+    const t: Msg[] = [
+      { role: "system", content: "SYS" },
+      { role: "user", content: "hello" },
+      ...liveTurn(),
+      ...liveTurn(),
+      ...liveTurn(),
+    ];
+    const { prepared, summarizerCalls } = loopWithSummarizer(
+      [step("s1", "tool-calls", TIGHT), step("s2", "stop", TIGHT)],
+      [t, t],
+    );
+    await runTask(haiku);
+    expect(summarizerCalls).toHaveLength(0);
+    expect(summaryCount(prepared[1]!.messages)).toBe(0);
+  });
+
+  it("does not fire while the run is nowhere near the window", async () => {
+    const t = spentTranscript(6);
+    const { summarizerCalls } = loopWithSummarizer(
+      [step("s1", "tool-calls", CALM), step("s2", "stop", CALM)],
+      [t, t],
+    );
+    await runTask(haiku);
+    expect(summarizerCalls).toHaveLength(0);
+  });
+
+  it("fires once when eviction is armed and freed nothing, then reuses the result", async () => {
+    const t = spentTranscript(6);
+    const { prepared, summarizerCalls } = loopWithSummarizer(
+      [
+        step("s1", "tool-calls", TIGHT),
+        step("s2", "tool-calls", TIGHT),
+        step("s3", "stop", TIGHT),
+      ],
+      [t, t, t],
+    );
+    await runTask(haiku);
+
+    // Exactly one extra request, ever.
+    expect(summarizerCalls).toHaveLength(1);
+    expect(String(summarizerCalls[0].system)).toContain("compacting the middle");
+    expect(summarizerCalls[0].maxOutputTokens).toBe(3_000);
+    // …on a model chosen for price, not the run's model.
+    expect(summarizerCalls[0].maxRetries).toBe(1);
+
+    // Step 0 had no reading yet, so it isn't armed. Steps 1 and 2 carry the
+    // summary, and byte-identically — that is what keeps the prompt cache.
+    expect(summaryCount(prepared[0]?.messages ?? [])).toBe(0);
+    expect(summaryCount(prepared[1]!.messages)).toBe(1);
+    expect(JSON.stringify(prepared[2]!.messages)).toBe(
+      JSON.stringify(prepared[1]!.messages),
+    );
+    expect(JSON.stringify(prepared[1]!.messages)).toContain("HANDOVER NOTE");
+    // The spec is never summarized away.
+    expect(prepared[1]!.messages[1]).toEqual({ role: "user", content: "hello" });
+    expect(prepared[1]!.messages.length).toBeLessThan(t.length);
+  });
+
+  it("summarizeContext: false turns it off (the bisect switch)", async () => {
+    const t = spentTranscript(6);
+    const { prepared, summarizerCalls } = loopWithSummarizer(
+      [step("s1", "tool-calls", TIGHT), step("s2", "stop", TIGHT)],
+      [t, t],
+    );
+    await runTask({ ...haiku, summarizeContext: false });
+    expect(summarizerCalls).toHaveLength(0);
+    expect(summaryCount(prepared[1]!.messages)).toBe(0);
+  });
+
+  it("a summarizer that throws degrades to no summary, never to a failed run", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const t = spentTranscript(6);
+    const { prepared, summarizerCalls } = loopWithSummarizer(
+      [step("s1", "tool-calls", TIGHT), step("s2", "stop", TIGHT)],
+      [t, t],
+      new Error("529 overloaded"),
+    );
+    const r = await runTask(haiku);
+    expect(r.ok).toBe(true);
+    expect(summarizerCalls).toHaveLength(1);
+    expect(summaryCount(prepared[1]!.messages)).toBe(0);
+    warn.mockRestore();
+  });
+
+  it("does not re-summarize a transcript that already carries one", async () => {
+    const t: Msg[] = [
+      { role: "system", content: "SYS" },
+      {
+        role: "user",
+        content: "[context-summary] earlier work, summarized. ".repeat(50),
+      },
+      ...spentTurn(),
+      ...spentTurn(),
+      ...spentTurn(),
+    ];
+    const { summarizerCalls } = loopWithSummarizer(
+      [step("s1", "tool-calls", TIGHT), step("s2", "stop", TIGHT)],
+      [t, t],
+    );
+    await runTask(haiku);
+    expect(summarizerCalls).toHaveLength(0);
   });
 });
 
@@ -797,6 +1578,37 @@ describe("final-answer selection (multi-step streams)", () => {
     if (r.ok) expect(r.object).toEqual({ items: ["real"] });
   });
 
+  // The back door into the shadowing bug this describe block exists to close.
+  // `stepTexts` records "" for every pure tool-call step, so a `|| acc`
+  // fallback for "the last step wrote nothing" fired exactly when the loop
+  // ended ON a tool call — a budget stop — and handed the whole-run
+  // concatenation to the validator. With defaulted schemas that "validates" as
+  // an empty batch and the run reports ok:true with zero cases.
+  it("does not fall back to the concatenation when the last step wrote nothing", async () => {
+    const schema = z.object({ items: z.array(z.string()).default([]) });
+    streamSteps([
+      { deltas: [narration], finishReason: "tool-calls" },
+      { deltas: [], finishReason: "tool-calls" },
+    ]);
+    const r = await streamTask({ ...baseInput, schema, tools, onText: () => {} });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("empty");
+  });
+
+  // …and the finish reason that says WHY rides out with it. Without this the
+  // surface can only say "the model returned an empty response", which is one
+  // of three quite different failures.
+  it("reports the provider's finish reason on an empty answer", async () => {
+    const schema = z.object({ a: z.number() });
+    streamSteps([
+      { deltas: ["reading"], finishReason: "tool-calls" },
+      { deltas: [], finishReason: "length" },
+    ]);
+    const r = await streamTask({ ...baseInput, schema, tools, onText: () => {} });
+    expect(r.ok).toBe(false);
+    expect(r.finishReason).toBe("length");
+  });
+
   it("trailing-error salvage validates the unfinished step's tail, not the narration", async () => {
     const schema = z.object({ a: z.number() });
     // Final answer streamed fully but its step never finished (stream died).
@@ -890,6 +1702,104 @@ describe("step_cap", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("step_cap");
     expect(r.stepsUsed).toBe(3);
+  });
+});
+
+// A step is a poor proxy for the constraint: one step can be a 200-token call or
+// a 60k-token file read. The token budget is the ration; the step ceiling is the
+// runaway guard behind it. These pin the classification, which is where getting
+// it wrong is expensive — a spend stop lands with steps to spare, so the old
+// `stepsUsed === maxSteps` test would have called it a schema_violation and told
+// the user the model returned bad output when it had simply been cut off.
+describe("token budget", () => {
+  const schema = z.object({ a: z.number() });
+  const spend = (n: number) => ({ inputTokens: n, outputTokens: 0 });
+  const budgeted = {
+    ...baseInput,
+    schema,
+    tools: { read_file: {} } as never,
+    // Deliberately far apart, so nothing here can pass because both guards
+    // happened to bind at once.
+    maxSteps: 20,
+    tokenBudget: 1_000,
+  };
+
+  it("a spend stop with steps to spare is step_cap, not schema_violation", async () => {
+    generateTextOverSteps(
+      [
+        step("s1", "tool-calls", spend(600)),
+        step("s2", "tool-calls", spend(600)),
+      ],
+      "still thinking about it",
+    );
+    const r = await runTask(budgeted);
+    expect(r.stepsUsed).toBe(2); // nowhere near maxSteps
+    expect(r.tokensUsed).toBe(1_200);
+    expect(r.limit).toBe("tokens");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("step_cap");
+  });
+
+  it("under both guards is still a plain schema_violation", async () => {
+    generateTextOverSteps([step("s1", "tool-calls", spend(100))], "garbage");
+    const r = await runTask(budgeted);
+    expect(r.limit).toBeUndefined();
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("schema_violation");
+  });
+
+  it("schema-valid text still wins as ok:true at the budget", async () => {
+    generateTextOverSteps(
+      [step("s1", "tool-calls", spend(5_000))],
+      JSON.stringify({ a: 7 }),
+    );
+    const r = await runTask(budgeted);
+    expect(r.limit).toBe("tokens");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.object).toEqual({ a: 7 });
+  });
+
+  it("a spend stop that finished on its own terms is NOT a budget failure", async () => {
+    // The model answered and stopped; it merely happened to cross the line on
+    // the way. Only a loop cut off mid-tool-call is worth resuming.
+    generateTextOverSteps([step("s1", "stop", spend(5_000))], "garbage");
+    const r = await runTask(budgeted);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("schema_violation");
+  });
+
+  it("installs BOTH stop conditions, so neither guard can be dropped by accident", async () => {
+    generateTextOverSteps([step("s1", "stop", spend(10))], JSON.stringify({ a: 1 }));
+    await runTask(budgeted);
+    const args = generateText.mock.calls[0][0] as { stopWhen?: unknown[] };
+    expect(args.stopWhen).toHaveLength(2);
+    // The SDK ORs the array, so the loop ends at whichever binds first.
+    expect(args.stopWhen?.[1]).toEqual({ __stepCountIs: 20 });
+  });
+
+  it("streamTask classifies a spend stop identically", async () => {
+    streamTextOverSteps(
+      [
+        step("s1", "tool-calls", spend(600)),
+        step("s2", "tool-calls", spend(600)),
+      ],
+      ["not", " json"],
+    );
+    const r = await streamTask({ ...budgeted, onText: () => {} });
+    expect(r.limit).toBe("tokens");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("step_cap");
+  });
+
+  it("an endpoint that reports no usage falls through to the step ceiling", async () => {
+    // Local servers routinely report nothing. The token budget is structurally
+    // blind there, which is the whole reason the step count was kept.
+    generateTextOverSteps([step("s1"), step("s2"), step("s3")], "");
+    const r = await runTask({ ...budgeted, maxSteps: 3 });
+    expect(r.tokensUsed).toBe(0);
+    expect(r.limit).toBe("steps");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("step_cap");
   });
 });
 

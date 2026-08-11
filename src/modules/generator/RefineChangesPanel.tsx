@@ -10,7 +10,14 @@ import { ArrowDown01Icon, Edit02Icon, RefreshIcon } from "@hugeicons/core-free-i
 import { diffSteps, StepsDiff, type StepLine } from "@/components/diff/stepsDiff";
 import { TextDiff } from "@/components/diff/textDiff";
 import { useGenerationSession } from "./store/useGenerationSession";
-import type { ReviewedBug, ReviewedCase } from "./lib/draftBatchSchema";
+import type { ReviewedCase } from "./lib/draftBatchSchema";
+import {
+  caseFieldChanges,
+  norm,
+  pairBugs,
+  pairCases,
+  relinkForCurrent,
+} from "./lib/refineDiff";
 
 /**
  * "What did the last refine change?" panel for the review phase.
@@ -498,143 +505,11 @@ function ValueDiff({
 }
 
 // --- Pairing ----------------------------------------------------------------
+// The pairing itself now lives in lib/refineDiff so the two prompts can render
+// the same "what changed" the user reads here.
 
 function toStepLines(c: ReviewedCase): StepLine[] {
   return c.steps.map((s, i) => ({ index: i + 1, action: s.action, expected: s.expected }));
-}
-
-const norm = (s: string) => s.trim().toLowerCase();
-
-function stepsChanged(a: ReviewedCase, b: ReviewedCase): boolean {
-  if (a.steps.length !== b.steps.length) return true;
-  for (let i = 0; i < a.steps.length; i++) {
-    if (a.steps[i].action !== b.steps[i].action) return true;
-    if (a.steps[i].expected !== b.steps[i].expected) return true;
-  }
-  return false;
-}
-
-function caseFieldChanges(a: ReviewedCase, b: ReviewedCase) {
-  const tagsKey = (c: ReviewedCase) => [...(c.tags ?? [])].sort().join(" ");
-  return {
-    description: a.description !== b.description,
-    steps: stepsChanged(a, b),
-    rationale: (a.rationale ?? "") !== (b.rationale ?? ""),
-    tags: tagsKey(a) !== tagsKey(b),
-    areaPath: (a.areaPath ?? "") !== (b.areaPath ?? ""),
-    iterationPath: (a.iterationPath ?? "") !== (b.iterationPath ?? ""),
-  };
-}
-
-function caseChanged(a: ReviewedCase, b: ReviewedCase): boolean {
-  const ch = caseFieldChanges(a, b);
-  return (
-    ch.description ||
-    ch.steps ||
-    ch.rationale ||
-    ch.tags ||
-    ch.areaPath ||
-    ch.iterationPath
-  );
-}
-
-function pairCases(before: ReviewedCase[], after: ReviewedCase[]) {
-  const pool = new Map<string, ReviewedCase[]>();
-  for (const item of before) {
-    const k = norm(item.title);
-    const arr = pool.get(k);
-    if (arr) arr.push(item);
-    else pool.set(k, [item]);
-  }
-  const added: ReviewedCase[] = [];
-  const modified: { before: ReviewedCase; after: ReviewedCase }[] = [];
-  for (const a of after) {
-    const prev = pool.get(norm(a.title))?.shift();
-    if (!prev) added.push(a);
-    else if (caseChanged(prev, a)) modified.push({ before: prev, after: a });
-  }
-  const removed: ReviewedCase[] = [];
-  for (const arr of pool.values()) removed.push(...arr);
-  return { added, removed, modified };
-}
-
-/** The bug's parent case title, resolved through the cases array it indexes.
- *  We compare parents by TITLE (not raw index) because a refine rebuilds the
- *  cases array — the same index can point at a different case before/after. */
-function parentTitleOf(bug: ReviewedBug, cs: ReviewedCase[]): string | null {
-  const i = bug.linkedDraftCaseIndex;
-  return i != null && i >= 0 && i < cs.length ? cs[i].title : null;
-}
-
-/** Re-point a snapshot bug's parent link at the LIVE cases array before
- *  restoring it — the index it carried referenced the snapshot's array, which
- *  the refine has since rebuilt. Matches the parent by title; nulls the link
- *  when that case no longer exists in the current draft. */
-function relinkForCurrent(
-  bug: ReviewedBug,
-  snapshotCases: ReviewedCase[],
-  currentCases: ReviewedCase[],
-): ReviewedBug {
-  const parentTitle = parentTitleOf(bug, snapshotCases);
-  if (parentTitle == null) return { ...bug, linkedDraftCaseIndex: null };
-  const i = currentCases.findIndex((c) => norm(c.title) === norm(parentTitle));
-  return { ...bug, linkedDraftCaseIndex: i >= 0 ? i : null };
-}
-
-type BugMod = {
-  before: ReviewedBug;
-  after: ReviewedBug;
-  beforeParentTitle: string | null;
-  afterParentTitle: string | null;
-};
-
-function pairBugs(
-  before: ReviewedBug[],
-  after: ReviewedBug[],
-  beforeCases: ReviewedCase[],
-  afterCases: ReviewedCase[],
-) {
-  const pool = new Map<string, ReviewedBug[]>();
-  for (const item of before) {
-    const k = norm(item.title);
-    const arr = pool.get(k);
-    if (arr) arr.push(item);
-    else pool.set(k, [item]);
-  }
-  const added: ReviewedBug[] = [];
-  const modified: BugMod[] = [];
-  for (const a of after) {
-    const prev = pool.get(norm(a.title))?.shift();
-    if (!prev) {
-      added.push(a);
-      continue;
-    }
-    const beforeParentTitle = parentTitleOf(prev, beforeCases);
-    const afterParentTitle = parentTitleOf(a, afterCases);
-    // Catch the small-but-real changes a refine can make: a re-link to a
-    // different parent case, or a change to the grounded code refs — not just
-    // the repro text and severity.
-    const relinked =
-      norm(beforeParentTitle ?? "") !== norm(afterParentTitle ?? "");
-    const codeRefsChanged =
-      JSON.stringify(prev.codeRefs ?? []) !== JSON.stringify(a.codeRefs ?? []);
-    if (
-      prev.reproSteps !== a.reproSteps ||
-      prev.severity !== a.severity ||
-      relinked ||
-      codeRefsChanged
-    ) {
-      modified.push({
-        before: prev,
-        after: a,
-        beforeParentTitle,
-        afterParentTitle,
-      });
-    }
-  }
-  const removed: ReviewedBug[] = [];
-  for (const arr of pool.values()) removed.push(...arr);
-  return { added, removed, modified };
 }
 
 function summarize(

@@ -134,3 +134,136 @@ describe("taskRunner integration (real AI SDK + Zod v4, mock model)", () => {
     expect(captured.prompt?.some((m) => m.role === "system")).toBe(true);
   });
 });
+
+// The budget has to STOP a run, not merely be reported after one. That can only
+// be shown against the real SDK loop — a mocked generateText walks whatever step
+// list the test hands it and would "pass" with stopWhen wired to nothing.
+describe("run budget stops the real SDK loop", () => {
+  /** A model that never answers: every turn is another tool call. The runaway
+   *  both guards exist for. `perStep` is the prompt size it reports. */
+  function runawayModel(perStep: number): { model: MockLanguageModelV3; turns: () => number } {
+    let turns = 0;
+    return {
+      model: new MockLanguageModelV3({
+        doGenerate: async () => {
+          turns++;
+          return {
+            content: [
+              {
+                type: "tool-call",
+                toolCallId: `call-${turns}`,
+                toolName: "read_file",
+                input: "{}",
+              },
+            ],
+            // PROVIDER-level shapes, both of them, which is not what the flat
+            // `finishReason: "stop"` / `usage: { inputTokens: 5 }` in the older
+            // helpers above look like. LanguageModelV3 nests both, and the SDK
+            // flattens them on the way out — hand it the flat form and the
+            // finish reason maps to "other" and every count comes back
+            // undefined. Those tests assert on neither, so it never showed;
+            // here it would make the mock silently spend nothing and report a
+            // reason no budget stop could ever be told apart from a clean stop.
+            finishReason: { unified: "tool-calls", raw: "tool_calls" },
+            usage: {
+              inputTokens: {
+                total: perStep,
+                noCache: perStep,
+                cacheRead: 0,
+                cacheWrite: 0,
+              },
+              outputTokens: { total: 0, text: 0, reasoning: 0 },
+            },
+            warnings: [],
+          };
+        },
+      } as never),
+      turns: () => turns,
+    };
+  }
+
+  const tools = {
+    read_file: {
+      description: "read a file",
+      inputSchema: z.object({}),
+      execute: async () => "some file contents",
+    },
+  } as never;
+
+  it("the TOKEN budget stops it, with steps to spare", async () => {
+    // 30k/step against a 100k budget: the 4th step's request takes the running
+    // total to 120k. The 40-step ceiling is nowhere near — nothing but the
+    // token budget can end this run.
+    const runaway = runawayModel(30_000);
+    mockModel = runaway.model;
+    const r = await runTask({
+      ...base,
+      schema: Schema,
+      tools,
+      maxSteps: 40,
+      tokenBudget: 100_000,
+    });
+
+    expect(runaway.turns()).toBe(4);
+    expect(r.stepsUsed).toBe(4);
+    expect(r.tokensUsed).toBe(120_000);
+    expect(r.limit).toBe("tokens");
+    // Cut off mid-loop, never "the model returned bad output" — that
+    // misclassification is what the resumable step_cap reason exists to end,
+    // and it only reached the token stop once budgetReason stopped testing
+    // `stepsUsed === maxSteps`.
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("step_cap");
+  });
+
+  it("…and where it stops MOVES with the budget", async () => {
+    // The mutation, in-suite: double the budget and the same runaway model gets
+    // twice as far. A stopWhen wired to nothing (or to steps alone) would report
+    // the same number both times.
+    const runaway = runawayModel(30_000);
+    mockModel = runaway.model;
+    await runTask({ ...base, schema: Schema, tools, maxSteps: 40, tokenBudget: 200_000 });
+    expect(runaway.turns()).toBe(7);
+  });
+
+  it("the STEP ceiling still stops a loop that never spends anything", async () => {
+    // The endpoint that reports no usage — local servers routinely don't. The
+    // token budget is structurally blind here, so the ceiling is the only guard
+    // there is, and it is why the step count was kept rather than deleted.
+    const runaway = runawayModel(0);
+    mockModel = runaway.model;
+    const r = await runTask({
+      ...base,
+      schema: Schema,
+      tools,
+      maxSteps: 5,
+      tokenBudget: 2_500_000,
+    });
+
+    expect(runaway.turns()).toBe(5);
+    expect(r.tokensUsed).toBe(0);
+    expect(r.limit).toBe("steps");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("step_cap");
+  });
+
+  it("…and where THAT stops moves with the ceiling", async () => {
+    const runaway = runawayModel(0);
+    mockModel = runaway.model;
+    await runTask({ ...base, schema: Schema, tools, maxSteps: 9, tokenBudget: 2_500_000 });
+    expect(runaway.turns()).toBe(9);
+  });
+
+  it("a run that answers inside its budget is untouched by either guard", async () => {
+    mockModel = genModel(JSON.stringify({ cases: [{ title: "Fine", n: 1 }] }));
+    const r = await runTask({
+      ...base,
+      schema: Schema,
+      tools,
+      maxSteps: 40,
+      tokenBudget: 2_500_000,
+    });
+    expect(r.ok).toBe(true);
+    expect(r.limit).toBeUndefined();
+  });
+});

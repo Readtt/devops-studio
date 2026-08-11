@@ -9,15 +9,24 @@ vi.mock("@/modules/ai/lib/taskRunner", () => ({
 
 import {
   buildInvestigatePrompt,
+  buildVerifyPrompt,
   combinedPatchBytes,
   isOldCommit,
   runCommitReview,
+  unverifiedFindings,
   COMBINED_DIFF_WARN_BYTES,
   type RunCommitReviewInput,
 } from "./runCommitReview";
 import { runTask, streamTask } from "@/modules/ai/lib/taskRunner";
-import { RESUME_TOPUP_STEPS, SURFACE_STEP_CAPS } from "@/modules/ai/config";
-import { FINISH_NOW_NUDGE } from "@/modules/ai/lib/checkpointApi";
+import {
+  RESUME_TOPUP_TOKENS,
+  SURFACE_STEP_CAPS,
+  SURFACE_TOKEN_BUDGETS,
+} from "@/modules/ai/config";
+import {
+  FINISH_NOW_NUDGE,
+  TRUNCATED_ANSWER_NUDGE,
+} from "@/modules/ai/lib/checkpointApi";
 import type { CandidateFinding } from "./schema";
 import type { CommitDiff } from "./gitCommitApi";
 
@@ -250,7 +259,7 @@ describe("runCommitReview — resume", () => {
     expect(args.maxSteps).toBe(SURFACE_STEP_CAPS.commitReviewInvestigate);
   });
 
-  it("a step-cap resume tops the budget up and tells the resumed stage to finish", async () => {
+  it("a budget-stopped resume tops up TOKENS and tells the resumed stage to finish", async () => {
     mockStreamTask.mockResolvedValue(stage1Ok([]));
 
     await runCommitReview(
@@ -266,7 +275,11 @@ describe("runCommitReview — resume", () => {
 
     const args = mockStreamTask.mock.calls[0][0];
     const resumed = args.resumeMessages ?? [];
-    expect(args.maxSteps).toBe(RESUME_TOPUP_STEPS);
+    expect(args.tokenBudget).toBe(RESUME_TOPUP_TOKENS);
+    // The step ceiling is a runaway guard, not the ration — it goes back to the
+    // full surface cap so a model that only needs a few cheap turns to write out
+    // findings it already investigated isn't starved a second time.
+    expect(args.maxSteps).toBe(SURFACE_STEP_CAPS.commitReviewInvestigate);
     expect(resumed[resumed.length - 1]).toEqual({
       role: "user",
       content: FINISH_NOW_NUDGE,
@@ -290,10 +303,84 @@ describe("runCommitReview — resume", () => {
     );
 
     const args = mockRunTask.mock.calls[0][0];
-    expect(args.maxSteps).toBe(RESUME_TOPUP_STEPS);
+    expect(args.tokenBudget).toBe(RESUME_TOPUP_TOKENS);
+    expect(args.maxSteps).toBe(SURFACE_STEP_CAPS.commitReviewVerify);
     expect(args.resumeMessages).toEqual([
       { role: "user", content: FINISH_NOW_NUDGE },
     ]);
+  });
+
+  // A truncated answer is NOT a wandering one: FINISH_NOW_NUDGE tells it to
+  // stop reading, which it wasn't doing, and "answer now" at the same output
+  // cap deterministically meets the same ceiling. The generator got both halves
+  // of this in b7a2724; Commit Review failed closed instead, so a truncated
+  // review offered no resume at all.
+  it("a truncated resume retries at the raised ceiling with the truncation nudge", async () => {
+    mockStreamTask.mockResolvedValue(stage1Ok([]));
+
+    await runCommitReview(
+      input({
+        resume: {
+          stage: "investigate",
+          stage1Candidates: null,
+          resumeMessages: priorMessages,
+          stepCapNudge: true,
+          raisedOutputCap: 128_000,
+        },
+      }),
+    );
+
+    const args = mockStreamTask.mock.calls[0][0];
+    const resumed = args.resumeMessages ?? [];
+    expect(args.maxOutputTokens).toBe(128_000);
+    expect(resumed[resumed.length - 1]).toEqual({
+      role: "user",
+      content: TRUNCATED_ANSWER_NUDGE,
+    });
+    // Still a finish pass in every other respect.
+    expect(args.tokenBudget).toBe(RESUME_TOPUP_TOKENS);
+    expect(resumed[0]).toEqual(priorMessages[0]);
+  });
+
+  it("carries the raised ceiling into a resumed VERIFY stage too", async () => {
+    mockRunTask.mockResolvedValue(stage2Ok([]));
+
+    await runCommitReview(
+      input({
+        resume: {
+          stage: "verify",
+          stage1Candidates: [cand("f1")],
+          resumeMessages: null,
+          stepCapNudge: true,
+          raisedOutputCap: 64_000,
+        },
+      }),
+    );
+
+    const args = mockRunTask.mock.calls[0][0];
+    expect(args.maxOutputTokens).toBe(64_000);
+    expect(args.resumeMessages).toEqual([
+      { role: "user", content: TRUNCATED_ANSWER_NUDGE },
+    ]);
+  });
+
+  it("sends no output cap when the stop wasn't a truncation", async () => {
+    // Omitted, not zero: absent means "use the per-model config cap", which is
+    // what every non-truncation resume should keep running at.
+    mockStreamTask.mockResolvedValue(stage1Ok([]));
+
+    await runCommitReview(
+      input({
+        resume: {
+          stage: "investigate",
+          stage1Candidates: null,
+          resumeMessages: priorMessages,
+          stepCapNudge: true,
+        },
+      }),
+    );
+
+    expect(mockStreamTask.mock.calls[0][0].maxOutputTokens).toBeUndefined();
   });
 
   it("a fresh run passes no transcript and keeps both surface caps", async () => {
@@ -306,9 +393,15 @@ describe("runCommitReview — resume", () => {
     expect(mockStreamTask.mock.calls[0][0].maxSteps).toBe(
       SURFACE_STEP_CAPS.commitReviewInvestigate,
     );
+    expect(mockStreamTask.mock.calls[0][0].tokenBudget).toBe(
+      SURFACE_TOKEN_BUDGETS.commitReviewInvestigate,
+    );
     expect(mockRunTask.mock.calls[0][0].resumeMessages).toBeUndefined();
     expect(mockRunTask.mock.calls[0][0].maxSteps).toBe(
       SURFACE_STEP_CAPS.commitReviewVerify,
+    );
+    expect(mockRunTask.mock.calls[0][0].tokenBudget).toBe(
+      SURFACE_TOKEN_BUDGETS.commitReviewVerify,
     );
   });
 
@@ -435,5 +528,171 @@ describe("buildInvestigatePrompt", () => {
     ]);
     expect(out).toContain("predate the working tree");
     expect(out).toContain("**Commit:**");
+  });
+});
+
+// Item 7 of the phase, as a measurement rather than a claim. The engine already
+// had the SHAPE of a sub-agent split — two loops, two clean transcripts — but
+// verify re-inlined every raw patch alongside the candidate JSON, so every byte
+// of every diff was paid for twice per review and re-sent on each of verify's
+// agentic steps.
+describe("unverifiedFindings", () => {
+  it("flags every candidate unverified and sorts them by severity", () => {
+    const out = unverifiedFindings([
+      { ...cand("low"), severity: "low" },
+      { ...cand("crit"), severity: "critical" },
+    ]);
+    expect(out.map((f) => f.id)).toEqual(["crit", "low"]);
+    expect(out.every((f) => f.verified === false)).toBe(true);
+  });
+});
+
+describe("buildVerifyPrompt — the verify stage's window", () => {
+  const hunk = (path: string, bytes: number) =>
+    [
+      `diff --git a/${path} b/${path}`,
+      "index 1111111..2222222 100644",
+      `--- a/${path}`,
+      `+++ b/${path}`,
+      "@@ -1,3 +1,3 @@",
+      `+${"x".repeat(bytes)}`,
+    ].join("\n");
+
+  const bigDiff = () =>
+    diff(
+      [
+        hunk("src/a.ts", 20_000),
+        hunk("src/b.ts", 20_000),
+        hunk("src/c.ts", 20_000),
+        hunk("src/d.ts", 20_000),
+      ].join("\n"),
+      { shortSha: "abc1234", headSha: "abc1234" },
+    );
+
+  const verify = (diffs: CommitDiff[], candidates: CandidateFinding[]) =>
+    buildVerifyPrompt(
+      {
+        diffs,
+        contextBlocks: [],
+        sourceRoot: "C:/repo",
+      } as unknown as RunCommitReviewInput,
+      candidates,
+    );
+
+  it("is strictly smaller than the investigate prompt it would otherwise repeat", () => {
+    const diffs = [bigDiff()];
+    const before = investigate(diffs);
+    const after = verify(diffs, [{ ...cand("f1"), file: "src/b.ts" }]);
+    expect(after.length).toBeLessThan(before.length);
+    // Three of four files' hunks are gone; the candidate's own file stays.
+    expect(after).toContain("diff --git a/src/b.ts");
+    expect(after).not.toContain("diff --git a/src/a.ts");
+  });
+
+  it("still shows the full file list and names what it dropped", () => {
+    const files = [
+      { path: "src/a.ts", additions: 1, deletions: 0, status: "modified" },
+      { path: "src/b.ts", additions: 1, deletions: 0, status: "modified" },
+    ];
+    const out = verify(
+      [{ ...bigDiff(), files }],
+      [{ ...cand("f1"), file: "src/b.ts" }],
+    );
+    // The blast radius is still legible even where the hunks aren't.
+    expect(out).toContain("src/a.ts");
+    expect(out).toContain("**Files changed:** 2");
+    // …and the exact command that fetches an omitted file back.
+    expect(out).toContain("git show abc1234 -- <path>");
+  });
+
+  it("leaves a small diff exactly as the investigate stage saw it", () => {
+    const diffs = [diff("@@ -1 +1 @@\n+small change")];
+    const out = verify(diffs, [{ ...cand("f1"), file: "src/b.ts" }]);
+    expect(out).toContain("RAW PATCH (this commit's own change):");
+    expect(out).toContain("+small change");
+  });
+
+  it("never narrows away the evidence when candidates cite code outside the diff", () => {
+    // A finding about a caller the commit never touched is legitimate — and a
+    // verifier handed an empty patch would refute it for the wrong reason.
+    const diffs = [bigDiff()];
+    const out = verify(diffs, [{ ...cand("f1"), file: "src/elsewhere.ts" }]);
+    for (const p of ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"]) {
+      expect(out).toContain(`diff --git a/${p}`);
+    }
+  });
+});
+
+// A stage-1 answer cut off by the output cap (`finish: length`) fails
+// whole-batch validation, but the complete findings that arrived before the
+// cut are bought-and-paid-for work — and the verify pass exists precisely to
+// filter candidates. These pin: broken answers are salvaged and the pipeline
+// continues; a budget-stopped loop is NOT (its resume affordance is the honest
+// recovery, and narration-shaped "findings" from a half-read investigation
+// would be premature).
+describe("runCommitReview — stage-1 salvage of a truncated answer", () => {
+  it("salvages complete findings from a length-cut stage 1 and continues to verify", async () => {
+    const truncated =
+      `{"findings":[${JSON.stringify(cand("f1"))},` +
+      `{"id":"f2","title":"the finding the cut landed i`;
+    mockStreamTask.mockResolvedValue({
+      ok: false,
+      reason: "schema_violation",
+      finishReason: "length",
+      text: truncated,
+      durationMs: 9,
+      stepsUsed: 12,
+    } as never);
+    mockRunTask.mockResolvedValue(stage2Ok([{ id: "f1", verdict: "confirmed" }]));
+    const onStage1Candidates = vi.fn();
+
+    const res = await runCommitReview(input({ onStage1Candidates }));
+
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.findings.map((f) => f.id)).toEqual(["f1"]);
+    }
+    // The salvaged candidates became durable before verify ran…
+    expect(onStage1Candidates).toHaveBeenCalledWith([cand("f1")]);
+    // …and verify actually ran over them.
+    expect(mockRunTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not salvage a step_cap loop — that failure keeps its resume path", async () => {
+    // Narration from a cut-off loop can contain findings-shaped JSON; a
+    // half-read investigation must still fail through to the resume affordance.
+    mockStreamTask.mockResolvedValue({
+      ok: false,
+      reason: "step_cap",
+      text: `{"findings":[${JSON.stringify(cand("f1"))}]}`,
+      durationMs: 9,
+      stepsUsed: 28,
+    } as never);
+
+    const res = await runCommitReview(input());
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe("step_cap");
+    expect(mockRunTask).not.toHaveBeenCalled();
+  });
+
+  it("still fails through with the finish reason when nothing is salvageable", async () => {
+    mockStreamTask.mockResolvedValue({
+      ok: false,
+      reason: "schema_violation",
+      finishReason: "length",
+      text: "no findings json anywhere",
+      durationMs: 9,
+      stepsUsed: 12,
+    } as never);
+
+    const res = await runCommitReview(input());
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reason).toBe("schema_violation");
+      expect(res.finishReason).toBe("length");
+    }
+    expect(mockRunTask).not.toHaveBeenCalled();
   });
 });

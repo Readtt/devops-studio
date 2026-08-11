@@ -76,6 +76,7 @@ import { MODELS, type ModelId } from "@/modules/ai/config";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { useChatStore } from "@/modules/ai/store/chatStore";
+import { BestPracticeNotice } from "@/modules/ai/components/BestPracticeNotice";
 import {
   ContextGuardNotice,
   ContextMeter,
@@ -1710,6 +1711,7 @@ function Composer({
           className="mb-2"
         />
         {bugChips ? <div className="mb-1.5">{bugChips}</div> : null}
+        <BestPracticeNotice className="mb-2" />
         <ContextGuardNotice
           usage={guard.usage}
           guardEnabled={guard.guardEnabled}

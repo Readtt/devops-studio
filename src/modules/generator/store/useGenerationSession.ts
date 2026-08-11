@@ -48,6 +48,7 @@ import {
   createCheckpointWriter,
   deleteCheckpoint,
   getCheckpoint,
+  hasReplayableTranscript,
   listCheckpoints,
   sanitizeTranscriptMessages,
   type CheckpointOutcome,
@@ -56,7 +57,12 @@ import {
   type GeneratorRefineCheckpointV1,
   type TranscriptCheckpoint,
 } from "@/modules/ai/lib/checkpointApi";
-import { canOfferResume, classifyForResume } from "@/modules/ai/lib/errorClass";
+import {
+  canOfferResume,
+  canRaiseOutputCap,
+  classifyForResume,
+  emptyAnswerCause,
+} from "@/modules/ai/lib/errorClass";
 import type { TaskCheckpoint } from "@/modules/ai/lib/taskRunner";
 import { CURRENT_BRANCH_SENTINEL, resolveTrackingBranch } from "@/modules/git";
 import {
@@ -92,8 +98,21 @@ import { buildRefineUserPrompt } from "../lib/qaAnalystRefinePrompt";
 import {
   streamChatTask,
   newChatMessageId,
+  sanitizeTranscript,
   type ChatMessage,
 } from "../lib/qaChatRun";
+import type { ModelMessage } from "ai";
+
+/** The transcript fields to merge onto a settled assistant message. Absent when
+ *  the turn banked nothing replayable — a provider that reported no steps, or a
+ *  cancel that landed before the first one finished — so the message keeps the
+ *  plain-text replay it would have had. */
+function bankTranscript(
+  messages: ModelMessage[],
+): { transcript?: ModelMessage[] } {
+  const safe = sanitizeTranscript(messages);
+  return safe.length > 0 ? { transcript: safe } : {};
+}
 
 export type Phase =
   | "input"
@@ -114,11 +133,18 @@ export type PublishLogEntry = {
 
 import {
   isKnownModelId,
-  RESUME_TOPUP_STEPS,
+  RESUME_TOPUP_TOKENS,
   SURFACE_STEP_CAPS,
+  SURFACE_TOKEN_BUDGETS,
   supportsVision,
   type ModelId,
 } from "@/modules/ai/config";
+import { formatTokens } from "@/modules/ai/lib/contextEstimate";
+import {
+  budgetSpentPhrase,
+  stepSpend,
+  type RunBudget,
+} from "@/modules/ai/lib/runBudget";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import { bugsToContextBlocks } from "@/modules/ado/lib/bugContextBlock";
 import type { WorkItemRef } from "@/modules/ado";
@@ -203,16 +229,85 @@ export type SessionState = {
   /** Agentic steps the current/last analyze has completed — cumulative across
    *  resumes, so it keeps counting up rather than restarting at 0. */
   stepsUsed: number | null;
-  /** Step budget in force for the current/last analyze: the full generator cap,
-   *  or the smaller top-up a step-cap resume runs under. */
+  /** Runaway step ceiling in force for the current/last analyze. Kept for the
+   *  activity readout's fallback on endpoints that report no token usage — the
+   *  budget below is what the run is actually rationed by. */
   stepCap: number | null;
+  /** What the current/last analyze has spent AGAINST ITS BUDGET, in
+   *  cost-equivalent tokens (runBudget.stepSpend — cache reads at a tenth,
+   *  output at 5x, normalised to a fresh input token). Cumulative across
+   *  resumes, so it keeps climbing rather than restarting at 0.
+   *
+   *  Deliberately NOT the raw token count, and not interchangeable with it:
+   *  this is the budget's unit and the one that tracks the bill. Anything
+   *  measuring the run rather than rationing it — the cache hit ratio, the
+   *  dollar estimate — wants {@link tokensInput} instead. */
+  tokensUsed: number | null;
+  /** The ceiling `tokensUsed` is shown against. On a resume this is the PRIOR
+   *  total plus this call's top-up, for the same reason `stepCap` is: both
+   *  counters are cumulative, so a raw budget here would read "~1.2M / 500k". */
+  tokenBudget: number | null;
+  /** RAW input tokens the run sent, summed across steps and inclusive of cache
+   *  reads — the provider's own count, undiscounted.
+   *
+   *  Separate from `tokensUsed` because the cache hit ratio is
+   *  `cacheReadTokens / inputTokens` and computing it against a denominator
+   *  that already discounts cache reads would flatter every run. (It also
+   *  quietly fixes the old denominator, which was input PLUS output.) */
+  tokensInput: number | null;
+  /** How many of `tokensInput` were cache reads. Prices the run honestly —
+   *  cached input bills at ~10% and an agentic loop is mostly cache hits — and,
+   *  as a share of `tokensInput`, is the cache hit ratio the readout shows.
+   *
+   *  Null means the provider reported no cache detail at ALL, which is why this
+   *  isn't seeded to 0: local endpoints and some gateways never report it, and
+   *  rendering that as "cache 0%" would accuse a healthy run of a cost
+   *  regression it didn't have. */
+  tokensCached: number | null;
+  /** Largest single request this run made, from the provider's own count. The
+   *  run's spend is the sum of every request; this is the one that has to FIT,
+   *  and the one to compare across runs when judging whether the caps and
+   *  eviction are doing their job. Null until a step reports an input count. */
+  peakPromptTokens: number | null;
   /** Date.now() when the current/last analyze started, for the elapsed timer. */
   analyzeStartedAt: number | null;
+  /** What the current (or most recent) follow-up round spent, in the same units
+   *  as the analyze fields above.
+   *
+   *  Deliberately its own object rather than reusing `tokensUsed` and friends.
+   *  A refine that wrote into those would silently redefine the review header,
+   *  which reads them beside the analyze run's duration and case count and
+   *  means "what the run that produced this draft cost". A follow-up is a
+   *  separate call with a separate budget; blending them would also blend the
+   *  cache ratios, and a ratio averaged across two runs describes neither.
+   *
+   *  Null before the first round of a session. Reset at the start of each
+   *  round, so the strip shows THIS round rather than the last one's total. */
+  refineSpend: {
+    stepsUsed: number;
+    stepCap: number;
+    /** Budget-unit spend — what the round is rationed by. */
+    tokensUsed: number;
+    tokenBudget: number;
+    /** Raw provider counts, for the cache ratio. Null ⇒ not reported. */
+    tokensInput: number | null;
+    tokensCached: number | null;
+    peakPromptTokens: number | null;
+    /** Date.now() the round started, for the elapsed timer. */
+    startedAt: number;
+  } | null;
   /** Set when a failed / cancelled analyze left a checkpoint worth continuing.
    *  Null when there's nothing to resume (never ran, ran to completion, or the
    *  user discarded it). */
   resumable: {
     stepsUsed: number;
+    /** Whether the checkpoint kept a transcript worth replaying. Carried in
+     *  state because `canOfferResume` needs it for the answered-badly outcomes
+     *  and the render sites only have this object. */
+    hasTranscript: boolean;
+    /** Whether a `finish: length` outcome has output headroom to retry with —
+     *  same carry-it-for-the-gate reason as `hasTranscript`. */
+    outputCapRaisable: boolean;
     totalTokens: number | null;
     updatedAt: string;
     outcome: CheckpointOutcome | null;
@@ -351,7 +446,7 @@ export type SessionState = {
    *  draft row so it survives a window close. */
   refineRounds: RefineRound[];
   /** Set when a follow-up died with paid-for work worth continuing — stopped
-   *  by the user, killed by a provider/network error, or out of step budget.
+   *  by the user, killed by a provider/network error, or out of run budget.
    *  Null when there's nothing to resume. Deliberately separate from
    *  `resumable` (which belongs to analyze): a draft outlives its analyze
    *  checkpoint, so the two can be live at different times and must not
@@ -362,6 +457,10 @@ export type SessionState = {
     /** What the user asked, so the affordance can name the follow-up. */
     instruction: string;
     stepsUsed: number;
+    /** See `resumable.hasTranscript`. */
+    hasTranscript: boolean;
+    /** See `resumable.outputCapRaisable`. */
+    outputCapRaisable: boolean;
     totalTokens: number | null;
     updatedAt: string;
     outcome: CheckpointOutcome | null;
@@ -507,6 +606,8 @@ function resumableFrom(
 ): NonNullable<SessionState["resumable"]> {
   return {
     stepsUsed: payload.transcript?.stepsUsed ?? 0,
+    hasTranscript: hasReplayableTranscript(payload.transcript),
+    outputCapRaisable: canRaiseOutputCap(payload.modelId, outcome),
     totalTokens: payload.transcript?.usage?.totalTokens ?? null,
     updatedAt: outcome.at,
     outcome,
@@ -522,6 +623,8 @@ function refineResumableFrom(
     runId: payload.runId,
     instruction: payload.round.instruction,
     stepsUsed: payload.transcript?.stepsUsed ?? 0,
+    hasTranscript: hasReplayableTranscript(payload.transcript),
+    outputCapRaisable: canRaiseOutputCap(payload.modelId, outcome),
     totalTokens: payload.transcript?.usage?.totalTokens ?? null,
     updatedAt: outcome.at,
     outcome,
@@ -558,7 +661,23 @@ function recordRound(
   rounds: RefineRound[],
   next: RefineRound,
   resumed: boolean,
+  /** The live round's meter, stamped onto the entry so the thinking history
+   *  can price a past round. Absent ⇒ nothing was reported and the row says
+   *  so, rather than showing a confident zero. */
+  spend?: SessionState["refineSpend"],
 ): RefineRound[] {
+  next = spend
+    ? {
+        ...next,
+        spend: {
+          stepsUsed: spend.stepsUsed,
+          tokensUsed: spend.tokensUsed,
+          tokensInput: spend.tokensInput,
+          tokensCached: spend.tokensCached,
+          peakPromptTokens: spend.peakPromptTokens,
+        },
+      }
+    : next;
   const i = resumed
     ? rounds.findIndex(
         (r) =>
@@ -706,7 +825,13 @@ const initialState: Omit<
   runId: null,
   stepsUsed: null,
   stepCap: null,
+  tokensUsed: null,
+  tokenBudget: null,
+  tokensInput: null,
+  tokensCached: null,
+  peakPromptTokens: null,
   analyzeStartedAt: null,
+  refineSpend: null,
   resumable: null,
   cases: [],
   bugs: [],
@@ -727,6 +852,78 @@ const initialState: Omit<
 };
 
 const REFINE_HISTORY_MAX = 12;
+
+/** What a FULL generator attempt runs on — analyze and review-phase follow-ups
+ *  alike, since they drive the same engine over the same tools. A resume builds
+ *  its own from `resumeBudget`, which is why this is a value rather than being
+ *  read from the tables at each use site. */
+const GENERATOR_BUDGET: RunBudget = {
+  tokens: SURFACE_TOKEN_BUDGETS.generator,
+  steps: SURFACE_STEP_CAPS.generator,
+};
+
+/** Fold one request's measured size into the run's peak. A zustand updater
+ *  rather than a read-then-write so two steps landing in the same tick can't
+ *  clobber each other's maximum. */
+function peakFrom(promptTokens: number) {
+  return (s: { peakPromptTokens: number | null }) => ({
+    peakPromptTokens: Math.max(s.peakPromptTokens ?? 0, promptTokens),
+  });
+}
+
+/** Fold one completed step's usage into the live round's spend. Mirrors what
+ *  analyze() writes into the top-level token fields — the follow-up used to
+ *  write none of it, which is why the refine dock could show a live activity
+ *  log and no cost beside it. */
+function refineSpendFrom(cp: {
+  stepsUsed: number;
+  usage: { inputTokens?: number; cacheReadTokens?: number };
+}) {
+  return (s: { refineSpend: SessionState["refineSpend"] }) =>
+    s.refineSpend
+      ? {
+          refineSpend: {
+            ...s.refineSpend,
+            stepsUsed: cp.stepsUsed,
+            tokensUsed: stepSpend(cp.usage),
+            // Absent (not 0) when the provider reported nothing — rendering an
+            // unreported cache count as 0% accuses a healthy run of a
+            // regression it didn't have.
+            tokensInput: cp.usage.inputTokens ?? null,
+            tokensCached: cp.usage.cacheReadTokens ?? null,
+          },
+        }
+      : {};
+}
+
+/** The refine-side twin. Same reason for being an updater, and a no-op once the
+ *  round has been cleared out from under a late-landing step. */
+function refinePeakFrom(promptTokens: number) {
+  return (s: { refineSpend: SessionState["refineSpend"] }) =>
+    s.refineSpend
+      ? {
+          refineSpend: {
+            ...s.refineSpend,
+            peakPromptTokens: Math.max(
+              s.refineSpend.peakPromptTokens ?? 0,
+              promptTokens,
+            ),
+          },
+        }
+      : {};
+}
+
+/** Sum two counts that are ABSENT when the provider never reported them. Adding
+ *  with `?? 0` would turn "this endpoint doesn't meter cache reads" into a
+ *  confident zero, which the readout would then show as a 0% hit ratio — an
+ *  accusation of a cost regression that never happened. */
+function addReported(
+  a: number | undefined | null,
+  b: number | undefined | null,
+): number | null {
+  if (a == null && b == null) return null;
+  return (a ?? 0) + (b ?? 0);
+}
 
 /** Debounce window for auto-persisting draft edits.
  *
@@ -887,7 +1084,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       existingCaseTitles: { id: number; title: string }[];
       planName: string | null;
       suiteName: string | null;
-      stepCap: number;
+      /** The budget this attempt actually ran under — the surface's, or the
+       *  smaller grant a resume runs on. Named in the failure copy, so it has to
+       *  be the live one rather than the table's. */
+      budget: RunBudget;
       writer: CheckpointWriter;
       buildPayload: (outcome: CheckpointOutcome | null) => GeneratorCheckpointV1;
     }): Promise<void> => {
@@ -914,11 +1114,12 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         const outcome: CheckpointOutcome = {
           at: new Date().toISOString(),
           kind: "step_cap",
+          ...(result.limit ? { limit: result.limit } : {}),
         };
         const payload = buildPayload(outcome);
         set({
           phase: "error",
-          error: `The run hit its ${args.stepCap}-step budget before it could write the final test-case batch. Resume grants ${RESUME_TOPUP_STEPS} more steps and asks the model to finish with what it has already read.`,
+          error: `The run spent ${budgetSpentPhrase(result.limit, args.budget, formatTokens)} reading the codebase before it could write the final test-case batch. Resume adds ~${formatTokens(RESUME_TOPUP_TOKENS)} more tokens and asks the model to finish with what it has already read.`,
           errorPhase: "analyze",
           stepLabel: "",
           resumable: resumableFrom(payload, outcome),
@@ -934,21 +1135,70 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       // guidance instead. tryAgain() keeps the spec, so it's a one-click fix.
       if (cases.length === 0 && bugs.length === 0) {
         const why = !result.ok
-          ? result.reason === "empty"
-            ? "The model returned an empty response — no test cases came back. OpenAI-compatible or custom endpoints often need JSON mode (structured output) turned on before they return a usable batch."
-            : "The model's response couldn't be read as the structured format the generator expects, and nothing usable could be salvaged from it. This is common with OpenAI-compatible or custom endpoints that don't fully support structured JSON output."
+          ? emptyAnswerCause(
+              result.reason === "schema_violation" ? "schema_violation" : "empty",
+              result.finishReason,
+            )
           : "The model ran but produced no test cases or bugs for this spec.";
+        // `resumable` means "a checkpoint exists", not "a resume is on offer":
+        // the render sites ask `canOfferResume` for that, and gating this field
+        // on it instead is what made a checkpoint nobody could resume also one
+        // nobody could DELETE. It's the handle Discard hangs off, and the
+        // handle the next run supersedes the row by.
+        //
+        // Whether it IS on offer now turns on what the attempt banked. "The run
+        // COMPLETED, so there's no partial work to continue" — the reasoning
+        // this used to carry — describes a model that answered nothing on step
+        // one. It is the wrong description of a run that spent 22 steps and
+        // 1.7M tokens reading the codebase and then failed only at turning that
+        // into a batch: the transcript is the work, and replaying it with the
+        // finish-now nudge is the cheap recovery. `canOfferResume` draws that
+        // line; the copy below follows it so we never tell a user to re-run
+        // work they can continue.
+        const emptyOutcome: CheckpointOutcome = {
+          at: new Date().toISOString(),
+          // Record what actually happened rather than flattening both to
+          // "empty" — the two get different unavailable-reason copy, and a
+          // salvage failure is not a silent model.
+          kind:
+            !result.ok && result.reason === "schema_violation"
+              ? "schema_violation"
+              : "empty",
+          // Persisted so a checkpoint reopened from History still knows WHY,
+          // and so the next occurrence of this failure names its own cause
+          // instead of being diagnosed by inference a second time.
+          ...(result.finishReason ? { finishReason: result.finishReason } : {}),
+          // What the failed attempt's requests asked for — the number the
+          // truncation-resume gate compares against the model's ceiling.
+          ...(result.outputCap !== undefined
+            ? { outputCap: result.outputCap }
+            : {}),
+        };
+        const emptyPayload = buildPayload(emptyOutcome);
+        const emptyResumable = resumableFrom(emptyPayload, emptyOutcome);
+        const canContinue = canOfferResume(
+          emptyOutcome,
+          emptyOutcome.message ?? null,
+          emptyResumable,
+        );
+        // A truncated answer resumes differently from a wandering one — it
+        // retries the answer at the model's output CEILING with a be-compact
+        // nudge (resumeBudget) — so the offer has to say that, not "write the
+        // batch from what it has", which is the same request that just failed.
+        const resumeSuffix =
+          result.finishReason === "length"
+            ? `It had already read the codebase over ${emptyResumable.stepsUsed} step${emptyResumable.stepsUsed === 1 ? "" : "s"} — resuming replays that work and retries the answer with a raised output-token limit.`
+            : `It had already read the codebase over ${emptyResumable.stepsUsed} step${emptyResumable.stepsUsed === 1 ? "" : "s"} before that, so resuming asks it to write the batch from what it has instead of paying for the run again.`;
         set({
           phase: "error",
-          error: `No test cases generated. ${why}`,
+          error: canContinue
+            ? `No test cases generated. ${why} ${resumeSuffix}`
+            : `No test cases generated. ${why}`,
           errorPhase: "analyze",
           stepLabel: "",
+          resumable: emptyResumable,
         });
-        // The run COMPLETED — there's no partial work to continue, so the
-        // inputs stay on disk for a fresh attempt but no resume is offered.
-        await writer.flush(
-          buildPayload({ at: new Date().toISOString(), kind: "empty" }),
-        );
+        await writer.flush(emptyPayload);
         notifyHistoryUpdated(args.runId);
         return;
       }
@@ -1081,7 +1331,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
        *  the basis for carrying similarity / verdicts / update-bindings
        *  forward onto the revised batch. */
       snapshot: { cases: ReviewedCase[]; bugs: ReviewedBug[]; rawText: string };
-      stepCap: number;
+      /** The budget this attempt ran under — see settleAnalyzeRun. */
+      budget: RunBudget;
       /** Null only when the round couldn't be checkpointed (no session runId to
        *  tie a row to) — it then behaves exactly as follow-ups did before
        *  checkpointing existed: no resume offered, draft handling unchanged. */
@@ -1100,14 +1351,16 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         const outcome: CheckpointOutcome = {
           at: new Date().toISOString(),
           kind: "step_cap",
+          ...(result.limit ? { limit: result.limit } : {}),
         };
+        const spent = budgetSpentPhrase(result.limit, args.budget, formatTokens);
         const payload = cp?.buildPayload(outcome) ?? null;
         set((curr) => ({
           isRefining: false,
           stepLabel: "",
           refineError: payload
-            ? `This follow-up hit its ${args.stepCap}-step budget before it could write the revised draft. Your draft is unchanged — resuming grants ${RESUME_TOPUP_STEPS} more steps and asks the model to finish with what it has already read.`
-            : `This follow-up hit its ${args.stepCap}-step budget before it could write the revised draft. Your draft is unchanged — try again with a narrower instruction.`,
+            ? `This follow-up spent ${spent} before it could write the revised draft. Your draft is unchanged — resuming adds ~${formatTokens(RESUME_TOPUP_TOKENS)} more tokens and asks the model to finish with what it has already read.`
+            : `This follow-up spent ${spent} before it could write the revised draft. Your draft is unchanged — try again with a narrower instruction.`,
           refineResumable: payload ? refineResumableFrom(payload, outcome) : null,
           refineRounds: recordRound(
             curr.refineRounds,
@@ -1118,6 +1371,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
               "Ran out of steps before writing the revised draft.",
             ),
             args.resumed,
+            curr.refineSpend,
           ),
         }));
         if (cp && payload) await cp.writer.flush(payload);
@@ -1125,24 +1379,48 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         return;
       }
 
-      // Nothing structured came back — better to keep the user's existing
-      // batch than to wipe it for an empty response. The model ANSWERED (just
-      // uselessly), so this is not resumable: drop the row instead of leaving
-      // a resume point that could only re-fail the same way.
+      // Nothing structured came back — better to keep the user's existing batch
+      // than to wipe it for an empty response. Whether that's continuable is
+      // the same question analyze answers above: a round that answered nothing
+      // having read nothing is a dead end, but one that spent real steps in the
+      // codebase first only failed the last hop, and its transcript is worth
+      // more than the row it sits in. Keep the checkpoint in that case; drop it
+      // in the other, so a useless row doesn't linger.
       if (result.batch.cases.length === 0 && result.batch.bugs.length === 0) {
+        const outcome: CheckpointOutcome = {
+          at: new Date().toISOString(),
+          kind:
+            !result.ok && result.reason === "schema_violation"
+              ? "schema_violation"
+              : "empty",
+          ...(result.finishReason ? { finishReason: result.finishReason } : {}),
+          ...(result.outputCap !== undefined
+            ? { outputCap: result.outputCap }
+            : {}),
+        };
+        const payload = cp?.buildPayload(outcome) ?? null;
+        const resumable = payload
+          ? refineResumableFrom(payload, outcome)
+          : null;
+        const canContinue =
+          !!resumable &&
+          canOfferResume(outcome, outcome.message ?? null, resumable);
         set((curr) => ({
           isRefining: false,
           stepLabel: "",
-          refineError:
-            "The model returned an empty refine result — your previous draft is unchanged. Try a more specific instruction.",
-          refineResumable: null,
+          refineError: canContinue
+            ? "The model returned an empty refine result — your previous draft is unchanged. It had already read the codebase, so resuming asks it to write the revised draft from what it has."
+            : "The model returned an empty refine result — your previous draft is unchanged. Try a more specific instruction.",
+          refineResumable: canContinue ? resumable : null,
           refineRounds: recordRound(
             curr.refineRounds,
             unchangedRound(round, curr.activityLog, "empty", null),
             args.resumed,
+            curr.refineSpend,
           ),
         }));
-        await cp?.writer.delete();
+        if (canContinue && cp && payload) await cp.writer.flush(payload);
+        else await cp?.writer.delete();
         schedulePersistDraft();
         return;
       }
@@ -1224,6 +1502,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
             error: null,
           },
           args.resumed,
+          curr.refineSpend,
         ),
       }));
       // Arms the debounced draft write. Unlike settleAnalyzeRun — which awaits
@@ -1287,6 +1566,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
             cancelled ? "Cancelled before completion." : errorText,
           ),
           args.resumed,
+          curr.refineSpend,
         ),
       }));
       if (cp && payload) await cp.writer.flush(payload);
@@ -1420,6 +1700,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       runId,
       stepsUsed: 0,
       stepCap: SURFACE_STEP_CAPS.generator,
+      tokensUsed: 0,
+      tokenBudget: SURFACE_TOKEN_BUDGETS.generator,
+      tokensInput: null,
+      tokensCached: null,
+      peakPromptTokens: null,
       analyzeStartedAt: Date.now(),
       resumable: null,
       // Clean-slate the prior run's RESULT state (mirrors tryAgain). When
@@ -1561,13 +1846,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     // user explicitly picks a model again.
     const modelId = overrideModelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
-    const { blocks: bpBlocks, warnings: bpWarnings } =
-      await loadBestPracticeBlocks(prefs.bestPracticeFiles, {
-        visionCapable: supportsVision(modelId),
-      });
-    if (bpWarnings.length > 0) {
-      console.warn("[generator] best-practices skipped:", bpWarnings);
-    }
+    const { blocks: bpBlocks } = await loadBestPracticeBlocks(
+      prefs.bestPracticeFiles,
+      { visionCapable: supportsVision(modelId) },
+    );
     // #mentioned work items → read-only context blocks, merged with
     // best-practices. Fetched here (at analyze time) so the chips only hold
     // lightweight refs until they're actually needed.
@@ -1675,10 +1957,18 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           // otherwise queue a live-run payload on top of the terminal outcome
           // they just wrote. Same phase signal the catch below guards on.
           if (get().phase !== "analyzing") return;
-          set({ stepsUsed: cp.stepsUsed });
+          set({
+            stepsUsed: cp.stepsUsed,
+            tokensUsed: stepSpend(cp.usage),
+            // Absent (not 0) when no step reported it — the accumulator only
+            // writes a usage field a provider actually sent.
+            tokensInput: cp.usage.inputTokens ?? null,
+            tokensCached: cp.usage.cacheReadTokens ?? null,
+          });
           transcript = toTranscript(cp, null);
           writer.save(buildPayload(null));
         },
+        onContextSignal: (s) => set(peakFrom(s.promptTokens)),
         onText: (delta) => {
           if (!analyzePartialText) set({ stepLabel: "Writing output…" });
           analyzePartialText += delta;
@@ -1691,7 +1981,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         existingCaseTitles,
         planName: targetContext?.planName ?? null,
         suiteName: targetContext?.suiteName ?? null,
-        stepCap: SURFACE_STEP_CAPS.generator,
+        budget: GENERATOR_BUDGET,
         writer,
         buildPayload,
       });
@@ -1784,9 +2074,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       return;
     }
 
-    const { cap, resumeMessages } = resumeBudget(payload);
+    const { cap, tokens, resumeMessages, maxOutputTokens } =
+      resumeBudget(payload);
     const base = payload.transcript;
     const baseSteps = base?.stepsUsed ?? 0;
+    const baseTokens = stepSpend(base?.usage);
 
     // Same reasoning as analyze(): the resumed run re-derives the whole draft,
     // so a follow-up against the previous one is unreachable from here.
@@ -1801,12 +2093,22 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       // Seeded from the checkpoint so the log reads as one continuous run.
       activityLog: payload.activity,
       analyzeStartedAt: Date.now(),
-      // Displayed ceiling, not the runner's budget: stepsUsed keeps counting
-      // cumulatively across resumes, so the readout's cap must be the prior
-      // total plus this call's budget — otherwise a step-cap resume shows
-      // "step 27/8" (26 done + an 8-step top-up).
+      // Displayed ceilings, not the runner's budgets. Both counters keep
+      // climbing cumulatively across resumes, so each readout's ceiling has to
+      // be the prior total plus this call's grant. Showing the raw grant is what
+      // once made a topped-up resume read "step 27/8"; in the unit that now
+      // rations the run it would read "~1.2M / 500k tokens" on a run with plenty
+      // of room left.
       stepCap: baseSteps + cap,
       stepsUsed: baseSteps,
+      tokenBudget: baseTokens + tokens,
+      tokensUsed: baseTokens,
+      tokensInput: base?.usage?.inputTokens ?? null,
+      tokensCached: base?.usage?.cacheReadTokens ?? null,
+      // Not carried across a resume: the checkpoint records what the run SPENT,
+      // not how big any one request got, so the peak has to be re-measured from
+      // this attempt's own steps rather than invented from the total.
+      peakPromptTokens: null,
       error: null,
       errorPhase: null,
       resumable: null,
@@ -1855,6 +2157,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         keys,
         local: localProviderConfig(prefs),
         maxSteps: cap,
+        tokenBudget: tokens,
+        maxOutputTokens,
         resumeMessages,
         onActivity: onRunActivity,
         onCheckpoint: (cp) => {
@@ -1862,9 +2166,21 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           // cp.messages already carries the resumed prefix (the runner
           // prepends it), so only the COUNTERS need the earlier totals added.
           transcript = toTranscript(cp, base);
-          set({ stepsUsed: baseSteps + cp.stepsUsed });
+          set({
+            stepsUsed: baseSteps + cp.stepsUsed,
+            tokensUsed: baseTokens + stepSpend(cp.usage),
+            tokensInput: addReported(
+              base?.usage?.inputTokens,
+              cp.usage.inputTokens,
+            ),
+            tokensCached: addReported(
+              base?.usage?.cacheReadTokens,
+              cp.usage.cacheReadTokens,
+            ),
+          });
           writer.save(buildPayload(null));
         },
+        onContextSignal: (s) => set(peakFrom(s.promptTokens)),
         onText: (delta) => {
           if (!analyzePartialText) set({ stepLabel: "Writing output…" });
           analyzePartialText += delta;
@@ -1879,7 +2195,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         existingCaseTitles: [],
         planName: payload.form.planName,
         suiteName: payload.form.suiteName,
-        stepCap: cap,
+        budget: { tokens, steps: cap },
         writer,
         buildPayload,
       });
@@ -1936,6 +2252,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       stepsUsed: payload.transcript?.stepsUsed ?? null,
       resumable: {
         stepsUsed: payload.transcript?.stepsUsed ?? 0,
+        hasTranscript: hasReplayableTranscript(payload.transcript),
+        outputCapRaisable: canRaiseOutputCap(payload.modelId, payload.lastOutcome),
         totalTokens: payload.transcript?.usage?.totalTokens ?? null,
         updatedAt,
         outcome: payload.lastOutcome,
@@ -2654,6 +2972,19 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       errorPhase: null,
       refineError: null,
       refineResumable: null,
+      // Zeroed, not left from the last round: the strip is reporting THIS
+      // follow-up, and a round that starts at the previous one's total reads
+      // as having spent it before making a request.
+      refineSpend: {
+        stepsUsed: 0,
+        stepCap: GENERATOR_BUDGET.steps,
+        tokensUsed: 0,
+        tokenBudget: GENERATOR_BUDGET.tokens,
+        tokensInput: null,
+        tokensCached: null,
+        peakPromptTokens: null,
+        startedAt: Date.now(),
+      },
     });
 
     // Minted before the prep awaits so a cancel during them already-aborts
@@ -2703,6 +3034,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         skippedCases,
         keptBugs,
         skippedBugs,
+        // Read BEFORE this round mutates anything: `refineUndoSnapshot` is
+        // still the previous round's undo point, so it pairs with the draft as
+        // it stands right now to describe what that round actually changed.
+        refineRounds: s.refineRounds,
+        lastRefineSnapshot: s.refineUndoSnapshot,
         instruction: text,
       });
 
@@ -2710,13 +3046,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       const keys = await chat.ensureApiKeys();
       const modelId = s.overrideModelId ?? chat.selectedModelId;
       const prefs = usePreferencesStore.getState();
-      const { blocks: bpBlocks, warnings: bpWarnings } =
-        await loadBestPracticeBlocks(prefs.bestPracticeFiles, {
-          visionCapable: supportsVision(modelId),
-        });
-      if (bpWarnings.length > 0) {
-        console.warn("[generator] best-practices skipped:", bpWarnings);
-      }
+      const { blocks: bpBlocks } = await loadBestPracticeBlocks(
+        prefs.bestPracticeFiles,
+        { visionCapable: supportsVision(modelId) },
+      );
       // Attach any #id-mentioned work items as read-only grounding context.
       const bugBlocks =
         workItemIds && workItemIds.length > 0
@@ -2807,9 +3140,18 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           // A step finishing in the same tick as a cancel (or after a newer
           // round took over) must not queue a live payload on top of the
           // terminal outcome that was just written.
-          if (seq !== refineSeq || !liveCp) return;
+          if (seq !== refineSeq) return;
+          set(refineSpendFrom(checkpoint));
+          // Metering is guarded on the round only, NOT on `liveCp`: a draft
+          // with no runId can't be checkpointed but still spends real money,
+          // and that is exactly the round whose cost was invisible.
+          if (!liveCp) return;
           transcript = toTranscript(checkpoint, null);
           liveCp.writer.save(liveCp.buildPayload(null));
+        },
+        onContextSignal: (sig) => {
+          if (seq !== refineSeq) return;
+          set(refinePeakFrom(sig.promptTokens));
         },
         signal: refineAc.signal,
       });
@@ -2821,7 +3163,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         result,
         round,
         snapshot,
-        stepCap: SURFACE_STEP_CAPS.generator,
+        budget: GENERATOR_BUDGET,
         cp,
       });
     } catch (e) {
@@ -2853,6 +3195,19 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       errorPhase: null,
       refineError: null,
       refineResumable: null,
+      // A resume is a fresh call under its own (topped-up) grant, so the strip
+      // reports what THIS attempt spends. What the interrupted attempt cost is
+      // already on the resume card the user just clicked.
+      refineSpend: {
+        stepsUsed: 0,
+        stepCap: GENERATOR_BUDGET.steps,
+        tokensUsed: 0,
+        tokenBudget: GENERATOR_BUDGET.tokens,
+        tokensInput: null,
+        tokensCached: null,
+        peakPromptTokens: null,
+        startedAt: Date.now(),
+      },
     });
     // Minted before the checkpoint read, like refine() does before its prep:
     // ESC during that read has to have something to abort, or the round would
@@ -2913,7 +3268,18 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       return;
     }
 
-    const { cap, resumeMessages } = resumeBudget(payload);
+    const { cap, tokens, resumeMessages, maxOutputTokens } =
+      resumeBudget(payload);
+    // Known only now, and usually NOT the surface budget: a round that stopped
+    // without answering resumes on a top-up. The strip has to show the grant
+    // THIS attempt has, or its meter reads a fraction of the wrong ceiling.
+    set((s) =>
+      s.refineSpend
+        ? {
+            refineSpend: { ...s.refineSpend, stepCap: cap, tokenBudget: tokens },
+          }
+        : {},
+    );
     const base = payload.transcript;
     // Re-read: the draft is what the user sees NOW, which is the undo point a
     // completed resume should restore, and the basis for carrying verdicts /
@@ -2961,14 +3327,21 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         keys,
         local: localProviderConfig(prefs),
         maxSteps: cap,
+        tokenBudget: tokens,
+        maxOutputTokens,
         resumeMessages,
         onActivity: onRunActivity,
         onCheckpoint: (checkpoint) => {
           if (seq !== refineSeq) return;
+          set(refineSpendFrom(checkpoint));
           // checkpoint.messages already carries the resumed prefix (the runner
           // prepends it), so only the COUNTERS need the earlier totals added.
           transcript = toTranscript(checkpoint, base);
           writer.save(buildPayload(null));
+        },
+        onContextSignal: (sig) => {
+          if (seq !== refineSeq) return;
+          set(refinePeakFrom(sig.promptTokens));
         },
         signal: refineAc.signal,
       });
@@ -2979,7 +3352,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         result,
         round: payload.round,
         snapshot,
-        stepCap: cap,
+        budget: { tokens, steps: cap },
         cp,
       });
     } catch (e) {
@@ -3034,9 +3407,16 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       if (!cp || cp.payload.surface !== "generator-refine") continue;
       const p = cp.payload;
       if (p.sessionRunId !== sessionRunId) continue;
-      // Same gate as every Resume affordance: a round that answered badly, or
-      // died non-resumably, would just re-fail.
-      if (!canOfferResume(p.lastOutcome, p.lastOutcome?.message ?? null)) {
+      // Same gate as every Resume affordance: a round that died non-resumably,
+      // or answered badly with nothing banked, would just re-fail.
+      const progress = {
+        stepsUsed: p.transcript?.stepsUsed ?? 0,
+        hasTranscript: hasReplayableTranscript(p.transcript),
+        outputCapRaisable: canRaiseOutputCap(p.modelId, p.lastOutcome),
+      };
+      if (
+        !canOfferResume(p.lastOutcome, p.lastOutcome?.message ?? null, progress)
+      ) {
         continue;
       }
       // Re-validate in the same synchronous step as the patch — the user may
@@ -3049,7 +3429,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         refineResumable: {
           runId: p.runId,
           instruction: p.round.instruction,
-          stepsUsed: p.transcript?.stepsUsed ?? 0,
+          ...progress,
           totalTokens: p.transcript?.usage?.totalTokens ?? null,
           updatedAt: cp.updatedAt,
           outcome: p.lastOutcome,
@@ -3110,6 +3490,12 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         ),
       }));
 
+    // The model-facing record of this turn, refreshed after every step. Kept in
+    // a local rather than written straight to the message so a cancelled turn
+    // banks whatever it had read at the moment it stopped — the terminal paths
+    // below decide what to keep.
+    let turnTranscript: ModelMessage[] = [];
+
     // Tool activity (Read/Glob/Grep) → upsert onto the assistant message by id
     // so a running tool later completes in place. Surfaces the same live strip
     // the other chats use.
@@ -3131,13 +3517,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     const keys = await chat.ensureApiKeys();
     const modelId = s.overrideModelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
-    const { blocks: bpBlocks, warnings: bpWarnings } =
-      await loadBestPracticeBlocks(prefs.bestPracticeFiles, {
-        visionCapable: supportsVision(modelId),
-      });
-    if (bpWarnings.length > 0) {
-      console.warn("[generator] best-practices skipped:", bpWarnings);
-    }
+    const { blocks: bpBlocks } = await loadBestPracticeBlocks(
+      prefs.bestPracticeFiles,
+      { visionCapable: supportsVision(modelId) },
+    );
     const bugBlocks =
       bugIds && bugIds.length > 0 ? await bugsToContextBlocks(bugIds) : [];
     const chatContextBlocks = [...bpBlocks, ...bugBlocks];
@@ -3166,6 +3549,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         attachments: s.attachments,
         cases: s.cases,
         bugs: s.bugs,
+        // The Ask sits beside the Refine dock in the same pane, so questions
+        // about the draft are routinely questions about a follow-up the user
+        // ran. It had the draft but no account of how the draft got that way.
+        refineRounds: s.refineRounds,
+        lastRefineSnapshot: s.refineUndoSnapshot,
         // Was `null`, which meant draft-chat couldn't answer "does this cover
         // the acceptance criteria?" for a requirement-bound suite. Normally the
         // body is whatever analyze() already resolved — the hydrate above only
@@ -3196,6 +3584,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         customInstructions: prefs.customInstructions || undefined,
         onText: appendDelta,
         onToolEvent: mergeToolEvent,
+        onTranscript: (messages) => {
+          turnTranscript = messages;
+        },
         signal: chatAc.signal,
       });
       // Backfill a placeholder for a genuinely empty response so the bubble
@@ -3204,8 +3595,12 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         chatBusy: false,
         chatStreamingId: null,
         chatMessages: curr.chatMessages.map((m) =>
-          m.id === assistantId && m.content.trim() === ""
-            ? { ...m, content: "(empty response)" }
+          m.id === assistantId
+            ? {
+                ...m,
+                content: m.content.trim() === "" ? "(empty response)" : m.content,
+                ...bankTranscript(turnTranscript),
+              }
             : m,
         ),
       }));
@@ -3213,13 +3608,17 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       const cancelled = isCancelledError(e);
       if (!cancelled) console.error("[generator] chat failed:", e);
       // Drop the placeholder if nothing streamed (keep a partial answer on
-      // cancel — that text is still useful to the user).
+      // cancel — that text is still useful to the user). A turn that survives
+      // keeps its transcript too: the reads are paid for either way, and
+      // carrying them is what stops the retry from making all of them again.
       set((curr) => ({
         chatBusy: false,
         chatStreamingId: null,
-        chatMessages: curr.chatMessages.filter(
-          (m) => m.id !== assistantId || m.content.trim() !== "",
-        ),
+        chatMessages: curr.chatMessages.flatMap((m) => {
+          if (m.id !== assistantId) return [m];
+          if (m.content.trim() === "") return [];
+          return [{ ...m, ...bankTranscript(turnTranscript) }];
+        }),
         chatError: cancelled ? null : errToString(e),
       }));
     } finally {

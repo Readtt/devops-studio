@@ -7,6 +7,7 @@
 // suggestedFix reuses PatchSchema so ApplyPatchCard consumes it unchanged.
 
 import { z } from "zod";
+import { completeItemsOfTruncatedArray } from "@/modules/ai/lib/extractJson";
 import { PatchSchema } from "./patchSchema";
 
 export const SEVERITIES = ["critical", "high", "medium", "low"] as const;
@@ -86,6 +87,23 @@ export const Stage1Schema = z.object({
 
 export type CandidateFinding = z.infer<typeof CandidateFindingSchema>;
 export type Stage1 = z.infer<typeof Stage1Schema>;
+
+/** Salvage the complete, individually-valid findings out of a Stage 1 answer
+ *  that failed whole-batch validation — cut off mid-structure by an output cap
+ *  (`finish: length`), or parseable but with some malformed elements. Same
+ *  partial-batch acceptance the generator applies to cases/bugs: findings are
+ *  independent items, and the ones that arrived intact are real work. The
+ *  verify pass exists to skeptically filter candidates, so a salvaged partial
+ *  set feeds it exactly what it was built for. Never throws; [] when nothing
+ *  survives. */
+export function salvageCandidateFindings(text: string): CandidateFinding[] {
+  const out: CandidateFinding[] = [];
+  for (const item of completeItemsOfTruncatedArray(text, "findings")) {
+    const r = CandidateFindingSchema.safeParse(item);
+    if (r.success) out.push(r.data);
+  }
+  return out;
+}
 
 // ---- Stage 2: verdicts -----------------------------------------------------
 

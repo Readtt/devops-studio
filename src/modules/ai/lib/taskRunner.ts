@@ -21,7 +21,6 @@
 import {
   generateObject,
   generateText,
-  stepCountIs,
   streamText,
   type FinishReason,
   type ModelMessage,
@@ -29,12 +28,21 @@ import {
 } from "ai";
 import type { z } from "zod";
 import {
+  DEFAULT_TOKEN_BUDGET,
   getModel,
+  getModelOutputCap,
   MAX_AGENT_STEPS,
   supportsTemperature,
   supportsVision,
   type ModelId,
 } from "../config";
+import {
+  limitReached,
+  runStopConditions,
+  stepSpend,
+  type BudgetLimit,
+  type RunBudget,
+} from "./runBudget";
 import {
   buildConfiguredLanguageModel,
   buildStableSystem,
@@ -42,6 +50,22 @@ import {
 } from "./agent";
 import type { ProviderKeys } from "./keyring";
 import { extractJsonBlock } from "./extractJson";
+import {
+  measureRequestContext,
+  type RequestContextSignal,
+} from "./contextEstimate";
+import {
+  compactTranscript,
+  CONTEXT_COMPACTION_ENABLED,
+} from "./compactTranscript";
+import {
+  CONTEXT_SUMMARIZATION_ENABLED,
+  pickSummarizerModel,
+  planSummarization,
+  summaryMessage,
+  SUMMARIZER_SYSTEM_PROMPT,
+  SUMMARY_MAX_OUTPUT_TOKENS,
+} from "./summarizeTranscript";
 import { buildUserTurn } from "./visionMessage";
 import {
   clampOutputFull,
@@ -76,6 +100,9 @@ export type TaskCheckpoint = {
   usage: TaskUsage;
   /** finishReason of the most recent completed step. */
   finishReason?: FinishReason;
+  /** How full the window was on the most recent step, from the provider's own
+   *  count. Absent when no step reported an input count. */
+  context?: RequestContextSignal;
 };
 
 export type TaskInput<S extends z.ZodTypeAny | undefined = undefined> = {
@@ -88,14 +115,37 @@ export type TaskInput<S extends z.ZodTypeAny | undefined = undefined> = {
   /** The user turn. Text attachments are assumed already folded in by the
    *  caller; only images are lifted into vision parts. */
   prompt: string;
+  /** A leading user turn carrying the material that does NOT change from turn to
+   *  turn — the suite and its cases, the spec, the draft, the standards blocks.
+   *  Split out from `prompt` purely so the prompt cache can cover it: it sits in
+   *  front of {@link priorMessages}, so the whole conversation up to the newest
+   *  question is a stable prefix that grows only at the end. Omit for surfaces
+   *  that send one turn and are done. */
+  contextPrompt?: string;
+  /** The conversation so far, as REAL user/assistant messages rather than prose
+   *  quoted inside `prompt`. Both are the same bytes to the model; only the
+   *  former can be cached, because a rebuilt prose block changes shape in the
+   *  MIDDLE of the request every turn and a cached prefix has to be a prefix. */
+  priorMessages?: ModelMessage[];
   attachments?: ImageLike[];
   /** Read-only tool set (build*Tools). null/undefined ⇒ tool-less. */
   tools?: ToolSet | null;
   /** Explicit per call. Omit ⇒ provider default (no hidden global). */
   temperature?: number;
   seed?: number;
-  /** Step cap for the agentic loop (only meaningful with tools). */
+  /** Runaway step ceiling for the agentic loop (only meaningful with tools).
+   *  Not the budget — see `tokenBudget`. */
   maxSteps?: number;
+  /** Tokens this call may spend across all its steps before the loop is stopped
+   *  — the PRIMARY budget (runBudget.ts). Omit ⇒ {@link DEFAULT_TOKEN_BUDGET};
+   *  every live surface passes its own from `SURFACE_TOKEN_BUDGETS`. */
+  tokenBudget?: number;
+  /** Output-token cap per REQUEST (each agentic step is one request). Omit ⇒
+   *  the per-model cap from config (`getModelOutputCap`); no entry there either
+   *  ⇒ nothing is sent and the endpoint decides, exactly as before this field
+   *  existed. Only the truncation-resume path passes an explicit value — it
+   *  retries at the model's ceiling. */
+  maxOutputTokens?: number;
   /** Present ⇒ structured mode (the result carries a validated `object`). */
   schema?: S;
   /** Optional blocks layered below the base prompt. Surfaces that don't pass
@@ -110,11 +160,24 @@ export type TaskInput<S extends z.ZodTypeAny | undefined = undefined> = {
    *  Only fires on the tool-bearing generateText/streamText paths; the
    *  tool-less generateObject path ignores it (single-shot, no steps). */
   onCheckpoint?: (cp: TaskCheckpoint) => void;
+  /** Fired after each step whose usage carried an input count, with how full
+   *  the window was for THAT request. */
+  onContextSignal?: (signal: RequestContextSignal) => void;
   /** Continuation transcript from a previous call. When set, the request is
    *  [rebuilt system + user turn, ...resumeMessages]. The user turn is rebuilt
    *  fresh from prompt/attachments (images stay Uint8Array — they never come
    *  from persisted state; callers rebuild them from stored attachments). */
   resumeMessages?: ModelMessage[];
+  /** Per-call override of the eviction kill switch
+   *  ({@link CONTEXT_COMPACTION_ENABLED}). Even when on, eviction only fires
+   *  once a step's measured prompt lands inside the compaction buffer, so an
+   *  ordinary run never reaches it. */
+  compactContext?: boolean;
+  /** Per-call override of the summarization kill switch
+   *  ({@link CONTEXT_SUMMARIZATION_ENABLED}). This is the one control that costs
+   *  a model call, so it sits behind eviction: it fires only after eviction has
+   *  run and freed nothing, and then at most once per attempt. */
+  summarizeContext?: boolean;
   signal?: AbortSignal;
 };
 
@@ -128,23 +191,50 @@ type TaskScalars = {
   /** Agentic steps completed in this call. 0 on the tool-less generateObject
    *  path (single-shot) and on any path where the provider reported no steps. */
   stepsUsed: number;
+  /** Tokens this call spent, summed across its steps (runBudget.ts). 0 when the
+   *  provider reported no usage — indistinguishable from a free run, which is
+   *  exactly why the step ceiling is kept. */
+  tokensUsed: number;
   finishReason?: FinishReason;
   usage?: TaskUsage;
+  /** Window pressure on the last measured step. See {@link RequestContextSignal}. */
+  context?: RequestContextSignal;
+  /** Which guard the loop ran into, when it ran into one. Present even on a
+   *  SUCCESSFUL run that answered on its last allowed step — the reason field
+   *  is what says the run failed; this only says what bound it. */
+  limit?: BudgetLimit;
+  /** The output cap this call's requests actually asked for (explicit or the
+   *  per-model config cap). Absent ⇒ none was sent. Persisted onto the failure
+   *  outcome so a `finish: length` resume can tell whether a HIGHER cap even
+   *  exists to retry with — without it, that gate would be a guess. */
+  outputCap?: number;
 };
 
 export type TaskResult<S extends z.ZodTypeAny | undefined = undefined> =
   | ({
       ok: true;
       text: string;
+      /** The FINAL step's answer, as opposed to `text`, which on the streaming
+       *  path is every step's text concatenated across the whole agentic loop.
+       *  The two differ exactly when the loop ended without writing an answer:
+       *  `text` is then the mid-run narration ("I'll dig into the collect
+       *  code…") and this is empty. A prose surface has to show `text` — the
+       *  user watched it stream — but must not mistake it for a reply.
+       *
+       *  Set by `streamTask` only; `runTask` has one text and no such split. */
+      finalText?: string;
       object: InferObject<S>;
       durationMs: number;
     } & TaskScalars)
   | ({
       ok: false;
       /** schema_violation ⇒ repair budget exhausted; empty ⇒ no usable text;
-       *  step_cap ⇒ the loop burned its whole step budget still calling tools,
-       *  so the model never got to write its answer (retryable with a bigger
-       *  budget or a resume — not a model that returned garbage). */
+       *  step_cap ⇒ the loop ran into a RUN BUDGET (tokens, or the step ceiling
+       *  — `limit` says which) still calling tools, so the model never got to
+       *  write its answer. Retryable with a topped-up budget or a resume, unlike
+       *  a model that returned garbage. The name predates the token budget and
+       *  is kept because it is persisted in every existing checkpoint's
+       *  `lastOutcome.kind`. */
       reason: "schema_violation" | "empty" | "step_cap";
       text: string;
       durationMs: number;
@@ -180,7 +270,10 @@ const TASK_MAX_RETRIES = 6;
  *  two breakpoints (system + last message), well under Anthropic's cap of 4;
  *  the untag sweep is belt-and-braces should that internal ever change.
  *  Non-Anthropic providers return undefined: their automatic prefix caching
- *  needs no explicit breakpoints, and their requests must stay byte-identical. */
+ *  needs no explicit breakpoints, and their requests must stay byte-identical.
+ *  (They may still get a `prepareStep` from {@link buildStepPrepare}, which
+ *  wraps this one — but it only overrides messages when eviction actually
+ *  rewrote something.) */
 function anthropicStepCachePrepare(
   modelId: ModelId,
 ): (({ messages }: { messages: ModelMessage[] }) => { messages: ModelMessage[] } | undefined) | undefined {
@@ -194,6 +287,161 @@ function anthropicStepCachePrepare(
     );
     next[next.length - 1] = tagAnthropicCache(next[next.length - 1]);
     return { messages: next };
+  };
+}
+
+/** The `prepareStep` the agentic paths actually install: tool-result eviction
+ *  composed with the Anthropic cache breakpoint.
+ *
+ *  COMPOSE, don't replace. Compaction is provider-agnostic (every provider has a
+ *  context window); the tagging stays Anthropic-only. The tagger's return value
+ *  is what gets sent, so it has to be computed over the COMPACTED list — hand it
+ *  the raw one and its output silently throws the eviction away, which is the
+ *  easy way to write this and does nothing at all on the only provider where
+ *  running out of window costs the most.
+ *
+ *  ARMED ONCE, NEVER DISARMED. `shouldCompact` is derived from the last
+ *  completed step's measured prompt, and eviction makes the next request
+ *  smaller — so a naive `if (shouldCompact)` would compact, drop back under the
+ *  buffer, un-compact, cross it again, and rewrite the prefix on every single
+ *  step. That is the sliding-window cache-invalidation failure wearing a
+ *  different hat, and it costs more than it saves. The latch means the prefix
+ *  changes at most once for arming, and after that only when the eviction
+ *  boundary itself advances.
+ *
+ *  SUMMARIZATION IS THE RUNG BELOW EVICTION, not an alternative to it. It fires
+ *  only when eviction runs and frees NOTHING — every result outside the hot tail
+ *  is already a stub, so the cheap mechanism has nothing left to take — and then
+ *  at most once, because it costs a model call. Once a summary is installed it is
+ *  re-applied byte-identically on every later step from the same cut index; the
+ *  prefix therefore changes exactly once more, which is the same bargain the
+ *  arming latch makes.
+ *
+ *  Returning `undefined` when nothing changed is deliberate: a run that never
+ *  trips the budget sends byte-identical requests to what it sent before this
+ *  existed. */
+function buildStepPrepare(
+  modelId: ModelId,
+  compactionEnabled: boolean,
+  contextOf: () => RequestContextSignal | undefined,
+  summarize?: (messages: ModelMessage[]) => Promise<InstalledSummary | null>,
+):
+  | (({
+      messages,
+    }: {
+      messages: ModelMessage[];
+    }) =>
+      | { messages: ModelMessage[] }
+      | undefined
+      | Promise<{ messages: ModelMessage[] } | undefined>)
+  | undefined {
+  const cache = anthropicStepCachePrepare(modelId);
+  if (!compactionEnabled) return cache;
+  let armed = false;
+  let summaryTried = false;
+  // The installed summary. The SDK hands us the FULL history every step (it
+  // never writes the override back), so re-applying it means slicing that
+  // history at the same index again — hence an index, not a message reference.
+  let summary: InstalledSummary | null = null;
+
+  const finish = (
+    original: ModelMessage[],
+    next: ModelMessage[],
+  ): { messages: ModelMessage[] } | undefined => {
+    const tagged = cache?.({ messages: next });
+    if (tagged) return tagged;
+    return next === original ? undefined : { messages: next };
+  };
+
+  return ({ messages }) => {
+    if (!armed && contextOf()?.shouldCompact === true) armed = true;
+    const base = summary ? applyInstalledSummary(summary, messages) : messages;
+    if (!armed) return finish(messages, base);
+
+    const compacted = compactTranscript(base).messages;
+    // Deliberately NOT an async function: every step of every agentic run goes
+    // through here, and only the one step that actually summarizes should hand
+    // the SDK a promise to await. The common path stays exactly as synchronous
+    // as it was before summarization existed.
+    if (summarize && !summaryTried && compacted === base) {
+      // Eviction ran and freed nothing: everything outside the hot tail is
+      // already a stub. This is the only state summarization is for.
+      summaryTried = true;
+      return summarize(base).then((installed) => {
+        summary = installed;
+        if (!installed) return finish(messages, compacted);
+        return finish(
+          messages,
+          compactTranscript(applyInstalledSummary(installed, messages)).messages,
+        );
+      });
+    }
+    return finish(messages, compacted);
+  };
+}
+
+/** A summary that has been installed for the rest of this attempt: the messages
+ *  that go in front, and the offset in the SDK's (still full) history they
+ *  replace up to. */
+type InstalledSummary = { prefix: ModelMessage[]; cutIndex: number };
+
+function applyInstalledSummary(
+  summary: InstalledSummary,
+  messages: ModelMessage[],
+): ModelMessage[] {
+  return [...summary.prefix, ...messages.slice(summary.cutIndex)];
+}
+
+/** The summarization callback `buildStepPrepare` calls, or undefined when the
+ *  fallback is off. Lives here rather than in summarizeTranscript.ts so the pure
+ *  module never has to import the runner back (and so the one place in the app
+ *  that talks to a provider stays this file).
+ *
+ *  Everything is swallowed. A summarizer that throws — no key for the cheap
+ *  provider, its own overload, an abort — must degrade to "no summary" and let
+ *  the step go out as it would have anyway. It is a recovery attempt on a run
+ *  that is already in trouble, not a new failure mode for it. */
+function makeSummarizer(
+  input: TaskInput<z.ZodTypeAny | undefined>,
+): ((messages: ModelMessage[]) => Promise<InstalledSummary | null>) | undefined {
+  if (!(input.summarizeContext ?? CONTEXT_SUMMARIZATION_ENABLED)) return undefined;
+  return async (messages) => {
+    try {
+      const plan = planSummarization(messages);
+      if (!plan) return null;
+      const summarizerId = pickSummarizerModel(
+        input.modelId,
+        input.keys,
+        plan.sourceTokens,
+      );
+      const model = await buildConfiguredLanguageModel(
+        summarizerId,
+        input.keys,
+        input.local ?? {},
+      );
+      const { text } = await generateText({
+        model,
+        system: SUMMARIZER_SYSTEM_PROMPT,
+        prompt: plan.source,
+        ...(supportsTemperature(summarizerId) ? { temperature: 0 } : {}),
+        maxOutputTokens: SUMMARY_MAX_OUTPUT_TOKENS,
+        // One attempt, not TASK_MAX_RETRIES: the run is inside its compaction
+        // buffer and waiting out a rate-limit window here just moves the
+        // failure. No summary is a survivable outcome; a two-minute stall
+        // inside prepareStep is not.
+        maxRetries: 1,
+        abortSignal: input.signal,
+      });
+      const summary = text?.trim();
+      if (!summary) return null;
+      return {
+        prefix: [...messages.slice(0, plan.protectedCount), summaryMessage(summary)],
+        cutIndex: plan.cutIndex,
+      };
+    } catch (e) {
+      console.warn("[taskRunner] context summarization failed — continuing without it", e);
+      return null;
+    }
   };
 }
 
@@ -278,6 +526,42 @@ function buildRequestPrompt(
   return { messages: [systemMessage, ...userMessages] };
 }
 
+/** The user side of the request: an optional stable context turn, the prior
+ *  conversation, then the turn being answered.
+ *
+ *  A surface that passes neither of the first two gets `buildUserTurn` verbatim
+ *  — a bare `{ prompt }` string when there are no images — so every single-turn
+ *  surface sends byte-for-byte what it sent before this existed, and the
+ *  providers that cache on an identical prefix are undisturbed.
+ *
+ *  Consecutive user messages are fine: the Anthropic provider groups same-role
+ *  messages into one turn with several content blocks, and every other provider
+ *  passes them through. What matters is the ORDER — stable context first, then
+ *  history oldest-first, then the new question — because that is what makes each
+ *  turn's request an extension of the last one's rather than a rewrite of it. */
+function buildConversationTurn(
+  input: Pick<
+    TaskInput<z.ZodTypeAny | undefined>,
+    "modelId" | "prompt" | "contextPrompt" | "priorMessages" | "attachments"
+  >,
+): { prompt: string } | { messages: ModelMessage[] } {
+  const current = buildUserTurn(input.prompt, visionSafe(input));
+  const context = input.contextPrompt?.trim() ? input.contextPrompt : null;
+  const prior = input.priorMessages ?? [];
+  if (!context && prior.length === 0) return current;
+  const currentMessages: ModelMessage[] =
+    "messages" in current
+      ? current.messages
+      : [{ role: "user", content: current.prompt }];
+  return {
+    messages: [
+      ...(context ? [{ role: "user" as const, content: context }] : []),
+      ...prior,
+      ...currentMessages,
+    ],
+  };
+}
+
 /** Rebuild the request for a RESUMED run: a freshly assembled system + user turn
  *  followed by the transcript an earlier attempt accumulated. The user turn is
  *  rebuilt rather than replayed from the transcript because image parts never
@@ -355,14 +639,16 @@ function makeStepAccumulator(
   start: number,
   input: Pick<
     TaskInput<z.ZodTypeAny | undefined>,
-    "onToolEvent" | "onCheckpoint" | "resumeMessages"
+    "modelId" | "onToolEvent" | "onCheckpoint" | "onContextSignal" | "resumeMessages"
   >,
 ) {
   const messages: ModelMessage[] = [];
   const stepTexts: string[] = [];
   const usage: TaskUsage = {};
   let stepsUsed = 0;
+  let tokensUsed = 0;
   let finishReason: FinishReason | undefined;
+  let context: RequestContextSignal | undefined;
 
   const snapshotUsage = (): TaskUsage => ({ ...usage });
 
@@ -370,11 +656,25 @@ function makeStepAccumulator(
     get stepsUsed() {
       return stepsUsed;
     },
+    /** Tokens spent across this call's completed steps. Accumulated with the
+     *  same {@link stepSpend} the `stopWhen` condition sums with, so the
+     *  after-the-fact verdict from `limitReached` can't disagree with the stop
+     *  the SDK actually made. */
+    get tokensUsed() {
+      return tokensUsed;
+    },
     get finishReason() {
       return finishReason;
     },
     get usage() {
       return snapshotUsage();
+    },
+    /** Window pressure on the last step that reported an input count. Lags the
+     *  live request by one step — it describes the prompt the provider has
+     *  already answered, and the next one is bigger by whatever this step
+     *  added. Phase 3's eviction decision has to allow for that. */
+    get context() {
+      return context;
     },
     /** Each completed step's text, in order — what streamTask needs to tell
      *  the FINAL answer apart from the all-steps textStream concatenation. */
@@ -396,6 +696,18 @@ function makeStepAccumulator(
           if (v !== undefined) usage[k] = (usage[k] ?? 0) + v;
         }
       }
+      tokensUsed += stepSpend(stepUsage);
+      // Measured off THIS step's usage, never the running sum: `usage` counts
+      // the re-sent transcript once per step (that's what was billed), which
+      // says nothing about how full the window is.
+      const signal = measureRequestContext({
+        modelId: input.modelId,
+        usage: stepUsage,
+      });
+      if (signal) {
+        context = signal;
+        input.onContextSignal?.(signal);
+      }
       // Snapshot, don't alias: a caller persisting the checkpoint must not see
       // it mutate underneath them when the next step lands.
       input.onCheckpoint?.({
@@ -403,21 +715,59 @@ function makeStepAccumulator(
         stepsUsed,
         usage: snapshotUsage(),
         finishReason,
+        ...(context ? { context } : {}),
       });
     },
   };
 }
 
-/** A run that burned its whole step budget and stopped still calling tools never
+/** The budget one call runs under: the caller's, or the conservative defaults.
+ *  Both halves are always present — a surface that names a token budget still
+ *  gets a runaway ceiling, and one that names neither still gets both. */
+function runBudgetOf(input: TaskInput<z.ZodTypeAny | undefined>): RunBudget {
+  return {
+    tokens: input.tokenBudget ?? DEFAULT_TOKEN_BUDGET,
+    steps: input.maxSteps ?? MAX_AGENT_STEPS,
+  };
+}
+
+/** The per-run scalars both result arms carry, read off the accumulator once so
+ *  the two paths can't drift on what they report. */
+function scalarsOf(
+  steps: ReturnType<typeof makeStepAccumulator>,
+  budget: RunBudget,
+): TaskScalars {
+  const limit = limitReached({
+    tokensUsed: steps.tokensUsed,
+    stepsUsed: steps.stepsUsed,
+    budget,
+  });
+  return {
+    stepsUsed: steps.stepsUsed,
+    tokensUsed: steps.tokensUsed,
+    finishReason: steps.finishReason,
+    usage: steps.usage,
+    ...(steps.context ? { context: steps.context } : {}),
+    ...(limit ? { limit } : {}),
+  };
+}
+
+/** A run that ran into a budget guard and stopped still calling tools never
  *  reached the point of writing its answer — that's a cut-off loop, not a model
  *  that returned garbage, and only the former is worth resuming with more
- *  budget. Schema-valid text always wins as a success, whatever the step count. */
-function stepCapReason<R extends "empty" | "schema_violation">(
+ *  budget. Schema-valid text always wins as a success, whatever it spent.
+ *
+ *  Reads `scalars.limit`, which covers BOTH guards. The equality test this
+ *  replaces (`stepsUsed === maxSteps`) is exactly wrong for the token budget:
+ *  that stop lands with steps to spare, so a run cut off mid-loop by spend would
+ *  have been reported as `schema_violation` — the same "the model returned bad
+ *  output" lie about a model that was simply interrupted that the step-cap
+ *  reason was introduced to end. */
+function budgetReason<R extends "empty" | "schema_violation">(
   fallback: R,
   scalars: TaskScalars,
-  maxSteps: number,
 ): R | "step_cap" {
-  return scalars.stepsUsed === maxSteps && scalars.finishReason === "tool-calls"
+  return scalars.limit && scalars.finishReason === "tool-calls"
     ? "step_cap"
     : fallback;
 }
@@ -500,6 +850,17 @@ function effectiveTemperature(input: {
   temperature?: number;
 }): number | undefined {
   return supportsTemperature(input.modelId) ? input.temperature : undefined;
+}
+
+/** The output cap this call's requests ask for: the caller's explicit value,
+ *  else the per-model cap from config. Undefined ⇒ nothing is sent — the
+ *  request is byte-identical to before caps existed, and the endpoint's own
+ *  default governs (the only safe answer for models we haven't catalogued). */
+function effectiveOutputCap(input: {
+  modelId: ModelId;
+  maxOutputTokens?: number;
+}): number | undefined {
+  return input.maxOutputTokens ?? getModelOutputCap(input.modelId);
 }
 
 /** Provider errors arrive wrapped (RetryError → APICallError), and the useful
@@ -589,11 +950,12 @@ export async function runTask<
     input.local ?? {},
   );
   const system = assembleSystem(input);
-  const userTurn = buildUserTurn(input.prompt, visionSafe(input));
+  const userTurn = buildConversationTurn(input);
   const tools = input.tools ?? undefined;
-  const maxSteps = input.maxSteps ?? MAX_AGENT_STEPS;
+  const budget = runBudgetOf(input);
   const repairAttempts = input.repairAttempts ?? DEFAULT_REPAIR_ATTEMPTS;
   const temperature = effectiveTemperature(input);
+  const outputCap = effectiveOutputCap(input);
 
   // --- Structured, tool-less: generateObject -------------------------------
   if (input.schema && !tools) {
@@ -626,8 +988,11 @@ export async function runTask<
           },
           ...(temp !== undefined ? { temperature: temp } : {}),
           ...(input.seed !== undefined ? { seed: input.seed } : {}),
+          ...(outputCap !== undefined ? { maxOutputTokens: outputCap } : {}),
           abortSignal: input.signal,
         });
+        const usage = toTaskUsage(r.usage);
+        const context = measureRequestContext({ modelId: input.modelId, usage });
         return {
           ok: true,
           text: JSON.stringify(r.object),
@@ -635,7 +1000,10 @@ export async function runTask<
           durationMs: Date.now() - start,
           // Single-shot: no agentic loop, so nothing to resume from.
           stepsUsed: 0,
-          usage: toTaskUsage(r.usage),
+          tokensUsed: stepSpend(usage),
+          usage,
+          ...(context ? { context } : {}),
+          ...(outputCap !== undefined ? { outputCap } : {}),
         };
       } catch (e) {
         if (input.signal?.aborted) throw e;
@@ -666,19 +1034,31 @@ export async function runTask<
       text: lastText,
       durationMs: Date.now() - start,
       stepsUsed: 0,
+      tokensUsed: 0,
+      ...(outputCap !== undefined ? { outputCap } : {}),
     };
   }
 
   // --- Structured + tools, or prose: generateText --------------------------
-  const prepareStep = tools ? anthropicStepCachePrepare(input.modelId) : undefined;
   const steps = makeStepAccumulator(start, input);
+  // Tool-less runs are a single request: no step loop to prepare, and no tool
+  // results to evict.
+  const prepareStep = tools
+    ? buildStepPrepare(
+        input.modelId,
+        input.compactContext ?? CONTEXT_COMPACTION_ENABLED,
+        () => steps.context,
+        makeSummarizer(input),
+      )
+    : undefined;
   const args = (temp: number | undefined) => ({
     model,
     ...buildResumableRequest(input.modelId, system, userTurn, input.resumeMessages),
-    ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
+    ...(tools ? { tools, stopWhen: runStopConditions(budget) } : {}),
     ...(prepareStep ? { prepareStep } : {}),
     ...(temp !== undefined ? { temperature: temp } : {}),
     ...(input.seed !== undefined ? { seed: input.seed } : {}),
+    ...(outputCap !== undefined ? { maxOutputTokens: outputCap } : {}),
     maxRetries: TASK_MAX_RETRIES,
     abortSignal: input.signal,
     onStepFinish: steps.onStepFinish,
@@ -691,10 +1071,9 @@ export async function runTask<
     r = await generateText(args(undefined));
   }
 
-  const scalars: TaskScalars = {
-    stepsUsed: steps.stepsUsed,
-    finishReason: steps.finishReason,
-    usage: steps.usage,
+  const scalars = {
+    ...scalarsOf(steps, budget),
+    ...(outputCap !== undefined ? { outputCap } : {}),
   };
   const text = r.text ?? "";
   if (input.schema) {
@@ -707,7 +1086,7 @@ export async function runTask<
       // violation so the surface can show "model returned nothing" guidance.
       return {
         ok: false,
-        reason: stepCapReason("empty", scalars, maxSteps),
+        reason: budgetReason("empty", scalars),
         text: "",
         durationMs: Date.now() - start,
         ...scalars,
@@ -717,7 +1096,7 @@ export async function runTask<
     if (!parsed.ok) {
       return {
         ok: false,
-        reason: stepCapReason("schema_violation", scalars, maxSteps),
+        reason: budgetReason("schema_violation", scalars),
         text,
         durationMs: Date.now() - start,
         ...scalars,
@@ -756,12 +1135,11 @@ export async function streamTask<
     input.local ?? {},
   );
   const system = assembleSystem(input);
-  const userTurn = buildUserTurn(input.prompt, visionSafe(input));
+  const userTurn = buildConversationTurn(input);
   const tools = input.tools ?? undefined;
-  const maxSteps = input.maxSteps ?? MAX_AGENT_STEPS;
+  const budget = runBudgetOf(input);
   const temperature = effectiveTemperature(input);
-
-  const prepareStep = tools ? anthropicStepCachePrepare(input.modelId) : undefined;
+  const outputCap = effectiveOutputCap(input);
 
   // streamText NEVER rejects: a provider/network failure mid-stream (429 on a
   // follow-up agentic step, overload, dropped connection) is reported via
@@ -771,19 +1149,29 @@ export async function streamTask<
   // format". Capture the first error and rethrow it below so callers' existing
   // catch paths show the REAL provider message.
   //
-  // One attempt = one full stream, drained. Each gets a fresh accumulator so a
-  // retried attempt can't inherit the abandoned one's steps or checkpoints.
+  // One attempt = one full stream, drained. Each gets a fresh accumulator — and
+  // therefore a fresh compaction latch — so a retried attempt can't inherit the
+  // abandoned one's steps, checkpoints, or eviction state.
   const attempt = async (temp: number | undefined) => {
     const toolStart = new Map<string, number>();
     let streamError: unknown = null;
     const steps = makeStepAccumulator(start, input);
+    const prepareStep = tools
+      ? buildStepPrepare(
+          input.modelId,
+          input.compactContext ?? CONTEXT_COMPACTION_ENABLED,
+          () => steps.context,
+          makeSummarizer(input),
+        )
+      : undefined;
     const result = streamText({
       model,
       ...buildResumableRequest(input.modelId, system, userTurn, input.resumeMessages),
-      ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
+      ...(tools ? { tools, stopWhen: runStopConditions(budget) } : {}),
       ...(prepareStep ? { prepareStep } : {}),
       ...(temp !== undefined ? { temperature: temp } : {}),
       ...(input.seed !== undefined ? { seed: input.seed } : {}),
+      ...(outputCap !== undefined ? { maxOutputTokens: outputCap } : {}),
       maxRetries: TASK_MAX_RETRIES,
       abortSignal: input.signal,
       // Live per-tool events (spinner → done) plus the step-finish sweep as a
@@ -815,10 +1203,9 @@ export async function streamTask<
   }
   const { steps, acc, streamError } = run;
 
-  const scalars: TaskScalars = {
-    stepsUsed: steps.stepsUsed,
-    finishReason: steps.finishReason,
-    usage: steps.usage,
+  const scalars = {
+    ...scalarsOf(steps, budget),
+    ...(outputCap !== undefined ? { outputCap } : {}),
   };
 
   // `acc` is EVERY step's text concatenated (the SDK's textStream spans the
@@ -829,10 +1216,19 @@ export async function streamTask<
   // false clean). Completed steps' texts are exact prefixes of `acc`, so any
   // remainder is the in-flight step that never finished — the right text to
   // salvage when the stream died mid-answer.
+  //
+  // There is deliberately NO `|| acc` fallback for "the last step finished with
+  // no text". `stepTexts` records "" for every pure tool-call step, so that
+  // fallback fired exactly when the loop ended ON a tool call — a budget stop —
+  // and handed the whole-run concatenation to the validator: the shadowing bug
+  // above, still reachable through the back door in the one case it was most
+  // likely to bite. When no step wrote an answer the honest result is `empty`,
+  // and since an empty answer after real work is now resumable, that costs the
+  // user a click rather than the run.
   const completedTextLen = steps.stepTexts.reduce((n, t) => n + t.length, 0);
   const inFlightTail = acc.slice(completedTextLen);
   const lastStepText = steps.stepTexts[steps.stepTexts.length - 1] ?? "";
-  const finalText = inFlightTail.trim() ? inFlightTail : lastStepText || acc;
+  const finalText = inFlightTail.trim() ? inFlightTail : lastStepText;
 
   // A user abort also lands here as a quietly-ended stream. Rethrow it as an
   // AbortError so surfaces map it to their "cancelled" state instead of an
@@ -850,6 +1246,7 @@ export async function streamTask<
         return {
           ok: true,
           text: finalText,
+          finalText,
           object: parsed.value as InferObject<S>,
           durationMs: Date.now() - start,
           ...scalars,
@@ -866,9 +1263,34 @@ export async function streamTask<
       // No final answer at all — mirror runTask's "empty" (or step_cap when
       // the loop burned its budget still calling tools) instead of blaming
       // the schema. `text` keeps the narration for display/salvage.
+      //
+      // WHAT REACHES HERE, for the next person diagnosing an empty run. A live
+      // run came back empty after 22 steps and ~1.7M tokens; working backwards:
+      //
+      //  • `finalText` empty ⇒ the last completed step wrote no text AND no
+      //    in-flight tail survived. Whether `acc` (the whole run's narration)
+      //    was also empty is now irrelevant — see the `|| acc` note above.
+      //  • `streamError` was null, so it was NOT a stall or a dropped socket:
+      //    those take the throw path above and surface as a classified error,
+      //    not as EMPTY-RESULT. The stall banner on that run explains its 15
+      //    minutes, not its emptiness.
+      //  • `limit` was unset (22 of 40 steps, 1.7M of 2.5M tokens), so the
+      //    loop was not cut off by either guard — `budgetReason` would have
+      //    said `step_cap`.
+      //  • Eviction cannot produce this: it rewrites tool-result content, and
+      //    at that request size it never armed in the first place.
+      //
+      // That leaves the provider's own reason for ending the last step, which
+      // the runner has had all along and every layer above it discarded. It is
+      // now carried out on the result and persisted on the outcome. `stop`
+      // means the model ended its turn writing nothing; `length` means it hit
+      // the output ceiling, which on a reasoning model the thinking block
+      // spends too — a step of pure thinking and no text looks identical to
+      // silence from here. Read it off the error panel rather than inferring
+      // it again.
       return {
         ok: false,
-        reason: stepCapReason("empty", scalars, maxSteps),
+        reason: budgetReason("empty", scalars),
         text: acc,
         durationMs: Date.now() - start,
         ...scalars,
@@ -878,7 +1300,7 @@ export async function streamTask<
     if (!parsed.ok) {
       return {
         ok: false,
-        reason: stepCapReason("schema_violation", scalars, maxSteps),
+        reason: budgetReason("schema_violation", scalars),
         text: finalText,
         durationMs: Date.now() - start,
         ...scalars,
@@ -887,14 +1309,22 @@ export async function streamTask<
     return {
       ok: true,
       text: finalText,
+      finalText,
       object: parsed.value as InferObject<S>,
       durationMs: Date.now() - start,
       ...scalars,
     };
   }
+  // The schema-less arm is the one where the distinction bites. A prose surface
+  // gets `text` (what streamed, narration included) AND `finalText` (what the
+  // last step actually wrote), because a loop that ends on a tool call — budget
+  // stop or a model that simply stopped — leaves the two very different, and
+  // reporting `ok: true` with only the concatenation is how a run that never
+  // answered came back looking like an answer.
   return {
     ok: true,
     text: acc,
+    finalText,
     object: undefined as InferObject<S>,
     durationMs: Date.now() - start,
     ...scalars,

@@ -1,5 +1,11 @@
-import { SURFACE_STEP_CAPS, type ModelId } from "@/modules/ai/config";
+import {
+  SURFACE_STEP_CAPS,
+  SURFACE_TOKEN_BUDGETS,
+  type ModelId,
+} from "@/modules/ai/config";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
+import type { RequestContextSignal } from "@/modules/ai/lib/contextEstimate";
+import type { BudgetLimit } from "@/modules/ai/lib/runBudget";
 import {
   runTask,
   streamTask,
@@ -26,6 +32,7 @@ import {
 import type { ActivityEntry } from "./activityLog";
 import { renderRelatedCases, type RelatedCase } from "./relatedCases";
 import {
+  clipPromptText,
   collectContextImages,
   formatContextBlocks,
   type ContextBlock,
@@ -184,13 +191,28 @@ export type RunResult = {
   /** When `ok` is false: `empty` ⇒ the provider returned no usable text (common
    *  with OpenAI-compatible endpoints lacking JSON mode); `schema_violation` ⇒
    *  text came back but didn't match the expected shape; `step_cap` ⇒ the
-   *  agentic loop ran out of steps before writing its answer. */
+   *  agentic loop ran into a run budget before writing its answer. */
   reason?: "schema_violation" | "empty" | "step_cap";
+  /** Why the provider ended the model's last step. Carried out of the runner
+   *  rather than dropped there because it is the only thing that distinguishes
+   *  a model that wandered (`stop`) from one that ran out of output tokens
+   *  (`length`) from a loop cut off mid-read (`tool-calls`) — and those need
+   *  three different sentences to the user. */
+  finishReason?: string;
+  /** Which budget guard bound the loop, when one did — tokens (the ration) or
+   *  steps (the runaway ceiling). Lets the error panel name the right one
+   *  instead of always blaming steps. */
+  limit?: BudgetLimit;
   /** Agentic steps this call completed. Drives the checkpoint's cumulative
-   *  step count and the "n / cap steps" readout. */
+   *  step count. */
   stepsUsed?: number;
   /** Token usage this call accrued, when the provider reported it. */
   usage?: TaskUsage;
+  /** The output-token cap the call's requests asked for (explicit override or
+   *  the per-model config cap); absent when none was sent. Persisted onto a
+   *  failure outcome so the `finish: length` resume gate can tell whether a
+   *  larger cap exists to retry with. */
+  outputCap?: number;
 };
 
 /** Everything the model call needs, with prompt assembly already done. Split
@@ -232,12 +254,23 @@ export type ExecuteAnalystOptions = {
   /** Provider keys hydrated from the OS keychain. Never persisted. */
   keys: ProviderKeys;
   local?: LocalProviderConfig;
-  /** Defaults to SURFACE_STEP_CAPS.generator; a resume passes a smaller top-up. */
+  /** Runaway step ceiling. Defaults to SURFACE_STEP_CAPS.generator. */
   maxSteps?: number;
+  /** Tokens this call may spend — the primary budget. Defaults to
+   *  SURFACE_TOKEN_BUDGETS.generator; a resume passes a smaller top-up. */
+  tokenBudget?: number;
+  /** Per-request output cap override. Only the truncation resume passes one —
+   *  the model's hard ceiling, from `resumeBudget` — so the retry has room the
+   *  failed attempt didn't. Omit ⇒ the runner's per-model config cap. */
+  maxOutputTokens?: number;
   onActivity?: (e: ActivityEntry) => void;
   /** Fired after each completed agentic step so the caller can persist a
    *  resume point. Tool-bearing path only (tool-less runs are single-shot). */
   onCheckpoint?: (cp: TaskCheckpoint) => void;
+  /** Fired with the provider's own measurement of each request the run made.
+   *  The checkpoint's `usage` says what the run SPENT; this says how big any one
+   *  request got, which is the number the window binds on. */
+  onContextSignal?: (signal: RequestContextSignal) => void;
   /** Liveness only — fires on the tool-bearing (streaming) path. */
   onText?: (delta: string) => void;
   /** Continuation transcript from an earlier attempt at this same run. */
@@ -275,9 +308,12 @@ export async function executeQaAnalystRun(
     tools: tools ?? null,
     temperature: 0,
     maxSteps: opts.maxSteps ?? SURFACE_STEP_CAPS.generator,
+    tokenBudget: opts.tokenBudget ?? SURFACE_TOKEN_BUDGETS.generator,
+    maxOutputTokens: opts.maxOutputTokens,
     schema: DraftBatchLLMSchema,
     onToolEvent: opts.onActivity,
     onCheckpoint: opts.onCheckpoint,
+    onContextSignal: opts.onContextSignal,
     resumeMessages: opts.resumeMessages,
     signal: opts.signal,
   };
@@ -301,8 +337,11 @@ export async function executeQaAnalystRun(
     durationMs: Date.now() - start,
     ok: r.ok,
     reason: r.ok ? undefined : r.reason,
+    limit: r.limit,
+    finishReason: r.finishReason,
     stepsUsed: r.stepsUsed,
     usage: r.usage,
+    outputCap: r.outputCap,
   };
 }
 
@@ -330,7 +369,7 @@ function buildUserPrompt(input: RunInput): string {
     input.attachments.length === 0
       ? ""
       : "\n\nSource code attached for grounding:\n\n" +
-        input.attachments.map(formatAttachmentBlock).join("\n\n");
+        renderAttachmentBlocks(input.attachments);
 
   const targetBlock = renderTargetContext(input.targetContext);
   const relatedBlock = renderRelatedCases(input.relatedCases ?? []);
@@ -525,4 +564,40 @@ export function formatAttachmentBlock(a: RunAttachment): string {
     return `--- ${a.path} ---\n[user-attached binary: ${mime}${bytes}]`;
   }
   return `--- ${a.path} ---\n${a.content}`;
+}
+
+/** Generous ceiling on the TOTAL text inlined from attachments in one run.
+ *
+ *  Dragging files in is the app's core workflow, so a dropped file that gets
+ *  silently shortened means generating tests against code we never showed the
+ *  model — invisible, and exactly the failure the feature exists to prevent.
+ *  Ingest already caps each file at 200 KB but nothing caps the COUNT, so ~20
+ *  files is a megabyte before a single tool runs. 400 KB is ~100k tokens, well
+ *  past any normal drop, and the pre-run ContextMeter itemises attachments so
+ *  the weight is visible before the request goes out.
+ *
+ *  When it does bite, no attachment is dropped: every one keeps its header and
+ *  a truncated file says so by name, so the model knows what it is missing. */
+export const ATTACHMENT_TEXT_BUDGET = 400 * 1024;
+
+/** Render every attachment for the user prompt, spending a shared text budget
+ *  in order. */
+export function renderAttachmentBlocks(attachments: RunAttachment[]): string {
+  let remaining = ATTACHMENT_TEXT_BUDGET;
+  return attachments
+    .map((a) => {
+      if ((a.kind ?? "text") !== "text") return formatAttachmentBlock(a);
+      const budget = Math.max(0, remaining);
+      remaining -= a.content.length;
+      if (a.content.length <= budget) return formatAttachmentBlock(a);
+      const kept = clipPromptText(a.content, budget);
+      const cut = a.content.length - kept.length;
+      return (
+        `--- ${a.path} ---\n${kept}\n` +
+        `[TRUNCATED — ${cut} more characters of "${a.path}" were not included; this run's ` +
+        `attachment budget of ${ATTACHMENT_TEXT_BUDGET} characters ran out. Read the file ` +
+        `from the source directory if it lives there, or say what you're missing.]`
+      );
+    })
+    .join("\n\n");
 }

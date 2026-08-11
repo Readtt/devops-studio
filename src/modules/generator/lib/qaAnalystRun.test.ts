@@ -17,6 +17,10 @@ vi.mock("@/modules/test-plans/lib/suiteChatTools", () => ({
 }));
 
 import {
+  SURFACE_STEP_CAPS,
+  SURFACE_TOKEN_BUDGETS,
+} from "@/modules/ai/config";
+import {
   executeQaAnalystRun,
   prepareQaAnalystRun,
   renderTargetContext,
@@ -149,6 +153,22 @@ describe("runQaAnalyst tool wiring", () => {
     expect(out.batch.cases).toHaveLength(1);
   });
 
+  // The runner knows why the provider ended the last step; every layer above
+  // it used to drop that on the floor, which is what made "22 steps in and
+  // nothing came back" a guess instead of a readout. `length` (output ceiling)
+  // and `stop` (the model wrote nothing) want different sentences.
+  it("carries the runner's finish reason out with a failed run", async () => {
+    streamTask.mockResolvedValue({
+      ok: false,
+      reason: "empty",
+      text: "",
+      durationMs: 1,
+      finishReason: "length",
+    });
+    const out = await runQaAnalyst({ ...base, sourceRoot: "C:/repo" });
+    expect(out.finishReason).toBe("length");
+  });
+
   it("salvages a partial batch when the runner reports schema_violation", async () => {
     runTask.mockResolvedValue({
       ok: false,
@@ -211,7 +231,8 @@ describe("prepareQaAnalystRun / runQaAnalyst prompt assembly", () => {
     expect(arg.attachments).toEqual(prepared.attachments);
     expect(arg.customInstructions).toBe("Prefer short titles.");
     expect(arg.temperature).toBe(0);
-    expect(arg.maxSteps).toBe(24);
+    expect(arg.maxSteps).toBe(SURFACE_STEP_CAPS.generator);
+    expect(arg.tokenBudget).toBe(SURFACE_TOKEN_BUDGETS.generator);
     expect(arg.schema).toBeDefined();
     expect(arg.systemPrompt).toEqual(expect.stringContaining("QA"));
   });
@@ -366,11 +387,20 @@ describe("executeQaAnalystRun passthroughs", () => {
     expect(arg.onCheckpoint).toBe(onCheckpoint);
   });
 
-  it("defaults maxSteps to the generator surface cap", async () => {
+  it("defaults both budgets to the generator surface entries", async () => {
     await executeQaAnalystRun(prepareQaAnalystRun({ ...base, sourceRoot: null }), {
       keys: {} as never,
     });
-    expect(runnerArg().maxSteps).toBe(24);
+    expect(runnerArg().maxSteps).toBe(SURFACE_STEP_CAPS.generator);
+    expect(runnerArg().tokenBudget).toBe(SURFACE_TOKEN_BUDGETS.generator);
+  });
+
+  it("forwards a resume's token top-up as the call's budget", async () => {
+    await executeQaAnalystRun(prepareQaAnalystRun({ ...base, sourceRoot: null }), {
+      keys: {} as never,
+      tokenBudget: 500_000,
+    });
+    expect(runnerArg().tokenBudget).toBe(500_000);
   });
 });
 

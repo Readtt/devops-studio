@@ -711,6 +711,63 @@ export function getModelContextLimit(
   return MODEL_CONTEXT_LIMITS[modelId] ?? 128_000;
 }
 
+/** Per-model OUTPUT-token policy, decided here — not delegated to the provider
+ *  SDKs. Same doctrine as `supportsTemperature`, one field over: with no
+ *  explicit `maxOutputTokens`, @ai-sdk/anthropic fills in its own per-model
+ *  table (3.0.104 resolves claude-opus-5 / claude-sonnet-5 to the full 128k
+ *  ceiling, unknown non-Claude ids to 4096), which means the number changes
+ *  whenever the SDK table does — silently, a release behind every model launch.
+ *  Gateway/local transports have no table at all and forward whatever we send.
+ *
+ *  `cap` is what every request asks for. It has to clear the largest legitimate
+ *  answer on ANY surface — a 10-case DraftBatch with steps and bugs is ~4k–15k
+ *  text tokens — PLUS the adaptive-thinking phase Claude 5 runs by default,
+ *  which bills against the SAME max_tokens budget (that's how a run ends
+ *  `finish: length` with an empty answer: the thinking spent it first). 64k is
+ *  Anthropic's own floor guidance for high-effort agentic work and halves what
+ *  a runaway thinking spiral can burn in one step versus the 128k default the
+ *  SDK was applying. Haiku doesn't think unless asked, so half that is still
+ *  ~2x its largest legitimate answer.
+ *
+ *  `ceiling` is the model's hard max, held in reserve deliberately: it is the
+ *  headroom a resume-after-truncation retries with (see resumePolicy), which
+ *  only exists because `cap` sits below it.
+ *
+ *  Per-MODEL, not per-surface, on purpose. Answer sizes differ by surface, but
+ *  the failure this bounds — a thinking/narration spiral — is a property of the
+ *  model, and a per-surface cap tight enough to matter would create a NEW
+ *  truncation failure on the multiplied path (bulk Confidence runs once per
+ *  case). Per-surface COST is already governed by SURFACE_TOKEN_BUDGETS.
+ *
+ *  Absent entry ⇒ send nothing and let the endpoint decide — exactly today's
+ *  behavior for OpenRouter's non-Anthropic routes, custom OpenAI-compatible
+ *  endpoints, LM Studio, MLX and Ollama. Never invent a cap for a model we
+ *  don't know. The OpenRouter Claude routes are listed because they are the
+ *  same upstream models reached through a transport that forwards our body
+ *  verbatim — the same reasoning that put `rejectsSamplingParams` on them. */
+export const MODEL_OUTPUT_LIMITS: Record<
+  string,
+  { cap: number; ceiling: number }
+> = {
+  "claude-opus-5": { cap: 64_000, ceiling: 128_000 },
+  "claude-sonnet-5": { cap: 64_000, ceiling: 128_000 },
+  "claude-haiku-4-5": { cap: 32_000, ceiling: 64_000 },
+  "anthropic/claude-opus-5": { cap: 64_000, ceiling: 128_000 },
+  "anthropic/claude-sonnet-5": { cap: 64_000, ceiling: 128_000 },
+};
+
+/** The output cap every request for this model asks for, or undefined to send
+ *  nothing and let the endpoint decide (unknown / local / custom models). */
+export function getModelOutputCap(id: string): number | undefined {
+  return MODEL_OUTPUT_LIMITS[id]?.cap;
+}
+
+/** The model's hard output ceiling, when we know it. Only consulted by the
+ *  truncation-resume path — ordinary runs ask for `cap`. */
+export function getModelOutputCeiling(id: string): number | undefined {
+  return MODEL_OUTPUT_LIMITS[id]?.ceiling;
+}
+
 export type ModelPricing = {
   input: number;
   output: number;
@@ -777,22 +834,71 @@ export const OPENAI_COMPATIBLE_DEFAULT_BASE_URL = "";
 export const MAX_AGENT_STEPS = 24;
 export const TERMINAL_BUFFER_LINES = 300;
 
-/** Per-surface caps on the agentic read loop (how many tool-calling steps the
- *  model may take before it's forced to produce its final answer). The
- *  Generator gets the most room because it traces across many files; confidence
- *  now follows call chains into implementations (not just call sites), so it
- *  needs headroom to stay accurate without dragging on. */
+/** Per-surface ceilings on the agentic read loop (how many tool-calling steps
+ *  the model may take before it's forced to produce its final answer).
+ *
+ *  These are RUNAWAY GUARDS, not the budget — {@link SURFACE_TOKEN_BUDGETS} is
+ *  what a run is actually rationed by, and what the UI shows. A step ceiling
+ *  still catches the two things a token budget can't see: a loop that spends
+ *  almost nothing per step, and an endpoint that reports no usage at all. See
+ *  runBudget.ts.
+ *
+ *  The two surfaces users actually hit the ceiling on — Generator and Commit
+ *  Review's investigate pass — are raised accordingly, so a run of many cheap
+ *  steps is no longer cut off short of its answer. The lean surfaces keep their
+ *  ceilings: Suite Chat and verify are interactive/short by design, and
+ *  confidence runs ONCE PER CASE in bulk suite scoring, where a higher ceiling
+ *  multiplies by the case count into the app's largest cost path. */
 export const SURFACE_STEP_CAPS = {
-  generator: 24,
+  generator: 40,
   suiteChat: 12,
+  /** Review-pane "Ask a follow-up" chat (qaChatRun). Same tool set and shape as
+   *  Suite Chat; it previously fell through to MAX_AGENT_STEPS with no entry
+   *  here at all, so its budget was an accident rather than a decision. */
+  draftChat: 12,
   // Commit Review runs two stages: a generous agentic investigation pass that
   // traces blast radius across the tree, then a lean skeptical verify pass.
-  commitReviewInvestigate: 28,
+  commitReviewInvestigate: 40,
   commitReviewVerify: 12,
   confidence: 18,
 } as const;
 
-/** Extra steps granted when resuming a run that exhausted its step cap —
- *  paired with a "finish now" nudge, so a looping run converges instead of
- *  burning another full budget. */
-export const RESUME_TOPUP_STEPS = 8;
+/** Per-surface TOKEN budget for ONE agentic call — the primary control, summed
+ *  across the call's steps (see runBudget.ts for spend-vs-occupancy).
+ *
+ *  Every step re-sends the whole conversation, so the spend of an N-step loop
+ *  grows with N², not N: a 24-step run whose prompt climbs from 10k to 60k costs
+ *  roughly 800k tokens in total, and the run that prompted this work — one that
+ *  walked into a 1M-token window — cost several million. These numbers are set
+ *  where a HEALTHY run of that surface never reaches them and a runaway does, so
+ *  a budget stop means something is wrong rather than "this spec was large".
+ *  Same posture as eviction: structurally inert on ordinary work.
+ *
+ *  Confidence is deliberately the tightest per call. It is invoked once per case
+ *  (× up to 5 runs) in bulk suite scoring, so it is the only surface here whose
+ *  ceiling multiplies by a list length — a 50-case suite pays this 250 times. */
+export const SURFACE_TOKEN_BUDGETS = {
+  generator: 2_500_000,
+  suiteChat: 1_000_000,
+  draftChat: 1_000_000,
+  commitReviewInvestigate: 2_500_000,
+  commitReviewVerify: 1_000_000,
+  confidence: 600_000,
+} as const;
+
+/** Fallback budget for a tool-bearing call whose caller named no surface. Every
+ *  live surface passes its own; this exists so a future one can't be born
+ *  unbudgeted the way qaChatRun was born uncapped. */
+export const DEFAULT_TOKEN_BUDGET = 1_000_000;
+
+/** Tokens granted when resuming a run that exhausted its budget — paired with a
+ *  "finish now" nudge, so a looping run converges instead of spending another
+ *  full budget the same way.
+ *
+ *  Denominated in tokens rather than the 8 extra STEPS this replaces, and the
+ *  swap tightens the grant rather than loosening it: a resume replays the whole
+ *  transcript, so 8 more steps against a 150k-token transcript was licence to
+ *  spend well over a million tokens re-reading it. This is ~3 such steps, and
+ *  many more cheap ones — bounded in the unit that costs money instead of the
+ *  one that doesn't. */
+export const RESUME_TOPUP_TOKENS = 500_000;

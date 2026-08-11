@@ -14,7 +14,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
 import { modelMessageSchema, type ModelMessage } from "ai";
 import type { ModelId } from "../config";
-import type { ResumeErrorKind } from "./errorClass";
+import {
+  compactTranscript,
+  CHECKPOINT_REPLAY_TOKEN_BUDGET,
+  REPLAY_MIN_EVICTABLE_CHARS,
+} from "./compactTranscript";
+import type { ResumeErrorKind, ResumeProgress } from "./errorClass";
+import type { BudgetLimit } from "./runBudget";
 import type { ContextBlock } from "./contextBlocks";
 import type { Attachment } from "@/components/chat/attachments";
 import type { SuiteType, WorkItemRef } from "@/modules/ado";
@@ -41,8 +47,36 @@ export type TranscriptCheckpoint = {
 
 export type CheckpointOutcome = {
   at: string; // ISO timestamp
+  /** `step_cap` predates the token budget and is kept verbatim because it is
+   *  written into every checkpoint on disk; it means "ran into a run budget",
+   *  and `limit` says which one. */
   kind: "error" | "cancelled" | "step_cap" | "schema_violation" | "empty";
   errorKind?: ResumeErrorKind; // when kind === "error"
+  /** Which guard bound the loop, when kind === "step_cap". OPTIONAL because a
+   *  checkpoint written before budgets were denominated in tokens has no such
+   *  field — those still load, and their panel falls back to budget-neutral
+   *  copy rather than asserting a limit nobody recorded. */
+  limit?: BudgetLimit;
+  /** Why the provider ended the model's LAST step — the SDK's `finishReason`,
+   *  widened to string because this is persisted and the SDK's union can grow.
+   *
+   *  This is the field that answers "why did a 22-step run come back empty?",
+   *  and it was being computed and thrown away at every layer. The three
+   *  answers mean completely different things: `stop` is a model that chose to
+   *  end without writing anything (it wandered), `length` is an output cap hit
+   *  — plausibly during reasoning, which produces a step with thinking and no
+   *  text at all — and `tool-calls` is a loop cut off mid-investigation. Only
+   *  the last of those is what the "empty response? turn on JSON mode" copy
+   *  describes, so without this we were guessing in the user's face. */
+  finishReason?: string;
+  /** The output-token cap the failed attempt's requests asked for (TaskResult
+   *  `outputCap`). What makes a `finish: length` outcome self-describing: the
+   *  resume gate compares it against the model's known ceiling to decide
+   *  whether a retry with MORE output room even exists. Absent ⇒ the attempt
+   *  ran at the provider/SDK default — for catalogued models that default WAS
+   *  the ceiling (the pre-cap bug), and for uncatalogued ones nobody knows —
+   *  so absent correctly gates a truncation resume closed. */
+  outputCap?: number;
   message?: string;
 };
 
@@ -163,10 +197,35 @@ const CHECKPOINT_SURFACES = [
   "commit-review",
 ] as const;
 
+/** Whether a checkpoint kept a transcript a resume could actually replay.
+ *
+ *  Deliberately a separate question from "did the run take steps". They come
+ *  apart because {@link capPayloadSize} degrades an oversized payload to
+ *  `transcript: null` — and the runs that overflow it are precisely the long,
+ *  expensive ones a resume matters most for. `canOfferResume` needs both
+ *  (see {@link ResumeProgress}). */
+export function hasReplayableTranscript(
+  transcript: TranscriptCheckpoint | null | undefined,
+): boolean {
+  return (transcript?.messages?.length ?? 0) > 0;
+}
+
 /** Appended as a user message after the transcript when resuming a run that
- *  hit its step cap. */
+ *  stopped without a usable answer — out of budget, or done reading and empty
+ *  handed. Only ever appended when there IS a transcript: on its own it tells a
+ *  model that has read nothing to answer from nothing. */
 export const FINISH_NOW_NUDGE =
   "You have exhausted your investigation budget. Do not call any more tools. Using only what you have already read, produce the final answer now, in exactly the output format the instructions require.";
+
+/** The `finish: length` variant of the nudge above. FINISH_NOW_NUDGE diagnoses
+ *  the wrong problem for a truncated answer — the model didn't wander, its
+ *  answer overran the output cap — and telling it only "answer now" invites the
+ *  same overrun. This one names the real failure and pushes compactness; the
+ *  resume that carries it also retries at the model's output CEILING when one
+ *  is known (resumePolicy), so the retry differs from the failed attempt in
+ *  both instruction and room. */
+export const TRUNCATED_ANSWER_NUDGE =
+  "Your previous answer was cut off by the output-token limit before it finished. Do not call any more tools, and do not repeat long deliberation — write the complete final answer now, in exactly the output format the instructions require, keeping prose fields tight so the whole answer fits.";
 
 // ---- Wire row shapes (mirror Rust AiCheckpointRow / AiCheckpointListEntry) --
 
@@ -336,14 +395,46 @@ const WRITE_THROTTLE_MS = 500;
 /** Degrade an oversize payload before it goes over IPC rather than fail the
  *  write outright — losing the resume point entirely is worse than losing
  *  the transcript, since inputs-only still lets the run restart from
- *  scratch instead of vanishing. */
+ *  scratch instead of vanishing.
+ *
+ *  The ladder is `full → compacted → null`, and the middle rung is the whole
+ *  point. A 1M-token context is roughly 4 MB of JSON, so the run this ladder
+ *  exists for — one that filled its window and died — is EXACTLY the one that
+ *  lands over the cap. Going straight from full to null meant the only failure
+ *  that could ever produce an unresumable-by-size checkpoint was the failure
+ *  resume was built to recover from: all 24 steps of paid work, nulled by the
+ *  writer, before the UI ever got to ask whether it was resumable. Evicting old
+ *  tool-result content instead keeps the transcript — and the resume — alive at
+ *  a fraction of the bytes. */
 function capPayloadSize(payload: CheckpointPayload): CheckpointPayload {
   if (JSON.stringify(payload).length <= MAX_PAYLOAD_BYTES) return payload;
-  return {
+
+  // Both lower rungs trim the activity log: it's the UI's scrollback, not the
+  // resume point, and it's the cheapest thing here to give up.
+  const trimmed = {
     ...payload,
-    transcript: null,
     activity: payload.activity.slice(-100),
-  };
+  } as CheckpointPayload;
+
+  const messages = trimmed.transcript?.messages;
+  if (messages && messages.length > 0) {
+    const compacted = compactTranscript(messages, {
+      toolResultTokenBudget: CHECKPOINT_REPLAY_TOKEN_BUDGET,
+      minEvictableChars: REPLAY_MIN_EVICTABLE_CHARS,
+    });
+    // Same array back ⇒ there was nothing evictable, so the bulk is elsewhere
+    // (inputs, attachments) and re-measuring would only cost a second
+    // stringify of a multi-megabyte object.
+    if (compacted.messages !== messages) {
+      const next = {
+        ...trimmed,
+        transcript: { ...trimmed.transcript, messages: compacted.messages },
+      } as CheckpointPayload;
+      if (JSON.stringify(next).length <= MAX_PAYLOAD_BYTES) return next;
+    }
+  }
+
+  return { ...trimmed, transcript: null } as CheckpointPayload;
 }
 
 export function createCheckpointWriter(args: {

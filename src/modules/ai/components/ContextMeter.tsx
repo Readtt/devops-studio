@@ -4,8 +4,9 @@
 //
 //   • <ContextMeter>          — a passive chip (always shown) with a breakdown
 //                                tooltip. Turns amber → red as the payload grows.
-//   • <ContextGuardNotice>    — an inline warning at the "heavy"/"overflow" tier
-//                                with cost, a quality note, and remediations.
+//   • <ContextGuardNotice>    — an inline ADVISORY at the "heavy"/"overflow"
+//                                tier: cost, what it does to results, and the
+//                                ways out. Not a limit warning — the run works.
 //   • <ContextOverflowDialog> — a confirm shown only when a run would likely not
 //                                fit — the one case that actually wastes credits.
 //
@@ -36,6 +37,7 @@ import {
   computeContextUsage,
   formatCostUsd,
   formatTokens,
+  showsContextAdvisory,
   type ContextSegment,
   type ContextTier,
   type ContextUsage,
@@ -223,9 +225,15 @@ function ContextBreakdown({ usage }: { usage: ContextUsage }) {
 
 // --- Inline warning ---------------------------------------------------------
 
-/** Amber (heavy) / rose (overflow) banner with the cost + quality note and the
- *  concrete ways out. Render it near the run/send button; it returns null when
- *  the payload is comfortable or the guard preference is off. */
+/** Amber (heavy) / rose (overflow) note with the cost, what it does to results,
+ *  and the concrete ways out. Render it near the run/send button; it returns
+ *  null when the payload is comfortable or the guard preference is off.
+ *
+ *  Two of its three messages are ADVISORY — nothing is going to fail, results
+ *  just get less thorough — and they say so, because worded as limit warnings
+ *  they read as "you can't send this" and users trim work they didn't need to.
+ *  Only the `mayNotFit` branch describes an actual failure, and that one is also
+ *  the only one that interrupts (via ContextOverflowDialog). */
 export function ContextGuardNotice({
   usage,
   guardEnabled,
@@ -237,27 +245,27 @@ export function ContextGuardNotice({
   modelLabel?: string;
   className?: string;
 }) {
-  if (!guardEnabled || usage.tier === "comfortable") return null;
+  if (!showsContextAdvisory(usage, guardEnabled)) return null;
   const red = usage.tier === "overflow";
   const model = modelLabel ?? "this model";
   const cost =
     usage.estCostUsd !== null ? ` (~${formatCostUsd(usage.estCostUsd)})` : "";
 
   // Three messages: a physical won't-fit (rare, the only one that hard-fails),
-  // badly-degraded quality (red, advisory), and quality just starting to thin.
+  // results thinning badly (red, advisory), and results starting to thin.
   const title = usage.mayNotFit
     ? `May not fit ${model}`
     : red
-      ? "Quality likely degraded"
-      : "Quality starting to thin";
+      ? "Results will be noticeably thinner"
+      : "Results start to thin out past here";
   const lead = usage.mayNotFit
     ? "It could fail partway and waste the run."
     : red
-      ? `This much context makes ${model} miss requirements and dedupe poorly.`
-      : `Past ~${formatTokens(usage.qualityBudget)} tokens, ${model} spreads its attention thin — expect less thorough results.`;
+      ? `This will still run, but ${model} is spread thin enough to start missing requirements and duplicating cases.`
+      : `This will still run. Past ~${formatTokens(usage.qualityBudget)} tokens ${model} spreads its attention across everything you sent, so expect less thorough coverage — not a failure.`;
   const fix = usage.mayNotFit
     ? "Compact the spec, split it across a few runs, or pick a bigger-context model."
-    : "Trim to the spec and files that matter to stay in the green, or split it across a few runs.";
+    : "For sharper results, cut back to the spec and files that actually matter, or split the work across a few runs.";
 
   return (
     <div

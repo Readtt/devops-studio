@@ -95,9 +95,20 @@ import { Attachment01Icon } from "@hugeicons/core-free-icons";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { useChatStore } from "@/modules/ai/store/chatStore";
-import { getModel, RESUME_TOPUP_STEPS } from "@/modules/ai/config";
+import {
+  getModel,
+  RESUME_TOPUP_TOKENS,
+  SURFACE_STEP_CAPS,
+  SURFACE_TOKEN_BUDGETS,
+} from "@/modules/ai/config";
+import { budgetSpentPhrase, type BudgetLimit } from "@/modules/ai/lib/runBudget";
+import { CacheHitReadout } from "@/modules/ai/components/CacheHitReadout";
+import { RunBudgetReadout, useElapsed } from "./components/RunBudgetReadout";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
-import { canOfferResume as canOfferResumeShared } from "@/modules/ai/lib/errorClass";
+import {
+  canOfferResume as canOfferResumeShared,
+  resumeUnavailableReason,
+} from "@/modules/ai/lib/errorClass";
 import type { CheckpointOutcome } from "@/modules/ai/lib/checkpointApi";
 import {
   classifyProviderError,
@@ -107,6 +118,7 @@ import {
 } from "@/modules/ai/components/RunErrorPanel";
 import { relativeTime, ResumeCard } from "@/modules/ai/components/ResumeCard";
 import { StallHint } from "@/modules/ai/components/StallHint";
+import { BestPracticeNotice } from "@/modules/ai/components/BestPracticeNotice";
 import {
   ContextGuardNotice,
   ContextMeter,
@@ -114,7 +126,10 @@ import {
   useContextGuard,
 } from "@/modules/ai/components/ContextMeter";
 import { useContextBaseline } from "@/modules/ai/lib/useContextBaseline";
-import { estimateTokens } from "@/modules/ai/lib/contextEstimate";
+import {
+  estimateTokens,
+  formatTokens,
+} from "@/modules/ai/lib/contextEstimate";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { ArrowDown01Icon, ArrowRight01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 
@@ -124,14 +139,6 @@ function ellipsizeForTab(s: string, max = 36): string {
   const trimmed = s.trim();
   if (trimmed.length <= max) return trimmed;
   return `${trimmed.slice(0, max - 1)}…`;
-}
-
-/** Milliseconds → "m:ss", for the analyzing-phase elapsed timer. */
-function formatElapsed(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000);
-  const m = Math.floor(totalSeconds / 60);
-  const s = totalSeconds % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
 /** Resolve missing plan + suite names against the shared useTestPlans
@@ -249,7 +256,9 @@ function canOfferResume(
   errorMessage: string,
 ): boolean {
   if (!resumable) return false;
-  return canOfferResumeShared(resumable.outcome, errorMessage);
+  // `resumable` is already the ResumeProgress shape (stepsUsed + hasTranscript),
+  // which is what decides the answered-badly outcomes.
+  return canOfferResumeShared(resumable.outcome, errorMessage, resumable);
 }
 
 const STEPS = [
@@ -882,8 +891,10 @@ function InputPhase() {
     // full pane width.
     <div className="grid grid-cols-1 gap-4 @3xl:grid-cols-[1fr_280px]">
       <section className="flex min-w-0 flex-col gap-3">
-        {resumable &&
-        canOfferResume(resumable, resumable.outcome?.message ?? "") ? (
+        {/* The card renders for ANY checkpoint, resumable or not: Discard lives
+            inside it, so gating the whole card on canOfferResume left an
+            unresumable row both unreachable and undeletable. */}
+        {resumable ? (
           <ResumeCard
             title={
               resumable.outcome?.kind === "cancelled"
@@ -896,11 +907,24 @@ function InputPhase() {
                     resumable.stepsUsed === 1 ? "" : "s"
                   } in`
                 : null,
+              // What the interrupted attempt already bought, in the unit the
+              // run is rationed by — resuming replays it instead of paying for
+              // it twice, which is the whole pitch of the button below.
+              resumable.totalTokens ? `~${formatTokens(resumable.totalTokens)} tokens spent` : null,
               relativeTime(resumable.updatedAt),
             ]
               .filter(Boolean)
               .join(" · ")}
-            onResume={() => void resumeAnalyze()}
+            onResume={
+              canOfferResume(resumable, resumable.outcome?.message ?? "")
+                ? () => void resumeAnalyze()
+                : undefined
+            }
+            unresumableReason={
+              canOfferResume(resumable, resumable.outcome?.message ?? "")
+                ? undefined
+                : resumeUnavailableReason(resumable.outcome, resumable)
+            }
             onDiscard={discardCheckpoint}
           />
         ) : null}
@@ -1201,6 +1225,8 @@ function InputPhase() {
           </label>
         ) : null}
 
+        <BestPracticeNotice />
+
         <ContextGuardNotice
           usage={guard.usage}
           guardEnabled={guard.guardEnabled}
@@ -1488,6 +1514,13 @@ function AnalyzingPhase() {
   const attachments = useGenerationSession((s) => s.attachments);
   const stepsUsed = useGenerationSession((s) => s.stepsUsed);
   const stepCap = useGenerationSession((s) => s.stepCap);
+  const tokensUsed = useGenerationSession((s) => s.tokensUsed);
+  const tokenBudget = useGenerationSession((s) => s.tokenBudget);
+  const tokensInput = useGenerationSession((s) => s.tokensInput);
+  const tokensCached = useGenerationSession((s) => s.tokensCached);
+  const peakPromptTokens = useGenerationSession((s) => s.peakPromptTokens);
+  const overrideModelId = useGenerationSession((s) => s.overrideModelId);
+  const defaultModelId = useChatStore((s) => s.selectedModelId);
   const analyzeStartedAt = useGenerationSession((s) => s.analyzeStartedAt);
   // Long specs dominate the analyzing view — collapse anything past ~12
   // lines / 800 chars by default so the focus stays on the streaming log.
@@ -1507,24 +1540,18 @@ function AnalyzingPhase() {
     return () => window.removeEventListener("keydown", onKey);
   }, [cancel]);
 
-  // Live elapsed timer for the step counter below. Ticks off a wall-clock
-  // timestamp rather than a counting ref so it stays correct across a tab
-  // switch (no drift from throttled background timers).
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (analyzeStartedAt == null) return;
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [analyzeStartedAt]);
-  const elapsed =
-    analyzeStartedAt != null
-      ? formatElapsed(Math.max(0, now - analyzeStartedAt))
-      : "0:00";
+  const elapsed = useElapsed(analyzeStartedAt);
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-md border border-border/60 bg-card/40 px-3 py-2.5">
-        <div className="flex min-w-0 items-center gap-2">
+        {/* `basis-0 flex-1`, not just `min-w-0`. In a flex-WRAP container an
+            item's hypothetical size is its max-content width, and an item that
+            doesn't fit wraps rather than shrinks — so a long tool label pushed
+            the budget readout and Cancel onto a second line however aggressive
+            the `truncate` below it was. Zero basis makes this cell claim no
+            intrinsic width, so it absorbs the slack and truncates instead. */}
+        <div className="flex min-w-0 basis-0 flex-1 items-center gap-2">
           <Spinner className="size-4 shrink-0 text-primary" />
           <div className="min-w-0">
             <p className="text-[12px] font-medium">Analyzing requirements…</p>
@@ -1538,15 +1565,17 @@ function AnalyzingPhase() {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-3">
-          {stepCap != null ? (
-            // The step IN PROGRESS, not the completed count — "step 1/26"
-            // while the first model turn runs, instead of a "0/26" that reads
-            // as stuck. stepsUsed only ticks when a turn completes.
-            <span className="text-[11px] tabular-nums text-muted-foreground">
-              step {Math.min((stepsUsed ?? 0) + 1, stepCap)}/{stepCap} ·{" "}
-              {elapsed}
-            </span>
-          ) : null}
+          <RunBudgetReadout
+            tokensUsed={tokensUsed}
+            tokenBudget={tokenBudget}
+            tokensInput={tokensInput}
+            tokensCached={tokensCached}
+            peakPromptTokens={peakPromptTokens}
+            stepsUsed={stepsUsed}
+            stepCap={stepCap}
+            modelId={overrideModelId ?? defaultModelId}
+            elapsed={elapsed}
+          />
           <Tooltip>
             <TooltipTrigger asChild>
               <Button size="sm" variant="outline" onClick={cancel} className="shrink-0">
@@ -1760,6 +1789,14 @@ function ReviewPhase({
   const publish = useGenerationSession((s) => s.publish);
   const startNew = useGenerationSession((s) => s.startNew);
   const durationMs = useGenerationSession((s) => s.durationMs);
+  // The finished run's cost shape. Kept on screen after the run rather than
+  // only during it: a cache hit ratio is a comparison, and you can't compare
+  // two numbers that both vanish the moment the run lands.
+  const tokensInput = useGenerationSession((s) => s.tokensInput);
+  const tokensCached = useGenerationSession((s) => s.tokensCached);
+  const peakPromptTokens = useGenerationSession((s) => s.peakPromptTokens);
+  const overrideModelId = useGenerationSession((s) => s.overrideModelId);
+  const defaultModelId = useChatStore((s) => s.selectedModelId);
   const isRefining = useGenerationSession((s) => s.isRefining);
   const publishLog = useGenerationSession((s) => s.publishLog);
 
@@ -2152,7 +2189,22 @@ function ReviewPhase({
           {bugs.length > 0
             ? `, ${bugs.length} bug suggestion${bugs.length === 1 ? "" : "s"}`
             : ""}
-          {durationMs ? ` · ${(durationMs / 1000).toFixed(1)}s` : ""}.
+          {durationMs ? ` · ${(durationMs / 1000).toFixed(1)}s` : ""}
+          {/* The RAW count here, not the budget's cost-equivalent one: on the
+              landed run this reads as "how big was this", and it's also the
+              denominator of the chip beside it. */}
+          {tokensInput ? ` · ~${formatTokens(tokensInput)} tokens` : ""}.
+          {tokensInput ? (
+            <>
+              {" "}
+              <CacheHitReadout
+                inputTokens={tokensInput}
+                cacheReadTokens={tokensCached}
+                peakPromptTokens={peakPromptTokens}
+                modelId={overrideModelId ?? defaultModelId}
+              />
+            </>
+          ) : null}
           <span className="ml-2 hidden text-muted-foreground/70 @md:inline">
             j/k to nav cases &amp; bugs · space to toggle · p to publish
           </span>
@@ -2948,22 +3000,35 @@ function DonePhase() {
 function classifyError(
   message: string,
   errorPhase: SessionState["errorPhase"],
-  opts?: { outcomeKind?: CheckpointOutcome["kind"] | null },
+  opts?: {
+    outcomeKind?: CheckpointOutcome["kind"] | null;
+    /** Which budget guard bound the run. Absent on a checkpoint written before
+     *  budgets were denominated in tokens — the copy then names neither. */
+    outcomeLimit?: BudgetLimit | null;
+  },
 ): ErrorClass {
   // Structural signal, not string matching — the store already knows this
   // was a step-cap failure (CheckpointOutcome.kind), so checking it first
   // means the copy below can never be confused with a provider error that
   // happens to mention "steps" or "budget".
   if (opts?.outcomeKind === "step_cap") {
+    const spent = budgetSpentPhrase(
+      opts.outcomeLimit ?? undefined,
+      {
+        tokens: SURFACE_TOKEN_BUDGETS.generator,
+        steps: SURFACE_STEP_CAPS.generator,
+      },
+      formatTokens,
+    );
     return {
-      code: "GEN/03 · STEP-CAP",
-      title: "Hit the step budget before writing the batch",
+      code: "GEN/03 · BUDGET",
+      title: "Ran out of budget before writing the batch",
       icon: AiBrain01Icon,
       tone: "config",
-      why: "The analyzer spent its entire step budget reading the codebase — files, greps, related cases — and never reached the point of writing the final test-case batch.",
+      why: `The analyzer spent ${spent} reading the codebase — files, greps, related cases — and never reached the point of writing the final test-case batch. A run is rationed by the tokens it reads rather than by how many turns it takes, because one turn can read an entire file.`,
       steps: [
-        `Resume grants ${RESUME_TOPUP_STEPS} more steps and tells the model to finish with what it already read — usually enough to land the batch.`,
-        "If it caps again, trim the spec or attachments, or turn off code search for this run so there's less to read.",
+        `Resume adds ~${formatTokens(RESUME_TOPUP_TOKENS)} more tokens and tells the model to finish with what it already read — usually enough to land the batch. Nothing it already read is thrown away.`,
+        "If it runs out again, trim the spec or attachments, or turn off code search for this run so there's less to read.",
       ],
     };
   }
@@ -3056,6 +3121,7 @@ function ErrorPhase() {
   const startNew = useGenerationSession((s) => s.startNew);
   const resumable = useGenerationSession((s) => s.resumable);
   const resumeAnalyze = useGenerationSession((s) => s.resumeAnalyze);
+  const discardCheckpoint = useGenerationSession((s) => s.discardCheckpoint);
   // Is there anything in the form worth protecting from an accidental wipe?
   // Drives whether "Start over" confirms first — the user lost their spec to
   // an unguarded click here once, so a non-empty form gets a confirm step.
@@ -3078,14 +3144,26 @@ function ErrorPhase() {
     () =>
       classifyError(message, errorPhase, {
         outcomeKind: resumable?.outcome?.kind ?? null,
+        outcomeLimit: resumable?.outcome?.limit ?? null,
       }),
-    [message, errorPhase, resumable?.outcome?.kind],
+    [message, errorPhase, resumable?.outcome?.kind, resumable?.outcome?.limit],
   );
 
   return (
     <RunErrorPanel
       klass={klass}
-      metaLabel={errorPhase ? `phase: ${errorPhase}` : "phase: —"}
+      // The provider's own reason for ending the last step, when there is one.
+      // "22 steps in and nothing came back" is unanswerable without it; `stop`
+      // vs `length` vs `tool-calls` are three different failures wearing the
+      // same error card, and this is the only place the difference is visible.
+      metaLabel={[
+        errorPhase ? `phase: ${errorPhase}` : "phase: —",
+        resumable?.outcome?.finishReason
+          ? `finish: ${resumable.outcome.finishReason}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")}
       raw={message}
     >
       {/* Action row — primary remediation on the left (when there is one)
@@ -3104,6 +3182,21 @@ function ErrorPhase() {
               <TooltipContent side="top" className="max-w-[240px] text-[11px]">
                 Continues where it stopped with the original model — finished
                 steps aren't re-run.
+              </TooltipContent>
+            </Tooltip>
+          ) : resumable ? (
+            /* Unresumable, but the checkpoint is still on disk — and Discard
+               used to be reachable only through the Resume affordance. */
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button size="sm" variant="outline" onClick={discardCheckpoint}>
+                  Discard saved progress
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-[260px] text-[11px]">
+                {/* The reason only. "…and this deletes it" was a second
+                    sentence saying what a button labelled Discard does. */}
+                {resumeUnavailableReason(resumable.outcome, resumable)}
               </TooltipContent>
             </Tooltip>
           ) : null}

@@ -1,9 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
   canOfferResume,
+  canRaiseOutputCap,
   classifyForResume,
+  emptyAnswerCause,
   isResumableKind,
   matchErrorKind,
+  resumeUnavailableReason,
   STALL_MESSAGE,
   type ResumeErrorKind,
 } from "./errorClass";
@@ -97,9 +100,24 @@ describe("matchErrorKind", () => {
 });
 
 describe("isResumableKind", () => {
-  it("is false only for context-overflow", () => {
-    expect(isResumableKind("context-overflow")).toBe(false);
-    for (const kind of ["rate-limit", "no-credits", "stall", "abort", "unknown"] as ResumeErrorKind[]) {
+  // context-overflow used to be the one hard no, because resume replayed the
+  // transcript verbatim and a replay of a request that didn't fit cannot fit.
+  // resumeBudget / resumeArgs now compact before replaying — at a tightened
+  // budget precisely when the previous attempt overflowed — so the resumed
+  // request is a subset, and the carve-out that cost users their whole
+  // transcript is gone.
+  it("is true for every kind, overflow included", () => {
+    for (const kind of [
+      "rate-limit",
+      "overloaded",
+      "no-credits",
+      "network",
+      "stall",
+      "auth",
+      "context-overflow",
+      "abort",
+      "unknown",
+    ] as ResumeErrorKind[]) {
       expect(isResumableKind(kind)).toBe(true);
     }
   });
@@ -143,14 +161,9 @@ describe("classifyForResume", () => {
     expect(classifyForResume({}).kind).toBe("unknown");
   });
 
-  // A resumed request replays the transcript on top of the same prompt, so it is
-  // a strict superset of the one that already didn't fit — guaranteed to fail
-  // again. Every other kind clears once the user waits / tops up / fixes the key.
-  it("marks only context-overflow as non-resumable", () => {
-    expect(classifyForResume(new Error("maximum context length")).resumable).toBe(
-      false,
-    );
+  it("marks every classified failure resumable, overflow included", () => {
     for (const message of [
+      "maximum context length",
       "429",
       "529 overloaded",
       "402 insufficient credits",
@@ -177,26 +190,242 @@ describe("canOfferResume", () => {
     expect(canOfferResume({ kind: "cancelled" })).toBe(true);
   });
 
-  it("is false for empty and schema_violation — the model answered with nothing worth continuing", () => {
+  it("is false for empty and schema_violation with no progress recorded — an un-updated caller fails closed", () => {
     expect(canOfferResume({ kind: "empty" })).toBe(false);
     expect(canOfferResume({ kind: "schema_violation" })).toBe(false);
   });
 
+  // The second data loss, as a test. The observed failure: 22 steps, ~1.7M
+  // tokens of the codebase read into the transcript, an empty final message,
+  // and a card offering only Discard. The research is the expensive part and
+  // it is right there in the transcript.
+  it("offers a resume for an empty answer that came AFTER real work", () => {
+    expect(
+      canOfferResume({ kind: "empty" }, null, {
+        stepsUsed: 22,
+        hasTranscript: true,
+      }),
+    ).toBe(true);
+    expect(
+      canOfferResume({ kind: "schema_violation" }, null, {
+        stepsUsed: 22,
+        hasTranscript: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("refuses a genuinely empty run — nothing read, nothing transcribed", () => {
+    expect(
+      canOfferResume({ kind: "empty" }, null, {
+        stepsUsed: 0,
+        hasTranscript: false,
+      }),
+    ).toBe(false);
+  });
+
+  // The two halves are separate questions and both are load-bearing.
+  // capPayloadSize degrades an oversized payload to `transcript: null`, so a
+  // 22-step run can bank nothing — replaying that would send the finish-now
+  // nudge to a model that has read nothing at all.
+  it("needs BOTH steps and a surviving transcript", () => {
+    expect(
+      canOfferResume({ kind: "empty" }, null, {
+        stepsUsed: 22,
+        hasTranscript: false,
+      }),
+    ).toBe(false);
+    expect(
+      canOfferResume({ kind: "empty" }, null, {
+        stepsUsed: 0,
+        hasTranscript: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("leaves the other outcomes untouched by progress", () => {
+    const none = { stepsUsed: 0, hasTranscript: false };
+    expect(canOfferResume({ kind: "step_cap" }, null, none)).toBe(true);
+    expect(canOfferResume({ kind: "cancelled" }, null, none)).toBe(true);
+    expect(canOfferResume({ kind: "something-new" }, null, {
+      stepsUsed: 22,
+      hasTranscript: true,
+    })).toBe(false);
+  });
+
   it("for kind 'error', prefers the recorded errorKind over reclassifying", () => {
-    expect(canOfferResume({ kind: "error", errorKind: "context-overflow" })).toBe(
-      false,
-    );
     expect(canOfferResume({ kind: "error", errorKind: "rate-limit" })).toBe(true);
   });
 
-  it("falls back to matchErrorKind(errorMessage) when errorKind wasn't recorded", () => {
+  // The reported data loss, as a test: 24 steps of paid work, a run that
+  // overflowed, and a Resume button that never rendered.
+  it("offers a resume after a context overflow — the resumed request is compacted, not replayed verbatim", () => {
+    expect(canOfferResume({ kind: "error", errorKind: "context-overflow" })).toBe(
+      true,
+    );
     expect(
       canOfferResume({ kind: "error" }, "maximum context length exceeded"),
-    ).toBe(false);
+    ).toBe(true);
+  });
+
+  it("falls back to matchErrorKind(errorMessage) when errorKind wasn't recorded", () => {
     expect(canOfferResume({ kind: "error" }, "429 rate limit")).toBe(true);
+    // Still gated on the OUTCOME kind, which the message can't override.
+    expect(canOfferResume({ kind: "empty" }, "429 rate limit")).toBe(false);
   });
 
   it("is false for any other/unrecognised kind", () => {
     expect(canOfferResume({ kind: "something-new" })).toBe(false);
+  });
+});
+
+// The sentence a failed run leads with. It used to be one sentence for every
+// empty result — "turn on JSON mode" — which is true of a connector that can't
+// do structured output and false of the failure that prompted this: 22 steps of
+// codebase reading, then nothing.
+describe("emptyAnswerCause", () => {
+  it("names the output ceiling on a length finish, not JSON mode", () => {
+    const s = emptyAnswerCause("empty", "length");
+    expect(s).toMatch(/output-token ceiling/);
+    expect(s).not.toMatch(/JSON mode/);
+    // The reasoning-model trap: thinking spends the output budget, so the
+    // reply can be empty with nothing wrong at the connector at all.
+    expect(s).toMatch(/thinking/);
+  });
+
+  it("says the model wrote nothing on a stop finish, not that it can't format", () => {
+    const s = emptyAnswerCause("empty", "stop");
+    expect(s).toMatch(/without writing an answer/);
+    expect(s).not.toMatch(/JSON mode/);
+  });
+
+  it("keeps the connector wording where it was earned — no finish reason at all", () => {
+    expect(emptyAnswerCause("empty", undefined)).toMatch(/JSON mode/);
+    expect(emptyAnswerCause("empty", "tool-calls")).toMatch(/JSON mode/);
+  });
+
+  it("distinguishes an unreadable answer from a missing one at the same finish", () => {
+    expect(emptyAnswerCause("schema_violation", "length")).toMatch(
+      /cut off mid-structure/,
+    );
+    expect(emptyAnswerCause("empty", "length")).not.toMatch(
+      /cut off mid-structure/,
+    );
+  });
+});
+
+// The copy the discard-only card shows. It is only ever reached when
+// canOfferResume already said no, so each branch has to be true of the case
+// that actually got it there.
+describe("resumeUnavailableReason", () => {
+  it("blames the model when the model really did return nothing", () => {
+    const reason = resumeUnavailableReason({ kind: "empty" }, {
+      stepsUsed: 0,
+      hasTranscript: false,
+    });
+    expect(reason).toContain("returned nothing");
+  });
+
+  it("blames the transcript, not the model, when work was done but nothing survived", () => {
+    const reason = resumeUnavailableReason({ kind: "empty" }, {
+      stepsUsed: 22,
+      hasTranscript: false,
+    });
+    expect(reason).toContain("too large to save");
+    // The 22-step run DID return plenty; saying otherwise sends the user
+    // hunting for a model problem that isn't there.
+    expect(reason).not.toContain("returned nothing");
+  });
+
+  it("says the same for schema_violation", () => {
+    expect(
+      resumeUnavailableReason({ kind: "schema_violation" }, {
+        stepsUsed: 22,
+        hasTranscript: false,
+      }),
+    ).toContain("too large to save");
+  });
+});
+
+// `finish: length` is its own resume case: the answer overran the output cap,
+// so a replay at the SAME cap deterministically meets the same ceiling — the
+// button re-fails and bills the user twice. It is offered only when the retry
+// genuinely differs (a known ceiling above the cap the attempt ran at), and
+// refused with copy that names the real problem otherwise.
+describe("canOfferResume / canRaiseOutputCap — truncated (length) answers", () => {
+  const work = { stepsUsed: 22, hasTranscript: true };
+
+  it.each(["empty", "schema_violation"] as const)(
+    "refuses a length-cut %s even with banked work when no raise exists",
+    (kind) => {
+      expect(
+        canOfferResume({ kind, finishReason: "length" }, null, {
+          ...work,
+          outputCapRaisable: false,
+        }),
+      ).toBe(false);
+      // Absent flag fails closed, like the other progress fields.
+      expect(canOfferResume({ kind, finishReason: "length" }, null, work)).toBe(
+        false,
+      );
+    },
+  );
+
+  it("offers a length-cut answer when the output cap can be raised", () => {
+    expect(
+      canOfferResume({ kind: "empty", finishReason: "length" }, null, {
+        ...work,
+        outputCapRaisable: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("a raisable cap does not rescue a run with nothing banked", () => {
+    expect(
+      canOfferResume({ kind: "empty", finishReason: "length" }, null, {
+        stepsUsed: 0,
+        hasTranscript: false,
+        outputCapRaisable: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("non-length answered-badly outcomes keep the plain banked-work gate", () => {
+    expect(canOfferResume({ kind: "empty", finishReason: "stop" }, null, work)).toBe(
+      true,
+    );
+    expect(canOfferResume({ kind: "schema_violation" }, null, work)).toBe(true);
+  });
+
+  it("canRaiseOutputCap: known ceiling above the recorded cap, and only that", () => {
+    // Catalogued model, ran at the standing cap → the ceiling is headroom.
+    expect(canRaiseOutputCap("claude-sonnet-5", { outputCap: 64_000 })).toBe(true);
+    // Already ran at the ceiling (a resumed attempt) → nothing left to offer.
+    expect(canRaiseOutputCap("claude-sonnet-5", { outputCap: 128_000 })).toBe(
+      false,
+    );
+    // No recorded cap: the attempt ran at the provider/SDK default, which for
+    // catalogued models WAS the ceiling (the pre-cap bug) — fail closed.
+    expect(canRaiseOutputCap("claude-sonnet-5", {})).toBe(false);
+    expect(canRaiseOutputCap("claude-sonnet-5", null)).toBe(false);
+    // Uncatalogued model: no known ceiling to raise to.
+    expect(canRaiseOutputCap("some-local-model", { outputCap: 4_096 })).toBe(
+      false,
+    );
+  });
+
+  it("resumeUnavailableReason names the ceiling for a refused length outcome", () => {
+    const reason = resumeUnavailableReason(
+      { kind: "schema_violation", finishReason: "length" },
+      { stepsUsed: 22, hasTranscript: true },
+    );
+    expect(reason).toMatch(/output-token limit/);
+    expect(reason).not.toMatch(/returned nothing/);
+    // Without banked work the transcript-loss / generic copy still wins.
+    expect(
+      resumeUnavailableReason(
+        { kind: "empty", finishReason: "length" },
+        { stepsUsed: 0, hasTranscript: false },
+      ),
+    ).toMatch(/returned nothing/);
   });
 });

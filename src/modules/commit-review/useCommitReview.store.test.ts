@@ -50,7 +50,11 @@ import { gitStatusSummary } from "@/modules/git";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { DEFAULT_MODEL_ID } from "@/modules/ai/config";
-import { runCommitReview } from "./runCommitReview";
+import {
+  runCommitReview,
+  type RunCommitReviewInput,
+} from "./runCommitReview";
+import { canOfferResume } from "@/modules/ai/lib/errorClass";
 import {
   getCommitReview,
   saveCommitReview,
@@ -506,6 +510,8 @@ function seedResumable(tabId: number) {
     resumable: {
       stage: "verify",
       stepsUsed: 5,
+      hasTranscript: true,
+      outputCapRaisable: false,
       totalTokens: 100,
       updatedAt: "2026-01-01T00:02:00.000Z",
       outcome: { at: "2026-01-01T00:01:00.000Z", kind: "cancelled" },
@@ -540,6 +546,9 @@ describe("resume", () => {
       stage1Candidates: [cand("f1")],
       resumeMessages: [],
       stepCapNudge: false,
+      // Not an overflow, so the replay runs at the live eviction budget —
+      // which is a no-op for a transcript that fit fine.
+      afterOverflow: false,
     });
   });
 
@@ -685,7 +694,86 @@ describe("run — checkpoint lifecycle", () => {
     expect(candidatesFlush.transcript).toBeNull();
   });
 
-  it("a step-capped run is resumable; a badly-formatted answer is not", async () => {
+  // The candidates were already on disk; nothing ever put them on screen. A
+  // review stopped or killed during the verify pass rendered an activity log
+  // and read as a total loss of the investigate spend.
+  describe("stranded stage-1 findings", () => {
+    it("puts them in the slice as soon as they parse, before verify runs", async () => {
+      seedRunnable(1);
+      let seen: CandidateFinding[] | null = null;
+      mockRun.mockImplementation(async ({ onStage1Candidates }) => {
+        onStage1Candidates?.([cand("f1")]);
+        seen = slice(1).stage1Candidates;
+        return { ok: true, findings: [], durationMs: 4 };
+      });
+
+      await useCommitReview.getState().run(1);
+      expect(seen).toEqual([cand("f1")]);
+    });
+
+    it("keeps them when the run is cancelled mid-verify", async () => {
+      seedRunnable(1);
+      let reachedVerify!: () => void;
+      const atVerify = new Promise<void>((r) => (reachedVerify = r));
+      mockRun.mockImplementation(
+        ({ onStage1Candidates, signal }) =>
+          new Promise((_resolve, reject) => {
+            onStage1Candidates?.([cand("f1")]);
+            signal?.addEventListener("abort", () => reject(abortError()));
+            reachedVerify();
+          }),
+      );
+
+      const running = useCommitReview.getState().run(1);
+      await atVerify;
+      useCommitReview.getState().stop(1);
+      await running;
+
+      expect(slice(1).status).toBe("cancelled");
+      expect(slice(1).findings).toEqual([]);
+      expect(slice(1).stage1Candidates).toEqual([cand("f1")]);
+    });
+
+    it("clears them once the run produces real findings — they'd render twice", async () => {
+      seedRunnable(1);
+      mockRun.mockImplementation(async ({ onStage1Candidates }) => {
+        onStage1Candidates?.([cand("f1")]);
+        return {
+          ok: true,
+          findings: [{ ...cand("f1"), verified: true }],
+          durationMs: 4,
+        };
+      });
+      await useCommitReview.getState().run(1);
+      expect(slice(1).stage1Candidates).toBeNull();
+      expect(slice(1).findings).toHaveLength(1);
+    });
+
+    it("restores them when an interrupted run is adopted on a fresh mount", async () => {
+      mockListCheckpoints.mockResolvedValue([
+        {
+          runId: "crun-1",
+          cwd: "C:/repo",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:02:00.000Z",
+        },
+      ]);
+      mockGetCheckpoint.mockResolvedValue(checkpointRow());
+      mockGetRow.mockResolvedValue(null);
+
+      await useCommitReview.getState().ensure(1, "C:/repo");
+      expect(slice(1).stage1Candidates).toEqual([cand("f1")]);
+    });
+
+    it("drops them when the reviewed set changes — they were about other code", async () => {
+      seedRunnable(1);
+      seed(1, { stage1Candidates: [cand("f1")] });
+      await useCommitReview.getState().toggleCommit(1, "bbb");
+      expect(slice(1).stage1Candidates).toBeNull();
+    });
+  });
+
+  it("a step-capped run is resumable; a badly-formatted answer with nothing banked is not", async () => {
     seedRunnable(1);
     mockRun.mockResolvedValue({
       ok: false,
@@ -706,9 +794,104 @@ describe("run — checkpoint lifecycle", () => {
       durationMs: 9,
     });
     await useCommitReview.getState().run(2);
-    // The loop COMPLETED with a bad answer — resuming it would just re-fail.
-    expect(slice(2).resumable).toBeNull();
+    // No onCheckpoint fired, so nothing was banked — the checkpoint is still
+    // surfaced (it's the Discard handle) but the gate says no.
+    const r2 = slice(2).resumable;
+    expect(r2).not.toBeNull();
+    expect(canOfferResume(r2?.outcome, null, r2)).toBe(false);
     expect(slice(2).schemaViolationRaw).toBe("nonsense");
+  });
+
+  // The generator's data loss, in Commit Review's clothes: the investigate pass
+  // reads the diff and the code over many steps, then fumbles the JSON. The
+  // findings were nearly bought; re-running pays for the whole investigation
+  // again.
+  it("a badly-formatted answer AFTER a real investigation IS resumable", async () => {
+    seedRunnable(3);
+    mockRun.mockImplementation(async (input: RunCommitReviewInput) => {
+      input.onCheckpoint?.("investigate", {
+        messages: [{ role: "assistant", content: "I read the diff." }],
+        stepsUsed: 14,
+        usage: { inputTokens: 900_000, outputTokens: 400 },
+      });
+      return {
+        ok: false as const,
+        reason: "schema_violation" as const,
+        rawText: "nonsense",
+        durationMs: 9,
+      };
+    });
+
+    await useCommitReview.getState().run(3);
+
+    const r = slice(3).resumable;
+    expect(r?.stepsUsed).toBe(14);
+    expect(canOfferResume(r?.outcome, null, r)).toBe(true);
+    // …and the transcript it would replay is on disk, not deleted.
+    expect(lastFlushed()?.lastOutcome?.kind).toBe("schema_violation");
+    expect(writerLog.some((w) => w.kind === "delete")).toBe(false);
+  });
+
+  // A truncated review used to fail closed twice over: the outcome never
+  // recorded the cap the attempt ran at, and the resumable never carried the
+  // raisable flag — so `canOfferResume` had nothing to say yes on, and the user
+  // paid for a full investigation and got no Resume button. The generator has
+  // had this path since b7a2724.
+  it("offers a resume for an answer the OUTPUT cap cut off", async () => {
+    seedRunnable(4);
+    mockRun.mockImplementation(async (input: RunCommitReviewInput) => {
+      input.onCheckpoint?.("investigate", {
+        messages: [{ role: "assistant", content: "I read the diff." }],
+        stepsUsed: 9,
+        usage: { inputTokens: 500_000, outputTokens: 64_000 },
+      });
+      return {
+        ok: false as const,
+        reason: "schema_violation" as const,
+        finishReason: "length",
+        // Below claude-opus-5's 128k ceiling, so a raise genuinely exists.
+        outputCap: 64_000,
+        rawText: "{ half a finding",
+        durationMs: 9,
+      };
+    });
+
+    await useCommitReview.getState().run(4);
+
+    const r = slice(4).resumable;
+    expect(r?.outputCapRaisable).toBe(true);
+    expect(canOfferResume(r?.outcome, null, r)).toBe(true);
+    // The cap the failed attempt ran at is on the outcome, which is the only
+    // thing that lets the retry differ from it.
+    expect(lastFlushed()?.lastOutcome?.outputCap).toBe(64_000);
+    expect(lastFlushed()?.lastOutcome?.finishReason).toBe("length");
+  });
+
+  it("still refuses a truncation that already ran at the ceiling", async () => {
+    // Retrying at the same cap deterministically meets the same ceiling and
+    // bills the user twice for one failure.
+    seedRunnable(5);
+    mockRun.mockImplementation(async (input: RunCommitReviewInput) => {
+      input.onCheckpoint?.("investigate", {
+        messages: [{ role: "assistant", content: "I read the diff." }],
+        stepsUsed: 9,
+        usage: { inputTokens: 500_000 },
+      });
+      return {
+        ok: false as const,
+        reason: "schema_violation" as const,
+        finishReason: "length",
+        outputCap: 128_000,
+        rawText: "{ half a finding",
+        durationMs: 9,
+      };
+    });
+
+    await useCommitReview.getState().run(5);
+
+    const r = slice(5).resumable;
+    expect(r?.outputCapRaisable).toBe(false);
+    expect(canOfferResume(r?.outcome, null, r)).toBe(false);
   });
 
   it("supersedes the previous run's checkpoint when a re-run mints a new id", async () => {
@@ -737,6 +920,10 @@ describe("ensure — checkpoint probe", () => {
     expect(s.resumable).toEqual({
       stage: "verify",
       stepsUsed: 5,
+      hasTranscript: false,
+      // A cancel isn't a truncation, and this fixture's outcome carries no
+      // outputCap — the gate fails closed, as it must.
+      outputCapRaisable: false,
       totalTokens: 100,
       updatedAt: "2026-01-01T00:02:00.000Z",
       outcome: { at: "2026-01-01T00:01:00.000Z", kind: "cancelled" },
@@ -745,7 +932,7 @@ describe("ensure — checkpoint probe", () => {
     expect(s.activity.map((a) => a.id)).toEqual(["a1"]);
   });
 
-  it("offers no resume for a run that answered with garbage", async () => {
+  it("offers no resume for a run that answered with garbage having banked nothing", async () => {
     mockGetRow.mockResolvedValue(savedRow());
     mockGetCheckpoint.mockResolvedValue(
       checkpointRow(
@@ -760,7 +947,36 @@ describe("ensure — checkpoint probe", () => {
 
     await useCommitReview.getState().ensure(8, "C:/repo", "crun-1");
 
-    expect(slice(8).resumable).toBeNull();
+    // The checkpoint is surfaced so Discard is reachable; the gate is what
+    // withholds the Resume button.
+    const r = slice(8).resumable;
+    expect(r).not.toBeNull();
+    expect(canOfferResume(r?.outcome, null, r)).toBe(false);
+  });
+
+  it("DOES offer one when that garbage followed a real investigation", async () => {
+    mockGetRow.mockResolvedValue(savedRow());
+    mockGetCheckpoint.mockResolvedValue(
+      checkpointRow(
+        checkpoint({
+          transcript: {
+            messages: [{ role: "assistant", content: "I read the diff." }],
+            stepsUsed: 14,
+            usage: { totalTokens: 900_000 },
+          },
+          lastOutcome: {
+            at: "2026-01-01T00:01:00.000Z",
+            kind: "schema_violation",
+          },
+        }),
+      ),
+    );
+
+    await useCommitReview.getState().ensure(12, "C:/repo", "crun-1");
+
+    const r = slice(12).resumable;
+    expect(r?.hasTranscript).toBe(true);
+    expect(canOfferResume(r?.outcome, null, r)).toBe(true);
   });
 
   it("offers no resume for a review that FINISHED, orphaned checkpoint or not", async () => {
