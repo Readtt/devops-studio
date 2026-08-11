@@ -2933,6 +2933,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         skippedCases,
         keptBugs,
         skippedBugs,
+        // Read BEFORE this round mutates anything: `refineUndoSnapshot` is
+        // still the previous round's undo point, so it pairs with the draft as
+        // it stands right now to describe what that round actually changed.
+        refineRounds: s.refineRounds,
+        lastRefineSnapshot: s.refineUndoSnapshot,
         instruction: text,
       });
 
@@ -3406,6 +3411,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         attachments: s.attachments,
         cases: s.cases,
         bugs: s.bugs,
+        // The Ask sits beside the Refine dock in the same pane, so questions
+        // about the draft are routinely questions about a follow-up the user
+        // ran. It had the draft but no account of how the draft got that way.
+        refineRounds: s.refineRounds,
+        lastRefineSnapshot: s.refineUndoSnapshot,
         // Was `null`, which meant draft-chat couldn't answer "does this cover
         // the acceptance criteria?" for a requirement-bound suite. Normally the
         // body is whatever analyze() already resolved — the hydrate above only

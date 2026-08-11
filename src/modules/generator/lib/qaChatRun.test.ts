@@ -429,6 +429,30 @@ describe("draft-chat draft block — the draft ships its own evidence", () => {
     expect(ctx).not.toContain("x".repeat(1300));
   });
 
+  it("tells the model what the user already asked for in Refine", async () => {
+    // Reported: the review pane shows a follow-up history and a last-refine
+    // diff, and "none of this gets passed to the model".
+    await streamChatTask({
+      ...base,
+      cases: [kase()],
+      refineRounds: [
+        {
+          timestamp: "2026-08-10T10:00:00Z",
+          instruction: "drop the duplicate archive case",
+          activityLog: [],
+          beforeCases: 2,
+          afterCases: 1,
+          beforeBugs: 0,
+          afterBugs: 0,
+          outcome: "ok",
+        },
+      ] as never,
+    });
+    const ctx = streamTask.mock.calls[0][0].contextPrompt as string;
+    expect(ctx).toContain("REFINE HISTORY");
+    expect(ctx).toContain('"drop the duplicate archive case"');
+  });
+
   it("numbers cases and bugs from 1 and names the bug's parent case", async () => {
     await streamChatTask({ ...base, cases: [kase()], bugs: [bug()] });
     const ctx = streamTask.mock.calls[0][0].contextPrompt as string;

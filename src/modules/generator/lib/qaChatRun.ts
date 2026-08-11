@@ -27,6 +27,8 @@ import {
   type ContextBlock,
 } from "@/modules/ai/lib/contextBlocks";
 import type { ActivityEntry } from "./activityLog";
+import { renderRefineHistory } from "./refineDiff";
+import type { RefineRound } from "./history";
 
 /** One message in the review-pane chat thread. */
 export type ChatMessage = {
@@ -126,6 +128,12 @@ export type ChatRunInput = {
    *  caller — the chat just needs to know what cases / bugs exist. */
   cases: ReviewedCase[];
   bugs: ReviewedBug[];
+  /** Follow-ups already applied to this draft. The Ask and the Refine dock sit
+   *  in the same pane, so "why is case 3 like that?" is usually a question
+   *  about a round the user ran — unanswerable from the draft alone. */
+  refineRounds?: RefineRound[];
+  /** Undo point for the newest round; see RefinePromptInput.lastRefineSnapshot. */
+  lastRefineSnapshot?: { cases: ReviewedCase[]; bugs: ReviewedBug[] } | null;
   targetContext?: TargetContext | null;
   /** Prior messages, oldest-first. Stays small in practice (the popover
    *  panel doesn't scroll past ~50 turns); we pass them verbatim so the
@@ -291,6 +299,12 @@ function buildChatContext(input: ChatRunInput): string {
   const changesetsBlock = renderChangesetsBlock(input.changesets);
   const draftBlock = renderDraftBlock(input.cases, input.bugs);
   const contextText = formatContextBlocks(input.contextBlocks ?? []);
+  const historyBlock = renderRefineHistory({
+    rounds: input.refineRounds ?? [],
+    lastSnapshot: input.lastRefineSnapshot,
+    cases: input.cases,
+    bugs: input.bugs,
+  });
 
   return [
     targetBlock,
@@ -299,6 +313,8 @@ function buildChatContext(input: ChatRunInput): string {
     "",
     changesetsBlock || null,
     changesetsBlock ? "" : null,
+    historyBlock || null,
+    historyBlock ? "" : null,
     "CURRENT DRAFT (what the user is looking at right now):",
     draftBlock,
     contextText ? "" : null,
