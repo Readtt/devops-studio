@@ -412,9 +412,13 @@ describe("grep · result shaping", () => {
     ]);
   });
 
-  // filesOnly is an option, not a mode change: what Rust is asked for — and
-  // in particular the default maxResults — must be identical either way.
-  it("leaves the default search mode and maxResults alone", async () => {
+  // `maxResults` bounds matching LINES on the Rust side, and filesOnly then
+  // collapses those lines to one row per file — so the file list was bounded by
+  // line hits, not by files. A symbol with 80 references inside one hot file
+  // filled the default cap inside that file and came back as "1 file matched"
+  // for something used across twenty. The broad scan runs at the Rust hard
+  // ceiling instead; its answer is small however many lines it walked.
+  it("scans wide for filesOnly, where the cap counts lines but the answer counts files", async () => {
     invoke.mockResolvedValue({ hits: [], truncated: false, files_scanned: 5 });
     await callTool("grep", { pattern: "x", filesOnly: true });
     expect(lastPayload()).toEqual({
@@ -422,8 +426,18 @@ describe("grep · result shaping", () => {
       root: ROOT,
       glob: null,
       caseInsensitive: false,
-      maxResults: 80,
+      maxResults: 2000,
     });
+  });
+
+  // The line-returning mode is unchanged: there the cap really is the size of
+  // what comes back, so the caller's number (and the default) still rule.
+  it("leaves the line-returning search on the caller's maxResults", async () => {
+    invoke.mockResolvedValue({ hits: [], truncated: false, files_scanned: 5 });
+    await callTool("grep", { pattern: "x" });
+    expect((lastPayload() as { maxResults: number }).maxResults).toBe(80);
+    await callTool("grep", { pattern: "x", maxResults: 30 });
+    expect((lastPayload() as { maxResults: number }).maxResults).toBe(30);
   });
 });
 

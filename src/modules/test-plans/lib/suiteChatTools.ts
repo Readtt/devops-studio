@@ -47,6 +47,12 @@ export const MESSAGE_RESULT_CAP = 200_000;
  *  exists. */
 const GREP_LINE_CAP = 160;
 
+/** Line budget a `filesOnly` grep walks before Rust stops appending. Matches
+ *  `HARD_MAX_RESULTS` in src-tauri/src/modules/fs/grep.rs, which clamps
+ *  anything larger — this mode returns one row per FILE, so a bigger line
+ *  budget buys coverage without growing the answer. */
+const FILES_ONLY_SCAN_CAP = 2000;
+
 /** Build the set of read-only fs tools the BYOK suite-chat runner can
  *  hand to the model. Returns `undefined` when no source dir is set — the
  *  caller should fall back to a tools-less run in that case. */
@@ -192,7 +198,7 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
           .boolean()
           .optional()
           .describe(
-            "Return only which files matched (path + match count), no line text. Use for a broad 'where does this live' scan; then grep again narrowed, or read_file. Still bounded by `maxResults`, so raise it when scanning wide. Default false.",
+            "Return only which files matched (path + match count), no line text. Use for a broad 'where does this live' scan; then grep again narrowed, or read_file. Default false.",
           ),
       }),
       execute: async ({ pattern, glob, caseInsensitive, maxResults, filesOnly }) => {
@@ -202,7 +208,19 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
             root,
             glob: glob ?? null,
             caseInsensitive: caseInsensitive ?? false,
-            maxResults: maxResults ?? 80,
+            // `maxResults` counts matching LINES on the Rust side, and
+            // `filesOnly` then collapses those lines to one row per file — so
+            // the file list a broad scan returns was bounded by line hits, not
+            // by files. A symbol with 80 references inside one hot file filled
+            // the default cap inside that file and came back as "1 file
+            // matched" for something used in twenty. Scanning wide is the whole
+            // point of this mode and its result is small however many lines it
+            // walked, so it runs at the Rust hard ceiling instead. The
+            // line-returning mode keeps the caller's cap: there the number
+            // really is the size of what comes back.
+            maxResults: filesOnly
+              ? FILES_ONLY_SCAN_CAP
+              : (maxResults ?? 80),
             // workspace defaults to Local on the Rust side; we don't pass
             // one because the WorkspaceEnv shape is internal.
           });
