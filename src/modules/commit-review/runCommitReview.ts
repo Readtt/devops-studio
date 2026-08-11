@@ -17,7 +17,10 @@ import {
 } from "@/modules/ai/lib/taskRunner";
 // The nudge text only — the engine never reads or writes a checkpoint itself;
 // it reports through callbacks and the store owns persistence.
-import { FINISH_NOW_NUDGE } from "@/modules/ai/lib/checkpointApi";
+import {
+  FINISH_NOW_NUDGE,
+  TRUNCATED_ANSWER_NUDGE,
+} from "@/modules/ai/lib/checkpointApi";
 import { compactForResume } from "@/modules/ai/lib/compactTranscript";
 import { focusPathsFromCandidates, focusPatchOnFiles } from "./verifyFocus";
 import type { ModelMessage } from "ai";
@@ -61,6 +64,14 @@ export type CommitReviewResume = {
    *  transcript at a much tighter eviction budget so the resumed request is a
    *  SUBSET of the one that overflowed rather than a superset of it. */
   afterOverflow?: boolean;
+  /** The previous attempt's answer was cut off by the OUTPUT cap
+   *  (`finish: length`), and a higher ceiling exists to retry at. Swaps
+   *  FINISH_NOW_NUDGE — which diagnoses a wandering run, not a truncated one,
+   *  and invites the same overrun — for TRUNCATED_ANSWER_NUDGE, and runs the
+   *  retry AT the ceiling. Without both, the retry is the failed attempt again
+   *  and bills the user twice for one failure, which is why the resume was
+   *  refused outright until now. Same treatment b7a2724 gave the generator. */
+  raisedOutputCap?: number;
 };
 
 export type RunCommitReviewInput = {
@@ -106,6 +117,11 @@ export type RunCommitReviewResult =
        *  `stop` (wrote nothing), `tool-calls` (cut off mid-read). The three
        *  need different sentences; see `emptyAnswerCause`. */
       finishReason?: string;
+      /** The output cap this attempt's requests actually asked for. What a
+       *  `finish: length` resume needs to tell whether a HIGHER cap even
+       *  exists to retry at — `canRaiseOutputCap` fails closed without it, so
+       *  dropping it here is what made every truncated review unresumable. */
+      outputCap?: number;
       rawText: string;
       durationMs: number;
     };
@@ -170,6 +186,7 @@ export async function runCommitReview(
     maxSteps: number;
     tokenBudget: number;
     resumeMessages: ModelMessage[] | undefined;
+    maxOutputTokens?: number;
   } => {
     const full = { maxSteps: surfaceCap, tokenBudget: surfaceTokens };
     if (!resume || resume.stage !== stage) {
@@ -181,13 +198,18 @@ export async function runCommitReview(
     if (!resume.stepCapNudge) {
       return { ...full, resumeMessages: prior };
     }
+    const truncated = resume.raisedOutputCap !== undefined;
     return {
       maxSteps: surfaceCap,
       tokenBudget: RESUME_TOPUP_TOKENS,
       resumeMessages: [
         ...(prior ?? []),
-        { role: "user", content: FINISH_NOW_NUDGE },
+        {
+          role: "user",
+          content: truncated ? TRUNCATED_ANSWER_NUDGE : FINISH_NOW_NUDGE,
+        },
       ],
+      ...(truncated ? { maxOutputTokens: resume.raisedOutputCap } : {}),
     };
   };
 
@@ -216,6 +238,9 @@ export async function runCommitReview(
       tools: tools ?? null,
       temperature: 0,
       maxSteps: stage1Args.maxSteps,
+      ...(stage1Args.maxOutputTokens !== undefined
+        ? { maxOutputTokens: stage1Args.maxOutputTokens }
+        : {}),
       tokenBudget: stage1Args.tokenBudget,
       resumeMessages: stage1Args.resumeMessages,
       schema: Stage1Schema,
@@ -241,6 +266,9 @@ export async function runCommitReview(
           reason: stage1.reason,
           ...(stage1.limit ? { limit: stage1.limit } : {}),
           ...(stage1.finishReason ? { finishReason: stage1.finishReason } : {}),
+          ...(stage1.outputCap !== undefined
+            ? { outputCap: stage1.outputCap }
+            : {}),
           rawText: stage1.text,
           durationMs: stage1.durationMs,
         };
@@ -286,6 +314,9 @@ export async function runCommitReview(
       tools: tools ?? null,
       temperature: 0,
       maxSteps: stage2Args.maxSteps,
+      ...(stage2Args.maxOutputTokens !== undefined
+        ? { maxOutputTokens: stage2Args.maxOutputTokens }
+        : {}),
       tokenBudget: stage2Args.tokenBudget,
       resumeMessages: stage2Args.resumeMessages,
       schema: Stage2Schema,

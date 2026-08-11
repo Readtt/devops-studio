@@ -23,7 +23,10 @@ import {
   SURFACE_STEP_CAPS,
   SURFACE_TOKEN_BUDGETS,
 } from "@/modules/ai/config";
-import { FINISH_NOW_NUDGE } from "@/modules/ai/lib/checkpointApi";
+import {
+  FINISH_NOW_NUDGE,
+  TRUNCATED_ANSWER_NUDGE,
+} from "@/modules/ai/lib/checkpointApi";
 import type { CandidateFinding } from "./schema";
 import type { CommitDiff } from "./gitCommitApi";
 
@@ -305,6 +308,79 @@ describe("runCommitReview — resume", () => {
     expect(args.resumeMessages).toEqual([
       { role: "user", content: FINISH_NOW_NUDGE },
     ]);
+  });
+
+  // A truncated answer is NOT a wandering one: FINISH_NOW_NUDGE tells it to
+  // stop reading, which it wasn't doing, and "answer now" at the same output
+  // cap deterministically meets the same ceiling. The generator got both halves
+  // of this in b7a2724; Commit Review failed closed instead, so a truncated
+  // review offered no resume at all.
+  it("a truncated resume retries at the raised ceiling with the truncation nudge", async () => {
+    mockStreamTask.mockResolvedValue(stage1Ok([]));
+
+    await runCommitReview(
+      input({
+        resume: {
+          stage: "investigate",
+          stage1Candidates: null,
+          resumeMessages: priorMessages,
+          stepCapNudge: true,
+          raisedOutputCap: 128_000,
+        },
+      }),
+    );
+
+    const args = mockStreamTask.mock.calls[0][0];
+    const resumed = args.resumeMessages ?? [];
+    expect(args.maxOutputTokens).toBe(128_000);
+    expect(resumed[resumed.length - 1]).toEqual({
+      role: "user",
+      content: TRUNCATED_ANSWER_NUDGE,
+    });
+    // Still a finish pass in every other respect.
+    expect(args.tokenBudget).toBe(RESUME_TOPUP_TOKENS);
+    expect(resumed[0]).toEqual(priorMessages[0]);
+  });
+
+  it("carries the raised ceiling into a resumed VERIFY stage too", async () => {
+    mockRunTask.mockResolvedValue(stage2Ok([]));
+
+    await runCommitReview(
+      input({
+        resume: {
+          stage: "verify",
+          stage1Candidates: [cand("f1")],
+          resumeMessages: null,
+          stepCapNudge: true,
+          raisedOutputCap: 64_000,
+        },
+      }),
+    );
+
+    const args = mockRunTask.mock.calls[0][0];
+    expect(args.maxOutputTokens).toBe(64_000);
+    expect(args.resumeMessages).toEqual([
+      { role: "user", content: TRUNCATED_ANSWER_NUDGE },
+    ]);
+  });
+
+  it("sends no output cap when the stop wasn't a truncation", async () => {
+    // Omitted, not zero: absent means "use the per-model config cap", which is
+    // what every non-truncation resume should keep running at.
+    mockStreamTask.mockResolvedValue(stage1Ok([]));
+
+    await runCommitReview(
+      input({
+        resume: {
+          stage: "investigate",
+          stage1Candidates: null,
+          resumeMessages: priorMessages,
+          stepCapNudge: true,
+        },
+      }),
+    );
+
+    expect(mockStreamTask.mock.calls[0][0].maxOutputTokens).toBeUndefined();
   });
 
   it("a fresh run passes no transcript and keeps both surface caps", async () => {

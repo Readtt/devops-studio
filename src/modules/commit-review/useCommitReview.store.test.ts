@@ -511,6 +511,7 @@ function seedResumable(tabId: number) {
       stage: "verify",
       stepsUsed: 5,
       hasTranscript: true,
+      outputCapRaisable: false,
       totalTokens: 100,
       updatedAt: "2026-01-01T00:02:00.000Z",
       outcome: { at: "2026-01-01T00:01:00.000Z", kind: "cancelled" },
@@ -831,6 +832,68 @@ describe("run — checkpoint lifecycle", () => {
     expect(writerLog.some((w) => w.kind === "delete")).toBe(false);
   });
 
+  // A truncated review used to fail closed twice over: the outcome never
+  // recorded the cap the attempt ran at, and the resumable never carried the
+  // raisable flag — so `canOfferResume` had nothing to say yes on, and the user
+  // paid for a full investigation and got no Resume button. The generator has
+  // had this path since b7a2724.
+  it("offers a resume for an answer the OUTPUT cap cut off", async () => {
+    seedRunnable(4);
+    mockRun.mockImplementation(async (input: RunCommitReviewInput) => {
+      input.onCheckpoint?.("investigate", {
+        messages: [{ role: "assistant", content: "I read the diff." }],
+        stepsUsed: 9,
+        usage: { inputTokens: 500_000, outputTokens: 64_000 },
+      });
+      return {
+        ok: false as const,
+        reason: "schema_violation" as const,
+        finishReason: "length",
+        // Below claude-opus-5's 128k ceiling, so a raise genuinely exists.
+        outputCap: 64_000,
+        rawText: "{ half a finding",
+        durationMs: 9,
+      };
+    });
+
+    await useCommitReview.getState().run(4);
+
+    const r = slice(4).resumable;
+    expect(r?.outputCapRaisable).toBe(true);
+    expect(canOfferResume(r?.outcome, null, r)).toBe(true);
+    // The cap the failed attempt ran at is on the outcome, which is the only
+    // thing that lets the retry differ from it.
+    expect(lastFlushed()?.lastOutcome?.outputCap).toBe(64_000);
+    expect(lastFlushed()?.lastOutcome?.finishReason).toBe("length");
+  });
+
+  it("still refuses a truncation that already ran at the ceiling", async () => {
+    // Retrying at the same cap deterministically meets the same ceiling and
+    // bills the user twice for one failure.
+    seedRunnable(5);
+    mockRun.mockImplementation(async (input: RunCommitReviewInput) => {
+      input.onCheckpoint?.("investigate", {
+        messages: [{ role: "assistant", content: "I read the diff." }],
+        stepsUsed: 9,
+        usage: { inputTokens: 500_000 },
+      });
+      return {
+        ok: false as const,
+        reason: "schema_violation" as const,
+        finishReason: "length",
+        outputCap: 128_000,
+        rawText: "{ half a finding",
+        durationMs: 9,
+      };
+    });
+
+    await useCommitReview.getState().run(5);
+
+    const r = slice(5).resumable;
+    expect(r?.outputCapRaisable).toBe(false);
+    expect(canOfferResume(r?.outcome, null, r)).toBe(false);
+  });
+
   it("supersedes the previous run's checkpoint when a re-run mints a new id", async () => {
     seedRunnable(1);
     seed(1, {
@@ -858,6 +921,9 @@ describe("ensure — checkpoint probe", () => {
       stage: "verify",
       stepsUsed: 5,
       hasTranscript: false,
+      // A cancel isn't a truncation, and this fixture's outcome carries no
+      // outputCap — the gate fails closed, as it must.
+      outputCapRaisable: false,
       totalTokens: 100,
       updatedAt: "2026-01-01T00:02:00.000Z",
       outcome: { at: "2026-01-01T00:01:00.000Z", kind: "cancelled" },

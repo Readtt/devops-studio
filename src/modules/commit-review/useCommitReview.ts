@@ -5,6 +5,7 @@
 
 import { create } from "zustand";
 import {
+  getModelOutputCeiling,
   isKnownModelId,
   RESUME_TOPUP_TOKENS,
   SURFACE_STEP_CAPS,
@@ -48,6 +49,7 @@ import {
 } from "@/modules/ai/lib/checkpointApi";
 import {
   canOfferResume,
+  canRaiseOutputCap,
   classifyForResume,
   emptyAnswerCause,
 } from "@/modules/ai/lib/errorClass";
@@ -150,6 +152,11 @@ export type CommitReviewSlice = {
     stepsUsed: number;
     /** Whether the checkpoint kept a transcript worth replaying. */
     hasTranscript: boolean;
+    /** Whether a `finish: length` failure has anywhere to go on retry — a known
+     *  output ceiling above the cap the attempt ran at. `canOfferResume` fails
+     *  CLOSED without it, which is why a truncated review offered no resume at
+     *  all while the generator, which passes it, offered one. */
+    outputCapRaisable: boolean;
     totalTokens: number | null;
     updatedAt: string;
     outcome: CheckpointOutcome | null;
@@ -297,6 +304,7 @@ function resumableFrom(
     stage: payload.stage,
     stepsUsed: payload.transcript?.stepsUsed ?? 0,
     hasTranscript: hasReplayableTranscript(payload.transcript),
+    outputCapRaisable: canRaiseOutputCap(payload.modelId, outcome),
     totalTokens: payload.transcript?.usage?.totalTokens ?? null,
     updatedAt: outcome.at,
     outcome,
@@ -342,6 +350,11 @@ async function settleResult(
       kind: result.reason,
       ...(result.limit ? { limit: result.limit } : {}),
       ...(result.finishReason ? { finishReason: result.finishReason } : {}),
+      // Persisted so a later `finish: length` resume can compare what the
+      // attempt ran at against the model's ceiling. The generator has recorded
+      // this since d9dca77; Commit Review dropped it, which is the other half
+      // of why its truncation resume could only ever fail closed.
+      ...(result.outputCap !== undefined ? { outputCap: result.outputCap } : {}),
     };
     const payload = cp.buildPayload(outcome);
     const resumable = resumableFrom(payload, outcome);
@@ -478,6 +491,7 @@ async function adoptInterruptedRun(
       !canOfferResume(p.lastOutcome, p.lastOutcome?.message ?? null, {
         stepsUsed: p.transcript?.stepsUsed ?? 0,
         hasTranscript: hasReplayableTranscript(p.transcript),
+        outputCapRaisable: canRaiseOutputCap(p.modelId, p.lastOutcome),
       })
     ) {
       continue;
@@ -555,6 +569,7 @@ async function adoptInterruptedRun(
         stage: p.stage,
         stepsUsed: p.transcript?.stepsUsed ?? 0,
         hasTranscript: hasReplayableTranscript(p.transcript),
+        outputCapRaisable: canRaiseOutputCap(p.modelId, p.lastOutcome),
         totalTokens: p.transcript?.usage?.totalTokens ?? null,
         updatedAt: cp.updatedAt,
         outcome: p.lastOutcome,
@@ -706,6 +721,10 @@ export const useCommitReview = create<State>((set, get) => ({
                   stage: p.stage,
                   stepsUsed: p.transcript?.stepsUsed ?? 0,
                   hasTranscript: hasReplayableTranscript(p.transcript),
+                  outputCapRaisable: canRaiseOutputCap(
+                    p.modelId,
+                    p.lastOutcome,
+                  ),
                   totalTokens: p.transcript?.usage?.totalTokens ?? null,
                   updatedAt: cp.updatedAt,
                   outcome: p.lastOutcome,
@@ -1394,6 +1413,14 @@ export const useCommitReview = create<State>((set, get) => ({
             hasReplayableTranscript(payload.transcript),
           ),
           afterOverflow: diedOfContextOverflow(payload.lastOutcome),
+          // A truncated answer resumes at the model's output CEILING with the
+          // truncation nudge, or — when no higher ceiling is known — not at
+          // all: canOfferResume already refused it, and this keeps the two
+          // gates reading the same field.
+          ...(payload.lastOutcome?.finishReason === "length" &&
+          canRaiseOutputCap(payload.modelId, payload.lastOutcome)
+            ? { raisedOutputCap: getModelOutputCeiling(payload.modelId) }
+            : {}),
         },
         signal: abort.signal,
       });
