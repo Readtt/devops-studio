@@ -47,7 +47,7 @@ Do not substitute role-suggesting names in code, comments, prompts, or UI copy.
 
 | # | Phase | File | Status | Commit |
 |---|---|---|---|---|
-| 1 | Custom provider: model dropdown + real Test | `01-custom-provider.md` | ☑ | |
+| 1 | Custom provider: model dropdown + real Test | `01-custom-provider.md` | ☑ | `077d946` |
 | 2 | Source-link format fixes | `02-source-link-format.md` | ☐ | |
 | 3 | Repo registry + compatibility shim | `03-repo-registry.md` | ☐ | |
 | 4 | Mechanical sweep: delete `sourceRoot` | `04-sourceroot-sweep.md` | ☐ | |
