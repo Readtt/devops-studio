@@ -55,7 +55,7 @@ import {
   type ExecutionOutcome,
   type TeamMember,
 } from "@/modules/ado";
-import { usePrimaryRepoGitInfo } from "@/modules/git";
+import { useReposGitInfo, type GitRepoInfo } from "@/modules/git";
 import {
   AiBrain01Icon,
   AlertCircleIcon,
@@ -131,6 +131,8 @@ import {
   formatTokens,
 } from "@/modules/ai/lib/contextEstimate";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { RepoScopeChips } from "@/components/RepoScopeChips";
+import { scopedRepos } from "@/modules/ai/lib/repoScope";
 import { ArrowDown01Icon, ArrowRight01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 
 /** Tab title trimmer — keeps the cap below the visible width budget so
@@ -843,7 +845,21 @@ function InputPhase() {
     (targetSuite === null || suiteCapabilities(targetSuite).canAddCases);
   const planName = plans.find((p) => p.id === planId)?.name ?? null;
   const suiteName = suites.find((s) => s.id === suiteId)?.name ?? null;
-  const git = usePrimaryRepoGitInfo();
+  // Every configured repo's branch, not just the first one's: at one repo this
+  // is exactly what the form always showed, and beyond one the preview has to
+  // name each repo's own branch — that's what publish now stamps.
+  const reposGit = useReposGitInfo();
+  const repos = usePreferencesStore((s) => s.repos);
+  const codeSearchEnabled = usePreferencesStore((s) => s.codeSearchEnabled);
+  const repoScope = useGenerationSession((s) => s.repoScope);
+  const toggleRepoScope = useGenerationSession((s) => s.toggleRepoScope);
+  const inScope = useMemo(
+    () => scopedRepos(repos, repoScope),
+    [repos, repoScope],
+  );
+  // The switch only means something where there's a branch to stamp.
+  const anyBranch = inScope.some((r) => reposGit.get(r.id)?.branch);
+  const soleBranch = repos.length === 1 ? reposGit.get(repos[0].id)?.branch : null;
 
   // Context guardrail. Everything the analyze run will actually send — the spec,
   // text attachments, attached work items, images, and the always-injected
@@ -1184,7 +1200,18 @@ function InputPhase() {
           <Switch checked={suggestBugs} onCheckedChange={setSuggestBugs} />
         </label>
 
-        {git.branch ? (
+        {/* Which repos this run may read. Only worth a control once there's a
+            choice to make — at one repo the whole row would be noise, and with
+            code search off in Settings nothing reads source at all. */}
+        {codeSearchEnabled && repos.length > 1 ? (
+          <RepoScopeChips
+            repos={repos}
+            scope={repoScope}
+            onToggle={toggleRepoScope}
+          />
+        ) : null}
+
+        {anyBranch ? (
           <label
             className={cn(
               "flex cursor-pointer items-start gap-2.5 rounded-md border px-3 py-2 transition-colors hover:bg-foreground/[0.03]",
@@ -1209,14 +1236,22 @@ function InputPhase() {
                     size={9}
                     strokeWidth={2}
                   />
-                  {git.branch}
+                  {soleBranch ?? "per repo"}
                 </span>
               </div>
               <p className="mt-0.5 text-[10.5px] leading-relaxed text-muted-foreground">
                 Stamps{" "}
-                <span className="font-mono text-foreground/85">
-                  {git.branch}
-                </span>{" "}
+                {/* Mono is for the literal branch name. The multi-repo phrase
+                    is prose — setting it in mono reads as a ref that isn't. */}
+                {soleBranch ? (
+                  <span className="font-mono text-foreground/85">
+                    {soleBranch}
+                  </span>
+                ) : (
+                  <span className="text-foreground/85">
+                    each repo&rsquo;s own branch
+                  </span>
+                )}{" "}
                 onto published cases&rsquo; code links and the commit onto bug
                 code refs, so links point at the code you generated from. Off =
                 no source provenance.
@@ -1473,23 +1508,39 @@ function InputPhase() {
               )
             }
           />
-          <PreviewRow
-            label="Branch"
-            value={
-              git.isRepo && git.branch ? (
-                <span className="inline-flex items-center gap-1">
-                  <HugeiconsIcon
-                    icon={GitBranchIcon}
-                    size={10}
-                    strokeWidth={1.75}
-                  />
-                  <span className="font-mono">{git.branch}</span>
-                </span>
-              ) : (
-                "no source dir"
-              )
-            }
-          />
+          {/* One row per repo this run will read — each stamps its own branch
+              onto the links that cite it. At one repo this is the single
+              "Branch" row the form has always had. */}
+          {inScope.length === 0 ? (
+            <PreviewRow
+              label="Branch"
+              value={
+                repos.length === 0 ? "no repos configured" : "no repos in scope"
+              }
+            />
+          ) : (
+            <>
+              {inScope.slice(0, BRANCH_PREVIEW_MAX).map((repo) => (
+                <PreviewRow
+                  key={repo.id}
+                  label={repos.length === 1 ? "Branch" : repo.name}
+                  value={<RepoBranchValue info={reposGit.get(repo.id)} />}
+                />
+              ))}
+              {/* The preview is sticky — at twenty repos an uncapped list runs
+                  past the viewport and buries the context meter under it. */}
+              {inScope.length > BRANCH_PREVIEW_MAX ? (
+                <PreviewRow
+                  label={`+${inScope.length - BRANCH_PREVIEW_MAX} repos`}
+                  value={
+                    <span className="text-muted-foreground">
+                      each stamps its own branch
+                    </span>
+                  }
+                />
+              ) : null}
+            </>
+          )}
           <PreviewRow label="Context" value={<ContextMeter usage={guard.usage} />} />
         </ul>
         <p className="text-[10px] leading-relaxed text-muted-foreground/85">
@@ -3456,6 +3507,25 @@ function Field({
       <Label className="text-[11px] text-muted-foreground">{label}</Label>
       {children}
     </div>
+  );
+}
+
+/** Branch rows the run preview shows before collapsing the rest into a count. */
+const BRANCH_PREVIEW_MAX = 5;
+
+/** A repo's branch in the run preview. `undefined` means the poller hasn't
+ *  answered for that repo yet — a skeleton, because "not a git repo" is a claim
+ *  and we don't know it yet. */
+function RepoBranchValue({ info }: { info: GitRepoInfo | undefined }) {
+  if (!info) return <Skeleton className="inline-block h-3 w-20 align-middle" />;
+  if (!info.isRepo || !info.branch) {
+    return <span className="text-muted-foreground">not a git repo</span>;
+  }
+  return (
+    <span className="inline-flex items-center gap-1">
+      <HugeiconsIcon icon={GitBranchIcon} size={10} strokeWidth={1.75} />
+      <span className="font-mono">{info.branch}</span>
+    </span>
   );
 }
 

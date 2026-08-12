@@ -69,8 +69,9 @@ import {
   localProviderConfig,
   usePreferencesStore,
 } from "@/modules/settings/preferences";
-import { primaryRepoRoot, type WorkspaceRepo } from "@/modules/settings/store";
+import type { WorkspaceRepo } from "@/modules/settings/store";
 import { splitRepoPath } from "@/modules/ai/lib/repoPaths";
+import { scopedRepos, toggleRepoScope } from "@/modules/ai/lib/repoScope";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   DraftSourceLink,
@@ -211,6 +212,11 @@ export type SessionState = {
    *  case's source links, and the source-dir HEAD SHA on bug code refs.
    *  Defaults to true; the user can turn it off in the input form. */
   tagSourceBranch: boolean;
+  /** Repo ids this run may read; null = every configured repo. Session-scoped
+   *  and reset per run, like {@link tagSourceBranch} — the app can't know which
+   *  repos a spec touches, so narrowing is always the user's explicit act.
+   *  Empty = read nothing, which is the per-run equivalent of code search off. */
+  repoScope: string[] | null;
   /** Per-generation model override. When null, the run uses
    *  useChatStore.selectedModelId (the global default). Reset to null on
    *  startNew so each session starts from the latest default. */
@@ -337,6 +343,8 @@ export type SessionState = {
    *  the resolved labels without another ADO lookup. */
   setPlanSuiteNames: (planName: string | null, suiteName: string | null) => void;
   setTagSourceBranch: (v: boolean) => void;
+  /** Include/exclude one repo from this run's read scope. */
+  toggleRepoScope: (repoId: string) => void;
   /** Set or clear (null) the per-generation model override. */
   setOverrideModelId: (id: ModelId | null) => void;
   /** Add a text attachment. Convenience wrapper around `addRichAttachment`
@@ -752,6 +760,7 @@ const initialState: Omit<
   | "setTarget"
   | "setPlanSuiteNames"
   | "setTagSourceBranch"
+  | "toggleRepoScope"
   | "setOverrideModelId"
   | "addAttachment"
   | "addRichAttachment"
@@ -820,6 +829,7 @@ const initialState: Omit<
   coverage: "full",
   suggestBugs: true,
   tagSourceBranch: true,
+  repoScope: null,
   overrideModelId: null,
   stepLabel: "",
   activityLog: [],
@@ -1602,6 +1612,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     schedulePersistDraft();
   },
   setTagSourceBranch: (v) => set({ tagSourceBranch: v }),
+  toggleRepoScope: (repoId) =>
+    set((s) => ({ repoScope: toggleRepoScope(s.repoScope, getRepos(), repoId) })),
   setOverrideModelId: (id) => set({ overrideModelId: id }),
   addAttachment: (path, content) =>
     set((s) => {
@@ -1655,7 +1667,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     // to stop existing. Its terminal handler then finds a session it doesn't
     // belong to and drops its row instead of writing into the new run.
     get().cancelRefine();
-    const { requirements, changesets, attachments, attachedWorkItems, planId, suiteId, coverage, suggestBugs, overrideModelId } = get();
+    const { requirements, changesets, attachments, attachedWorkItems, planId, suiteId, coverage, suggestBugs, repoScope, overrideModelId } = get();
     if (!requirements.trim()) {
       set({
         phase: "error",
@@ -1861,9 +1873,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         : [];
     const contextBlocks = [...bpBlocks, ...bugBlocks];
 
-    // Every configured repo, or none at all — the app can't know which repos a
-    // spec touches, so narrowing is the user's explicit act, not a default.
-    const repos = prefs.codeSearchEnabled ? prefs.repos : [];
+    // Every configured repo unless the user narrowed this run — the app can't
+    // know which repos a spec touches, so narrowing is their explicit act.
+    const repos = prefs.codeSearchEnabled
+      ? scopedRepos(prefs.repos, repoScope)
+      : [];
     const customInstructions = prefs.customInstructions || undefined;
     const prepared = prepareQaAnalystRun({
       requirements,
@@ -1928,6 +1942,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         coverage,
         suggestBugs,
         tagSourceBranch: get().tagSourceBranch,
+        // The scope as the user set it, NOT the resolved `repos` above: a
+        // checkpoint loaded back into the form has to re-render the chips, and
+        // an all-repos run must stay all-repos even if the registry grew.
+        repoScope,
         overrideModelId,
       },
       prepared: {
@@ -2250,6 +2268,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       coverage: form.coverage,
       suggestBugs: form.suggestBugs,
       tagSourceBranch: form.tagSourceBranch,
+      repoScope: form.repoScope ?? null,
       overrideModelId: form.overrideModelId,
       runId: payload.runId,
       activityLog: payload.activity,
@@ -2646,14 +2665,6 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       const prior = okByUid.get(c.uid);
       if (prior?.result?.id) caseIdByDraftUid.set(c.uid, prior.result.id);
     }
-    // Capture the source dir's branch and HEAD sha once, at publish time, so
-    // every case's code links and every bug's code refs carry the same
-    // provenance. Code links always track the live working-dir branch — there
-    // is no fixed-branch option. Either value can come back null (non-git
-    // source, or a detached HEAD, which has a commit but no branch); null
-    // stamps nothing rather than a "main" the user never generated from.
-    let sourceDirBranch: string | null = null;
-    let sourceDirSha: string | null = null;
     let orgUrl = "";
     let project = "";
     // The repos a link's `<repo>/…` prefix is resolved against. One list for
@@ -2664,27 +2675,41 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       const conn = await getConnection();
       orgUrl = conn.orgUrl ?? "";
       project = conn.project ?? "";
-      const sourceRoot = primaryRepoRoot(publishRepos);
-      if (sourceRoot) {
-        try {
-          const info = await invoke<{
-            branch: string | null;
-            commit: string | null;
-          }>("git_repo_info", { path: sourceRoot });
-          sourceDirBranch = info?.branch ?? null;
-          sourceDirSha = info?.commit ?? null;
-        } catch {
-          // Non-fatal — publish proceeds with no provenance stamp.
-        }
-      }
     } catch {
-      // Non-fatal — publish proceeds with no provenance stamp.
+      // Non-fatal — the published rows just lose their "open in ADO" links.
     }
 
-    // One gate for both stamps: a case's source links and the bugs hanging off
-    // it must never disagree about where the code came from.
-    const stampedBranch = tagSourceBranch ? sourceDirBranch ?? "" : "";
-    const stampedSha = tagSourceBranch ? sourceDirSha : null;
+    // Branch and HEAD sha PER REPO, captured once at publish time, so a batch
+    // that cites two repos stamps each link with the branch it was actually
+    // read from rather than whichever repo happens to sit first in the
+    // registry. Code links always track the live working-dir branch — there is
+    // no fixed-branch option. Either value can come back null (a folder that
+    // isn't a git repo, or a detached HEAD, which has a commit but no branch);
+    // null stamps nothing rather than a "main" the user never generated from.
+    //
+    // ONE gate for the whole map: a case's source links and the bugs hanging
+    // off it must never disagree about where the code came from — and with
+    // tagging off nothing is stamped, so the probes would be pure cost.
+    const provenance = new Map<string, RepoProvenance>();
+    if (tagSourceBranch) {
+      await Promise.all(
+        namedRepos(keptCases, keptBugs, publishRepos).map(async (repo) => {
+          try {
+            const info = await invoke<{
+              branch: string | null;
+              commit: string | null;
+            }>("git_repo_info", { path: repo.root });
+            provenance.set(repo.id, {
+              branch: info?.branch ?? null,
+              sha: info?.commit ?? null,
+            });
+          } catch {
+            // Non-fatal, and per repo — one unreadable root must not cost the
+            // repos that do answer their provenance stamp.
+          }
+        }),
+      );
+    }
 
     for (const c of keptCases) {
       // Skip cases that were already published successfully — re-running
@@ -2694,9 +2719,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       try {
         const sourceLinksBlock = renderSourceLinksBlock(
           c.sourceLinks,
-          stampedBranch,
-          stampedSha ?? "",
           publishRepos,
+          provenance,
         );
         const steps = c.steps.map((s, i) => ({
           index: i + 1,
@@ -2827,16 +2851,19 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           reproSteps: b.reproSteps,
           severity: b.severity,
           assignedTo: b.assignedTo ?? null,
-          codeLinks: (b.codeRefs ?? []).map((r) => ({
-            file: r.file,
-            startLine: r.startLine,
-            endLine: r.endLine ?? undefined,
-            // The commit the bug was found against, so its code refs survive
-            // future drift the same way case source-links do. Null renders
-            // without the commit chip in BugPane; the user can still navigate
-            // by file/line.
-            commitSha: stampedSha,
-          })),
+          codeLinks: (b.codeRefs ?? []).map((r) => {
+            const repo = splitRepoPath(r.file, publishRepos)?.repo;
+            return {
+              file: r.file,
+              startLine: r.startLine,
+              endLine: r.endLine ?? undefined,
+              // The commit the bug was found against, read from the ref's OWN
+              // repo, so its code refs survive future drift the same way case
+              // source-links do. Null renders without the commit chip in
+              // BugPane; the user can still navigate by file/line.
+              commitSha: repo ? provenance.get(repo.id)?.sha ?? null : null,
+            };
+          }),
         });
         updateLog(set, b.uid, { status: "ok", result: created });
       } catch (e) {
@@ -3057,7 +3084,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           ? await bugsToContextBlocks(workItemIds)
           : [];
       const contextBlocks = [...bpBlocks, ...bugBlocks];
-      const repos = prefs.codeSearchEnabled ? prefs.repos : [];
+      const repos = prefs.codeSearchEnabled
+        ? scopedRepos(prefs.repos, s.repoScope)
+        : [];
 
       // Assemble the prompt separately from running it, exactly as analyze
       // does — that split is what lets the round be checkpointed BEFORE the
@@ -3581,7 +3610,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         modelId,
         local: localProviderConfig(prefs),
         contextBlocks: chatContextBlocks,
-        repos: prefs.codeSearchEnabled ? prefs.repos : [],
+        repos: prefs.codeSearchEnabled
+          ? scopedRepos(prefs.repos, s.repoScope)
+          : [],
         customInstructions: prefs.customInstructions || undefined,
         onText: appendDelta,
         onToolEvent: mergeToolEvent,
@@ -3868,35 +3899,82 @@ function updateLog(
   }));
 }
 
-/** `trackingBranch` and `generationSha` are the provenance stamp — both empty
- *  when the user published without source-branch tagging, in which case the
+/** One repo's HEAD at publish time. Either half can be null — a folder that
+ *  isn't a git repo has neither; a detached HEAD has the commit but no branch. */
+type RepoProvenance = { branch: string | null; sha: string | null };
+
+/** The repo a draft source link belongs to: the path's `<repo>/…` prefix first,
+ *  which is what the prompts now ask for, then the deprecated `repoName` an
+ *  older draft still carries. One precedence for both the name that gets
+ *  published and the HEAD that gets stamped, so a link can never claim one repo
+ *  while carrying another's branch. Null ⇒ no configured repo claims it. */
+function linkRepo(
+  link: DraftSourceLink,
+  repos: WorkspaceRepo[],
+): WorkspaceRepo | null {
+  const split = splitRepoPath(link.filePath, repos);
+  if (split) return split.repo;
+  const legacy = link.repoName?.trim().toLowerCase();
+  if (!legacy) return null;
+  return repos.find((r) => r.name.toLowerCase() === legacy) ?? null;
+}
+
+/** The repos a batch's links and code refs actually name — the only ones worth
+ *  a git probe at publish time. Deduped, so N cases citing one repo cost one
+ *  subprocess, and a repo nobody linked to costs none. */
+function namedRepos(
+  cases: ReviewedCase[],
+  bugs: ReviewedBug[],
+  repos: WorkspaceRepo[],
+): WorkspaceRepo[] {
+  const byId = new Map<string, WorkspaceRepo>();
+  for (const c of cases) {
+    for (const l of c.sourceLinks ?? []) {
+      const repo = linkRepo(l, repos);
+      if (repo) byId.set(repo.id, repo);
+    }
+  }
+  for (const b of bugs) {
+    for (const r of b.codeRefs ?? []) {
+      const repo = splitRepoPath(r.file, repos)?.repo;
+      if (repo) byId.set(repo.id, repo);
+    }
+  }
+  return [...byId.values()];
+}
+
+/** `trackingBranch` and `generationSha` are the provenance stamp, taken from
+ *  the link's OWN repo — a case citing two repos records each link against the
+ *  branch it was read from. Both empty when the user published without
+ *  source-branch tagging (the map is then empty by design), in which case the
  *  link still records repo + path, just nothing about where it came from.
  *
- *  The repo comes from the path's `<repo>/…` prefix, which is what the prompts
- *  now ask for; `repoName` is the fallback for drafts generated before that.
- *  A link that names no repo either way is DROPPED rather than written blank:
- *  `parseSourceLinks` requires a repo, so a blank one publishes a line that can
- *  never be read back — a dead link in the user's ADO description. */
+ *  A link that names no repo — no usable prefix, no legacy `repoName` — is
+ *  DROPPED rather than written blank: `parseSourceLinks` requires a repo, so a
+ *  blank one publishes a line that can never be read back, a dead link sitting
+ *  in the user's ADO description forever. */
 function renderSourceLinksBlock(
   links: DraftSourceLink[] | undefined,
-  trackingBranch: string,
-  generationSha: string,
   repos: WorkspaceRepo[],
+  provenance: Map<string, RepoProvenance>,
 ): string | null {
   if (!links || links.length === 0) return null;
   const sl: SourceLink[] = [];
   for (const l of links) {
-    const repoName = splitRepoPath(l.filePath, repos)?.repo.name ?? l.repoName;
+    const repo = linkRepo(l, repos);
+    const repoName = repo?.name ?? l.repoName;
     if (!repoName) continue;
+    const stamp = repo ? provenance.get(repo.id) : undefined;
+    const branch = stamp?.branch ?? "";
     sl.push({
       repoId: l.repoId ?? repoName,
       repoName,
       filePath: l.filePath,
       symbol: l.symbol ?? undefined,
       lineRange: l.lineRange ?? undefined,
-      generationBranch: trackingBranch,
-      generationSha,
-      trackingBranch,
+      generationBranch: branch,
+      generationSha: stamp?.sha ?? "",
+      trackingBranch: branch,
     });
   }
   return sl.length > 0 ? renderBlock(sl) : null;

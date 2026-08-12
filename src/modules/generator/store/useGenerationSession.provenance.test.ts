@@ -12,11 +12,20 @@ const mockRepoInfo: { branch: string | null; commit: string | null } = {
   branch: BRANCH,
   commit: SHA,
 };
+/** HEAD per repo root. Repos move independently, so a batch spanning them has
+ *  to be able to see different answers; anything unlisted falls back to the
+ *  single-repo default above. */
+const heads = new Map<string, { branch: string | null; commit: string | null }>();
+const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (cmd: string) =>
-    cmd === "git_repo_info" ? mockRepoInfo : undefined,
-  ),
+  invoke: (...a: unknown[]) => invoke(...a),
 }));
+
+function gitRepoInfoPaths(): string[] {
+  return invoke.mock.calls
+    .filter((c) => c[0] === "git_repo_info")
+    .map((c) => (c[1] as { path: string }).path);
+}
 
 const createCaseInSuite = vi.fn();
 const createBugAndLink = vi.fn();
@@ -50,7 +59,11 @@ function mkCase(
   } as unknown as ReviewedCase;
 }
 
-function mkBug(): ReviewedBug {
+function mkBug(
+  codeRefs: Record<string, unknown>[] = [
+    { file: "src/auth/login.cs", startLine: 12 },
+  ],
+): ReviewedBug {
   return {
     uid: "b0",
     decision: "keep",
@@ -58,7 +71,7 @@ function mkBug(): ReviewedBug {
     reproSteps: "x",
     severity: "2 - High",
     linkedDraftCaseIndex: 0,
-    codeRefs: [{ file: "src/auth/login.cs", startLine: 12 }],
+    codeRefs,
   } as unknown as ReviewedBug;
 }
 
@@ -66,12 +79,13 @@ function mkBug(): ReviewedBug {
 async function publish(
   tagSourceBranch: boolean,
   sourceLinks?: Record<string, unknown>[],
+  codeRefs?: Record<string, unknown>[],
 ) {
   const store = createGenerationSessionStore();
   store.setState({
     phase: "review",
     cases: [mkCase(sourceLinks)],
-    bugs: [mkBug()],
+    bugs: [mkBug(codeRefs)],
     planId: 1,
     suiteId: 2,
     targetSuiteType: "staticTestSuite",
@@ -93,13 +107,26 @@ async function publish(
   };
 }
 
+/** Reset the ADO + git doubles. Every describe below starts from here; only the
+ *  repo registry differs. */
+function resetDoubles() {
+  createCaseInSuite.mockClear().mockResolvedValue({ id: 999, url: "" });
+  createBugAndLink.mockClear().mockResolvedValue({ id: 1000, url: "" });
+  heads.clear();
+  mockRepoInfo.branch = BRANCH;
+  mockRepoInfo.commit = SHA;
+  invoke.mockReset();
+  invoke.mockImplementation(async (cmd: string, args?: { path?: string }) => {
+    if (cmd !== "git_repo_info") return undefined;
+    const head = args?.path ? heads.get(args.path) : undefined;
+    return head ?? mockRepoInfo;
+  });
+}
+
 describe("publish stamps source provenance", () => {
   beforeEach(() => {
-    createCaseInSuite.mockClear().mockResolvedValue({ id: 999, url: "" });
-    createBugAndLink.mockClear().mockResolvedValue({ id: 1000, url: "" });
+    resetDoubles();
     usePreferencesStore.setState({ repos: [createRepo("C:/src/repo-one")] });
-    mockRepoInfo.branch = BRANCH;
-    mockRepoInfo.commit = SHA;
   });
 
   it("records the branch AND the commit the cases were generated from", async () => {
@@ -149,13 +176,10 @@ describe("publish stamps source provenance", () => {
 // is the only thing left that says which repo a published link belongs to.
 describe("publish binds each link to the repo its path names", () => {
   beforeEach(() => {
-    createCaseInSuite.mockClear().mockResolvedValue({ id: 999, url: "" });
-    createBugAndLink.mockClear().mockResolvedValue({ id: 1000, url: "" });
+    resetDoubles();
     usePreferencesStore.setState({
       repos: [createRepo("C:/src/repo-one"), createRepo("C:/src/repo-two")],
     });
-    mockRepoInfo.branch = BRANCH;
-    mockRepoInfo.commit = SHA;
   });
 
   it("reads the repo off the prefix when the model sent no repoName", async () => {
@@ -194,5 +218,111 @@ describe("publish binds each link to the repo its path names", () => {
   it("emits no block at all when every link is unclaimable", async () => {
     const { block } = await publish(true, [{ filePath: "src/auth/login.cs" }]);
     expect(block).toBeNull();
+  });
+});
+
+// Repos move independently: one can sit on a feature branch while another is on
+// main, three commits behind. A batch that cites both has to record what each
+// link was actually read from, or half its links point at code that never
+// existed in that state.
+describe("publish stamps every link with its OWN repo's HEAD", () => {
+  const ONE_ROOT = "C:/src/repo-one";
+  const TWO_ROOT = "C:/src/repo-two";
+  const THREE_ROOT = "C:/src/repo-three";
+
+  beforeEach(() => {
+    resetDoubles();
+    usePreferencesStore.setState({
+      repos: [
+        createRepo(ONE_ROOT),
+        createRepo(TWO_ROOT),
+        createRepo(THREE_ROOT),
+      ],
+    });
+    heads.set(ONE_ROOT, { branch: "feature/2fa", commit: "aaa1111" });
+    heads.set(TWO_ROOT, { branch: "main", commit: "bbb2222" });
+    heads.set(THREE_ROOT, { branch: "release/9", commit: "ccc3333" });
+  });
+
+  it("gives each link in one case the branch and sha of the repo it names", async () => {
+    const { block } = await publish(true, [
+      { filePath: "repo-one/src/auth/login.cs" },
+      { filePath: "repo-two/src/api/handler.ts" },
+    ]);
+    const links = parseSourceLinks(block ?? "");
+    expect(links).toHaveLength(2);
+    expect(links[0]).toMatchObject({
+      repoName: "repo-one",
+      trackingBranch: "feature/2fa",
+      generationSha: "aaa1111",
+    });
+    expect(links[1]).toMatchObject({
+      repoName: "repo-two",
+      trackingBranch: "main",
+      generationSha: "bbb2222",
+    });
+  });
+
+  it("anchors a bug's code refs to the commit of the repo each ref names", async () => {
+    await publish(true, [{ filePath: "repo-one/src/auth/login.cs" }], [
+      { file: "repo-two/src/api/handler.ts", startLine: 4 },
+      { file: "repo-three/src/lib/util.ts", startLine: 9 },
+    ]);
+    const { codeLinks } = createBugAndLink.mock.calls[0][1] as {
+      codeLinks: { file: string; commitSha: string | null }[];
+    };
+    expect(codeLinks[0].commitSha).toBe("bbb2222");
+    expect(codeLinks[1].commitSha).toBe("ccc3333");
+  });
+
+  it("probes only the repos the batch actually names, once each", async () => {
+    // A git probe is a subprocess spawn. Publishing three cases that all cite
+    // repo-one must cost one, and the two repos nobody linked to must cost none.
+    await publish(true, [
+      { filePath: "repo-one/src/auth/login.cs" },
+      { filePath: "repo-one/src/auth/session.cs" },
+    ]);
+    expect(gitRepoInfoPaths()).toEqual([ONE_ROOT]);
+  });
+
+  it("keeps a repo whose probe fails from costing the others their stamp", async () => {
+    // A root that moved or unmounted is still in the registry. Its links lose
+    // their provenance; the repos that answered keep theirs.
+    invoke.mockImplementation(async (cmd: string, args?: { path?: string }) => {
+      if (cmd !== "git_repo_info") return undefined;
+      if (args?.path === ONE_ROOT) throw new Error("not a directory");
+      return heads.get(args?.path ?? "") ?? mockRepoInfo;
+    });
+
+    const { block } = await publish(true, [
+      { filePath: "repo-one/src/auth/login.cs" },
+      { filePath: "repo-two/src/api/handler.ts" },
+    ]);
+    const links = parseSourceLinks(block ?? "");
+    expect(links[0].trackingBranch).toBe("");
+    expect(links[0].generationSha).toBe("");
+    expect(links[1].trackingBranch).toBe("main");
+    expect(links[1].generationSha).toBe("bbb2222");
+  });
+
+  it("spawns no git at all when the user opted out of tagging", async () => {
+    await publish(false, [
+      { filePath: "repo-one/src/auth/login.cs" },
+      { filePath: "repo-two/src/api/handler.ts" },
+    ]);
+    expect(gitRepoInfoPaths()).toEqual([]);
+  });
+
+  it("resolves a legacy draft's repoName to that repo's HEAD, not the first repo's", async () => {
+    // Drafts generated before the prompts dropped `repoName` carry an
+    // unprefixed path plus the name. Stamping repos[0]'s branch on those would
+    // be a guess dressed up as provenance.
+    const { block } = await publish(true, [
+      { repoName: "repo-three", filePath: "src/lib/util.ts" },
+    ]);
+    const link = parseSourceLinks(block ?? "")[0];
+    expect(link.repoName).toBe("repo-three");
+    expect(link.trackingBranch).toBe("release/9");
+    expect(link.generationSha).toBe("ccc3333");
   });
 });

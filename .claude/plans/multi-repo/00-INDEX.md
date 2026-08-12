@@ -364,6 +364,63 @@ API keys and three real repos, which this session had neither of. Step 4 (one re
 construction: the prompts are identical at every count and the N=1 bare-path tolerance is pinned in
 `repoPaths.test.ts`.
 
+**Phase 9 — `repoScope` lives in `ai/lib/repoScope.ts` and the chip row is SHARED.** The three pure
+helpers (`scopedRepos` / `isRepoInScope` / `toggleRepoScope`) sit next to `repoPaths.ts` rather than
+inside the generator, and the row itself is `src/components/RepoScopeChips.tsx` (label + hint props),
+because **Phase 10 §4 asks for "the same chip row as the generator"** — build on these two, don't
+copy. `toggleRepoScope` collapses back to `null` the moment every repo is selected: "all on" must
+have one representation, or a scope frozen at today's ids silently excludes a repo added tomorrow.
+
+**Phase 9 — the checkpoint carries BOTH the resolved repos and the scope.** `repos` (Phase 7) is what
+a resume replays against; the new `form.repoScope` (optional, read-tolerant) is what re-renders the
+chips when a checkpoint is loaded back into the form. They are not redundant: a null scope must stay
+null across a resume. The refine checkpoint needed nothing — it has no form to restore, and its
+`repos` is already the narrowed list.
+
+**Phase 9 — publish probes the repos the batch NAMES, not the in-scope ones.** The plan said one
+`git_repo_info` per in-scope repo; a reopened draft can cite a repo that isn't in the current scope,
+and that link would then publish with no provenance while still being written. Walking the kept
+links/refs through `splitRepoPath` (and `linkRepo`'s legacy-`repoName` fallback) is both correct and
+cheaper — N cases citing one repo cost one subprocess, and a repo nobody linked to costs none. With
+`tagSourceBranch` off there is no probe at all.
+
+**Phase 9 — `linkRepo` is the one precedence for both the published name and the stamp.** Prefix
+first, then a legacy draft's `repoName` matched against the registry. Two resolutions would let a
+link claim one repo and carry another's branch. A link that matches neither still publishes under its
+raw `repoName` (Phase 8's rule) but gets no provenance — a stamp for a repo we can't locate would be
+a guess.
+
+**Phase 9 — the chip row is gated on `codeSearchEnabled` too.** The plan said "only when
+`repos.length > 1`". A control asking which repos may be read, on a run that reads nothing because
+the global toggle is off, is a lie; the row hides instead.
+
+**Phase 9 — the run preview caps at 5 branch rows** (`BRANCH_PREVIEW_MAX`) then collapses the rest
+into "+N repos · each stamps its own branch". The aside is sticky, so an uncapped list at twenty
+repos runs past the viewport and buries the context meter. The `"no source dir"` fallback became
+`"no repos configured"` / `"no repos in scope"` / per-repo `"not a git repo"` — the old string was
+wrong for a configured folder that simply isn't a repo.
+
+**Phase 9 — `InputPhase` no longer calls `usePrimaryRepoGitInfo`.** It uses `useReposGitInfo` for
+everything; holding both hooks in one component polls the same root twice every 30 s. **Phase 11
+should check the other single-root callers for the same trap** before adding a second hook anywhere.
+
+**Phase 9 — verification.** `tsc` clean, `vite build` clean, 1087 frontend tests green (+25: 11 in
+`repoScope.test.ts`, 6 in the provenance suite, 8 in a new
+`useGenerationSession.repoScope.test.ts`). Eleven mutations were each caught by exactly the intended
+test — scope ignored, the null-collapse dropped, the analyze feeder unscoped, the checkpoint's scope
+dropped, `loadCheckpoint` ignoring it, every link taking the first repo's stamp, bug refs taking the
+first repo's sha, probing every configured repo, a failed probe propagating, probing with tagging
+off, and the legacy-`repoName` fallback removed. (A twelfth — one failed probe calling
+`provenance.clear()` — survived: the failing repo's catch runs before the succeeding repo's set, so
+that ordering isn't observable. Nothing in the shipped code clears the map.) Verify steps 2–4 were
+driven in the **real main webview** over CDP against a mocked Tauri IPC boundary at N=1, N=3 and N=8:
+at one repo the form is unchanged down to the single "Branch" row and the branch-named switch copy;
+at three each repo shows its own branch (one deliberately not a git repo), deselecting drops exactly
+that repo's row, deselecting all says the run reads no source, re-selecting all restores every row;
+at eight the chips wrap and the preview collapses to "+3 repos". Zero console errors. **Verify step 5
+(publish across two repos) is covered by unit tests, not by a live ADO publish**, and steps 1 and 6
+(a real analyze, interrupt, resume) need API keys and three real repos — unrun live, pinned by tests.
+
 **Phase 6 found a real bug in its own first draft**, worth knowing because the pattern recurs: the
 repo popover's `open` is controlled, so a programmatic `setOpen(false)` never fires `onOpenChange` —
 the drilled-into repo was never cleared and the next open showed the previous repo's branches. Any

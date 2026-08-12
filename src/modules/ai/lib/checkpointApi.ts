@@ -108,6 +108,11 @@ export type GeneratorCheckpointV2 = {
     coverage: Coverage;
     suggestBugs: boolean;
     tagSourceBranch: boolean;
+    /** Per-run repo narrowing, as the user set it (null = all). Separate from
+     *  `repos` above, which is the RESOLVED list the run reads: this one
+     *  re-renders the form's chips when a checkpoint is loaded back into it.
+     *  Optional for read-tolerance — checkpoints predate it. */
+    repoScope?: string[] | null;
     overrideModelId: ModelId | null;
   };
   prepared: { userPrompt: string; attachments: Attachment[] } | null;
