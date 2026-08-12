@@ -495,20 +495,16 @@ function AppShell() {
   );
 
   const openCommitReviewTab = useCallback(
-    (input?: {
-      cwd?: string;
-      rehydrateRunId?: string;
-      title?: string;
-    }) => {
-      const liveSourceRoot = primaryRepoRoot(getRepos());
-      const cwd = input?.cwd ?? liveSourceRoot;
-      if (!cwd) {
+    (input?: { rehydrateRunId?: string; title?: string }) => {
+      // A review spans the workspace, so the only precondition is that the
+      // workspace isn't empty. A saved run still opens either way — it restores
+      // its own repos and its findings are already on disk.
+      if (!input?.rehydrateRunId && getRepos().length === 0) {
         void openSettingsWindow("general");
         return null;
       }
       return useTabsStore.getState().openTab({
         kind: "commit-review",
-        cwd,
         rehydrateRunId: input?.rehydrateRunId ?? null,
         title: input?.title,
       });

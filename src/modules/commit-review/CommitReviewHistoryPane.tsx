@@ -203,6 +203,7 @@ function Row({
   onDelete: () => void;
 }) {
   const commits = commitCount(row.commits);
+  const repos = reviewedRepos(row.commits);
   return (
     <div className="group/row flex items-start gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-foreground/[0.04]">
       <button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
@@ -217,6 +218,16 @@ function Row({
             )}
           />
           <span className="truncate">{row.commitSubject ?? row.commitShort}</span>
+          {/* Which repos this review actually covered — the answer to "why does
+              reopening this show a different set of repos than my other tabs".
+              On the SUBJECT line, where it competes only with a string that
+              already truncates: the meta line below holds five items in a
+              200 px sidebar and squeezed this to a single letter. */}
+          {repos.length > 0 ? (
+            <span className="ml-auto max-w-[96px] shrink-0 truncate rounded-sm bg-foreground/[0.06] px-1 text-[9.5px] font-normal uppercase tracking-wide text-muted-foreground">
+              {repos.length === 1 ? repos[0] : `${repos.length} repos`}
+            </span>
+          ) : null}
         </div>
         <p className="mt-0.5 flex items-center gap-1 truncate text-[10.5px] text-muted-foreground">
           <span className="font-mono">{row.commitShort}</span>
@@ -281,6 +292,27 @@ function commitCount(json: string | null): number {
     return Array.isArray(v) && v.length > 0 ? v.length : 1;
   } catch {
     return 1;
+  }
+}
+
+/** The repos a saved review's commits came from, in first-seen order. Empty for
+ *  a row written before multi-repo — those name no repo, and inventing one from
+ *  today's registry would be a guess. */
+function reviewedRepos(json: string | null): string[] {
+  if (!json) return [];
+  try {
+    const v = JSON.parse(json);
+    if (!Array.isArray(v)) return [];
+    const names: string[] = [];
+    for (const c of v) {
+      const name = (c as { repoName?: unknown } | null)?.repoName;
+      if (typeof name === "string" && name && !names.includes(name)) {
+        names.push(name);
+      }
+    }
+    return names;
+  } catch {
+    return [];
   }
 }
 

@@ -33,7 +33,8 @@ import {
   localProviderConfig,
   usePreferencesStore,
 } from "@/modules/settings/preferences";
-import { primaryRepoRoot } from "@/modules/settings/store";
+import { sameRoot, type WorkspaceRepo } from "@/modules/settings/store";
+import { scopedRepos, toggleRepoScope } from "@/modules/ai/lib/repoScope";
 import { useTabsStore } from "@/modules/tabs/store/useTabsStore";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import { bugsToContextBlocks } from "@/modules/ado/lib/bugContextBlock";
@@ -68,10 +69,14 @@ import type { ActivityEntry } from "@/modules/generator/lib/activityLog";
 import {
   listCommits,
   commitDiff,
+  commitKey,
+  isLocalKey,
+  splitCommitKey,
   workingTreeDiff,
   LOCAL_CHANGES_SHA,
-  type CommitMeta,
-  type CommitDiff,
+  type MaybeRepoCommitDiff,
+  type RepoCommitDiff,
+  type RepoCommitMeta,
 } from "./gitCommitApi";
 import { gitStatusSummary } from "@/modules/git";
 import {
@@ -89,24 +94,61 @@ import type { AppliedPatchRecord, AppliedPatchesMap } from "./patchSchema";
 
 type Status = CommitReviewStatus | "idle";
 
+/** The scope key every commit-review checkpoint is filed under. A review spans
+ *  the whole workspace now, so there is no per-directory scope left to key on —
+ *  the column stays free-form TEXT on the Rust side, and `listCheckpoints`
+ *  keeps filtering on it unchanged. */
+const WORKSPACE_SCOPE = "workspace";
+
+/** Commits read per repo. The merged timeline is capped separately — this is
+ *  how deep into each repo's history the picker can see. */
+const COMMITS_PER_REPO = 80;
+
+/** Rows the merged timeline shows. Twenty repos × 80 commits is 1600 rows the
+ *  user would scroll through one branch at a time; the search box is how you
+ *  reach anything older. */
+const MERGED_COMMIT_CAP = 200;
+
 /** One reviewed commit, as persisted in the row's `commits` JSON blob. */
-export type ReviewedCommit = { sha: string; short: string; subject: string };
+export type ReviewedCommit = {
+  sha: string;
+  short: string;
+  subject: string;
+  /** Which repo it came from. Absent on rows written before multi-repo — those
+   *  predate the second repo existing, so they belong to the first one. */
+  repoId?: string;
+  repoName?: string;
+};
 
 export type CommitReviewSlice = {
-  cwd: string;
+  /** The repos this review covers — its workspace.
+   *
+   *  `null` tracks the live registry, so a repo added in Settings shows up in
+   *  the picker without reopening the tab. A rehydrated saved run pins its OWN
+   *  set here instead: reopening a review from History must show the repos it
+   *  actually ran against, not whichever ones are configured today. */
+  repoIds: string[] | null;
+  /** Repo ids this run may READ — the separate, per-run narrowing. `null` = all
+   *  of them. Deliberately NOT a filter on the commit list: a commit in one repo
+   *  often can't be judged without reading a different repo that has no commit
+   *  in the selection at all. */
+  repoScope: string[] | null;
   // --- commit picker (multi-select) ---
-  commits: CommitMeta[];
+  /** Every in-scope repo's commits, merged newest-first and capped. */
+  commits: RepoCommitMeta[];
   commitsLoading: boolean;
   commitsError: string | null;
-  /** Whether the working tree has uncommitted changes — gates the "Local
-   *  changes" target (and makes it the default when true). Refreshed alongside
-   *  the commit list. */
-  hasLocalChanges: boolean;
-  /** Full SHAs of the selected commits, kept in `commits` order (newest first). */
+  /** Repos whose working tree has uncommitted changes — one "Local changes"
+   *  target each. Refreshed alongside the commit list. */
+  dirtyRepoIds: string[];
+  /** The selected changes as `${repoId}:${sha}` keys, in `commits` order
+   *  (newest first). A sha is only unique within its repo — every repo has a
+   *  "local" — so the repo is part of the key. Legacy bare shas (persisted tabs
+   *  and saved rows from the single-root era) are normalised on read. */
   selectedShas: string[];
-  /** Per-commit diff cache keyed by full SHA. Read in selection order via
-   *  `selectedDiffs()`. Missing keys are commits still loading or failed. */
-  diffBySha: Record<string, CommitDiff>;
+  /** Diff cache keyed the same way. Read in selection order via
+   *  `selectedDiffs()`. Missing keys are changes still loading or failed. */
+  diffBySha: Record<string, RepoCommitDiff>;
   diffLoading: boolean;
   diffError: string | null;
   /** Monotonic token bumped on each loadDiffs so a late-resolving earlier load
@@ -169,24 +211,27 @@ type State = {
   byTab: Map<number, CommitReviewSlice>;
   ensure: (
     tabId: number,
-    cwd: string,
     rehydrateRunId?: string | null,
     modelId?: ModelId | null,
   ) => Promise<void>;
   loadCommits: (tabId: number) => Promise<void>;
-  /** Add/remove a commit from the selection, then load any missing diffs.
-   *  Changing the selection invalidates the current findings. */
-  toggleCommit: (tabId: number, sha: string) => Promise<void>;
-  /** Add/remove the synthetic "Local changes" target. It can be reviewed alone
-   *  or alongside commits; adding it re-reads the live working-tree diff. */
-  toggleLocalChanges: (tabId: number) => Promise<void>;
+  /** Add/remove one change from the selection (by `${repoId}:${sha}` key), then
+   *  load any missing diffs. Changing the selection invalidates the findings. */
+  toggleCommit: (tabId: number, key: string) => Promise<void>;
+  /** Add/remove one repo's "Local changes" target. It can be reviewed alone or
+   *  alongside commits; adding it re-reads that repo's live working tree. */
+  toggleLocalChanges: (tabId: number, repoId: string) => Promise<void>;
   /** Deselect every commit (the user must pick at least one to review). */
   clearCommits: (tabId: number) => void;
-  /** Re-read the source-dir git state after an in-app branch switch / pull /
-   *  stash op so an open tab doesn't show the previous branch's commit list,
-   *  a stale dirty-state, or a cached "Local changes" diff from another branch.
-   *  No-op while a review is running and for tabs pinned to a different cwd. */
-  refreshSource: (tabId: number) => Promise<void>;
+  /** Flip one repo's membership of the read scope. */
+  toggleRepo: (tabId: number, repoId: string) => void;
+  /** Re-read git state after an in-app branch switch / pull / stash op so an
+   *  open tab doesn't show the previous branch's commit list, a stale
+   *  dirty-state, or a cached "Local changes" diff from another branch. `root`
+   *  is the `source-git-changed` payload: it narrows the refresh to the repo
+   *  that moved, and a payload-less event means "refresh all". No-op while a
+   *  review is running, and for a root outside this review's repos. */
+  refreshSource: (tabId: number, root?: string) => Promise<void>;
   /** Fetch the diffs for the currently-selected commits that aren't cached. */
   loadDiffs: (tabId: number) => Promise<void>;
   setContext: (tabId: number, text: string) => void;
@@ -213,12 +258,36 @@ function newRunId(): string {
   return `crun-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** The loaded diffs for the selected commits, in selection order. Commits whose
+/** The repos this review covers, in registry order. A pinned set (a rehydrated
+ *  saved run) drops ids that no longer name a configured repo, so a review
+ *  outlives one of its repos being removed. */
+export function sliceRepos(slice: CommitReviewSlice): WorkspaceRepo[] {
+  return scopedRepos(getRepos(), slice.repoIds);
+}
+
+/** The repos this run's tools may read: the review's repos, narrowed by the
+ *  read scope. Code search off ⇒ none, and the run works from the diff alone. */
+export function runRepos(slice: CommitReviewSlice): WorkspaceRepo[] {
+  if (!usePreferencesStore.getState().codeSearchEnabled) return [];
+  return scopedRepos(sliceRepos(slice), slice.repoScope);
+}
+
+/** The repo a selection key names, or null when it no longer resolves. */
+export function repoForKey(
+  slice: CommitReviewSlice,
+  key: string,
+): WorkspaceRepo | null {
+  const repos = sliceRepos(slice);
+  const { repoId } = splitCommitKey(key, repos[0]?.id ?? "");
+  return repos.find((r) => r.id === repoId) ?? null;
+}
+
+/** The loaded diffs for the selected changes, in selection order. Changes whose
  *  diff is still loading or failed to load are skipped. */
-export function selectedDiffs(slice: CommitReviewSlice): CommitDiff[] {
+export function selectedDiffs(slice: CommitReviewSlice): RepoCommitDiff[] {
   return slice.selectedShas
     .map((s) => slice.diffBySha[s])
-    .filter((d): d is CommitDiff => !!d);
+    .filter((d): d is RepoCommitDiff => !!d);
 }
 
 /** True once every selected commit has a loaded diff (the gate for running). */
@@ -229,16 +298,61 @@ export function allDiffsLoaded(slice: CommitReviewSlice): boolean {
   );
 }
 
-/** Re-order a set of selected SHAs to match the commit-list order (newest
- *  first) so diff sections render in a stable, predictable order. */
-export function orderShas(shas: string[], commits: CommitMeta[]): string[] {
-  // "Local changes" (uncommitted, newest of all) sorts ahead of every commit;
-  // commits follow newest-first. Local can be reviewed alone, alongside
-  // commits, or not at all — it's just another item in the set.
-  const idx = new Map(commits.map((c, i) => [c.sha, i]));
-  const rank = (s: string) =>
-    s === LOCAL_CHANGES_SHA ? -1 : (idx.get(s) ?? Number.MAX_SAFE_INTEGER);
-  return [...new Set(shas)].sort((a, b) => rank(a) - rank(b));
+/** Re-order a set of selection keys to match the merged commit-list order
+ *  (newest first) so diff sections render in a stable, predictable order.
+ *
+ *  Every repo's "Local changes" (uncommitted, newer than any commit) sorts
+ *  ahead of every commit; among themselves the locals follow `repoIds` order,
+ *  which is registry order — a stable position, never a ranking. */
+export function orderShas(
+  keys: string[],
+  commits: RepoCommitMeta[],
+  repoIds: string[] = [],
+): string[] {
+  const idx = new Map(commits.map((c, i) => [commitKey(c.repoId, c.sha), i]));
+  // Commits rank from 0 up; locals occupy the negative band below them.
+  const localFloor = -Math.max(repoIds.length, 1);
+  const rank = (key: string) => {
+    if (!isLocalKey(key)) return idx.get(key) ?? Number.MAX_SAFE_INTEGER;
+    const pos = repoIds.indexOf(splitCommitKey(key, "").repoId);
+    return localFloor + (pos === -1 ? repoIds.length - 1 : pos);
+  };
+  return [...new Set(keys)].sort((a, b) => rank(a) - rank(b));
+}
+
+/** Normalise persisted selection keys. Bare shas come from the single-root era
+ *  (a persisted tab, or a saved row) and belong to the first repo — the one the
+ *  app was pinned to when they were written. */
+function normalizeKeys(keys: string[], fallbackRepoId: string): string[] {
+  return keys.map((k) => {
+    const { repoId, sha } = splitCommitKey(k, fallbackRepoId);
+    return commitKey(repoId, sha);
+  });
+}
+
+/** Tag a freshly-read diff with the repo it came from. */
+function tagDiff(diff: Omit<RepoCommitDiff, "repoId" | "repoName">, repo: WorkspaceRepo): RepoCommitDiff {
+  return { ...diff, repoId: repo.id, repoName: repo.name };
+}
+
+/** Key a checkpoint's snapshotted diffs. Payloads written before commit review
+ *  went multi-repo carry untagged diffs under the single root the run used, so
+ *  they take the first repo — the same rule bare selection keys follow. */
+function snapshotDiffMap(
+  diffs: MaybeRepoCommitDiff[],
+  repos: WorkspaceRepo[],
+): Record<string, RepoCommitDiff> {
+  const out: Record<string, RepoCommitDiff> = {};
+  for (const d of diffs) {
+    const repo = repos.find((r) => r.id === d.repoId) ?? repos[0] ?? null;
+    const tagged: RepoCommitDiff = {
+      ...d,
+      repoId: d.repoId || repo?.id || "",
+      repoName: d.repoName || repo?.name || "",
+    };
+    out[commitKey(tagged.repoId, tagged.sha)] = tagged;
+  }
+  return out;
 }
 
 type SetState = (fn: (s: State) => Partial<State>) => void;
@@ -461,11 +575,10 @@ async function adoptInterruptedRun(
   set: SetState,
   get: () => State,
   tabId: number,
-  cwd: string,
 ): Promise<void> {
   let entries: Awaited<ReturnType<typeof listCheckpoints>>;
   try {
-    entries = await listCheckpoints("commit-review", cwd);
+    entries = await listCheckpoints("commit-review", WORKSPACE_SCOPE);
   } catch {
     return;
   }
@@ -487,6 +600,14 @@ async function adoptInterruptedRun(
     }
     if (!cp || cp.payload.surface !== "commit-review") continue;
     const p = cp.payload;
+    // The workspace has to still BE the workspace this run read. Resuming
+    // replays a transcript against live tools, so a repo that's since been
+    // removed would answer "no such repo" to reads the transcript already has
+    // results for — worse than not offering the resume at all.
+    const configured = getRepos();
+    if (p.repos.some((r) => !configured.some((c) => sameRoot(c.root, r.root)))) {
+      continue;
+    }
     // Same gate as every Resume affordance: a run that died non-resumably, or
     // answered badly with nothing banked, would just re-fail.
     if (
@@ -519,8 +640,7 @@ async function adoptInterruptedRun(
     }
     if (nowClaimed.has(entry.runId)) continue;
 
-    const snapshotDiffs: Record<string, CommitDiff> = {};
-    for (const d of p.inputs.diffs) snapshotDiffs[d.sha] = d;
+    const snapshotDiffs = snapshotDiffMap(p.inputs.diffs, configured);
     const status: Status =
       row?.status === "cancelled" || p.lastOutcome?.kind === "cancelled"
         ? "cancelled"
@@ -559,7 +679,13 @@ async function adoptInterruptedRun(
       context: p.inputs.context,
       attachments: p.inputs.attachments,
       workItems: p.inputs.workItems,
-      selectedShas: p.inputs.selectedShas,
+      // The scope the interrupted run started with — a resume replays against
+      // `p.repos`, so the chips must not widen back to the whole registry.
+      repoScope: p.repoScope ?? null,
+      selectedShas: normalizeKeys(
+        p.inputs.selectedShas,
+        configured[0]?.id ?? "",
+      ),
       // The snapshot the run was reviewing. Safe to seed: commit diffs are
       // immutable, and a fresh run() re-reads the live working tree anyway —
       // only resume() deliberately replays this snapshot.
@@ -581,13 +707,14 @@ async function adoptInterruptedRun(
   }
 }
 
-function emptySlice(cwd: string, modelId: ModelId | null): CommitReviewSlice {
+function emptySlice(modelId: ModelId | null): CommitReviewSlice {
   return {
-    cwd,
+    repoIds: null,
+    repoScope: null,
     commits: [],
     commitsLoading: false,
     commitsError: null,
-    hasLocalChanges: false,
+    dirtyRepoIds: [],
     selectedShas: [],
     diffBySha: {},
     diffLoading: false,
@@ -619,9 +746,9 @@ function emptySlice(cwd: string, modelId: ModelId | null): CommitReviewSlice {
 export const useCommitReview = create<State>((set, get) => ({
   byTab: new Map(),
 
-  ensure: async (tabId, cwd, rehydrateRunId, modelId) => {
+  ensure: async (tabId, rehydrateRunId, modelId) => {
     const existing = get().byTab.get(tabId);
-    if (existing && existing.cwd === cwd) {
+    if (existing) {
       if (existing.commits.length === 0 && !existing.commitsLoading) {
         await get().loadCommits(tabId);
       }
@@ -635,7 +762,7 @@ export const useCommitReview = create<State>((set, get) => ({
       // Degrade to "use the global default" instead.
       next.set(
         tabId,
-        emptySlice(cwd, modelId && isKnownModelId(modelId) ? modelId : null),
+        emptySlice(modelId && isKnownModelId(modelId) ? modelId : null),
       );
       return { byTab: next };
     });
@@ -660,8 +787,19 @@ export const useCommitReview = create<State>((set, get) => ({
           // the loop — a reopened history entry gets budget-neutral copy rather
           // than a guess.
           const rowLimit = null;
+          // Bug #8: a saved run reopens against ITS repos, never whichever are
+          // configured right now. Roots that no longer resolve drop out; if
+          // none do (the whole workspace moved), fall back to tracking the live
+          // registry so the tab still works — the findings are historical
+          // either way, and an empty picker would just be a dead pane.
+          const rowRepoIds = repoIdsForRoots(parseRepoRoots(row.cwd));
           patch(set, tabId, {
-            selectedShas: safeParseCommitShas(row.commits, row.commitSha),
+            repoIds: rowRepoIds.length > 0 ? rowRepoIds : null,
+            selectedShas: safeParseCommitShas(
+              row.commits,
+              row.commitSha,
+              rowRepoIds[0] ?? getRepos()[0]?.id ?? "",
+            ),
             context: row.context ?? "",
             status: row.status,
             findings,
@@ -713,6 +851,9 @@ export const useCommitReview = create<State>((set, get) => ({
             // review's merged findings supersede the candidates they came from.
             stage1Candidates:
               done || curr?.findings.length ? null : p.stage1Candidates,
+            // The read scope the run started with — the row can't carry it, and
+            // a resume replays against `p.repos`, so the chips have to match.
+            repoScope: p.repoScope ?? null,
             // A finished run has nothing to continue. An answered-badly one
             // might: `canOfferResume` (via the pane) decides on what the
             // attempt banked, so this only has to hand it the checkpoint —
@@ -747,31 +888,44 @@ export const useCommitReview = create<State>((set, get) => ({
       const tab = useTabsStore.getState().tabs[tabId];
       if (tab && tab.kind === "commit-review") {
         patch(set, tabId, {
-          selectedShas: tab.selectedShas ?? [],
+          selectedShas: normalizeKeys(
+            tab.selectedShas ?? [],
+            getRepos()[0]?.id ?? "",
+          ),
           context: tab.context ?? "",
         });
       }
       // A fresh mount is where an interrupted run resurfaces after an app
       // restart — adopt it (inputs + resume affordance) instead of leaving
       // it discoverable only through History.
-      await adoptInterruptedRun(set, get, tabId, cwd);
+      await adoptInterruptedRun(set, get, tabId);
     }
 
     await get().loadCommits(tabId);
 
-    // Select the rehydrated commits, or default to the working-tree changes
-    // when the tree is dirty (the common "review what I'm about to commit"
-    // case), else HEAD. Then load the diffs.
+    // Select the rehydrated commits, or default to the uncommitted work when
+    // there is any (the common "review what I'm about to commit" case), else
+    // the newest change in the workspace. Every dirty repo is selected, not
+    // one of them: at one repo that's exactly today's behaviour, and at
+    // several, uncommitted work spanning repos is the case this pane exists
+    // for. The selection is visible in the picker and the oversized-diff
+    // banner still warns, so nothing is silently expensive.
     const slice = get().byTab.get(tabId);
     if (slice) {
       const shas = slice.selectedShas.length
         ? slice.selectedShas
-        : slice.hasLocalChanges
-          ? [LOCAL_CHANGES_SHA]
+        : slice.dirtyRepoIds.length > 0
+          ? slice.dirtyRepoIds.map((id) => commitKey(id, LOCAL_CHANGES_SHA))
           : slice.commits[0]
-            ? [slice.commits[0].sha]
+            ? [commitKey(slice.commits[0].repoId, slice.commits[0].sha)]
             : [];
-      patch(set, tabId, { selectedShas: orderShas(shas, slice.commits) });
+      patch(set, tabId, {
+        selectedShas: orderShas(
+          shas,
+          slice.commits,
+          sliceRepos(slice).map((r) => r.id),
+        ),
+      });
       await get().loadDiffs(tabId);
 
       // Reopening a saved run whose commits were since rebased away: those SHAs
@@ -784,15 +938,16 @@ export const useCommitReview = create<State>((set, get) => ({
       if (rehydrateRunId) {
         const after = get().byTab.get(tabId);
         if (after) {
-          const reachable = selectedDiffs(after).map((d) => d.sha);
+          const reachable = selectedDiffs(after).map((d) =>
+            commitKey(d.repoId, d.sha),
+          );
           // "Local changes" isn't a commit that can be rebased away — keep it
           // even if its live diff failed to load this time, so reopening a saved
           // local-changes review doesn't silently snap to an empty selection.
-          const nextShas =
-            after.selectedShas.includes(LOCAL_CHANGES_SHA) &&
-            !reachable.includes(LOCAL_CHANGES_SHA)
-              ? [...reachable, LOCAL_CHANGES_SHA]
-              : reachable;
+          const strandedLocals = after.selectedShas.filter(
+            (k) => isLocalKey(k) && !reachable.includes(k),
+          );
+          const nextShas = [...reachable, ...strandedLocals];
           if (nextShas.length !== after.selectedShas.length) {
             patch(set, tabId, { selectedShas: nextShas, diffError: null });
             useTabsStore
@@ -807,40 +962,69 @@ export const useCommitReview = create<State>((set, get) => ({
   loadCommits: async (tabId) => {
     const slice = get().byTab.get(tabId);
     if (!slice) return;
+    const repos = sliceRepos(slice);
     patch(set, tabId, { commitsLoading: true, commitsError: null });
-    try {
-      const commits = await listCommits(slice.cwd, 80);
-      // Also probe the working tree so the "Local changes" target can show
-      // (and default on) only when there's something uncommitted. Non-fatal —
-      // a status failure just leaves the option hidden.
-      let hasLocalChanges = false;
-      try {
-        const st = await gitStatusSummary(slice.cwd);
-        hasLocalChanges = st.dirty;
-      } catch {
-        // ignore — leave hasLocalChanges false
-      }
-      patch(set, tabId, { commits, commitsLoading: false, hasLocalChanges });
-    } catch (e) {
-      patch(set, tabId, {
-        commitsLoading: false,
-        commitsError: errStr(e),
-      });
-    }
+
+    const results = await Promise.all(
+      repos.map(async (repo) => {
+        // A repo that can't be listed (moved on disk, not a git repo) travels
+        // as data: one unreadable root must not empty the picker for the ones
+        // that answered. Its dirty-state probe is separately non-fatal, so a
+        // status failure only hides that repo's "Local changes" row.
+        const dirty = await gitStatusSummary(repo.root).then(
+          (s) => s.dirty,
+          () => false,
+        );
+        try {
+          const rows = await listCommits(repo.root, COMMITS_PER_REPO);
+          return {
+            repo,
+            dirty,
+            commits: rows.map((c) => ({
+              ...c,
+              repoId: repo.id,
+              repoName: repo.name,
+            })),
+            error: null as string | null,
+          };
+        } catch (e) {
+          return { repo, dirty, commits: [], error: errStr(e) };
+        }
+      }),
+    );
+
+    const merged = results
+      .flatMap((r) => r.commits)
+      .sort((a, b) => commitTime(b) - commitTime(a))
+      .slice(0, MERGED_COMMIT_CAP);
+    const failed = results.filter((r) => r.error);
+    patch(set, tabId, {
+      commits: merged,
+      commitsLoading: false,
+      dirtyRepoIds: results.filter((r) => r.dirty).map((r) => r.repo.id),
+      commitsError:
+        failed.length === 0
+          ? null
+          : failed.length === results.length && failed.length === 1
+            ? // The single-repo case reads exactly as it always did.
+              failed[0].error
+            : `Couldn't read ${failed.map((r) => r.repo.name).join(", ")}: ${failed[0].error}`,
+    });
   },
 
-  toggleCommit: async (tabId, sha) => {
+  toggleCommit: async (tabId, key) => {
     const slice = get().byTab.get(tabId);
     // Don't change the reviewed set mid-run: the in-flight run captured its diff
     // snapshot, so re-selecting now would orphan it and (because runId is reset)
     // silently drop the completed result. The picker is also disabled while busy.
     if (!slice || slice.busy) return;
-    const has = slice.selectedShas.includes(sha);
+    const has = slice.selectedShas.includes(key);
     const nextShas = orderShas(
       has
-        ? slice.selectedShas.filter((s) => s !== sha)
-        : [...slice.selectedShas, sha],
+        ? slice.selectedShas.filter((s) => s !== key)
+        : [...slice.selectedShas, key],
       slice.commits,
+      sliceRepos(slice).map((r) => r.id),
     );
     // Changing the reviewed set invalidates the findings — they were about a
     // different change. Keep the input context (likely still relevant).
@@ -865,18 +1049,23 @@ export const useCommitReview = create<State>((set, get) => ({
     await get().loadDiffs(tabId);
   },
 
-  toggleLocalChanges: async (tabId) => {
+  toggleLocalChanges: async (tabId, repoId) => {
     const slice = get().byTab.get(tabId);
     if (!slice || slice.busy) return;
-    const has = slice.selectedShas.includes(LOCAL_CHANGES_SHA);
-    // Always drop any cached working-tree diff: removing it cleans up, and
-    // re-adding should re-read the LIVE tree (the user may have edited files
-    // since the last look). Changing the selection invalidates findings.
+    const key = commitKey(repoId, LOCAL_CHANGES_SHA);
+    const has = slice.selectedShas.includes(key);
+    // Always drop this repo's cached working-tree diff: removing it cleans up,
+    // and re-adding should re-read the LIVE tree (the user may have edited
+    // files since the last look). Changing the selection invalidates findings.
     const nextDiffs = { ...slice.diffBySha };
-    delete nextDiffs[LOCAL_CHANGES_SHA];
+    delete nextDiffs[key];
     const nextShas = has
-      ? slice.selectedShas.filter((s) => s !== LOCAL_CHANGES_SHA)
-      : orderShas([...slice.selectedShas, LOCAL_CHANGES_SHA], slice.commits);
+      ? slice.selectedShas.filter((s) => s !== key)
+      : orderShas(
+          [...slice.selectedShas, key],
+          slice.commits,
+          sliceRepos(slice).map((r) => r.id),
+        );
     patch(set, tabId, {
       selectedShas: nextShas,
       diffBySha: nextDiffs,
@@ -926,29 +1115,49 @@ export const useCommitReview = create<State>((set, get) => ({
     useTabsStore.getState().patchCommitReviewTab(tabId, { selectedShas: [] });
   },
 
-  refreshSource: async (tabId) => {
+  toggleRepo: (tabId, repoId) => {
     const slice = get().byTab.get(tabId);
     if (!slice || slice.busy) return;
-    // Only the live source directory's git state changes via the in-app
-    // switcher; a tab pinned to a different cwd (its repo didn't move) is left
-    // alone. The repo registry is the single source of truth for that root.
-    if (slice.cwd !== primaryRepoRoot(getRepos())) return;
+    patch(set, tabId, {
+      repoScope: toggleRepoScope(slice.repoScope, sliceRepos(slice), repoId),
+    });
+  },
 
-    // Re-read the commit list + dirty-state for the (possibly new) branch so
-    // the picker offers the right commits and the "Local changes" affordance
-    // matches the current tree.
+  refreshSource: async (tabId, root) => {
+    const slice = get().byTab.get(tabId);
+    if (!slice || slice.busy) return;
+    const repos = sliceRepos(slice);
+    // A payload-less event means "refresh all"; a root narrows it to the repo
+    // that moved. Compared with the registry's own separator- and
+    // case-insensitive rule, because a root that round-tripped through an
+    // event payload comes back in whichever spelling that layer preferred —
+    // a raw `!==` here is what once made this silently return forever.
+    if (root && !repos.some((r) => sameRoot(r.root, root))) return;
+
+    // Re-read the commit lists + dirty-state for the (possibly new) branches so
+    // the picker offers the right commits and the "Local changes" affordances
+    // match the current trees.
     await get().loadCommits(tabId);
 
-    // A branch switch / pull / stash op rewrote the working tree, so any cached
-    // "Local changes" diff is now stale. Drop it (commit diffs are immutable
-    // and stay cached); reload it if it's selected so the diff panel — and the
-    // next run — reflect the live tree, never the previous branch's snapshot.
+    // A branch switch / pull / stash op rewrote a working tree, so that repo's
+    // cached "Local changes" diff is now stale. Drop it (commit diffs are
+    // immutable and stay cached); reload if it's selected so the diff panel —
+    // and the next run — reflect the live tree, never the old snapshot.
     const after = get().byTab.get(tabId);
-    if (!after || !after.diffBySha[LOCAL_CHANGES_SHA]) return;
+    if (!after) return;
+    const stale = Object.keys(after.diffBySha).filter((key) => {
+      if (!isLocalKey(key)) return false;
+      if (!root) return true;
+      const repo = repos.find(
+        (r) => r.id === splitCommitKey(key, "").repoId,
+      );
+      return !!repo && sameRoot(repo.root, root);
+    });
+    if (stale.length === 0) return;
     const nextDiffs = { ...after.diffBySha };
-    delete nextDiffs[LOCAL_CHANGES_SHA];
+    for (const key of stale) delete nextDiffs[key];
     patch(set, tabId, { diffBySha: nextDiffs });
-    if (after.selectedShas.includes(LOCAL_CHANGES_SHA)) {
+    if (stale.some((key) => after.selectedShas.includes(key))) {
       await get().loadDiffs(tabId);
     }
   },
@@ -961,19 +1170,29 @@ export const useCommitReview = create<State>((set, get) => ({
       patch(set, tabId, { diffLoading: false, diffError: null });
       return;
     }
+    const repos = sliceRepos(slice);
     // Tag this load so only the most-recent toggle's load owns the
     // loading/error flags: an earlier load resolving late can't flip
     // diffLoading off while a newer one is still pending, nor clobber its error.
     const seq = slice.diffLoadSeq + 1;
     patch(set, tabId, { diffLoading: true, diffError: null, diffLoadSeq: seq });
     const results = await Promise.allSettled(
-      missing.map((s) =>
-        s === LOCAL_CHANGES_SHA
-          ? workingTreeDiff(slice.cwd)
-          : commitDiff(slice.cwd, s),
-      ),
+      missing.map((key) => {
+        const { repoId, sha } = splitCommitKey(key, repos[0]?.id ?? "");
+        const repo = repos.find((r) => r.id === repoId);
+        if (!repo) {
+          return Promise.reject(
+            new Error("That repo is no longer in your workspace."),
+          );
+        }
+        return (
+          sha === LOCAL_CHANGES_SHA
+            ? workingTreeDiff(repo.root)
+            : commitDiff(repo.root, sha)
+        ).then((d) => tagDiff(d, repo));
+      }),
     );
-    const fetched: Record<string, CommitDiff> = {};
+    const fetched: Record<string, RepoCommitDiff> = {};
     const errors: string[] = [];
     results.forEach((r, i) => {
       if (r.status === "fulfilled") fetched[missing[i]] = r.value;
@@ -989,11 +1208,10 @@ export const useCommitReview = create<State>((set, get) => ({
       // meanwhile, so a stale snapshot can never be reviewed. The loading/error
       // flags are only written by the latest-issued load.
       const fresh = { ...fetched };
-      if (
-        fresh[LOCAL_CHANGES_SHA] &&
-        !curr.selectedShas.includes(LOCAL_CHANGES_SHA)
-      ) {
-        delete fresh[LOCAL_CHANGES_SHA];
+      for (const key of Object.keys(fresh)) {
+        if (isLocalKey(key) && !curr.selectedShas.includes(key)) {
+          delete fresh[key];
+        }
       }
       const merged = { ...curr, diffBySha: { ...curr.diffBySha, ...fresh } };
       if (curr.diffLoadSeq === seq) {
@@ -1059,20 +1277,36 @@ export const useCommitReview = create<State>((set, get) => ({
     // we never hand it a stale snapshot. (Commit diffs are immutable and stay
     // cached.) On a transient read failure, fall back to the cached diff rather
     // than refusing the run.
-    if (slice.selectedShas.includes(LOCAL_CHANGES_SHA)) {
-      try {
-        const fresh = await workingTreeDiff(slice.cwd);
-        const now = get().byTab.get(tabId);
-        // Drop the result if the tab vanished, a run already started, or the
-        // user deselected local while we were reading (mirrors loadDiffs).
-        if (now && !now.busy && now.selectedShas.includes(LOCAL_CHANGES_SHA)) {
-          patch(set, tabId, {
-            diffBySha: { ...now.diffBySha, [LOCAL_CHANGES_SHA]: fresh },
-          });
+    const localKeys = slice.selectedShas.filter(isLocalKey);
+    if (localKeys.length > 0) {
+      const repos = sliceRepos(slice);
+      const reread = await Promise.all(
+        localKeys.map(async (key) => {
+          const repo = repos.find(
+            (r) => r.id === splitCommitKey(key, repos[0]?.id ?? "").repoId,
+          );
+          if (!repo) return null;
+          try {
+            return { key, diff: tagDiff(await workingTreeDiff(repo.root), repo) };
+          } catch {
+            // Keep the cached local diff — reviewing the last-known tree beats
+            // refusing the run on a transient read error.
+            return null;
+          }
+        }),
+      );
+      const now = get().byTab.get(tabId);
+      // Drop the results if the tab vanished or a run already started; drop any
+      // whose target the user deselected while we were reading (mirrors
+      // loadDiffs).
+      if (now && !now.busy) {
+        const fresh: Record<string, RepoCommitDiff> = {};
+        for (const r of reread) {
+          if (r && now.selectedShas.includes(r.key)) fresh[r.key] = r.diff;
         }
-      } catch {
-        // Keep the cached local diff — reviewing the last-known tree beats
-        // refusing the run on a transient read error.
+        if (Object.keys(fresh).length > 0) {
+          patch(set, tabId, { diffBySha: { ...now.diffBySha, ...fresh } });
+        }
       }
       slice = get().byTab.get(tabId);
       if (!slice || slice.busy) return;
@@ -1170,7 +1404,7 @@ export const useCommitReview = create<State>((set, get) => ({
       const w = createCheckpointWriter({
         runId,
         surface: "commit-review",
-        cwd: slice.cwd,
+        cwd: WORKSPACE_SCOPE,
         createdAt,
       });
       writer = w;
@@ -1180,8 +1414,9 @@ export const useCommitReview = create<State>((set, get) => ({
         runId,
         createdAt,
         modelId: effectiveModelId,
-        cwd: slice.cwd,
-        repos: prefs.codeSearchEnabled ? prefs.repos : [],
+        cwd: WORKSPACE_SCOPE,
+        repos: runRepos(slice),
+        repoScope: slice.repoScope,
         customInstructions: prefs.customInstructions || undefined,
         inputs: {
           selectedShas: slice.selectedShas,
@@ -1297,8 +1532,7 @@ export const useCommitReview = create<State>((set, get) => ({
     // Snapshotted diffs, keyed for the slice. Seeding these (and the selection)
     // as part of the claim is what keeps a resume off the live working tree AND
     // satisfies persistRow's no-diffs early return before the row goes running.
-    const snapshotDiffs: Record<string, CommitDiff> = {};
-    for (const d of payload.inputs.diffs) snapshotDiffs[d.sha] = d;
+    const snapshotDiffs = snapshotDiffMap(payload.inputs.diffs, getRepos());
 
     const abort = new AbortController();
     let started = false;
@@ -1328,7 +1562,10 @@ export const useCommitReview = create<State>((set, get) => ({
         createdAt: curr.createdAt ?? payload.createdAt,
         durationMs: null,
         resumable: null,
-        selectedShas: payload.inputs.selectedShas,
+        selectedShas: normalizeKeys(
+          payload.inputs.selectedShas,
+          getRepos()[0]?.id ?? "",
+        ),
         diffBySha: { ...curr.diffBySha, ...snapshotDiffs },
         context: curr.context || payload.inputs.context,
         attachments: curr.attachments.length
@@ -1350,7 +1587,10 @@ export const useCommitReview = create<State>((set, get) => ({
     const w = createCheckpointWriter({
       runId,
       surface: "commit-review",
-      cwd: payload.cwd,
+      // Not payload.cwd: a checkpoint written before reviews spanned the
+      // workspace is filed under a single root, and re-filing it here is what
+      // keeps `listCheckpoints` finding the resumed row.
+      cwd: WORKSPACE_SCOPE,
       createdAt: payload.createdAt,
     });
     let cpStage: RunStage = payload.stage;
@@ -1363,6 +1603,7 @@ export const useCommitReview = create<State>((set, get) => ({
       outcome: CheckpointOutcome | null,
     ): CommitReviewCheckpointV2 => ({
       ...payload,
+      cwd: WORKSPACE_SCOPE,
       stage: cpStage,
       stage1Candidates: cpCandidates,
       activity: sink.current,
@@ -1378,9 +1619,11 @@ export const useCommitReview = create<State>((set, get) => ({
         keys,
         local: localProviderConfig(prefs),
         // Every input is frozen at what the run started with — re-reading the
-        // working tree here would review code the transcript never saw.
+        // working tree here would review code the transcript never saw. The
+        // snapshot map, not the raw payload: it carries the repo tag a
+        // pre-multi-repo checkpoint's diffs don't.
         repos: payload.repos,
-        diffs: payload.inputs.diffs,
+        diffs: Object.values(snapshotDiffs),
         contextBlocks: payload.inputs.contextBlocks,
         attachments: payload.inputs.attachments,
         customInstructions: payload.customInstructions,
@@ -1534,12 +1777,23 @@ async function persistRow(
   const status = override.status ?? statusForPersist(slice.status);
   await saveCommitReview({
     runId: slice.runId,
-    cwd: slice.cwd,
+    // The workspace this review ran in, so reopening it restores its own repos
+    // rather than whichever are configured then (bug #8). The column is
+    // unconstrained TEXT, like the `commits` blob beside it.
+    cwd: JSON.stringify(sliceRepos(slice).map((r) => r.root)),
     commitSha: primary.sha,
     commitShort: primary.shortSha,
     commitSubject: primary.subject,
     commits: JSON.stringify(
-      diffs.map((d) => ({ sha: d.sha, short: d.shortSha, subject: d.subject })),
+      diffs.map(
+        (d): ReviewedCommit => ({
+          sha: d.sha,
+          short: d.shortSha,
+          subject: d.subject,
+          repoId: d.repoId,
+          repoName: d.repoName,
+        }),
+      ),
     ),
     status,
     modelId: slice.modelId ?? prefs.defaultModelId,
@@ -1576,27 +1830,68 @@ function safeParseApplied(json: string): AppliedPatchesMap {
   }
 }
 
-/** Restore the reviewed-commit SHAs from a saved row's `commits` blob, falling
- *  back to the single primary SHA for legacy rows (or an empty selection). */
-function safeParseCommitShas(json: string | null, fallbackSha: string): string[] {
+/** Restore the reviewed-commit selection keys from a saved row's `commits`
+ *  blob, falling back to the single primary SHA for legacy rows (or an empty
+ *  selection). Entries with no repo predate multi-repo and take `fallbackRepoId`
+ *  — the first repo, which is the root the app was then pinned to. */
+function safeParseCommitShas(
+  json: string | null,
+  fallbackSha: string,
+  fallbackRepoId: string,
+): string[] {
   if (json) {
     try {
       const v = JSON.parse(json);
       if (Array.isArray(v)) {
-        const shas = v
-          .map((c) =>
-            c && typeof c === "object" ? (c as ReviewedCommit).sha : null,
-          )
-          .filter((s): s is string => typeof s === "string" && s.length > 0);
-        if (shas.length > 0) return shas;
+        const keys = v
+          .map((c) => {
+            if (!c || typeof c !== "object") return null;
+            const { sha, repoId } = c as ReviewedCommit;
+            if (typeof sha !== "string" || sha.length === 0) return null;
+            return commitKey(repoId || fallbackRepoId, sha);
+          })
+          .filter((s): s is string => s !== null);
+        if (keys.length > 0) return keys;
       }
     } catch {
       // fall through to the single-commit fallback
     }
   }
-  return fallbackSha ? [fallbackSha] : [];
+  return fallbackSha ? [commitKey(fallbackRepoId, fallbackSha)] : [];
+}
+
+/** The repo roots a saved row's `cwd` column names. New rows store a JSON
+ *  array; anything that doesn't parse as one is a single path from the
+ *  single-root era. */
+function parseRepoRoots(cwd: string): string[] {
+  try {
+    const v = JSON.parse(cwd);
+    if (Array.isArray(v)) {
+      return v.filter((r): r is string => typeof r === "string" && !!r.trim());
+    }
+  } catch {
+    // not JSON — a legacy single path
+  }
+  return cwd.trim() ? [cwd] : [];
+}
+
+/** Configured repo ids for a set of roots, in registry order. Roots that no
+ *  longer name a configured repo simply drop out. */
+function repoIdsForRoots(roots: string[]): string[] {
+  return getRepos()
+    .filter((r) => roots.some((root) => sameRoot(r.root, root)))
+    .map((r) => r.id);
 }
 
 function errStr(e: unknown): string {
   return typeof e === "string" ? e : (e as Error)?.message ?? String(e);
+}
+
+/** Sort key for the merged timeline. `CommitMeta.date` is `%cI` — ISO-8601
+ *  strict — but the offsets differ between repos cloned on different machines,
+ *  so it's parsed rather than compared as text. An unparseable date sinks to
+ *  the bottom instead of scrambling the order around it. */
+function commitTime(c: RepoCommitMeta): number {
+  const ms = Date.parse(c.date);
+  return Number.isNaN(ms) ? Number.NEGATIVE_INFINITY : ms;
 }

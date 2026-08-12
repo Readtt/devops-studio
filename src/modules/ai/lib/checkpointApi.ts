@@ -27,7 +27,7 @@ import type { SuiteType, WorkItemRef } from "@/modules/ado";
 import type { ActivityEntry } from "@/modules/generator/lib/activityLog";
 import type { Coverage } from "@/modules/generator/lib/qaAnalystRun";
 import type { CandidateFinding } from "@/modules/commit-review/schema";
-import type { CommitDiff } from "@/modules/commit-review/gitCommitApi";
+import type { MaybeRepoCommitDiff } from "@/modules/commit-review/gitCommitApi";
 import type { WorkspaceRepo } from "@/modules/settings/store";
 
 export type CheckpointUsage = {
@@ -175,15 +175,24 @@ export type CommitReviewCheckpointV2 = {
   runId: string;
   createdAt: string;
   modelId: ModelId;
+  /** Scope key, not a directory: a review spans the whole workspace, so every
+   *  commit-review checkpoint is filed under the same literal. */
   cwd: string;
   /** The repos the run reads. Restored from HERE on resume, never from live
    *  prefs — a resumed run must read the repos it started with, or its
    *  replayed transcript stops matching what the tools now see. */
   repos: WorkspaceRepo[];
+  /** The user's read-scope selection behind `repos`, so reopening the review
+   *  re-renders the chips as they were. Not derivable from `repos`: with code
+   *  search off that list is empty whatever the scope said. Optional — payloads
+   *  written before the chips existed simply have none. */
+  repoScope?: string[] | null;
   customInstructions?: string;
   inputs: {
     selectedShas: string[];
-    diffs: CommitDiff[];
+    /** Repo-tagged once commit review went multi-repo; untagged on payloads
+     *  written before that, where every diff came from the one source root. */
+    diffs: MaybeRepoCommitDiff[];
     context: string;
     attachments: Attachment[];
     workItems: WorkItemRef[];

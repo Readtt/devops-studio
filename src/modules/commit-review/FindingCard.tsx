@@ -9,6 +9,7 @@ import {
 import { ApplyPatchCard } from "./ApplyPatchCard";
 import type { AppliedPatchRecord } from "./patchSchema";
 import type { Category, Finding, Severity } from "./schema";
+import type { WorkspaceRepo } from "@/modules/settings/store";
 
 /** Left-border accent by severity — mirrors the Generator review list's
  *  `border-l-2` decision-color idiom. */
@@ -78,10 +79,14 @@ function openInViewer(file: string, startLine: number, endLine: number) {
 
 export function FindingCard({
   finding,
+  repos,
   applied,
   onApplied,
 }: {
   finding: Finding;
+  /** The review's repos — what this finding's `<repo>/<path>` resolves against
+   *  when its suggested fix is applied. */
+  repos: WorkspaceRepo[];
   applied?: AppliedPatchRecord | null;
   onApplied?: (record: AppliedPatchRecord) => void;
 }) {
@@ -205,6 +210,7 @@ export function FindingCard({
       {finding.suggestedFix ? (
         <ApplyPatchCard
           body={JSON.stringify(finding.suggestedFix)}
+          repos={repos}
           applied={applied ?? null}
           onApplied={onApplied}
         />

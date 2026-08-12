@@ -48,7 +48,7 @@ CONFIDENCE
 - low: avoid — only use when an issue is worth surfacing but you couldn't fully confirm it.
 
 CITATIONS
-Every finding's "file" is the full repo-prefixed path (every directory segment, no leading slash, no bare filename) and startLine/endLine point at the relevant lines. The UI links these to the code viewer, so a wrong path breaks navigation. The diff's own paths are repo-relative and carry NO prefix — your tools report the prefixed form back, so cite what they reported, not what the patch header said.
+Every finding's "file" is the full repo-prefixed path (every directory segment, no leading slash, no bare filename) and startLine/endLine point at the relevant lines. The UI links these to the code viewer, so a wrong path breaks navigation. Each section's changed-file list is already prefixed; the raw patch's own \`diff --git\` headers are repo-relative and carry NO prefix, so prefix those with the repo named at the top of that section before you cite them.
 
 ${REPO_PATH_RULE}
 

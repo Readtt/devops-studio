@@ -72,11 +72,14 @@ describe("commit-review prompts · repo addressing", () => {
     }
   });
 
-  // The diff's own paths are repo-relative; echoing one back as a citation is
-  // ambiguous the moment a second repo is configured.
+  // The raw patch's own paths are repo-relative; echoing one back as a citation
+  // is ambiguous the moment a second repo is configured.
   it("tells the investigator not to cite the patch header's bare path", () => {
     expect(INVESTIGATE_SYSTEM_PROMPT).toMatch(
-      /diff's own paths are repo-relative and carry NO prefix/,
+      /raw patch's own .* headers are repo-relative and carry NO prefix/,
+    );
+    expect(INVESTIGATE_SYSTEM_PROMPT).toContain(
+      "prefix those with the repo named at the top of that section",
     );
   });
 });

@@ -29,10 +29,16 @@ import {
 } from "@/modules/ai/lib/checkpointApi";
 import type { CandidateFinding } from "./schema";
 
-const REPOS = [{ id: "r1", name: "repo-one", root: "C:/repo", ado: null }];
-import type { CommitDiff } from "./gitCommitApi";
+const REPOS = [
+  { id: "r1", name: "repo-one", root: "C:/repo", ado: null },
+  { id: "r2", name: "repo-two", root: "C:/repo-two", ado: null },
+];
+import type { RepoCommitDiff } from "./gitCommitApi";
 
-function diff(rawPatch: string, over: Partial<CommitDiff> = {}): CommitDiff {
+function diff(
+  rawPatch: string,
+  over: Partial<RepoCommitDiff> = {},
+): RepoCommitDiff {
   return {
     sha: "x",
     shortSha: "x",
@@ -46,11 +52,13 @@ function diff(rawPatch: string, over: Partial<CommitDiff> = {}): CommitDiff {
     rawPatch,
     truncated: false,
     headSha: "h",
+    repoId: "r1",
+    repoName: "repo-one",
     ...over,
   };
 }
 
-function investigate(diffs: CommitDiff[]): string {
+function investigate(diffs: RepoCommitDiff[]): string {
   // Only diffs / contextBlocks / repos are read by the prompt builder.
   return buildInvestigatePrompt({
     diffs,
@@ -552,11 +560,41 @@ describe("buildInvestigatePrompt", () => {
     expect(out).not.toContain("predate the working tree");
   });
 
+  // The model addresses files as `<repo>/<path>`, but git writes repo-relative
+  // paths into a patch. The section header is what bridges the two.
+  it("names each section's repo and prefixes its changed-file list", () => {
+    const out = investigate([
+      diff("@@ @@", {
+        files: [
+          { path: "src/a.ts", additions: 1, deletions: 0, status: "modified" },
+        ],
+      }),
+    ]);
+    expect(out).toContain("**Repo:** repo-one");
+    expect(out).toContain("MODIFIED: repo-one/src/a.ts");
+    // The raw patch itself is left exactly as git wrote it — rewriting
+    // `diff --git` headers would corrupt a patch the model may `git apply`.
+    expect(out).toContain("prefix them with `repo-one/`");
+  });
+
+  it("tells the model when the selection spans repos, and which", () => {
+    const out = investigate([
+      diff("@@ @@"),
+      diff("@@ @@", { sha: "y", repoId: "r2", repoName: "repo-two" }),
+    ]);
+    expect(out).toContain("span 2 repos (repo-one, repo-two)");
+    expect(out).toContain("**Repo:** repo-two");
+    // One repo says nothing about spanning — there is nothing to span.
+    expect(investigate([diff("@@ @@")])).not.toContain("span");
+  });
+
   it("warns when a reviewed commit predates the working tree", () => {
     const out = investigate([
       diff("@@ @@", { shortSha: "1111111", headSha: "2222222" }),
     ]);
-    expect(out).toContain("predate the working tree");
+    expect(out).toContain("predates the working tree");
+    // Named with its repo: at more than one there is no single working tree.
+    expect(out).toContain("`1111111` (repo-one, tree at `2222222`)");
     expect(out).toContain("**Commit:**");
   });
 });
@@ -599,7 +637,7 @@ describe("buildVerifyPrompt — the verify stage's window", () => {
       { shortSha: "abc1234", headSha: "abc1234" },
     );
 
-  const verify = (diffs: CommitDiff[], candidates: CandidateFinding[]) =>
+  const verify = (diffs: RepoCommitDiff[], candidates: CandidateFinding[]) =>
     buildVerifyPrompt(
       {
         diffs,

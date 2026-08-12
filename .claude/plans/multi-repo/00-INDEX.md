@@ -421,6 +421,83 @@ at eight the chips wrap and the preview collapses to "+3 repos". Zero console er
 (publish across two repos) is covered by unit tests, not by a live ADO publish**, and steps 1 and 6
 (a real analyze, interrupt, resume) need API keys and three real repos — unrun live, pinned by tests.
 
+**Phase 10 — `slice.cwd` became `repoIds: string[] | null`, where null means "track the live
+registry".** The plan said `repoIds: string[]`. A frozen list is right for a REHYDRATED saved run
+(bug #8 — it must show the repos it ran against) and wrong for a fresh tab, which would then never
+see a repo added in Settings without being reopened. Null is the same convention `repoScope` already
+uses, and `scopedRepos(getRepos(), slice.repoIds)` reads both cases with one function. The pane
+derives its repos from the LIVE `usePreferencesStore((s) => s.repos)` rather than calling
+`sliceRepos` imperatively, so the chips re-render on a registry change; a small effect re-runs
+`loadCommits` when the repo signature moves, because the commit list is a cache.
+
+**Phase 10 — diffs and picker rows are repo-TAGGED at the call site (`RepoCommitDiff` /
+`RepoCommitMeta`), and that tag is load-bearing for the AI.** The plan only asked for
+`{repoId, repoName}` on the picker rows. But the engine renders each diff into the prompt, and
+`git` writes repo-RELATIVE paths — so at N > 1 the model could not tell which repo a changed file
+belonged to. `diffHeader` now prefixes the changed-file LIST and states the repo; the raw patch is
+left byte-identical (rewriting `diff --git` headers would corrupt a patch the model may hand to
+`git apply`), and the investigate prompt's CITATIONS paragraph was corrected to match. A selection
+spanning repos also gets one sentence telling the model to trace across the seam.
+
+**Phase 10 — `verifyFocus` needed a repo-aware companion, and without it the narrowing silently
+died.** Candidates cite `<repo>/<path>`; `focusPatchOnFiles` substring-matches against
+`diff --git a/src/x.ts`. The prefixed form never matches, so every verify pass would have quietly
+fallen back to the full patch — correct, but the token win Phase 7's predecessor bought was gone.
+`focusPathsInRepo` maps cited paths into one repo and drops the ones naming a different one.
+
+**Phase 10 — `hasLocalChanges: boolean` became `dirtyRepoIds: string[]`, and the mount default
+selects EVERY dirty repo's local changes.** At one repo that is byte-identical to today. At several,
+uncommitted work spanning repos is the case this pane exists for; the selection is visible in the
+picker and the oversized-diff banner still warns, so nothing is silently expensive.
+
+**Phase 10 — the ROW's `cwd` and the CHECKPOINT's `cwd` diverged, deliberately.** `commit_reviews.cwd`
+holds a JSON array of the review's repo roots (that is what bug #8's fix reads back);
+`ai_checkpoints.cwd` holds the literal `"workspace"`, as the plan specified. A resumed pre-multi-repo
+checkpoint is re-filed under `"workspace"` so `listCheckpoints` keeps finding it. Both readers are
+tolerant: a `cwd` that doesn't parse as JSON is a legacy single path, an untagged checkpoint diff and
+a bare selection sha both belong to `repos[0]`, and `repoScope` is optional on the payload. **No
+version bump** — `CHECKPOINT_PAYLOAD_VERSION` is still 2.
+
+**Phase 10 — `ApplyPatchCard` now takes `repos` as a prop** (drilled through `FindingsList` →
+`FindingCard`), and resolves through `resolveRepoPath`, which also brings the traversal and
+secret/protected-path gates the old `resolveAgainstRoot` join never had — it passed absolute paths
+straight through. **Phase 11 should not re-add a global-preference read here.**
+
+**Phase 10 — the fresh-review dedup key is a constant, and `cwd` is gone from every WRITE.**
+`CommitReviewTab.cwd` survives as an optional `@deprecated` field documenting what persisted tabs
+carry; nothing reads it and `openTab` no longer writes it, so the persist version stays 1 with no
+`migrate`. `openCommitReviewTab` / `launchCommitReview` now gate on "the workspace is empty" rather
+than "there is a source root".
+
+**Phase 10 — `commitReviewApi` reads are zod-parsed** at the IPC boundary, per the plan. `get`
+returns null on a shape mismatch; `list` drops the offending row and keeps the rest, because failing
+the whole call would hide every good review behind one bad one.
+
+**Phase 10 — History rows show the repo on the SUBJECT line, not the meta line.** Driven in the real
+webview, the meta line's five items squeezed the chip to the single letter "R." in a 200 px sidebar.
+On the subject line it competes only with a string that already truncates.
+
+**Phase 10 — verification is REAL, including the live steps.** `tsc` clean, `vite build` clean, 1126
+frontend tests green (+39; 65 in the store suite, 20 in `verifyFocus`, 15 in the selector suite).
+Twenty-five mutations were each caught by exactly the intended test — a concatenated merge, an
+ISO-text date compare, one unreadable repo emptying the picker, every diff read from `repos[0]`,
+`toggleLocalChanges` ignoring its argument, the run ignoring the scope, the checkpoint dropping the
+scope, the row storing one root, bug #8 restored, adopt resuming against a changed workspace, a raw
+`!==` root compare, a whole-workspace local-diff drop, a first-repo-only pre-run re-read, an untagged
+snapshot diff, unkeyed legacy shas, a repo-less commits blob, per-directory checkpoints, locals
+losing their sort position, a bare sha read as a repo id, focus paths keeping their prefix, focus
+paths leaking across repos, an unnamed diff section, an unprefixed file list, and a dropped span
+note. Verify steps 2–6 were driven in the **real main webview** over CDP against a mocked Tauri IPC
+boundary at N=2 and N=1: the merged picker interleaves repo-two's commit between repo-one's two, each
+repo carries its own `head` badge, searching a repo name narrows to it, one commit from each repo
+loads its diff **from its own root**, deselecting a repo from the read scope leaves the ticked
+commits ticked, a reopened saved run restores its own repo set, and **Apply wrote to
+`C:\dev\repo-two\src\two.ts`** — bug #4, closed end to end. At one repo the pane is unchanged: no
+repo chips, no scope row, a plain "Local changes" trigger. Zero console errors. The drivers are
+`.claude/skills/drive-ui/drive-commit-review{,-apply}.mjs`. **Verify steps 1 and 7 (a real
+two-repo review, and interrupt→adopt) are unrun live** — they need API keys and two real repos;
+both are pinned by store tests.
+
 **Phase 6 found a real bug in its own first draft**, worth knowing because the pattern recurs: the
 repo popover's `open` is controlled, so a programmatic `setOpen(false)` never fires `onOpenChange` —
 the drilled-into repo was never cleared and the next open showed the previous repo's branches. Any

@@ -31,15 +31,11 @@ export function launchTerminal(): void {
 }
 
 export function launchCommitReview(): void {
-  const liveSourceRoot = primaryRepoRoot(getRepos());
-  if (!liveSourceRoot) {
-    // No commits are reviewable without a source dir — send the user to set
+  if (getRepos().length === 0) {
+    // No commits are reviewable with an empty workspace — send the user to set
     // one up rather than opening a useless empty pane.
     void openSettingsWindow("general");
     return;
   }
-  useTabsStore.getState().openTab({
-    kind: "commit-review",
-    cwd: liveSourceRoot,
-  });
+  useTabsStore.getState().openTab({ kind: "commit-review" });
 }

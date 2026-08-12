@@ -72,8 +72,9 @@ import {
 } from "@/modules/ai/lib/contextEstimate";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { setCodeSearchEnabled } from "@/modules/settings/store";
-import { SOURCE_GIT_CHANGED_EVENT } from "@/modules/git";
+import { setCodeSearchEnabled, type WorkspaceRepo } from "@/modules/settings/store";
+import { onSourceGitChanged } from "@/modules/git";
+import { RepoScopeChips } from "@/components/RepoScopeChips";
 import { AnalyzeActivityLog } from "@/modules/generator/components/AnalyzeActivityLog";
 import {
   AttachmentList,
@@ -86,6 +87,7 @@ import {
   MentionHint,
   useWorkItemMention,
 } from "@/modules/ado/components/WorkItemMention";
+import { scopedRepos } from "@/modules/ai/lib/repoScope";
 import {
   useCommitReview,
   selectedDiffs,
@@ -99,7 +101,12 @@ import {
 } from "./runCommitReview";
 import { CommitDiffPanel } from "./CommitDiffView";
 import { FindingCard } from "./FindingCard";
-import { LOCAL_CHANGES_SHA, type CommitMeta } from "./gitCommitApi";
+import {
+  commitKey,
+  isLocalKey,
+  LOCAL_CHANGES_SHA,
+  type RepoCommitMeta,
+} from "./gitCommitApi";
 import type { CandidateFinding, Finding } from "./schema";
 import type { AppliedPatchRecord, AppliedPatchesMap } from "./patchSchema";
 import type { WorkItemRef } from "@/modules/ado";
@@ -107,16 +114,16 @@ import type { Attachment } from "@/components/chat/attachments";
 
 type Props = {
   tabId: number;
-  cwd: string;
   modelId?: ModelId | null;
   rehydrateRunId?: string | null;
 };
 
-export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props) {
+export function CommitReviewPane({ tabId, modelId, rehydrateRunId }: Props) {
   const slice = useCommitReview((s) => s.byTab.get(tabId));
   const ensure = useCommitReview((s) => s.ensure);
   const toggleCommit = useCommitReview((s) => s.toggleCommit);
   const toggleLocalChanges = useCommitReview((s) => s.toggleLocalChanges);
+  const toggleRepo = useCommitReview((s) => s.toggleRepo);
   const refreshSource = useCommitReview((s) => s.refreshSource);
   const clearCommits = useCommitReview((s) => s.clearCommits);
   const setContext = useCommitReview((s) => s.setContext);
@@ -133,7 +140,12 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
 
   const codeSearchEnabled = usePreferencesStore((s) => s.codeSearchEnabled);
   const defaultModelId = usePreferencesStore((s) => s.defaultModelId);
+  const configuredRepos = usePreferencesStore((s) => s.repos);
   const availability = useModelAvailability();
+  // The repos this review covers. Derived from the LIVE registry (not read off
+  // the store imperatively) so adding one in Settings widens an open tab; a
+  // rehydrated saved run keeps the pinned set it ran against.
+  const repos = scopedRepos(configuredRepos, slice?.repoIds ?? null);
 
   // Whether the commit's diff is expanded below. Toggled from the stats chip
   // in the header; persists across commit switches within this tab session.
@@ -141,18 +153,38 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
   const bodyRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    void ensure(tabId, cwd, rehydrateRunId ?? null, modelId ?? null);
-  }, [tabId, cwd, rehydrateRunId, modelId, ensure]);
+    void ensure(tabId, rehydrateRunId ?? null, modelId ?? null);
+  }, [tabId, rehydrateRunId, modelId, ensure]);
 
-  // Keep an open tab in sync with the source dir's git state: when a branch
-  // switch / pull / stash op fires `source-git-changed` (the same event the
-  // status-bar readers listen to), re-read this tab's commit list, dirty-state,
-  // and any cached "Local changes" diff so it never shows the previous branch.
+  // Keep an open tab in sync with its repos' git state: when a branch switch /
+  // pull / stash op fires `source-git-changed` (the same event the status-bar
+  // readers listen to), re-read the commit lists, dirty-state, and any cached
+  // "Local changes" diff so the picker never shows the previous branch. Via
+  // `onSourceGitChanged`, never a raw listener — the event travels on both the
+  // DOM and Tauri buses, and only the helper collapses the echo.
   useEffect(() => {
-    const onChanged = () => void refreshSource(tabId);
-    window.addEventListener(SOURCE_GIT_CHANGED_EVENT, onChanged);
-    return () => window.removeEventListener(SOURCE_GIT_CHANGED_EVENT, onChanged);
+    return onSourceGitChanged((root) => void refreshSource(tabId, root));
   }, [tabId, refreshSource]);
+
+  // A repo added or removed in Settings changes what this review covers. The
+  // chips re-render from `repos` on their own; the commit list is a cache, so
+  // it has to be re-read.
+  const repoSignature = repos.map((r) => `${r.id}:${r.root}`).join("|");
+  const loadCommits = useCommitReview((s) => s.loadCommits);
+  const seenRepoSignature = useRef<string | null>(null);
+  // `hasSlice`, not `slice`: the slice's identity changes on every keystroke in
+  // the context box, and this only needs to know whether one exists yet.
+  const hasSlice = !!slice;
+  useEffect(() => {
+    if (!hasSlice) return;
+    if (seenRepoSignature.current === null) {
+      seenRepoSignature.current = repoSignature;
+      return;
+    }
+    if (seenRepoSignature.current === repoSignature) return;
+    seenRepoSignature.current = repoSignature;
+    void loadCommits(tabId);
+  }, [tabId, repoSignature, loadCommits, hasSlice]);
 
   // The toggle lives in the fixed header but the diff renders at the top of the
   // scroll body — bring it into view when revealed so a scrolled-down reader
@@ -232,8 +264,9 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
     );
   }
 
-  // Repo-level failure (no source dir / not a git repo) — nothing else works.
-  if (slice.commitsError && slice.commits.length === 0) {
+  // Nothing readable anywhere — no repos configured, or every one of them
+  // failed. A partial failure keeps the pane and shows a banner instead.
+  if (repos.length === 0 || (slice.commitsError && slice.commits.length === 0)) {
     return (
       <div className="flex h-full items-center justify-center p-6">
         <div className="max-w-md rounded-md border border-border/60 bg-card/40 p-5 text-center">
@@ -244,11 +277,20 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
             className="mx-auto text-amber-500"
           />
           <p className="mt-2 text-[12.5px] font-medium text-foreground">
-            Can't read commits here
+            {repos.length === 0 ? "No source repos yet" : "Can't read commits"}
           </p>
           <p className="mt-1 text-[11.5px] leading-snug text-muted-foreground">
-            {slice.commitsError}. Point your source directory (bottom-left
-            status bar) at a git repository, then reopen Commit Review.
+            {repos.length === 0
+              ? "Commit Review reads the git history of your source repos."
+              : `${slice.commitsError}.`}{" "}
+            <button
+              type="button"
+              onClick={() => void openSettingsWindow("general")}
+              className="text-primary underline-offset-2 hover:underline"
+            >
+              {repos.length === 0 ? "Add a repo" : "Check your repos"}
+            </button>{" "}
+            in Settings, then reopen Commit Review.
           </p>
         </div>
       </div>
@@ -266,14 +308,14 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
     (sum, d) => sum + d.files.reduce((a, f) => a + f.deletions, 0),
     0,
   );
-  const distinctFiles = new Set(diffs.flatMap((d) => d.files.map((f) => f.path)))
-    .size;
-  const localSelected = slice.selectedShas.includes(LOCAL_CHANGES_SHA);
-  const commitSelectedCount = slice.selectedShas.filter(
-    (s) => s !== LOCAL_CHANGES_SHA,
-  ).length;
-  const headSha = diffs[0]?.headSha ?? "";
-  const headMoved = diffs.some(
+  // Repo-qualified: the same relative path in two repos is two files.
+  const distinctFiles = new Set(
+    diffs.flatMap((d) => d.files.map((f) => `${d.repoId}/${f.path}`)),
+  ).size;
+  const localSelectedCount = slice.selectedShas.filter(isLocalKey).length;
+  const localSelected = localSelectedCount > 0;
+  const commitSelectedCount = slice.selectedShas.length - localSelectedCount;
+  const movedCommits = diffs.filter(
     (d) =>
       // The live working-tree diff is always against the current HEAD, so it
       // never "moved on" — only committed diffs can.
@@ -282,19 +324,21 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
       !!d.shortSha &&
       d.shortSha.slice(0, 7) !== d.headSha.slice(0, 7),
   );
+  const headMoved = movedCommits.length > 0;
   const combinedDiffBytes = combinedPatchBytes(diffs);
   const combinedDiffTooLarge =
     selectionCount > 1 && combinedDiffBytes > COMBINED_DIFF_WARN_BYTES;
 
-  // "Local changes" picked on its own, but its diff came back empty (clean tree,
-  // or everything got committed since) — nothing to review. Only blocks the run
-  // when local is the ONLY thing selected; alongside commits it's harmless.
-  const localDiff = diffs.find((d) => d.isLocal);
+  // "Local changes" picked on its own, but every one of its diffs came back
+  // empty (clean tree, or everything got committed since) — nothing to review.
+  // Only blocks the run when local is the ONLY thing selected; alongside
+  // commits it's harmless, and one clean repo among several dirty ones is too.
+  const localDiffs = diffs.filter((d) => d.isLocal);
   const localOnlyEmpty =
     localSelected &&
     commitSelectedCount === 0 &&
-    !!localDiff &&
-    localDiff.files.length === 0;
+    localDiffs.length > 0 &&
+    localDiffs.every((d) => d.files.length === 0);
   const canRun = allDiffsLoaded(slice) && !slice.diffLoading && !localOnlyEmpty;
   const hasRun = slice.status !== "idle" && slice.status !== "running";
   // Gate for every Resume affordance below: judges whether the checkpoint left
@@ -311,13 +355,13 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border/45 px-3 py-2">
         <CommitPicker
           commits={slice.commits}
+          repos={repos}
           selected={slice.selectedShas}
           loading={slice.commitsLoading}
           disabled={slice.busy}
-          hasLocalChanges={slice.hasLocalChanges}
-          localSelected={localSelected}
-          onToggleLocal={() => void toggleLocalChanges(tabId)}
-          onToggle={(sha) => void toggleCommit(tabId, sha)}
+          dirtyRepoIds={slice.dirtyRepoIds}
+          onToggleLocal={(repoId) => void toggleLocalChanges(tabId, repoId)}
+          onToggle={(key) => void toggleCommit(tabId, key)}
           onClear={() => clearCommits(tabId)}
         />
         {selectionCount > 0 ? (
@@ -502,16 +546,19 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
       ) : null}
       {headMoved ? (
         <Banner tone="info">
-          {selectionCount > 1 ? "Some selected commits aren't" : "This commit isn't"}{" "}
-          your latest
-          {headSha ? (
+          {movedCommits.length > 1 ? "Some selected commits aren't" : "This commit isn't"}{" "}
+          the latest in{" "}
+          {/* Named per repo: at more than one there is no single working tree,
+              so one shared head sha would be wrong for every other repo. */}
+          {[...new Set(movedCommits.map((d) => d.repoName))].join(", ")}{" "}
+          {movedCommits.length === 1 && movedCommits[0].headSha ? (
             <>
-              {" "}
-              (working tree at <span className="font-mono">{headSha}</span>)
+              (working tree at{" "}
+              <span className="font-mono">{movedCommits[0].headSha}</span>){" "}
             </>
           ) : null}
-          . Surrounding code is read from the current tree, which may differ from{" "}
-          {selectionCount > 1 ? "those commits'" : "this commit's"} state.
+          — surrounding code is read from the current tree, which may differ from{" "}
+          {movedCommits.length > 1 ? "those commits'" : "this commit's"} state.
         </Banner>
       ) : null}
       {slice.diffError ? (
@@ -595,6 +642,27 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
         )
       ) : null}
 
+      {/* Which repos the reviewer may READ. Deliberately not a filter on the
+          commit list: a commit in one repo often can't be judged without
+          reading a different one that has no commit in the selection at all.
+          Only worth a control once there's a choice to make, and only when
+          anything reads source at all. */}
+      {codeSearchEnabled && repos.length > 1 ? (
+        <div className="border-b border-border/45 px-3 py-2">
+          <RepoScopeChips
+            repos={repos}
+            scope={slice.repoScope}
+            onToggle={(repoId) => toggleRepo(tabId, repoId)}
+            label="Repos the reviewer can read"
+            hint={
+              scopedRepos(repos, slice.repoScope).length === 0
+                ? "Nothing selected — the reviewer sees the diff and nothing else."
+                : "Which repos it may open files in while tracing this change. Separate from which commits you picked above."
+            }
+          />
+        </div>
+      ) : null}
+
       {/* Add context (collapsed) */}
       <div className="border-b border-border/45 px-3 py-2">
         <ContextSection
@@ -615,6 +683,7 @@ export function CommitReviewPane({ tabId, cwd, modelId, rehydrateRunId }: Props)
         <Body
           slice={slice}
           tabId={tabId}
+          repos={repos}
           applyFix={applyFix}
           onRun={() => guard.attempt(() => void run(tabId))}
           onResume={() => guard.attempt(() => void resume(tabId))}
@@ -662,6 +731,7 @@ function Banner({
 function Body({
   slice,
   tabId,
+  repos,
   applyFix,
   onRun,
   onResume,
@@ -670,6 +740,8 @@ function Body({
 }: {
   slice: CommitReviewSlice;
   tabId: number;
+  /** The review's repos — what a finding's `<repo>/<path>` resolves against. */
+  repos: WorkspaceRepo[];
   applyFix: (tabId: number, findingId: string, record: AppliedPatchRecord) => void;
   onRun: () => void;
   onResume: () => void;
@@ -695,6 +767,7 @@ function Body({
         <PartialFindings
           candidates={partial}
           verifying={slice.busy}
+          repos={repos}
           appliedPatches={slice.appliedPatches}
           onApply={(findingId, record) => applyFix(tabId, findingId, record)}
         />
@@ -702,6 +775,7 @@ function Body({
       <BodyContent
         slice={slice}
         tabId={tabId}
+        repos={repos}
         applyFix={applyFix}
         onRun={onRun}
         onResume={onResume}
@@ -722,12 +796,14 @@ function Body({
 function PartialFindings({
   candidates,
   verifying,
+  repos,
   appliedPatches,
   onApply,
 }: {
   candidates: CandidateFinding[];
   /** The verify pass is still running — this is a live preview, not a remnant. */
   verifying: boolean;
+  repos: WorkspaceRepo[];
   appliedPatches: AppliedPatchesMap;
   onApply: (findingId: string, record: AppliedPatchRecord) => void;
 }) {
@@ -755,6 +831,7 @@ function PartialFindings({
       <div className="px-3 pb-3 pt-2">
         <FindingsList
           findings={unverifiedFindings(candidates)}
+          repos={repos}
           appliedPatches={appliedPatches}
           durationMs={null}
           onApply={onApply}
@@ -822,6 +899,7 @@ function classifyReviewError(slice: CommitReviewSlice): ErrorClass {
 function BodyContent({
   slice,
   tabId,
+  repos,
   applyFix,
   onRun,
   onResume,
@@ -829,6 +907,7 @@ function BodyContent({
 }: {
   slice: CommitReviewSlice;
   tabId: number;
+  repos: WorkspaceRepo[];
   applyFix: (tabId: number, findingId: string, record: AppliedPatchRecord) => void;
   onRun: () => void;
   onResume: () => void;
@@ -954,6 +1033,7 @@ function BodyContent({
     return (
       <FindingsList
         findings={slice.findings}
+        repos={repos}
         appliedPatches={slice.appliedPatches}
         durationMs={slice.durationMs}
         onApply={(findingId, record) => applyFix(tabId, findingId, record)}
@@ -1058,11 +1138,13 @@ function SourceHint({
 
 function FindingsList({
   findings,
+  repos,
   appliedPatches,
   durationMs,
   onApply,
 }: {
   findings: Finding[];
+  repos: WorkspaceRepo[];
   appliedPatches: AppliedPatchesMap;
   durationMs: number | null;
   onApply: (findingId: string, record: AppliedPatchRecord) => void;
@@ -1083,6 +1165,7 @@ function FindingsList({
           <li key={f.id}>
             <FindingCard
               finding={f}
+              repos={repos}
               applied={appliedPatches[f.id] ?? null}
               onApplied={(record) => onApply(f.id, record)}
             />
@@ -1110,6 +1193,7 @@ function FindingsList({
               <li key={f.id}>
                 <FindingCard
                   finding={f}
+                  repos={repos}
                   applied={appliedPatches[f.id] ?? null}
                   onApplied={(record) => onApply(f.id, record)}
                 />
@@ -1128,39 +1212,49 @@ function FindingsList({
 
 function CommitPicker({
   commits,
+  repos,
   selected,
   loading,
   disabled,
-  hasLocalChanges,
-  localSelected,
+  dirtyRepoIds,
   onToggleLocal,
   onToggle,
   onClear,
 }: {
-  commits: CommitMeta[];
+  /** Every repo's commits, already merged newest-first. */
+  commits: RepoCommitMeta[];
+  repos: WorkspaceRepo[];
+  /** `${repoId}:${sha}` keys. */
   selected: string[];
   loading: boolean;
   /** Locked while a review is running so the reviewed set can't change mid-run. */
   disabled?: boolean;
-  /** Whether the working tree has uncommitted changes (gates the local row). */
-  hasLocalChanges: boolean;
-  /** Whether the "Local changes" target is part of the selection. */
-  localSelected: boolean;
-  onToggleLocal: () => void;
-  onToggle: (sha: string) => void;
+  /** Repos with uncommitted changes — one "Local changes" row each. */
+  dirtyRepoIds: string[];
+  onToggleLocal: (repoId: string) => void;
+  onToggle: (key: string) => void;
   onClear: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const selectedSet = new Set(selected);
-  const headSha = commits[0]?.sha;
-  const commitSelectedCount = selected.filter(
-    (s) => s !== LOCAL_CHANGES_SHA,
-  ).length;
+  const multiRepo = repos.length > 1;
+  // Newest commit PER REPO. A single `commits[0]` was right when the list was
+  // one repo's history; once repos interleave it badges whichever repo happens
+  // to have committed most recently and nothing else.
+  const headByRepo = new Map<string, string>();
+  for (const c of commits) {
+    if (!headByRepo.has(c.repoId)) headByRepo.set(c.repoId, c.sha);
+  }
+  const localSelectedRepos = repos.filter((r) =>
+    selectedSet.has(commitKey(r.id, LOCAL_CHANGES_SHA)),
+  );
+  const localSelected = localSelectedRepos.length > 0;
+  const commitSelectedCount = selected.filter((s) => !isLocalKey(s)).length;
   // When exactly one commit (and nothing else) is selected, show it inline.
   const onlyCommit =
     !localSelected && selected.length === 1
-      ? commits.find((c) => c.sha === selected[0]) ?? null
+      ? commits.find((c) => commitKey(c.repoId, c.sha) === selected[0]) ?? null
       : null;
 
   // Manual, order-preserving filter. cmdk's built-in fuzzy sort reorders rows
@@ -1170,15 +1264,21 @@ function CommitPicker({
   const filtered = q
     ? commits.filter(
         (c) =>
+          c.repoName.toLowerCase().includes(q) ||
           c.shortSha.toLowerCase().includes(q) ||
           c.subject.toLowerCase().includes(q) ||
           c.sha.toLowerCase().includes(q),
       )
     : commits;
-  // The "Local changes" row matches an empty box or any of its keywords.
-  const localRowVisible =
-    hasLocalChanges &&
-    (!q || "local changes uncommitted working tree".includes(q));
+  // A repo's "Local changes" row matches an empty box, its own name, or any of
+  // the shared keywords.
+  const localRows = repos.filter(
+    (r) =>
+      dirtyRepoIds.includes(r.id) &&
+      (!q ||
+        r.name.toLowerCase().includes(q) ||
+        "local changes uncommitted working tree".includes(q)),
+  );
 
   return (
     <Popover
@@ -1213,12 +1313,22 @@ function CommitPicker({
           {localSelected ? (
             <span className="min-w-0 truncate font-medium text-foreground/85">
               Local changes
+              {multiRepo && localSelectedRepos.length === 1
+                ? ` · ${localSelectedRepos[0].name}`
+                : localSelectedRepos.length > 1
+                  ? ` · ${localSelectedRepos.length} repos`
+                  : ""}
               {commitSelectedCount > 0
                 ? ` + ${commitSelectedCount} commit${commitSelectedCount === 1 ? "" : "s"}`
                 : ""}
             </span>
           ) : onlyCommit ? (
             <>
+              {multiRepo ? (
+                <span className="shrink-0 rounded-sm bg-foreground/[0.06] px-1 text-[9.5px] uppercase tracking-wide text-muted-foreground">
+                  {onlyCommit.repoName}
+                </span>
+              ) : null}
               <span className="shrink-0 font-mono text-foreground/85">
                 {onlyCommit.shortSha}
               </span>
@@ -1250,47 +1360,48 @@ function CommitPicker({
           <CommandInput
             value={query}
             onValueChange={setQuery}
-            placeholder="Search commits by message or sha…"
+            placeholder={
+              multiRepo
+                ? "Search commits by repo, message or sha…"
+                : "Search commits by message or sha…"
+            }
           />
           <CommandList className="max-h-[340px]">
-            {localRowVisible ? (
+            {localRows.length > 0 ? (
               <CommandGroup heading="Working tree">
-                <CommandItem
-                  value="__local_changes__"
-                  data-checked={localSelected}
-                  // Toggles in place — can be reviewed alone or with commits.
-                  onSelect={onToggleLocal}
-                  className="items-center gap-2"
-                >
-                  <span
-                    className={cn(
-                      "flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border transition-colors",
-                      localSelected
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-border/70",
-                    )}
-                  >
-                    {localSelected ? (
-                      <HugeiconsIcon icon={Tick02Icon} size={9} strokeWidth={3} />
-                    ) : null}
-                  </span>
-                  <HugeiconsIcon
-                    icon={PencilEdit01Icon}
-                    size={12}
-                    strokeWidth={1.75}
-                    className="shrink-0 text-muted-foreground"
-                  />
-                  <span className="min-w-0 flex-1 truncate text-[12px]">
-                    Local changes
-                  </span>
-                  <span className="shrink-0 text-[10px] text-muted-foreground/70">
-                    uncommitted
-                  </span>
-                </CommandItem>
+                {localRows.map((repo) => {
+                  const key = commitKey(repo.id, LOCAL_CHANGES_SHA);
+                  const isSel = selectedSet.has(key);
+                  return (
+                    <CommandItem
+                      key={key}
+                      value={key}
+                      data-checked={isSel}
+                      // Toggles in place — can be reviewed alone or with commits.
+                      onSelect={() => onToggleLocal(repo.id)}
+                      className="items-center gap-2"
+                    >
+                      <Checkbox on={isSel} />
+                      <HugeiconsIcon
+                        icon={PencilEdit01Icon}
+                        size={12}
+                        strokeWidth={1.75}
+                        className="shrink-0 text-muted-foreground"
+                      />
+                      {multiRepo ? <RepoChip name={repo.name} /> : null}
+                      <span className="min-w-0 flex-1 truncate text-[12px]">
+                        Local changes
+                      </span>
+                      <span className="shrink-0 text-[10px] text-muted-foreground/70">
+                        uncommitted
+                      </span>
+                    </CommandItem>
+                  );
+                })}
               </CommandGroup>
             ) : null}
             {filtered.length === 0 ? (
-              localRowVisible ? null : (
+              localRows.length > 0 ? null : (
                 <div className="py-6 text-center text-[11.5px] text-muted-foreground">
                   No commits match.
                 </div>
@@ -1298,37 +1409,32 @@ function CommitPicker({
             ) : (
             <CommandGroup heading="Commits">
               {filtered.map((c) => {
-                const isSel = selectedSet.has(c.sha);
+                const key = commitKey(c.repoId, c.sha);
+                const isSel = selectedSet.has(key);
                 return (
                 <CommandItem
-                  key={c.sha}
-                  value={c.sha}
+                  key={key}
+                  value={key}
                   data-checked={isSel}
                   // Don't close — multi-select toggles in place.
-                  onSelect={() => onToggle(c.sha)}
+                  onSelect={() => onToggle(key)}
                   className="items-center gap-2"
                 >
-                  <span
-                    className={cn(
-                      "flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border transition-colors",
-                      isSel
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-border/70",
-                    )}
-                  >
-                    {isSel ? (
-                      <HugeiconsIcon icon={Tick02Icon} size={9} strokeWidth={3} />
-                    ) : null}
-                  </span>
+                  <Checkbox on={isSel} />
+                  {multiRepo ? <RepoChip name={c.repoName} /> : null}
                   <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
                     {c.shortSha}
                   </span>
                   <span className="min-w-0 flex-1 truncate text-[12px]">
                     {c.subject}
                   </span>
-                  {c.sha === headSha ? (
+                  {headByRepo.get(c.repoId) === c.sha ? (
                     <span
-                      title="The latest commit on this branch (HEAD). Surrounding code in your working tree matches this commit."
+                      title={
+                        multiRepo
+                          ? `The latest commit on ${c.repoName}'s current branch (HEAD). That repo's working tree matches this commit.`
+                          : "The latest commit on this branch (HEAD). Surrounding code in your working tree matches this commit."
+                      }
                       className="shrink-0 rounded-sm bg-primary/12 px-1 text-[9px] font-medium uppercase tracking-wide text-primary"
                     >
                       head
@@ -1347,7 +1453,11 @@ function CommitPicker({
             <div className="flex items-center justify-between gap-2 border-t border-border/50 px-2.5 py-1.5 text-[10.5px] text-muted-foreground">
               <span className="min-w-0 truncate">
                 {[
-                  localSelected ? "Local changes" : null,
+                  localSelectedRepos.length > 1
+                    ? `Local changes in ${localSelectedRepos.length} repos`
+                    : localSelected
+                      ? "Local changes"
+                      : null,
                   commitSelectedCount > 0
                     ? `${commitSelectedCount} commit${commitSelectedCount === 1 ? "" : "s"}`
                     : null,
@@ -1368,6 +1478,31 @@ function CommitPicker({
         </Command>
       </PopoverContent>
     </Popover>
+  );
+}
+
+/** The picker's multi-select tick. Extracted only because the local-changes
+ *  rows and the commit rows now both render N of them. */
+function Checkbox({ on }: { on: boolean }) {
+  return (
+    <span
+      className={cn(
+        "flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border transition-colors",
+        on ? "border-primary bg-primary text-primary-foreground" : "border-border/70",
+      )}
+    >
+      {on ? <HugeiconsIcon icon={Tick02Icon} size={9} strokeWidth={3} /> : null}
+    </span>
+  );
+}
+
+/** Which repo a picker row belongs to. Shown only above one repo — at one it
+ *  would label every row with the same word. */
+function RepoChip({ name }: { name: string }) {
+  return (
+    <span className="max-w-[110px] shrink-0 truncate rounded-sm bg-foreground/[0.06] px-1 text-[9.5px] uppercase tracking-wide text-muted-foreground">
+      {name}
+    </span>
   );
 }
 

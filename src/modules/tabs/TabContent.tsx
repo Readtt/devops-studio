@@ -64,7 +64,6 @@ export const TabContent = memo(function TabContent({ tab }: Props) {
       return (
         <CommitReviewPane
           tabId={tab.id}
-          cwd={tab.cwd}
           modelId={tab.modelId ?? null}
           rehydrateRunId={tab.rehydrateRunId ?? null}
         />
