@@ -52,7 +52,7 @@ Do not substitute role-suggesting names in code, comments, prompts, or UI copy.
 | 3 | Repo registry + compatibility shim | `03-repo-registry.md` | ☑ | `a4f1399` |
 | 4 | Mechanical sweep: delete `sourceRoot` | `04-sourceroot-sweep.md` | ☑ | `b2cd9a4` |
 | 5 | Settings: "Source repos" block | `05-settings-repos.md` | ☑ | `0801e2f` |
-| 6 | Status bar: multi-repo | `06-status-bar.md` | ☑ | |
+| 6 | Status bar: multi-repo | `06-status-bar.md` | ☑ | `ad366e5` |
 | 7 | **AI tool layer — the core fix** | `07-ai-tool-layer.md` | ☐ | |
 | 8 | Prompts | `08-prompts.md` | ☐ | |
 | 9 | Generator | `09-generator.md` | ☐ | |
