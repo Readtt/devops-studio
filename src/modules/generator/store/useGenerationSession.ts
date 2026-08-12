@@ -64,7 +64,6 @@ import {
   emptyAnswerCause,
 } from "@/modules/ai/lib/errorClass";
 import type { TaskCheckpoint } from "@/modules/ai/lib/taskRunner";
-import { CURRENT_BRANCH_SENTINEL, resolveTrackingBranch } from "@/modules/git";
 import {
   localProviderConfig,
   usePreferencesStore,
@@ -2642,19 +2641,14 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       const prior = okByUid.get(c.uid);
       if (prior?.result?.id) caseIdByDraftUid.set(c.uid, prior.result.id);
     }
-    // Resolve the tracking branch once so published cases' code-link chips
-    // point at the right branch. Code links always track the live source-dir
-    // branch (resolved here, at publish time) — falling back to "main" only
-    // when there's no resolvable branch (detached HEAD / not a git repo). We
-    // also capture the source-dir HEAD SHA here so bug code refs can be stamped
-    // with the same commit.
-    let trackingBranch = "main";
-    let sourceDirSha: string | null = null;
-    // Whether we actually resolved a branch from the working dir. trackingBranch
-    // falls back to "main" when this stays null (non-git source dir / detached
-    // HEAD) — but we must NOT stamp that fabricated "main" onto code links for a
-    // source the user has no branch for, so the stamp below gates on this.
+    // Capture the source dir's branch and HEAD sha once, at publish time, so
+    // every case's code links and every bug's code refs carry the same
+    // provenance. Code links always track the live working-dir branch — there
+    // is no fixed-branch option. Either value can come back null (non-git
+    // source, or a detached HEAD, which has a commit but no branch); null
+    // stamps nothing rather than a "main" the user never generated from.
     let sourceDirBranch: string | null = null;
+    let sourceDirSha: string | null = null;
     let orgUrl = "";
     let project = "";
     try {
@@ -2671,18 +2665,17 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           sourceDirBranch = info?.branch ?? null;
           sourceDirSha = info?.commit ?? null;
         } catch {
-          // If git_repo_info fails we'll fall through to the "main" fallback.
+          // Non-fatal — publish proceeds with no provenance stamp.
         }
       }
-      // Always resolve live: pass the sentinel so any legacy fixed branch saved
-      // in settings is ignored in favor of the branch the user is on right now.
-      trackingBranch = resolveTrackingBranch(
-        CURRENT_BRANCH_SENTINEL,
-        sourceDirBranch,
-      );
     } catch {
-      // Non-fatal — falls back to "main".
+      // Non-fatal — publish proceeds with no provenance stamp.
     }
+
+    // One gate for both stamps: a case's source links and the bugs hanging off
+    // it must never disagree about where the code came from.
+    const stampedBranch = tagSourceBranch ? sourceDirBranch ?? "" : "";
+    const stampedSha = tagSourceBranch ? sourceDirSha : null;
 
     for (const c of keptCases) {
       // Skip cases that were already published successfully — re-running
@@ -2690,13 +2683,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       // visible in the log with its original "ok" status + result link.
       if (okByUid.has(c.uid)) continue;
       try {
-        // Tag the case's code links with the branch only when the user opted
-        // in (default). Passing "" omits the branch from the source-links block.
         const sourceLinksBlock = renderSourceLinksBlock(
           c.sourceLinks,
-          // Only stamp a branch we actually resolved from the working dir —
-          // never the "main" fallback on a non-git / detached-HEAD source.
-          tagSourceBranch && sourceDirBranch ? trackingBranch : "",
+          stampedBranch,
+          stampedSha ?? "",
         );
         const steps = c.steps.map((s, i) => ({
           index: i + 1,
@@ -2831,12 +2821,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
             file: r.file,
             startLine: r.startLine,
             endLine: r.endLine ?? undefined,
-            // Stamp the source-dir HEAD SHA (the commit the bug was found
-            // against, on the generation branch) so the bug's code refs survive
-            // future drift the same way case source-links do — unless the user
-            // turned off source-branch tagging. Null renders without the commit
-            // chip in BugPane; the user can still navigate by file/line.
-            commitSha: tagSourceBranch ? sourceDirSha : null,
+            // The commit the bug was found against, so its code refs survive
+            // future drift the same way case source-links do. Null renders
+            // without the commit chip in BugPane; the user can still navigate
+            // by file/line.
+            commitSha: stampedSha,
           })),
         });
         updateLog(set, b.uid, { status: "ok", result: created });
@@ -3869,9 +3858,13 @@ function updateLog(
   }));
 }
 
+/** `trackingBranch` and `generationSha` are the provenance stamp — both empty
+ *  when the user published without source-branch tagging, in which case the
+ *  link still records repo + path, just nothing about where it came from. */
 function renderSourceLinksBlock(
   links: DraftSourceLink[] | undefined,
   trackingBranch: string,
+  generationSha: string,
 ): string | null {
   if (!links || links.length === 0) return null;
   const sl: SourceLink[] = links.map((l) => ({
@@ -3881,7 +3874,7 @@ function renderSourceLinksBlock(
     symbol: l.symbol ?? undefined,
     lineRange: l.lineRange ?? undefined,
     generationBranch: trackingBranch,
-    generationSha: "",
+    generationSha,
     trackingBranch,
   }));
   return renderBlock(sl);

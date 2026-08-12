@@ -84,6 +84,23 @@ Phase 1 commit as having closed it.
 1–5 need a live OpenAI-compatible endpoint plus a valid and an invalid key, which this session had
 no access to. **Those five are unrun**, not passed.
 
+**Phase 2 — the plan's claim that branch and sha "are null together" is wrong.** `git.rs`
+`read_info:70-72` derives `detached = branch.is_none() && commit.is_some()`, so a detached HEAD has
+a real commit and no branch. The two gates were therefore NOT equivalent, and unifying them by
+tightening the bug gate would have silently dropped a true commit. They were unified the other way:
+one shared opt-in gate (`tagSourceBranch`), with each field stamping only what actually resolved.
+Pinned by `useGenerationSession.provenance.test.ts`.
+
+**Phase 2 — `resolveTrackingBranch` is now orphaned.** Publish was its last production caller; it
+only ever mapped `$current` → the working-dir branch with a `main` fallback that the stamp guard
+made unreachable. `src/modules/git/trackingBranch.ts` and its test still exist and `tsc` is clean —
+**Phase 13 should decide** whether multi-repo branch resolution reuses it or deletes it.
+`CURRENT_BRANCH_SENTINEL` is still live (`AzureDevOpsSection.tsx:142`).
+
+**Phase 2 — CLAUDE.md's branch-awareness paragraph was corrected**, not just the code: it claimed
+published links fall back to `main` on a detached HEAD / non-repo, which the `&& sourceDirBranch`
+guard already prevented.
+
 ---
 
 ## Shared: the data model
