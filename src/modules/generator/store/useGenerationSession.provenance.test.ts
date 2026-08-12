@@ -3,6 +3,7 @@ import { createGenerationSessionStore } from "./useGenerationSession";
 import type { ReviewedBug, ReviewedCase } from "../lib/draftBatchSchema";
 import { parseSourceLinks } from "@/modules/test-plans/lib/sourceLinksParser";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { createRepo } from "@/modules/settings/store";
 
 const BRANCH = "feature/2fa";
 const SHA = "9f3c1ab";
@@ -90,7 +91,7 @@ describe("publish stamps source provenance", () => {
   beforeEach(() => {
     createCaseInSuite.mockClear().mockResolvedValue({ id: 999, url: "" });
     createBugAndLink.mockClear().mockResolvedValue({ id: 1000, url: "" });
-    usePreferencesStore.setState({ sourceRoot: "C:/src/repo-one" });
+    usePreferencesStore.setState({ repos: [createRepo("C:/src/repo-one")] });
     mockRepoInfo.branch = BRANCH;
     mockRepoInfo.commit = SHA;
   });

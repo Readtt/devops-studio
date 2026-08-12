@@ -13,12 +13,17 @@ import { cn } from "@/lib/utils";
 import { windowDragProps } from "@/lib/windowDrag";
 import { CommandPalette } from "@/modules/command-palette";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
-import { usePreferencesStore } from "@/modules/settings/preferences";
+import {
+  getRepos,
+  usePreferencesStore,
+  usePrimaryRepoRoot,
+} from "@/modules/settings/preferences";
 import { SidebarRail, type SidebarViewId } from "@/modules/sidebar";
 import { useGlobalShortcuts } from "@/modules/shortcuts";
 import {
   emitGenerationBusy,
   onAdoConnectionChanged,
+  primaryRepoRoot,
   setSourceRoot,
   setTheme,
   type GenerationBusyReason,
@@ -442,7 +447,7 @@ function AppShell() {
       // abbreviated to. Resolving against the user's sourceRoot here is the
       // single point that fixes every dispatcher; the deep resolver also asks
       // the backend to locate the real file when a naive join would 404.
-      const liveSourceRoot = usePreferencesStore.getState().sourceRoot;
+      const liveSourceRoot = primaryRepoRoot(getRepos());
       const absPath =
         (await resolveSourcePathDeep(liveSourceRoot, input.path)) ?? input.path;
       const titleFor = (p: string) => {
@@ -496,7 +501,7 @@ function AppShell() {
       rehydrateRunId?: string;
       title?: string;
     }) => {
-      const liveSourceRoot = usePreferencesStore.getState().sourceRoot;
+      const liveSourceRoot = primaryRepoRoot(getRepos());
       const cwd = input?.cwd ?? liveSourceRoot;
       if (!cwd) {
         void openSettingsWindow("general");
@@ -547,7 +552,7 @@ function AppShell() {
       // almost always want to land in your project, not the app's process
       // cwd. Passing null explicitly lets a caller opt out and use whatever
       // Rust's default cwd resolution gives back.
-      const liveSourceRoot = usePreferencesStore.getState().sourceRoot;
+      const liveSourceRoot = primaryRepoRoot(getRepos());
       const cwd =
         input?.cwd === undefined ? liveSourceRoot ?? null : input.cwd;
       return useTabsStore.getState().openTab({
@@ -894,7 +899,7 @@ function AppShell() {
 
   // Source-directory picker. Persists to preferences so the BugPane's code-link
   // rows can resolve relative paths the next time the user opens the app.
-  const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
+  const sourceRoot = usePrimaryRepoRoot();
   const pickSourceDir = useCallback(async () => {
     try {
       const picked = await openDialog({
@@ -1532,7 +1537,6 @@ function AppShell() {
                     <TabsDndProvider>
                       <PaneTreeRenderer
                         node={paneTree}
-                        sourceRoot={sourceRoot}
                         emptyState={workspaceEmptyState}
                       />
                     </TabsDndProvider>

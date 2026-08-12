@@ -6,7 +6,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { TextDiff } from "@/components/diff/textDiff";
-import { usePreferencesStore } from "@/modules/settings/preferences";
+import { usePrimaryRepoRoot } from "@/modules/settings/preferences";
 import {
   Cancel01Icon,
   CheckmarkCircle02Icon,
@@ -62,7 +62,7 @@ export function ApplyPatchCard({
   /** Called after a successful apply so the parent persists the record. */
   onApplied?: (record: AppliedPatchRecord) => void;
 }) {
-  const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
+  const sourceRoot = usePrimaryRepoRoot();
   const [state, setState] = useState<ApplyState>({ kind: "idle" });
   // Local copy so the card reflects the apply instantly even if the parent
   // hasn't re-supplied `applied` yet (it does, on persist — this just avoids a

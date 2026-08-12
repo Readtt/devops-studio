@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useState } from "react";
 
-import { usePreferencesStore } from "@/modules/settings/preferences";
+import { usePrimaryRepoRoot } from "@/modules/settings/preferences";
 import { SOURCE_GIT_CHANGED_EVENT } from "./gitOps";
 
 export type GitRepoInfo = {
@@ -29,7 +29,7 @@ const REFRESH_MS = 30_000;
  * having to do anything.
  */
 export function useSourceDirGitInfo(): GitRepoInfo {
-  const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
+  const sourceRoot = usePrimaryRepoRoot();
   const [info, setInfo] = useState<GitRepoInfo>(EMPTY);
 
   useEffect(() => {

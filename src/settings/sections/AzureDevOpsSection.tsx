@@ -9,7 +9,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { AzureDevOpsBrand } from "@/components/AzureDevOpsBrand";
-import { usePreferencesStore } from "@/modules/settings/preferences";
+import {
+  usePreferencesStore,
+  usePrimaryRepoRoot,
+} from "@/modules/settings/preferences";
 import {
   emitAdoConnectionChanged,
   setCodeSearchEnabled,
@@ -56,7 +59,7 @@ export function AzureDevOpsSection() {
   const [patVisible, setPatVisible] = useState(false);
   const [hasStoredPat, setHasStoredPat] = useState(false);
   const gitInfo = useSourceDirGitInfo();
-  const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
+  const sourceRoot = usePrimaryRepoRoot();
   const codeSearchEnabled = usePreferencesStore((s) => s.codeSearchEnabled);
   const [status, setStatus] = useState<StatusBadge>({ kind: "unverified" });
   const [saving, setSaving] = useState(false);

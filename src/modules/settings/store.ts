@@ -139,10 +139,6 @@ export type Preferences = {
   /** Source repositories the app reads code from. Flat list — no active repo,
    *  no named profiles. Every code-reading surface sees all of them. */
   repos: WorkspaceRepo[];
-  /** Compatibility view of `repos[0]?.root`, derived on load and on every
-   *  registry write. Never persisted on its own. Goes away once every read
-   *  site routes through the registry. */
-  sourceRoot: string | null;
   /** Master switch: may the AI read the source directory (read-only
    *  Read/Glob/Grep) to ground its answers? Applies to every surface —
    *  Generator, Suite Chat, Code Review, Confidence. Default on. */
@@ -271,7 +267,6 @@ export const DEFAULT_PREFERENCES: Preferences = {
   // Must be a real array, not left undefined: preferences.ts spreads these as
   // the zustand initial state, so consumers map over it before hydration.
   repos: [],
-  sourceRoot: null,
   codeSearchEnabled: true,
   contextGuardEnabled: true,
   editorFontSize: EDITOR_FONT_SIZE_DEFAULT,
@@ -412,16 +407,10 @@ export function primaryRepoRoot(repos: WorkspaceRepo[]): string | null {
 /** Every registry write goes through here.
  *
  *  Routes through writePref so the cross-window event fires — the Settings
- *  window is a separate webview and never sees a write that skips it. The
- *  second emit keeps the derived `sourceRoot` view in step for the surfaces
- *  that still read a single root; it goes away with the field. */
+ *  window is a separate webview and never sees a write that skips it. */
 async function writeRepos(repos: WorkspaceRepo[]): Promise<WorkspaceRepo[]> {
   const next = normalizeRepos(repos);
   await writePref(KEY_REPOS, next);
-  await emit(PREFS_CHANGED_EVENT, {
-    key: KEY_SOURCE_ROOT,
-    value: primaryRepoRoot(next),
-  });
   return next;
 }
 
@@ -555,7 +544,6 @@ export async function loadPreferences(): Promise<Preferences> {
       get<Record<ShortcutId, KeyBinding[]>>(KEY_SHORTCUTS) ??
       DEFAULT_PREFERENCES.shortcuts,
     repos,
-    sourceRoot: primaryRepoRoot(repos),
     codeSearchEnabled:
       get<boolean>(KEY_CODE_SEARCH_ENABLED) ??
       DEFAULT_PREFERENCES.codeSearchEnabled,
@@ -882,8 +870,6 @@ export async function onPreferencesChange(
     [KEY_ZOOM_LEVEL]: "zoomLevel",
     [KEY_SHORTCUTS]: "shortcuts",
     [KEY_REPOS]: "repos",
-    // Not a stored key — writeRepos emits it so the derived view stays live.
-    [KEY_SOURCE_ROOT]: "sourceRoot",
     [KEY_CODE_SEARCH_ENABLED]: "codeSearchEnabled",
     [KEY_CONTEXT_GUARD_ENABLED]: "contextGuardEnabled",
     [KEY_EDITOR_FONT_SIZE]: "editorFontSize",

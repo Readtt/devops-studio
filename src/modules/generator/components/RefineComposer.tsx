@@ -47,7 +47,10 @@ import {
   canOfferResume,
   resumeUnavailableReason,
 } from "@/modules/ai/lib/errorClass";
-import { usePreferencesStore } from "@/modules/settings/preferences";
+import {
+  usePreferencesStore,
+  usePrimaryRepoRoot,
+} from "@/modules/settings/preferences";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { getModel } from "@/modules/ai/config";
 import { BestPracticeNotice } from "@/modules/ai/components/BestPracticeNotice";
@@ -141,7 +144,7 @@ export function RefineComposer({ isRefining }: Props) {
   const cases = useGenerationSession((s) => s.cases);
   const bugs = useGenerationSession((s) => s.bugs);
   const codeSearchEnabled = usePreferencesStore((s) => s.codeSearchEnabled);
-  const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
+  const sourceRoot = usePrimaryRepoRoot();
   const activityLog = useGenerationSession((s) => s.activityLog);
   const stepLabel = useGenerationSession((s) => s.stepLabel);
   const refineUndoSnapshot = useGenerationSession(

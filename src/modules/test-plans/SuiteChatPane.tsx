@@ -89,7 +89,10 @@ import {
   type ContextSegment,
 } from "@/modules/ai/lib/contextEstimate";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
-import { usePreferencesStore } from "@/modules/settings/preferences";
+import {
+  usePreferencesStore,
+  usePrimaryRepoRoot,
+} from "@/modules/settings/preferences";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowDown01Icon,
@@ -163,7 +166,7 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
   const setActiveThread = useSuiteChat((s) => s.setActiveThread);
   const deleteThread = useSuiteChat((s) => s.deleteThread);
   const renameThread = useSuiteChat((s) => s.renameThread);
-  const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
+  const sourceRoot = usePrimaryRepoRoot();
   const codeSearchEnabled = usePreferencesStore((s) => s.codeSearchEnabled);
   // Code grounding requires BOTH a source dir AND the global code-search toggle
   // — the send path gates on both (useSuiteChat), so the onboarding hint must

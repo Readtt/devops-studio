@@ -1,5 +1,6 @@
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
-import { usePreferencesStore } from "@/modules/settings/preferences";
+import { getRepos } from "@/modules/settings/preferences";
+import { primaryRepoRoot } from "@/modules/settings/store";
 import { useTabsStore } from "./store/useTabsStore";
 
 /**
@@ -22,7 +23,7 @@ export function launchGenerator(): void {
 }
 
 export function launchTerminal(): void {
-  const liveSourceRoot = usePreferencesStore.getState().sourceRoot;
+  const liveSourceRoot = primaryRepoRoot(getRepos());
   useTabsStore.getState().openTab({
     kind: "terminal",
     cwd: liveSourceRoot ?? null,
@@ -30,7 +31,7 @@ export function launchTerminal(): void {
 }
 
 export function launchCommitReview(): void {
-  const liveSourceRoot = usePreferencesStore.getState().sourceRoot;
+  const liveSourceRoot = primaryRepoRoot(getRepos());
   if (!liveSourceRoot) {
     // No commits are reviewable without a source dir — send the user to set
     // one up rather than opening a useless empty pane.

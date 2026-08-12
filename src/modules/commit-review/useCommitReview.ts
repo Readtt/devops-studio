@@ -29,9 +29,11 @@ const INVESTIGATE_BUDGET: RunBudget = {
 };
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import {
+  getRepos,
   localProviderConfig,
   usePreferencesStore,
 } from "@/modules/settings/preferences";
+import { primaryRepoRoot } from "@/modules/settings/store";
 import { useTabsStore } from "@/modules/tabs/store/useTabsStore";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import { bugsToContextBlocks } from "@/modules/ado/lib/bugContextBlock";
@@ -929,8 +931,8 @@ export const useCommitReview = create<State>((set, get) => ({
     if (!slice || slice.busy) return;
     // Only the live source directory's git state changes via the in-app
     // switcher; a tab pinned to a different cwd (its repo didn't move) is left
-    // alone. usePreferencesStore is the single source of truth for sourceRoot.
-    if (slice.cwd !== usePreferencesStore.getState().sourceRoot) return;
+    // alone. The repo registry is the single source of truth for that root.
+    if (slice.cwd !== primaryRepoRoot(getRepos())) return;
 
     // Re-read the commit list + dirty-state for the (possibly new) branch so
     // the picker offers the right commits and the "Local changes" affordance

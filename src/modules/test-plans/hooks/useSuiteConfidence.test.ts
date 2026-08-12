@@ -32,6 +32,7 @@ vi.mock("../lib/runSuiteConfidence", () => ({
 
 import { useSuiteConfidence, LARGE_SUITE_THRESHOLD } from "./useSuiteConfidence";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { createRepo } from "@/modules/settings/store";
 
 const ref = (id: number) => ({ id, title: `case ${id}`, state: "Design" });
 
@@ -47,7 +48,7 @@ beforeEach(() => {
   invoke.mockResolvedValue({ branch: "main", commit: "curr123", isRepo: true });
   // Default: no source dir, so staleness can't be determined and the discovery
   // skip behaves exactly as before (already-scored cases are skipped).
-  usePreferencesStore.setState({ sourceRoot: null, codeSearchEnabled: true });
+  usePreferencesStore.setState({ repos: [], codeSearchEnabled: true });
 });
 
 afterEach(() => {
@@ -81,7 +82,10 @@ describe("useSuiteConfidence.start discovery", () => {
   it("re-scores cases whose verdict was graded against a different source state", async () => {
     // Source dir set + current HEAD = curr123; verdicts stamped with a
     // different sha are stale and must be re-scored, fresh ones skipped.
-    usePreferencesStore.setState({ sourceRoot: "C:/repo", codeSearchEnabled: true });
+    usePreferencesStore.setState({
+      repos: [createRepo("C:/repo")],
+      codeSearchEnabled: true,
+    });
     invoke.mockResolvedValue({ branch: "main", commit: "curr123", isRepo: true });
     listSuiteCases.mockResolvedValue([ref(1), ref(2), ref(3)]);
     getConfidenceMany.mockResolvedValue(

@@ -14,6 +14,7 @@ import { listSuiteCases } from "@/modules/ado";
 import { hasKeyForModel } from "@/modules/ai";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { primaryRepoRoot } from "@/modules/settings/store";
 import type { GitRepoInfo } from "@/modules/git";
 import { getConfidenceMany } from "../lib/confidenceApi";
 import { verdictSourceState, type ConfidenceVerdict } from "../lib/confidence";
@@ -23,7 +24,7 @@ import { scoreCases, type ScoreTarget } from "../lib/runSuiteConfidence";
  *  deciding which stored verdicts are stale before a bulk run. Best-effort. */
 async function currentSourceSha(): Promise<string | null> {
   const prefs = usePreferencesStore.getState();
-  const root = prefs.codeSearchEnabled ? (prefs.sourceRoot ?? null) : null;
+  const root = prefs.codeSearchEnabled ? primaryRepoRoot(prefs.repos) : null;
   if (!root) return null;
   try {
     const info = await invoke<GitRepoInfo>("git_repo_info", { path: root });

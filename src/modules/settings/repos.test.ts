@@ -113,8 +113,8 @@ describe("repos preference · migration from the single source root", () => {
     expect(prefs.repos[0].id).toBeTruthy();
     // Persisted, so the next boot doesn't mint a different id.
     expect(stored()).toEqual(prefs.repos);
-    // And the derived view still answers what sourceRoot used to.
-    expect(prefs.sourceRoot).toBe("C:/dev/repo-one");
+    // And the single-root surfaces still resolve what sourceRoot used to answer.
+    expect(primaryRepoRoot(prefs.repos)).toBe("C:/dev/repo-one");
   });
 
   it("ignores the legacy key once the registry exists", async () => {
@@ -124,7 +124,7 @@ describe("repos preference · migration from the single source root", () => {
     const prefs = await loadPreferences();
 
     expect(prefs.repos.map((r) => r.root)).toEqual(["C:/dev/kept"]);
-    expect(prefs.sourceRoot).toBe("C:/dev/kept");
+    expect(primaryRepoRoot(prefs.repos)).toBe("C:/dev/kept");
   });
 
   it("does not write when there is nothing to migrate", async () => {
@@ -136,7 +136,7 @@ describe("repos preference · migration from the single source root", () => {
   it("boots clean with no settings at all", async () => {
     const prefs = await loadPreferences();
     expect(prefs.repos).toEqual([]);
-    expect(prefs.sourceRoot).toBeNull();
+    expect(primaryRepoRoot(prefs.repos)).toBeNull();
   });
 });
 
@@ -147,7 +147,7 @@ describe("repos preference · launched folder", () => {
     const prefs = await loadPreferences();
 
     expect(prefs.repos.map((r) => r.root)).toEqual(["C:/dev/launched"]);
-    expect(prefs.sourceRoot).toBe("C:/dev/launched");
+    expect(primaryRepoRoot(prefs.repos)).toBe("C:/dev/launched");
   });
 
   it("registers alongside configured repos and takes the front", async () => {
@@ -192,15 +192,12 @@ describe("repos preference · cross-window updates", () => {
     expect(seen).toEqual([["repos", [repo()]]]);
   });
 
-  it("emits on every registry write, including the derived source root", async () => {
+  it("emits on every registry write", async () => {
     // Hand-rolling store.set + store.save without the emit is the footgun:
     // the Settings window is a separate webview and never sees such a write.
     await setRepos([repo()]);
 
-    expect(h.emitted).toEqual([
-      { key: "repos", value: [repo()] },
-      { key: "sourceRoot", value: "C:/dev/repo-one" },
-    ]);
+    expect(h.emitted).toEqual([{ key: "repos", value: [repo()] }]);
   });
 });
 

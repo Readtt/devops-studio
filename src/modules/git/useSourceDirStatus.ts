@@ -1,7 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useState } from "react";
 
-import { usePreferencesStore } from "@/modules/settings/preferences";
+import { usePrimaryRepoRoot } from "@/modules/settings/preferences";
 import {
   EMPTY_STATUS,
   SOURCE_GIT_CHANGED_EVENT,
@@ -18,7 +18,7 @@ const REFRESH_MS = 30_000;
  * pull (the `source-git-changed` event).
  */
 export function useSourceDirStatus(): GitStatusSummary {
-  const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
+  const sourceRoot = usePrimaryRepoRoot();
   const [status, setStatus] = useState<GitStatusSummary>(EMPTY_STATUS);
 
   useEffect(() => {

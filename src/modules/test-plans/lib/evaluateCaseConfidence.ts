@@ -8,6 +8,7 @@ import {
   localProviderConfig,
   usePreferencesStore,
 } from "@/modules/settings/preferences";
+import { primaryRepoRoot } from "@/modules/settings/store";
 import { supportsVision } from "@/modules/ai/config";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import { evaluateConfidence, type EvalCase } from "./runConfidenceEval";
@@ -31,7 +32,9 @@ export async function evaluateCaseConfidence(
   const prefs = usePreferencesStore.getState();
   const modelId = chat.selectedModelId;
   // Global code-search toggle gates source access for every surface.
-  const sourceRoot = prefs.codeSearchEnabled ? (prefs.sourceRoot ?? null) : null;
+  const sourceRoot = prefs.codeSearchEnabled
+    ? primaryRepoRoot(prefs.repos)
+    : null;
   // Stamp the source state we're grading against (branch + HEAD sha) so a stored
   // verdict can later be flagged stale once the working tree moves past it — the
   // same provenance the generator captures at publish time. Best-effort: a

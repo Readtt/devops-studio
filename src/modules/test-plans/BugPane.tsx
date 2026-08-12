@@ -29,15 +29,15 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { LinkedWorkItem } from "@/modules/ado";
 import { EditableText } from "@/modules/generator/components/EditableText";
+import { usePrimaryRepoRoot } from "@/modules/settings/preferences";
 
 type Props = {
   bugId: number;
-  /** Absolute path to the source directory the user picked. Code links are
-   *  resolved relative to this when opening in the CodeViewer. */
-  sourceRoot?: string | null;
 };
 
-export function BugPane({ bugId, sourceRoot }: Props) {
+export function BugPane({ bugId }: Props) {
+  // Code links are stored relative, so they resolve against the source root.
+  const sourceRoot = usePrimaryRepoRoot();
   const [bug, setBug] = useState<Bug | null>(null);
   const [conn, setConn] = useState<ConnectionStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -253,7 +253,7 @@ export function BugPane({ bugId, sourceRoot }: Props) {
           ) : (
             <ul className="flex flex-col gap-1">
               {codeLinks.map((l, i) => {
-                const absPath = resolveAbsPath(sourceRoot ?? null, l.file);
+                const absPath = resolveAbsPath(sourceRoot, l.file);
                 return (
                   <li
                     key={`${l.file}:${l.startLine}:${i}`}

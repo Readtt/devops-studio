@@ -48,6 +48,7 @@ import {
 } from "./gitCommitApi";
 import { gitStatusSummary } from "@/modules/git";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { createRepo } from "@/modules/settings/store";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { DEFAULT_MODEL_ID } from "@/modules/ai/config";
 import {
@@ -260,9 +261,7 @@ beforeEach(() => {
   useCommitReview.setState({ byTab: new Map() } as Partial<
     ReturnType<typeof useCommitReview.getState>
   >);
-  usePreferencesStore.setState({ sourceRoot: "C:/repo" } as Partial<
-    ReturnType<typeof usePreferencesStore.getState>
-  >);
+  usePreferencesStore.setState({ repos: [createRepo("C:/repo")] });
   // Pre-hydrated keys so ensureApiKeys resolves without touching the keychain.
   useChatStore.setState({ keysLoaded: true, apiKeys: {} as never });
   mockStatus.mockResolvedValue({ dirty: false } as Awaited<

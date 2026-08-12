@@ -50,7 +50,7 @@ Do not substitute role-suggesting names in code, comments, prompts, or UI copy.
 | 1 | Custom provider: model dropdown + real Test | `01-custom-provider.md` | ☑ | `077d946` |
 | 2 | Source-link format fixes | `02-source-link-format.md` | ☑ | `fbf5297` |
 | 3 | Repo registry + compatibility shim | `03-repo-registry.md` | ☑ | `a4f1399` |
-| 4 | Mechanical sweep: delete `sourceRoot` | `04-sourceroot-sweep.md` | ☐ | |
+| 4 | Mechanical sweep: delete `sourceRoot` | `04-sourceroot-sweep.md` | ☑ | |
 | 5 | Settings: "Source repos" block | `05-settings-repos.md` | ☐ | |
 | 6 | Status bar: multi-repo | `06-status-bar.md` | ☐ | |
 | 7 | **AI tool layer — the core fix** | `07-ai-tool-layer.md` | ☐ | |
@@ -141,6 +141,31 @@ call it blindly. `usePrimaryRepoRoot()` and `getRepos()` are in `settings/prefer
 **Phase 3 — verification.** `tsc` clean, `vite build` clean, 969 frontend tests green (25 new in
 `settings/repos.test.ts`, each assertion proven by mutating the source). Verify steps 1–4 need a
 running app; see the phase report.
+
+**Phase 4 — the prop drill was the only structural change; everything else was one-for-one.** All
+19 read sites became `usePrimaryRepoRoot()` or `primaryRepoRoot(…)`. Where the call site already
+held a `usePreferencesStore.getState()` snapshot (`prefs`), the read is `primaryRepoRoot(prefs.repos)`
+rather than the plan's `primaryRepoRoot(getRepos())` — same function, but it stays inside the one
+snapshot the surrounding code already took instead of re-entering the store mid-function.
+
+**Phase 4 — `KEY_SOURCE_ROOT` survives, deliberately.** The plan's "delete three things together"
+note covers the `Preferences` field, the second `emit` in `writeRepos`, and the key-map entry — all
+three are gone. The `const KEY_SOURCE_ROOT` itself stays, because `loadRepos` still reads the legacy
+key once to seed the registry. **Phase 13 owns retiring that migration**, not this phase.
+
+**Phase 4 — dropping the derived emit did not cost cross-window liveness.** Every consumer now
+derives from `repos`, which `writeRepos` still emits through `writePref`. Pinned by
+`repos.test.ts` "emits on every registry write", whose narrowed assertion was proven by mutation
+(restoring the second emit fails it).
+
+**Phase 4 — `BugPane`'s `sourceRoot` prop is gone, not just unthreaded.** It now calls
+`usePrimaryRepoRoot()` itself, so `TabContent` / `LeafPane` / `PaneTreeRenderer` carry no root at
+all. `StatusBarGit`, `CommandPalette`, `LaunchMenu` and `GetSourceCodeDialog` keep their `sourceRoot`
+props — those come straight from `App.tsx`'s own hook and are Phase 6/11's to change.
+
+**Phase 4 — verification.** `tsc` clean, `vite build` clean, 969 frontend tests green (no new
+tests; this phase is behaviour-preserving, so the existing suite is the regression net). No Rust
+touched. **Verify step 3 — the live walkthrough of every surface — is unrun**, not passed.
 
 ---
 

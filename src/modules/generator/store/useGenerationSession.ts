@@ -65,9 +65,11 @@ import {
 } from "@/modules/ai/lib/errorClass";
 import type { TaskCheckpoint } from "@/modules/ai/lib/taskRunner";
 import {
+  getRepos,
   localProviderConfig,
   usePreferencesStore,
 } from "@/modules/settings/preferences";
+import { primaryRepoRoot } from "@/modules/settings/store";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   DraftSourceLink,
@@ -1858,7 +1860,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         : [];
     const contextBlocks = [...bpBlocks, ...bugBlocks];
 
-    const sourceRoot = prefs.codeSearchEnabled ? prefs.sourceRoot : null;
+    const sourceRoot = prefs.codeSearchEnabled
+      ? primaryRepoRoot(prefs.repos)
+      : null;
     const customInstructions = prefs.customInstructions || undefined;
     const prepared = prepareQaAnalystRun({
       requirements,
@@ -2655,7 +2659,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       const conn = await getConnection();
       orgUrl = conn.orgUrl ?? "";
       project = conn.project ?? "";
-      const sourceRoot = usePreferencesStore.getState().sourceRoot;
+      const sourceRoot = primaryRepoRoot(getRepos());
       if (sourceRoot) {
         try {
           const info = await invoke<{
@@ -3047,7 +3051,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           ? await bugsToContextBlocks(workItemIds)
           : [];
       const contextBlocks = [...bpBlocks, ...bugBlocks];
-      const sourceRoot = prefs.codeSearchEnabled ? prefs.sourceRoot : null;
+      const sourceRoot = prefs.codeSearchEnabled
+        ? primaryRepoRoot(prefs.repos)
+        : null;
 
       // Assemble the prompt separately from running it, exactly as analyze
       // does — that split is what lets the round be checkpointed BEFORE the
@@ -3571,7 +3577,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         modelId,
         local: localProviderConfig(prefs),
         contextBlocks: chatContextBlocks,
-        sourceRoot: prefs.codeSearchEnabled ? (prefs.sourceRoot ?? null) : null,
+        sourceRoot: prefs.codeSearchEnabled ? primaryRepoRoot(prefs.repos) : null,
         customInstructions: prefs.customInstructions || undefined,
         onText: appendDelta,
         onToolEvent: mergeToolEvent,

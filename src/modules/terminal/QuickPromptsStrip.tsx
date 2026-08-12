@@ -9,7 +9,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { usePreferencesStore } from "@/modules/settings/preferences";
+import {
+  usePreferencesStore,
+  usePrimaryRepoRoot,
+} from "@/modules/settings/preferences";
 import { MoreHorizontalCircle01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
@@ -59,7 +62,7 @@ type Props = {
  */
 export function QuickPromptsStrip({ sessionId }: Props) {
   const cli = usePreferencesStore((s) => s.preferredAiCli);
-  const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
+  const sourceRoot = usePrimaryRepoRoot();
   const [overflowOpen, setOverflowOpen] = useState(false);
   // Detected default base branch for the user's source dir, refreshed when
   // the source root changes. Null = not a git repo (or detection failed) —

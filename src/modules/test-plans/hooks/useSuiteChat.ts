@@ -29,6 +29,7 @@ import {
   localProviderConfig,
   usePreferencesStore,
 } from "@/modules/settings/preferences";
+import { primaryRepoRoot } from "@/modules/settings/store";
 import {
   newSuiteChatMessageId,
   streamSuiteChatTask,
@@ -828,7 +829,9 @@ export const useSuiteChat = create<Store>((set, get) => ({
     const modelId = curr.modelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
     // Global code-search toggle gates source access for every surface.
-    const sourceRoot = prefs.codeSearchEnabled ? (prefs.sourceRoot ?? null) : null;
+    const sourceRoot = prefs.codeSearchEnabled
+      ? primaryRepoRoot(prefs.repos)
+      : null;
     const priorMessages = curr.messages;
     // Best-practices standards injected as context; vision support depends on
     // the chosen model.
