@@ -428,6 +428,34 @@ describe("runCommitReview — resume", () => {
   });
 });
 
+// The roster is assembled by commitReviewPrompts, but only the engine knows
+// which repos this review may read. Asserting on the builder alone keeps
+// passing if the engine stops handing them over.
+describe("runCommitReview — the repo roster reaches both stages", () => {
+  it("names the review's repos on the investigate and verify prompts", async () => {
+    mockStreamTask.mockResolvedValue(stage1Ok([cand("f1")]));
+    mockRunTask.mockResolvedValue(stage2Ok([{ id: "f1", verdict: "confirmed" }]));
+
+    await runCommitReview(input({ repos: REPOS }));
+
+    const investigateSystem = mockStreamTask.mock.calls[0][0]
+      .systemPrompt as string;
+    const verifySystem = mockRunTask.mock.calls[0][0].systemPrompt as string;
+    for (const system of [investigateSystem, verifySystem]) {
+      expect(system).toContain("SOURCE REPOS you can read:");
+      expect(system).toContain("- repo-one: C:/repo");
+    }
+  });
+
+  it("sends no roster when code search left it with no repos", async () => {
+    mockStreamTask.mockResolvedValue(stage1Ok([]));
+    await runCommitReview(input());
+    expect(mockStreamTask.mock.calls[0][0].systemPrompt).not.toContain(
+      "SOURCE REPOS",
+    );
+  });
+});
+
 describe("runCommitReview — checkpoint callbacks", () => {
   it("reports stage-1 candidates before verify is invoked", async () => {
     const order: string[] = [];

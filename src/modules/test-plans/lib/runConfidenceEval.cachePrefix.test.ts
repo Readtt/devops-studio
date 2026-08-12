@@ -85,6 +85,10 @@ describe("confidence request — the cacheable prefix", () => {
     expect(system).toContain(HOUSE_RULES);
     expect(system).toContain("REQUIREMENT — this suite is requirement-based");
     expect(system).toContain("- repo-one: C:/src/app");
+    // Evidence refs are rendered as code-viewer chips, so the ref form has to
+    // be the prefixed one the tools report and the viewer resolves.
+    expect(system).toContain("PATHS ARE REPO-PREFIXED");
+    expect(system).toContain("<repo>/path/to/file.ext:LINE");
   });
 
   it("puts the case, and only the case, after it", () => {

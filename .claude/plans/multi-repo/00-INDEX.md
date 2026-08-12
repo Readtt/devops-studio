@@ -316,6 +316,54 @@ both refused without an `invoke`, `run_command` naming the three repos and then 
 asked for, zero console errors. **Verify step 1 is unrun** — a real generator analyze needs API keys
 and three real repos, which this session had neither of.
 
+**Phase 8 pulled Phase 9's schema relaxation forward, and had to.** The plan told this phase to stop
+asking the model for `repoName` while `DraftSourceLinkSchema.repoName` was still a required
+`z.string()` — so between the two commits every code-grounded case would have failed
+`DraftCaseLLMSchema`, been dropped by the salvager, and reached the user as "it generated nothing",
+logged only to `console.error`. A phase commit that breaks the generator until the next one lands is
+not a working state, so **Phase 9 §1 is already done**: `repoName` is `.nullable().optional()` with a
+deprecated JSDoc, and `renderSourceLinksBlock` no longer dereferences it. Phase 9 should verify that,
+not redo it; §2–§4 (repoScope, the chip row, per-repo provenance at publish) are untouched.
+
+**Phase 8 — a published link's repo comes from the path prefix, via a new `splitRepoPath`.**
+Exported from `repoPaths.ts`, returning `{ repo, within }` — the sync counterpart `resolveRepoPath`
+can't be, because publish must not touch the disk. Same N=1 missing-prefix tolerance as the resolver,
+so a path the tools accepted is a path publish can attribute. **Phase 9 §4 should reuse it** for the
+per-repo branch/sha stamp rather than re-splitting by hand. A link whose path names no configured
+repo is **dropped**, not written with a blank `repo:` — `parseSourceLinks` requires a repo
+(`sourceLinksParser.ts:93`), so a blank one publishes a line the app can never read back.
+
+**Phase 8 — the roster rides on the SYSTEM prompt for the three surfaces that gained one**
+(generator, draft chat, commit review); suite chat and confidence keep Phase 7's placement in their
+own grounding block. For the generator this is load-bearing rather than stylistic: refine replaces
+the user turn wholesale through `userPromptOverride`, so a roster assembled into `buildUserPrompt`
+would reach analyze and silently miss every follow-up round. `investigateSystemPrompt` /
+`verifySystemPrompt` now take `(commitCount, repos)`, which also keeps the roster out of the turn a
+resume compacts.
+
+**Phase 8 — `REPO_PATH_RULE` goes BEFORE each prompt's OUTPUT section, never after it.** Three of the
+six prompts close with a strict JSON contract; appending the rule after it displaces the last
+instruction the model reads, on exactly the surfaces where a prose answer costs a whole run.
+`systemPrompts.test.ts` asserts the rule over the barrel's enumeration, so a NEW surface has to carry
+it too.
+
+**Phase 8 — two promises the prompts now make that later phases must keep.** The codeRefs paragraph
+tells the model the repo prefix is what the app stamps from; publish still reads one repo
+(`primaryRepoRoot`) for every link and every bug ref until **Phase 9 §4**. And bug code refs travel to
+ADO prefixed (`codeLinks.file` is `r.file` verbatim, `useGenerationSession.ts:2831`), like suite-chat
+citations — **Phase 11** owns making the viewer resolve a prefixed path.
+
+**Phase 8 — verification.** `tsc` clean, `vite build` clean, 1062 frontend tests green (+39; the
+`qaAnalystRun` prompt-bytes snapshot was regenerated for the now-prefixed schema example). Nine
+mutations were each caught by exactly the intended test — `splitRepoPath` guessing `repos[0]` instead
+of refusing, a stale `repoName` outranking the prefix, an unclaimable link published blank, `repoName`
+required again, the analyst/draft-chat/commit-review rosters never rendered, the engine dropping its
+repos on the way to the prompt, and the rule removed from each of the five prompt files in turn.
+**Verify steps 1–3 are unrun** — a real analyze / Suite Chat / Commit Review across three repos needs
+API keys and three real repos, which this session had neither of. Step 4 (one repo unchanged) holds by
+construction: the prompts are identical at every count and the N=1 bare-path tolerance is pinned in
+`repoPaths.test.ts`.
+
 **Phase 6 found a real bug in its own first draft**, worth knowing because the pattern recurs: the
 repo popover's `open` is controlled, so a programmatic `setOpen(false)` never fires `onOpenChange` —
 the drilled-into repo was never cleared and the next open showed the previous repo's branches. Any

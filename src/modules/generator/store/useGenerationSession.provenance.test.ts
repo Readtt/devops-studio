@@ -34,7 +34,11 @@ vi.mock("@/modules/ado", async () => {
   };
 });
 
-function mkCase(): ReviewedCase {
+function mkCase(
+  sourceLinks: Record<string, unknown>[] = [
+    { repoName: "repo-one", filePath: "src/auth/login.cs" },
+  ],
+): ReviewedCase {
   return {
     uid: "c0",
     decision: "keep",
@@ -42,9 +46,7 @@ function mkCase(): ReviewedCase {
     title: "Case c0",
     description: "Body.",
     steps: [],
-    sourceLinks: [
-      { repoName: "repo-one", filePath: "src/auth/login.cs" },
-    ],
+    sourceLinks,
   } as unknown as ReviewedCase;
 }
 
@@ -61,11 +63,14 @@ function mkBug(): ReviewedBug {
 }
 
 /** Publish one case + one bug and hand back what actually reached ADO. */
-async function publish(tagSourceBranch: boolean) {
+async function publish(
+  tagSourceBranch: boolean,
+  sourceLinks?: Record<string, unknown>[],
+) {
   const store = createGenerationSessionStore();
   store.setState({
     phase: "review",
-    cases: [mkCase()],
+    cases: [mkCase(sourceLinks)],
     bugs: [mkBug()],
     planId: 1,
     suiteId: 2,
@@ -82,6 +87,7 @@ async function publish(tagSourceBranch: boolean) {
     codeLinks: { commitSha: string | null }[];
   };
   return {
+    block: draft?.sourceLinksBlock ?? null,
     link: parseSourceLinks(draft?.sourceLinksBlock ?? "")[0],
     bugCommitSha: bug?.codeLinks[0]?.commitSha ?? null,
   };
@@ -136,5 +142,57 @@ describe("publish stamps source provenance", () => {
     expect(link.trackingBranch).toBe("");
     expect(link.generationSha).toBe("");
     expect(bugCommitSha).toBeNull();
+  });
+});
+
+// The prompts stopped asking for a repo name, so the path's `<repo>/…` prefix
+// is the only thing left that says which repo a published link belongs to.
+describe("publish binds each link to the repo its path names", () => {
+  beforeEach(() => {
+    createCaseInSuite.mockClear().mockResolvedValue({ id: 999, url: "" });
+    createBugAndLink.mockClear().mockResolvedValue({ id: 1000, url: "" });
+    usePreferencesStore.setState({
+      repos: [createRepo("C:/src/repo-one"), createRepo("C:/src/repo-two")],
+    });
+    mockRepoInfo.branch = BRANCH;
+    mockRepoInfo.commit = SHA;
+  });
+
+  it("reads the repo off the prefix when the model sent no repoName", async () => {
+    const { link } = await publish(true, [
+      { filePath: "repo-two/src/api/handler.ts" },
+    ]);
+    expect(link.repoName).toBe("repo-two");
+    expect(link.repoId).toBe("repo-two");
+  });
+
+  it("prefers the prefix over a repoName carried by an older draft", async () => {
+    const { link } = await publish(true, [
+      { repoName: "MyApp", filePath: "repo-two/src/api/handler.ts" },
+    ]);
+    expect(link.repoName).toBe("repo-two");
+  });
+
+  // `parseSourceLinks` requires a repo, so a blank one is a line the app can
+  // never read back — a dead link in the user's ADO description. Dropping it is
+  // the honest outcome for a path that names no repo we know of.
+  it("drops a link no configured repo can claim", async () => {
+    const { block } = await publish(true, [
+      { filePath: "src/auth/login.cs" },
+      { filePath: "repo-one/src/auth/login.cs" },
+    ]);
+    // Asserted against the rendered block, not against what parses back out of
+    // it: the parser already skips a repo-less line, so a blank one would still
+    // read as "one link" while sitting in the user's description forever.
+    expect(block?.match(/^- /gm)).toHaveLength(1);
+    expect(block).toContain("repo: repo-one");
+    expect(parseSourceLinks(block ?? "")[0].filePath).toBe(
+      "repo-one/src/auth/login.cs",
+    );
+  });
+
+  it("emits no block at all when every link is unclaimable", async () => {
+    const { block } = await publish(true, [{ filePath: "src/auth/login.cs" }]);
+    expect(block).toBeNull();
   });
 });

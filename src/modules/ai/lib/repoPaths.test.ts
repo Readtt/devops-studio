@@ -5,7 +5,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...a: unknown[]) => invoke(...a),
 }));
 
-import { resolveRepoPath } from "./repoPaths";
+import { REPO_PATH_RULE, resolveRepoPath, splitRepoPath } from "./repoPaths";
 import type { WorkspaceRepo } from "@/modules/settings/store";
 
 function repo(name: string, root: string): WorkspaceRepo {
@@ -177,5 +177,64 @@ describe("resolveRepoPath · containment", () => {
   it("refuses everything when no repos are configured", async () => {
     const out = await resolveRepoPath("C:/src/repo-one/a.ts", []);
     expect(out.ok).toBe(false);
+  });
+});
+
+// Publish reads a link's repo binding off the path it was emitted with. It has
+// to agree with the resolver above — a path the model was allowed to read must
+// be a path publish can attribute — but it never touches the disk to do it.
+describe("splitRepoPath · the sync repo binding", () => {
+  it("reads the repo off the prefix and returns the rest", () => {
+    expect(splitRepoPath("repo-two/src/app.ts", MANY)).toEqual({
+      repo: TWO,
+      within: "src/app.ts",
+    });
+  });
+
+  it("matches the prefix case-insensitively, like the resolver", () => {
+    expect(splitRepoPath("REPO-TWO/src/app.ts", MANY)?.repo.id).toBe(TWO.id);
+  });
+
+  it("tolerates a missing prefix at one repo", () => {
+    expect(splitRepoPath("src/app.ts", [ONE])).toEqual({
+      repo: ONE,
+      within: "src/app.ts",
+    });
+  });
+
+  // The ambiguity the resolver settles with an fs probe has no sync answer, so
+  // this refuses rather than guessing — publish drops the link instead of
+  // stamping some other repo's branch onto it.
+  it("returns null for an unprefixed path once several repos exist", () => {
+    expect(splitRepoPath("src/app.ts", MANY)).toBeNull();
+  });
+
+  it("returns null when the prefix names no configured repo", () => {
+    expect(splitRepoPath("repo-four/src/app.ts", MANY)).toBeNull();
+  });
+
+  it("returns null with no repos configured", () => {
+    expect(splitRepoPath("repo-one/src/app.ts", [])).toBeNull();
+  });
+
+  it("normalises separators before splitting", () => {
+    expect(splitRepoPath("./repo-two\\src\\app.ts", MANY)).toEqual({
+      repo: TWO,
+      within: "src/app.ts",
+    });
+  });
+});
+
+// The rule ships on every request of every AI surface. These pin the two facts
+// a surface prompt leans on when it references it, so a rewrite can't quietly
+// drop them.
+describe("REPO_PATH_RULE", () => {
+  it("states the prefixed form and names run_command's repo argument", () => {
+    expect(REPO_PATH_RULE).toContain("<repo>/<path within repo>");
+    expect(REPO_PATH_RULE).toMatch(/run_command\` runs inside ONE repo/);
+  });
+
+  it("makes no claim about how the repos relate", () => {
+    expect(REPO_PATH_RULE).toMatch(/may relate to each other in any way/);
   });
 });

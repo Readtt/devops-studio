@@ -72,6 +72,52 @@ describe("parseDraftBatch", () => {
   });
 });
 
+// The prompts stopped asking for `repoName` — the repo now comes from the
+// path's `<repo>/…` prefix. While the field stayed required, a case that
+// followed the new instruction failed DraftCaseLLMSchema, which fails the whole
+// batch; the salvager then dropped that case with only a console.error behind
+// it. The user's report for that is "it generated nothing".
+describe("DraftSourceLinkSchema · a link with no repoName", () => {
+  const withLink = (link: Record<string, unknown>) =>
+    JSON.stringify({
+      cases: [
+        {
+          title: "Sign in with valid credentials",
+          steps: [{ action: "Enter creds", expected: "Logged in" }],
+          sourceLinks: [link],
+        },
+      ],
+      bugs: [],
+    });
+
+  it("parses, keeping the case", () => {
+    const batch = parseDraftBatch(
+      withLink({ filePath: "repo-one/src/auth/login.cs" }),
+    );
+    expect(batch.cases).toHaveLength(1);
+    expect(batch.cases[0].sourceLinks[0].filePath).toBe(
+      "repo-one/src/auth/login.cs",
+    );
+  });
+
+  it("survives the salvage path too, with nothing dropped", () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const batch = salvageDraftBatch(
+      withLink({ filePath: "repo-one/src/auth/login.cs" }),
+    );
+    expect(batch.cases).toHaveLength(1);
+    expect(err).not.toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it("still accepts an older draft that carries one", () => {
+    const batch = parseDraftBatch(
+      withLink({ repoName: "MyApp", filePath: "src/auth/login.cs" }),
+    );
+    expect(batch.cases[0].sourceLinks[0].repoName).toBe("MyApp");
+  });
+});
+
 describe("salvageDraftBatch (partial-batch acceptance)", () => {
   it("keeps the valid cases and drops only the malformed one", () => {
     const err = vi.spyOn(console, "error").mockImplementation(() => undefined);

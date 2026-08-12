@@ -118,6 +118,28 @@ export async function resolveRepoPath(
   };
 }
 
+/** Which repo a canonical `<repo>/<path>` names, and what follows the prefix.
+ *  The synchronous counterpart to {@link resolveRepoPath}, for callers that
+ *  need the repo BINDING rather than the file — publish stamps a link with its
+ *  repo's own branch and sha, and never touches the disk to do it.
+ *
+ *  A missing prefix is tolerated at one repo, matching the resolver's rule, so
+ *  the same paths resolve the same way in both. */
+export function splitRepoPath(
+  input: string,
+  repos: WorkspaceRepo[],
+): { repo: WorkspaceRepo; within: string } | null {
+  const cleaned = normalizePath(input);
+  if (!cleaned || repos.length === 0) return null;
+  const cut = cleaned.indexOf("/");
+  const head = cut === -1 ? cleaned : cleaned.slice(0, cut);
+  const named = repos.find((r) => r.name.toLowerCase() === head.toLowerCase());
+  if (named) {
+    return { repo: named, within: cut === -1 ? "" : cleaned.slice(cut + 1) };
+  }
+  return repos.length === 1 ? { repo: repos[0], within: cleaned } : null;
+}
+
 /** Apply the containment gates and build the result. `given` is the normalized
  *  input, used only to decide whether the model needs correcting. */
 function settle(
@@ -208,3 +230,17 @@ function roster(repos: WorkspaceRepo[]): string {
 export function renderRepoRoster(repos: WorkspaceRepo[]): string {
   return repos.map((r) => `- ${r.name}: ${r.root}`).join("\n");
 }
+
+/** The addressing rule, stated once for every surface that reads code. Without
+ *  it the model emits bare paths and leans on `resolveRepoPath`'s ambiguity
+ *  probe, which costs a correction round-trip per path it guesses at.
+ *
+ *  Deliberately short: it rides on every request of every AI surface, so it is
+ *  permanent token cost. The tool descriptions carry the per-argument detail
+ *  (which is where a model looks when it is about to call one); this is only
+ *  the shape of a path and the one thing that is NOT a path — a `run_command`
+ *  repo. */
+export const REPO_PATH_RULE = `PATHS ARE REPO-PREFIXED
+- Every path you read or emit is \`<repo>/<path within repo>\` — e.g. \`repo-one/src/services/handler.ts\`. The first segment is always one of the configured repo names; a bare path is ambiguous once more than one repo is configured, and an absolute path is refused.
+- \`run_command\` runs inside ONE repo — pass \`repo\`, and remember that \`git log\` there cannot see another repo.
+- The repos may relate to each other in any way, or not at all. Don't assume — read them.`;

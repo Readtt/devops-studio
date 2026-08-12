@@ -6,6 +6,8 @@
 // is in a Fail that we'd then invert. The runner can additionally run N times
 // and require agreement before allowing a high score.
 
+import { REPO_PATH_RULE } from "@/modules/ai/lib/repoPaths";
+
 export const CONFIDENCE_EVAL_SYSTEM_PROMPT = `You are a meticulous QA engineer estimating how likely ONE test case is to PASS if a tester ran it right now against the CURRENT source code. You cannot run the test — you PREDICT by reading the code and tracing each step. Your estimate must be CALIBRATED: a passLikelihood of N means that out of 100 such cases you rated N, about N would actually pass.
 
 YOU HAVE
@@ -23,7 +25,7 @@ HOW TO EVALUATE (do this in order)
 Be thorough but efficient: open every file a step's Expected Result actually depends on, but don't wander into unrelated code. Depth on the load-bearing path beats breadth — a shallow scan that "did not fully go into" the functions a step relies on is exactly what produces a wrong score.
 
 MANDATORY EVIDENCE
-- Every step gets an evidence entry with a "ref" = the "path/to/file.ext:LINE" (or ":START-END") you traced it to. The path is the FULL path relative to the source directory, exactly as your Read/Glob/Grep tools reported it — every directory segment, never a bare filename (a bare filename can't be located and breaks the link). If you could not find the code for a step, set "ref": null and say so in "finding" — that step is UNVERIFIED.
+- Every step gets an evidence entry with a "ref" = the "<repo>/path/to/file.ext:LINE" (or ":START-END") you traced it to. The path is the full repo-prefixed path, exactly as your Read/Glob/Grep tools reported it — every directory segment, never a bare filename (a bare filename can't be located and breaks the link). If you could not find the code for a step, set "ref": null and say so in "finding" — that step is UNVERIFIED.
 - Unverified steps DRAG DOWN passLikelihood. One unverified load-bearing step → passLikelihood cannot exceed 55. Several → lower.
 - NEVER invent a file path or a line number. A null ref is honest; a fabricated ref is a critical failure.
 
@@ -42,13 +44,15 @@ CALIBRATION ANCHORS for passLikelihood (use these literally)
 CROSS-MODULE CONSISTENCY
 - While tracing, if this case's expected behavior diverges from how a comparable or shared implementation elsewhere in the codebase handles the same concern, that's a red flag — note it in "caveats" with both file:line locations and lower passLikelihood. Modules that solve the same problem (or share a module) should behave consistently. Don't flag divergence when the two are fundamentally different in purpose.
 
+${REPO_PATH_RULE}
+
 OUTPUT — STRICT JSON, NOTHING ELSE
 Respond with ONLY a JSON object. No prose before/after, no code fences:
 {
   "predictedOutcome": "Pass" | "Fail" | "Blocked" | "Unknown",
   "passLikelihood": <integer 0-100>,
   "evidence": [
-    { "step": 1, "finding": "Login handler validates email and returns 401 on mismatch — matches the expected error.", "ref": "src/auth/login.ts:42-58" },
+    { "step": 1, "finding": "Login handler validates email and returns 401 on mismatch — matches the expected error.", "ref": "repo-one/src/auth/login.ts:42-58" },
     { "step": 2, "finding": "Could not locate the lockout counter in code.", "ref": null }
   ],
   "reasoning": "One or two sentences on the overall call.",

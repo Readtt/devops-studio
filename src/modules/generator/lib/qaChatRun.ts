@@ -18,6 +18,7 @@ import type { ModelMessage } from "ai";
 import { type LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { streamTask } from "@/modules/ai/lib/taskRunner";
 import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
+import { REPO_PATH_RULE, renderRepoRoster } from "@/modules/ai/lib/repoPaths";
 import type { WorkspaceRepo } from "@/modules/settings/store";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import type { ReviewedBug, ReviewedCase } from "./draftBatchSchema";
@@ -76,6 +77,8 @@ ROLE
 - It's fine to point out gaps in coverage, missing edge cases, weak
   assertions, or vague step language. That's the whole point.
 
+${REPO_PATH_RULE}
+
 OUTPUT
 - Plain markdown. Bullet lists, short paragraphs, fenced code when quoting
   source. No JSON. No HTML.
@@ -84,10 +87,10 @@ OUTPUT
   \`cat\` / \`rg\`, one command per call, writes refused) — use them to ground
   answers in the actual code and its recent history rather than guessing.
 - When you point at a source file, write the citation as bare text in the form
-  path/to/file.ext:LINE (or :START-END) — the FULL path relative to the source
-  directory (every directory segment, exactly as the tools reported it), forward
-  slashes, no leading slash, no parentheses, never a bare filename. The UI
-  auto-links it to the in-app code viewer, so the user can click straight to it.
+  <repo>/path/to/file.ext:LINE (or :START-END) — the full repo-prefixed path
+  (every directory segment, exactly as the tools reported it), forward slashes,
+  no leading slash, no parentheses, never a bare filename. The UI auto-links it
+  to the in-app code viewer, so the user can click straight to it.
 - Keep responses under ~12 lines unless the user asks for depth.`;
 
 export type ChatRunInput = {
@@ -151,6 +154,17 @@ export type ChatTaskInput = ChatRunInput & {
   signal?: AbortSignal;
 };
 
+/** The chat prompt plus the repos this turn may read. Same placement as the
+ *  analyst's roster — the system prompt, which the finish pass below re-sends
+ *  unchanged while the transcript it replays gets compacted. */
+function chatSystemPrompt(repos: WorkspaceRepo[]): string {
+  if (repos.length === 0) return CHAT_SYSTEM_PROMPT;
+  return `${CHAT_SYSTEM_PROMPT}
+
+SOURCE REPOS you can read:
+${renderRepoRoster(repos)}`;
+}
+
 /** Streaming draft-chat run. Calls `onText` with each delta as the model
  *  produces it; resolves with the full accumulated text. Mirrors
  *  streamSuiteChatTask so the review-pane "Ask" reads tokens live like every
@@ -168,7 +182,7 @@ export async function streamChatTask(
     modelId: input.modelId,
     keys: input.keys,
     local: input.local,
-    systemPrompt: CHAT_SYSTEM_PROMPT,
+    systemPrompt: chatSystemPrompt(input.repos ?? []),
     customInstructions: input.customInstructions,
     contextPrompt: buildChatContext(input),
     // A banked transcript is only replayable while the tools that produced it

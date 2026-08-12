@@ -582,3 +582,24 @@ describe("draft-chat draft block — the draft ships its own evidence", () => {
     expect(ctx).not.toContain("→ case");
   });
 });
+
+// The Ask cites files the same way the analyst emits them — `<repo>/path:line`
+// — which needs the repo names on the request.
+describe("draft-chat system prompt — the repo roster", () => {
+  it("names the repos this turn may read", async () => {
+    await streamChatTask({ ...base });
+    const system = streamTask.mock.calls[0][0].systemPrompt as string;
+    expect(system).toContain("SOURCE REPOS you can read:");
+    expect(system).toContain("- repo-one: /src");
+  });
+
+  it("adds no roster when the turn has no tools", async () => {
+    await streamChatTask({ ...base, repos: [] });
+    const system = streamTask.mock.calls[0][0].systemPrompt as string;
+    expect(system).not.toContain("SOURCE REPOS");
+    // The addressing rule is static prompt text and stays either way — it is
+    // what makes a one-repo run emit the same prefixed paths as a three-repo
+    // one, so there is one form to parse downstream.
+    expect(system).toContain("<repo>/<path within repo>");
+  });
+});

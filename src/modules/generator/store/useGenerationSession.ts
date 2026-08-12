@@ -69,7 +69,8 @@ import {
   localProviderConfig,
   usePreferencesStore,
 } from "@/modules/settings/preferences";
-import { primaryRepoRoot } from "@/modules/settings/store";
+import { primaryRepoRoot, type WorkspaceRepo } from "@/modules/settings/store";
+import { splitRepoPath } from "@/modules/ai/lib/repoPaths";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   DraftSourceLink,
@@ -2655,11 +2656,15 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     let sourceDirSha: string | null = null;
     let orgUrl = "";
     let project = "";
+    // The repos a link's `<repo>/…` prefix is resolved against. One list for
+    // the whole publish, read once — a repo added mid-publish would otherwise
+    // rename links written after it.
+    const publishRepos = getRepos();
     try {
       const conn = await getConnection();
       orgUrl = conn.orgUrl ?? "";
       project = conn.project ?? "";
-      const sourceRoot = primaryRepoRoot(getRepos());
+      const sourceRoot = primaryRepoRoot(publishRepos);
       if (sourceRoot) {
         try {
           const info = await invoke<{
@@ -2691,6 +2696,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           c.sourceLinks,
           stampedBranch,
           stampedSha ?? "",
+          publishRepos,
         );
         const steps = c.steps.map((s, i) => ({
           index: i + 1,
@@ -3864,24 +3870,36 @@ function updateLog(
 
 /** `trackingBranch` and `generationSha` are the provenance stamp — both empty
  *  when the user published without source-branch tagging, in which case the
- *  link still records repo + path, just nothing about where it came from. */
+ *  link still records repo + path, just nothing about where it came from.
+ *
+ *  The repo comes from the path's `<repo>/…` prefix, which is what the prompts
+ *  now ask for; `repoName` is the fallback for drafts generated before that.
+ *  A link that names no repo either way is DROPPED rather than written blank:
+ *  `parseSourceLinks` requires a repo, so a blank one publishes a line that can
+ *  never be read back — a dead link in the user's ADO description. */
 function renderSourceLinksBlock(
   links: DraftSourceLink[] | undefined,
   trackingBranch: string,
   generationSha: string,
+  repos: WorkspaceRepo[],
 ): string | null {
   if (!links || links.length === 0) return null;
-  const sl: SourceLink[] = links.map((l) => ({
-    repoId: l.repoId ?? l.repoName,
-    repoName: l.repoName,
-    filePath: l.filePath,
-    symbol: l.symbol ?? undefined,
-    lineRange: l.lineRange ?? undefined,
-    generationBranch: trackingBranch,
-    generationSha,
-    trackingBranch,
-  }));
-  return renderBlock(sl);
+  const sl: SourceLink[] = [];
+  for (const l of links) {
+    const repoName = splitRepoPath(l.filePath, repos)?.repo.name ?? l.repoName;
+    if (!repoName) continue;
+    sl.push({
+      repoId: l.repoId ?? repoName,
+      repoName,
+      filePath: l.filePath,
+      symbol: l.symbol ?? undefined,
+      lineRange: l.lineRange ?? undefined,
+      generationBranch: trackingBranch,
+      generationSha,
+      trackingBranch,
+    });
+  }
+  return sl.length > 0 ? renderBlock(sl) : null;
 }
 
 /** Resolve plan + suite metadata into the structured TargetContext that the

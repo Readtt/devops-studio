@@ -21,6 +21,7 @@ import {
 import type { ModelMessage } from "ai";
 import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
+import { renderRepoRoster } from "@/modules/ai/lib/repoPaths";
 import type { WorkspaceRepo } from "@/modules/settings/store";
 import {
   DraftBatchLLMSchema,
@@ -314,7 +315,7 @@ export async function executeQaAnalystRun(
     modelId: prepared.modelId,
     keys: opts.keys,
     local: opts.local ?? {},
-    systemPrompt: QA_ANALYST_PROMPT,
+    systemPrompt: analystSystemPrompt(prepared.repos),
     customInstructions: prepared.customInstructions,
     prompt: prepared.userPrompt,
     attachments: prepared.attachments,
@@ -402,6 +403,18 @@ export async function executeQaAnalystRun(
     usage: r.usage,
     outputCap: r.outputCap,
   };
+}
+
+/** The analyst prompt plus the roster of repos this run may read. It rides on
+ *  the SYSTEM prompt rather than the user turn because refine replaces the user
+ *  turn wholesale (`userPromptOverride`) — a roster built into `buildUserPrompt`
+ *  would reach analyze and silently miss every follow-up round. */
+function analystSystemPrompt(repos: WorkspaceRepo[]): string {
+  if (repos.length === 0) return QA_ANALYST_PROMPT;
+  return `${QA_ANALYST_PROMPT}
+
+SOURCE REPOS you can read:
+${renderRepoRoster(repos)}`;
 }
 
 export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
@@ -600,13 +613,13 @@ const DRAFT_BATCH_SHAPE = {
         "STEPS TO REPRODUCE:\n1. Click 'Send code again' six times within one minute.\n\n" +
         "EXPECTED RESULT:\nAfter the third request, a message states that no more codes can be sent for a short period.\n\n" +
         "ACTUAL RESULT:\nAll six codes arrive.\n\n" +
-        "TECHNICAL NOTES:\nsendCode never checks the rate-limit counter (src/auth/sms.ts:42-58).\n\n" +
+        "TECHNICAL NOTES:\nsendCode never checks the rate-limit counter (repo-one/src/auth/sms.ts:42-58).\n\n" +
         "ENVIRONMENT:\nn/a",
       severity: "2 - High",
       linkedDraftCaseIndex: 0,
       codeRefs: [
         {
-          file: "src/auth/sms.ts",
+          file: "repo-one/src/auth/sms.ts",
           startLine: 42,
           endLine: 58,
           symbol: "sendCode",

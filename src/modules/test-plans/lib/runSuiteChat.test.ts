@@ -217,6 +217,13 @@ describe("SUITE_CHAT_SYSTEM_PROMPT", () => {
       SUITE_CHAT_SYSTEM_PROMPT,
     );
   });
+
+  it("teaches the repo-prefixed path form the tools speak", () => {
+    expect(SUITE_CHAT_SYSTEM_PROMPT).toContain("PATHS ARE REPO-PREFIXED");
+    // Citations become chips in the code viewer, so the form the model writes
+    // them in has to be the form that resolves back to a repo.
+    expect(SUITE_CHAT_SYSTEM_PROMPT).toContain("<repo>/path/to/file.ext:LINE");
+  });
 });
 
 // The same "burned its steps reading and never answered" failure the draft Ask

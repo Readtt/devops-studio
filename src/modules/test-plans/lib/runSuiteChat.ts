@@ -32,7 +32,7 @@ import {
   type TestCase,
 } from "@/modules/ado";
 import { buildSuiteChatTools } from "./suiteChatTools";
-import { renderRepoRoster } from "@/modules/ai/lib/repoPaths";
+import { REPO_PATH_RULE, renderRepoRoster } from "@/modules/ai/lib/repoPaths";
 import type { WorkspaceRepo } from "@/modules/settings/store";
 import { PLAIN_LANGUAGE_RULES } from "@/modules/ai/lib/plainLanguage";
 import {
@@ -301,11 +301,11 @@ Rules for bulk blocks:
 
 WHAT YOU HAVE
 - Every case in the suite (id, title, steps, expected results, description).
-- The user's working source directory (when set) accessible via a set of
+- The user's source repos (listed in the request) accessible via a set of
   read-only filesystem tools — the Claude CLI engine exposes them as
   Read / Glob / Grep, and the BYOK provider engine exposes them as
   read_file / list_files / grep. Behaviour is the same either way:
-  read files, list paths, regex-search. USE THEM to validate that cases
+  read files, list paths, regex-search across every repo at once. USE THEM to validate that cases
   actually map to real code paths, that assertions match actual function
   behaviour, and to surface coverage gaps you can see by walking the code.
 - A read-only shell via run_command — git history + working-tree inspection
@@ -330,10 +330,10 @@ HOW TO ANSWER
   invalidation, but it doesn't assert the session token is purged…"). The
   UI auto-renders bare \`#15310\` as a clickable chip that opens the case
   in-app, so write the id inline — never as a fenced block.
-- Cite source files inline using the form \`path/to/file.ext:LINE\` or
-  \`path/to/file.ext:START-END\`. The UI renders these as clickable chips
+- Cite source files inline using the form \`<repo>/path/to/file.ext:LINE\` or
+  \`<repo>/path/to/file.ext:START-END\`. The UI renders these as clickable chips
   that jump straight into the in-app code viewer ("step 3 expects a 403,
-  but src/auth/loginController.ts:42 returns 401"). Only write a path
+  but repo-one/src/auth/loginController.ts:42 returns 401"). Only write a path
   you actually read with the fs tools.
 - For "review against the code" requests:
     1. Identify the code paths the case claims to exercise (read the steps
@@ -344,10 +344,12 @@ HOW TO ANSWER
 - For "what's missing" requests: list specific gaps, not generic advice.
 - Don't fabricate file paths. If you can't ground a claim in code you've
   actually read, say so.
-- When the source directory isn't available, fall back to reviewing case
+- When no source repos are available, fall back to reviewing case
   definitions on their own merits (clarity, assertion specificity,
   coverage of common edge cases) and call out that code grounding wasn't
   possible.
+
+${REPO_PATH_RULE}
 
 OUTPUT
 - Plain markdown. Bullet lists, short paragraphs, fenced code when quoting

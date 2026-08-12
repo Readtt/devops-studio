@@ -362,6 +362,35 @@ describe("engine dispatch", () => {
   });
 });
 
+// The model addresses files as `<repo>/…`, which it can only do if it knows
+// what the repo names are.
+describe("analyst system prompt — the repo roster", () => {
+  it("names every repo the run may read, with its path", async () => {
+    await runQaAnalyst({ ...base, repos: REPOS });
+    const prompt = runnerArg().systemPrompt as string;
+    expect(prompt).toContain("SOURCE REPOS you can read:");
+    expect(prompt).toContain("- repo-one: C:/repo");
+  });
+
+  it("adds no roster to a tool-less run", async () => {
+    await runQaAnalyst({ ...base, repos: [] });
+    expect(runnerArg().systemPrompt as string).not.toContain("SOURCE REPOS");
+  });
+
+  // Refine replaces the user turn wholesale, so a roster assembled into
+  // buildUserPrompt would reach analyze and miss every follow-up round.
+  it("still reaches a run whose user turn was overridden", async () => {
+    await runQaAnalyst({
+      ...base,
+      repos: REPOS,
+      userPromptOverride: "Follow-up: split case 3.",
+    });
+    const arg = runnerArg();
+    expect(arg.prompt).toBe("Follow-up: split case 3.");
+    expect(arg.systemPrompt as string).toContain("- repo-one: C:/repo");
+  });
+});
+
 describe("prepareQaAnalystRun / runQaAnalyst prompt assembly", () => {
   it("hands the runner exactly what prepare assembled", async () => {
     const prepared = prepareQaAnalystRun(rich);
@@ -456,12 +485,12 @@ describe("prepareQaAnalystRun / runQaAnalyst prompt assembly", () => {
         "bugs": [
           {
             "title": "[Sign in] More than three code text messages can be requested in one minute",
-            "reproSteps": "SUMMARY:\\nSix sign-in codes can be requested in one minute; the limit should be three.\\n\\nPRECONDITIONS:\\n1. Sign in as qa.tester@example.com / Test@123 until the 'Verify it's you' screen appears.\\n\\nSTEPS TO REPRODUCE:\\n1. Click 'Send code again' six times within one minute.\\n\\nEXPECTED RESULT:\\nAfter the third request, a message states that no more codes can be sent for a short period.\\n\\nACTUAL RESULT:\\nAll six codes arrive.\\n\\nTECHNICAL NOTES:\\nsendCode never checks the rate-limit counter (src/auth/sms.ts:42-58).\\n\\nENVIRONMENT:\\nn/a",
+            "reproSteps": "SUMMARY:\\nSix sign-in codes can be requested in one minute; the limit should be three.\\n\\nPRECONDITIONS:\\n1. Sign in as qa.tester@example.com / Test@123 until the 'Verify it's you' screen appears.\\n\\nSTEPS TO REPRODUCE:\\n1. Click 'Send code again' six times within one minute.\\n\\nEXPECTED RESULT:\\nAfter the third request, a message states that no more codes can be sent for a short period.\\n\\nACTUAL RESULT:\\nAll six codes arrive.\\n\\nTECHNICAL NOTES:\\nsendCode never checks the rate-limit counter (repo-one/src/auth/sms.ts:42-58).\\n\\nENVIRONMENT:\\nn/a",
             "severity": "2 - High",
             "linkedDraftCaseIndex": 0,
             "codeRefs": [
               {
-                "file": "src/auth/sms.ts",
+                "file": "repo-one/src/auth/sms.ts",
                 "startLine": 42,
                 "endLine": 58,
                 "symbol": "sendCode"
