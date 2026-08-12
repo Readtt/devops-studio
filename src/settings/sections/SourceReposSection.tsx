@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { DirEntry } from "@/modules/ai/lib/native";
-import type { GitRepoInfo } from "@/modules/git/useSourceDirGitInfo";
+import { useReposGitInfo, type GitRepoInfo } from "@/modules/git";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   addRepo,
@@ -68,7 +68,7 @@ function sameRoot(a: string, b: string): boolean {
  */
 export function SourceReposPanel() {
   const repos = usePreferencesStore((s) => s.repos);
-  const branches = useRepoBranches(repos);
+  const branches = useReposGitInfo();
   const [scan, setScan] = useState<ScanState | null>(null);
   const [renameId, setRenameId] = useState<string | null>(null);
 
@@ -136,7 +136,7 @@ export function SourceReposPanel() {
               otherNames={repos
                 .filter((r) => r.id !== repo.id)
                 .map((r) => r.name)}
-              git={branches[repo.root]}
+              git={branches.get(repo.id)}
               renameRequested={renameId === repo.id}
               onRenameHandled={() => setRenameId(null)}
               onRequestRename={() => setRenameId(repo.id)}
@@ -549,42 +549,3 @@ function ScanDialog({
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/*  Per-repo branch                                                            */
-/* -------------------------------------------------------------------------- */
-
-/** Current branch of every configured repo, keyed by root. Refetches when the
- *  SET of roots changes; a settings list doesn't need the status bar's polling. */
-function useRepoBranches(repos: WorkspaceRepo[]): Record<string, GitRepoInfo> {
-  const [info, setInfo] = useState<Record<string, GitRepoInfo>>({});
-  const rootsKey = repos.map((r) => r.root).join("|");
-
-  useEffect(() => {
-    let alive = true;
-    const roots = rootsKey ? rootsKey.split("|") : [];
-    for (const root of roots) {
-      void invoke<GitRepoInfo>("git_repo_info", { path: root })
-        .then((next) => {
-          if (alive && next) setInfo((s) => ({ ...s, [root]: next }));
-        })
-        .catch(() => {
-          if (alive) {
-            setInfo((s) => ({
-              ...s,
-              [root]: {
-                branch: null,
-                commit: null,
-                isRepo: false,
-                detached: false,
-              },
-            }));
-          }
-        });
-    }
-    return () => {
-      alive = false;
-    };
-  }, [rootsKey]);
-
-  return info;
-}

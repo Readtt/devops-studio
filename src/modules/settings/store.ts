@@ -319,6 +319,13 @@ function rootKey(root: string): string {
   return root.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
 }
 
+/** Same folder, either spelling. Anything matching a root against the registry
+ *  must use this — a path that round-trips through an event payload or a Rust
+ *  command can come back with the other separator. */
+export function sameRoot(a: string, b: string): boolean {
+  return rootKey(a) === rootKey(b);
+}
+
 /** The name doubles as the namespace the AI addresses files through, so path
  *  separators must not survive it. Everything else is the user's business. */
 export function sanitizeRepoName(raw: string): string {

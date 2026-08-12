@@ -69,7 +69,6 @@ import {
   BranchSwitchToast,
   BranchSwitchDialog,
   CloneProgressCapsule,
-  CloneSourceDialog,
 } from "@/modules/git";
 import { getConnection, type WorkItemRef } from "@/modules/ado";
 import { ActionToast } from "@/components/ActionToast";
@@ -1532,7 +1531,6 @@ function AppShell() {
                   </div>
                   <ConfidenceConfirmDialog />
                   <BranchSwitchDialog />
-                  <CloneSourceDialog />
                   <GeneratorCallbacksProvider value={generatorCallbacks}>
                     <TabsDndProvider>
                       <PaneTreeRenderer
@@ -1549,7 +1547,7 @@ function AppShell() {
           {/* Status bar — git branch & source dir on the left, ADO + stale
               indicators pinned to the right. */}
           <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-border/60 bg-card/60 px-3 text-[11px] text-muted-foreground">
-            <StatusBarGit sourceRoot={sourceRoot} onPickDir={() => void pickSourceDir()} />
+            <StatusBarGit onPickDir={() => void pickSourceDir()} />
             <div className="ml-auto flex items-center gap-2">
               <StatusBarModelPicker activeSession={activeGenSessionInfo} />
               <UpdaterStatusPill

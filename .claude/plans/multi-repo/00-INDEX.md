@@ -52,7 +52,7 @@ Do not substitute role-suggesting names in code, comments, prompts, or UI copy.
 | 3 | Repo registry + compatibility shim | `03-repo-registry.md` | ☑ | `a4f1399` |
 | 4 | Mechanical sweep: delete `sourceRoot` | `04-sourceroot-sweep.md` | ☑ | `b2cd9a4` |
 | 5 | Settings: "Source repos" block | `05-settings-repos.md` | ☑ | `0801e2f` |
-| 6 | Status bar: multi-repo | `06-status-bar.md` | ☐ | |
+| 6 | Status bar: multi-repo | `06-status-bar.md` | ☑ | |
 | 7 | **AI tool layer — the core fix** | `07-ai-tool-layer.md` | ☐ | |
 | 8 | Prompts | `08-prompts.md` | ☐ | |
 | 9 | Generator | `09-generator.md` | ☐ | |
@@ -201,6 +201,66 @@ disabled/"already added"; confirm adds only the new roots; zero console errors t
 **Verify step 2 (cross-window liveness) is the one still unrun** — it needs two real Tauri windows,
 which the browser harness can't provide. The `repos` key-map entry it depends on is pinned by
 `repos.test.ts` "maps the repos key so the other window's write lands in the store".
+
+**Phase 6 — the hooks are `useReposGitInfo` / `useReposStatus` / `usePrimaryRepoGitInfo`,** all in
+one new file `src/modules/git/useReposGit.ts`; `useSourceDirGitInfo.ts` and `useSourceDirStatus.ts`
+are deleted. The plan named only the first two, but `useSourceDirGitInfo` had three consumers outside
+the status bar (`GeneratorPane`, `ConfidenceDetailPanel`, `AzureDevOpsSection`) that still want one
+repo. Making it a wrapper over the N-repo hook would have had each of them poll every repo, so it
+survives as `usePrimaryRepoGitInfo` — same single-root cost, truthful name. **Phases 9 and 11 own
+retargeting those three.** All three share one polling shell (`useRootPoll`), which is where the
+30 s / focus / event cadence now lives once. `GitRepoInfo` + `EMPTY_REPO_INFO` + a `gitRepoInfo()`
+wrapper moved to `gitOps.ts` next to the other IPC wrappers.
+
+**Phase 6 — the event carries a nonce as well as the root.** Tauri's `emit` broadcasts back to the
+emitting window, so once both hooks listen to both buses (the bug #10 fix) every git action costs
+each reader **two** refreshes — i.e. 2 git spawns per repo per event. `onSourceGitChanged` (new, in
+`gitOps.ts`) is the single subscribe point and collapses the echo by nonce. Pinned by
+`gitOps.test.ts`, proven by mutation.
+
+**Phase 6 — the branch segment says `3 branches`, not `3 repos`.** The plan's sketch had the folder
+segment show `3 repos` and the branch segment `3 repos · 1 dirty`; driven in the real webview that
+reads as the same words twice in one 20 px pill. It now shows the branch when every repo agrees on
+one, `N branches` when they don't (counting a detached HEAD as its own position), and falls back to
+`N repos` only when too few repos resolve a ref to say anything truthful about branches.
+
+**Phase 6 — the post-clone source picker is deleted, not rewired.** `CloneSourceDialog.tsx` and the
+`choose-source` phase are gone: asking which of N clones becomes "the source" has no meaning once
+every configured repo is read. `startBatch` now appends every successful clone via `addRepo`
+(sequential — it's read-modify-write) and shows "Added X" / "Added N repos". Per-repo clone failures
+are still surfaced by `CloneProgressCapsule`'s tally, which is where they already were.
+
+**Phase 6 — the multi-repo folder segment opens Settings, it does not open the picker.** The picker
+writes through `setSourceRoot`, which collapses the registry to the folder chosen — at N > 1 that
+would silently drop every other repo. At N ≤ 1 it is the picker, exactly as before.
+
+**Phase 6 — `sameRoot` is now exported from `settings/store.ts`.** Matching an event-payload root
+against the registry needs the same separator/case-insensitive comparison the registry dedups with.
+`SourceReposSection`'s local copy was replaced by it, and its hand-rolled `useRepoBranches` poller
+by `useReposGitInfo()`.
+
+**Phase 6 — the drive-ui harness was missing `__TAURI_EVENT_PLUGIN_INTERNALS__`.** The unlisten that
+`listen()` returns goes through that global, not through `invoke`, so every Tauri-bus subscriber
+threw on unmount — which in React dev mode is the first thing that happens. Nothing in the Settings
+General tab had subscribed before this phase, which is why it surfaced now. `tauriMock.js` provides
+it, and `plugin:event|listen` now returns the callback id so unregistering actually works.
+
+**Phase 6 — verification is REAL, including the live steps.** `tsc` clean, `vite build` clean, 987
+frontend tests green (+13; every substantive assertion proven by mutating the source — a single
+global op token, a confirm map that clears wholesale, a removed nonce dedup, a half-detached
+unsubscribe, and an append loop that adds only the first clone each fail exactly the intended test).
+Verify steps 1–4 and 6 were driven in the **real main webview** over CDP against a mocked Tauri IPC
+boundary, at N=1 and at N=3 (one clean, one dirty+ahead, one detached+parked): the N=1 bar is
+unchanged down to its aria-labels and its single hairline; each repo row shows its **own** branch and
+state; drilling in lists that repo's branches under a header naming it; the dirty-tree dialog names
+the repo; and two switches started back to back render two independent capsules, neither cancelling
+the other. **Verify step 5 (a git change made from the Settings window) is the one still unrun** —
+it needs two real Tauri windows; `gitOps.test.ts` pins the both-bus subscription it depends on.
+
+**Phase 6 found a real bug in its own first draft**, worth knowing because the pattern recurs: the
+repo popover's `open` is controlled, so a programmatic `setOpen(false)` never fires `onOpenChange` —
+the drilled-into repo was never cleared and the next open showed the previous repo's branches. Any
+new controlled Radix surface here needs one `close()` that resets its own state too.
 
 ---
 

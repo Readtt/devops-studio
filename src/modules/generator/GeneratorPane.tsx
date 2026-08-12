@@ -55,7 +55,7 @@ import {
   type ExecutionOutcome,
   type TeamMember,
 } from "@/modules/ado";
-import { useSourceDirGitInfo } from "@/modules/git";
+import { usePrimaryRepoGitInfo } from "@/modules/git";
 import {
   AiBrain01Icon,
   AlertCircleIcon,
@@ -843,7 +843,7 @@ function InputPhase() {
     (targetSuite === null || suiteCapabilities(targetSuite).canAddCases);
   const planName = plans.find((p) => p.id === planId)?.name ?? null;
   const suiteName = suites.find((s) => s.id === suiteId)?.name ?? null;
-  const git = useSourceDirGitInfo();
+  const git = usePrimaryRepoGitInfo();
 
   // Context guardrail. Everything the analyze run will actually send — the spec,
   // text attachments, attached work items, images, and the always-injected

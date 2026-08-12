@@ -40,7 +40,8 @@ export const MOCK = (fixture, extraSource = "") => `
       const set = listeners.get(args.event) ?? new Set();
       set.add(args.handler);
       listeners.set(args.event, set);
-      return set.size;
+      // The callback id IS the event id: it's what unregisterListener gets back.
+      return args.handler;
     }
     if (cmd === "plugin:event|unlisten") return null;
     if (cmd === "plugin:event|emit" || cmd === "plugin:event|emit_to") {
@@ -120,6 +121,16 @@ export const MOCK = (fixture, extraSource = "") => `
       currentWebview: { label: "main" },
     },
     plugins: {},
+  };
+
+  // The unlisten returned by listen() goes through here, NOT through invoke.
+  // Without it every Tauri-bus subscriber throws on unmount — which in React
+  // dev mode is the very first thing that happens.
+  window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+    unregisterListener(event, eventId) {
+      listeners.get(event)?.delete(eventId);
+      callbacks.delete(eventId);
+    },
   };
 })();
 `;

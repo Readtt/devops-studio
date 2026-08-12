@@ -30,7 +30,7 @@ import {
 } from "@/modules/ado";
 import {
   CURRENT_BRANCH_SENTINEL,
-  useSourceDirGitInfo,
+  usePrimaryRepoGitInfo,
 } from "@/modules/git";
 import {
   CheckmarkCircle02Icon,
@@ -58,7 +58,7 @@ export function AzureDevOpsSection() {
   const [pat, setPat] = useState("");
   const [patVisible, setPatVisible] = useState(false);
   const [hasStoredPat, setHasStoredPat] = useState(false);
-  const gitInfo = useSourceDirGitInfo();
+  const gitInfo = usePrimaryRepoGitInfo();
   const sourceRoot = usePrimaryRepoRoot();
   const codeSearchEnabled = usePreferencesStore((s) => s.codeSearchEnabled);
   const [status, setStatus] = useState<StatusBadge>({ kind: "unverified" });

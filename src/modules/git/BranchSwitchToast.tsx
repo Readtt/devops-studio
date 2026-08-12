@@ -10,23 +10,58 @@ import {
   Cancel01Icon,
   CheckmarkCircle02Icon,
 } from "@hugeicons/core-free-icons";
-import { useBranchSwitch } from "./useBranchSwitch";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+import { repoBasename, sameRoot } from "@/modules/settings/store";
+import {
+  isBranchOpBusy,
+  useBranchSwitch,
+  type BranchSwitchToast as Toast,
+} from "./useBranchSwitch";
 
 /**
- * Bottom-left glass capsule for a branch switch / pull — deliberately the same
+ * Bottom-left glass capsules for branch switches / pulls — deliberately the same
  * shape, glass, and spinner as the updater toast (UpdaterToast.tsx) so the two
  * read as one notification language. The shared container in App.tsx owns
- * positioning and stacking.
+ * positioning and stacking; repos run independently, so this renders one capsule
+ * per repo with something in flight.
  */
 export function BranchSwitchToast() {
-  const toast = useBranchSwitch((s) => s.toast);
-  const dismiss = useBranchSwitch((s) => s.dismissToast);
-  if (!toast) return null;
+  const toasts = useBranchSwitch((s) => s.toasts);
+  const repos = usePreferencesStore((s) => s.repos);
+  if (toasts.size === 0) return null;
 
-  const busy =
-    toast.kind === "switching" ||
-    toast.kind === "pulling" ||
-    toast.kind === "restoring";
+  return (
+    <>
+      {[...toasts].map(([cwd, toast]) => (
+        <Capsule
+          key={cwd}
+          cwd={cwd}
+          toast={toast}
+          // Naming the repo only matters once there's more than one — at a single
+          // repo the capsule stays exactly what it always was.
+          repo={
+            repos.length > 1
+              ? repos.find((r) => sameRoot(r.root, cwd))?.name ??
+                repoBasename(cwd)
+              : null
+          }
+        />
+      ))}
+    </>
+  );
+}
+
+function Capsule({
+  cwd,
+  toast,
+  repo,
+}: {
+  cwd: string;
+  toast: Toast;
+  repo: string | null;
+}) {
+  const dismiss = useBranchSwitch((s) => s.dismissToast);
+  const busy = isBranchOpBusy(toast);
 
   return (
     <div
@@ -64,20 +99,28 @@ export function BranchSwitchToast() {
         />
       )}
 
+      {repo ? (
+        <span className="max-w-[7rem] shrink-0 truncate rounded-sm bg-foreground/[0.06] px-1 text-[9.5px] font-medium uppercase tracking-wide text-muted-foreground">
+          {repo}
+        </span>
+      ) : null}
+
       <p className="whitespace-nowrap pr-1 text-[12px] text-foreground">
         {toast.kind === "switching" ? (
           <>
             <span className="font-medium">
               {toast.stashing ? "Leaving changes, switching" : "Switching"}
             </span>
-            <span className="ml-1.5 font-mono text-[10.5px] text-muted-foreground">
+            {" "}
+            <span className="font-mono text-[10.5px] text-muted-foreground">
               {toast.branch}
             </span>
           </>
         ) : toast.kind === "pulling" ? (
           <>
             <span className="font-medium">Pulling latest</span>
-            <span className="ml-1.5 font-mono text-[10.5px] text-muted-foreground">
+            {" "}
+            <span className="font-mono text-[10.5px] text-muted-foreground">
               {toast.branch}
             </span>
           </>
@@ -90,7 +133,7 @@ export function BranchSwitchToast() {
         )}
       </p>
 
-      {!busy ? <DismissButton onDismiss={dismiss} /> : null}
+      {!busy ? <DismissButton onDismiss={() => dismiss(cwd)} /> : null}
     </div>
   );
 }

@@ -1,14 +1,19 @@
-export { useSourceDirGitInfo } from "./useSourceDirGitInfo";
-export type { GitRepoInfo } from "./useSourceDirGitInfo";
-export { useSourceDirStatus } from "./useSourceDirStatus";
+export {
+  usePrimaryRepoGitInfo,
+  useReposGitInfo,
+  useReposStatus,
+} from "./useReposGit";
 export {
   CURRENT_BRANCH_SENTINEL,
   resolveTrackingBranch,
 } from "./trackingBranch";
 export {
+  EMPTY_REPO_INFO,
   EMPTY_STATUS,
   SOURCE_GIT_CHANGED_EVENT,
   emitSourceGitChanged,
+  onSourceGitChanged,
+  gitRepoInfo,
   gitStatusSummary,
   gitBranches,
   gitCheckout,
@@ -17,6 +22,7 @@ export {
   gitStashRestore,
 } from "./gitOps";
 export type {
+  GitRepoInfo,
   GitStatusSummary,
   GitCheckoutResult,
   GitPullResult,
@@ -30,4 +36,3 @@ export { StatusBarGit } from "./StatusBarGit";
 export { BranchSwitchToast } from "./BranchSwitchToast";
 export { BranchSwitchDialog } from "./BranchSwitchDialog";
 export { CloneProgressCapsule } from "./CloneProgressCapsule";
-export { CloneSourceDialog } from "./CloneSourceDialog";

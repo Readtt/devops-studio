@@ -10,7 +10,7 @@ import {
   type ConfidenceVerdict,
   type EvidenceItem,
 } from "../lib/confidence";
-import { useSourceDirGitInfo } from "@/modules/git";
+import { usePrimaryRepoGitInfo } from "@/modules/git";
 import {
   AlertCircleIcon,
   Cancel01Icon,
@@ -257,7 +257,7 @@ export function ConfidenceDetailPanel({
 /**
  * Source-provenance line for a verdict. A confidence score is graded against
  * whatever source was checked out when it ran, so this compares the verdict's
- * stamped HEAD sha to the LIVE source-dir HEAD (via useSourceDirGitInfo, which
+ * stamped HEAD sha to the LIVE source-dir HEAD (via usePrimaryRepoGitInfo, which
  * reacts to branch switches/pulls through SOURCE_GIT_CHANGED_EVENT) and tells
  * the user precisely whether the score still reflects their code:
  *   - stale → amber, prompts a re-evaluate (the tree moved since it ran)
@@ -266,7 +266,7 @@ export function ConfidenceDetailPanel({
  *     fall back to the honest generic "check your branch" reminder.
  */
 function VerdictSourceHint({ verdict }: { verdict: ConfidenceVerdict }) {
-  const git = useSourceDirGitInfo();
+  const git = usePrimaryRepoGitInfo();
   const state = verdictSourceState(verdict, git.isRepo ? git.commit : null);
 
   if (state.kind === "stale") {

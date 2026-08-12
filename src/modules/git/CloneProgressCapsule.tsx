@@ -4,8 +4,8 @@
 // stacking are owned by the shared bottom-left container in App.tsx.
 //
 // While a batch runs it shows "Cloning 2/3 · repo · phase 45%"; when it ends it
-// shows a one-line tally. The source-dir decision lives in the CloneSourceDialog
-// popup (phase "choose-source"), during which this capsule is hidden.
+// shows a one-line tally. Every successful clone joins the workspace on its own
+// — the "Added N repos" confirmation is the ActionToast stacked beneath this.
 
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -29,7 +29,6 @@ export function CloneProgressCapsule() {
   const cancel = useCloneProgress((s) => s.cancel);
   const dismiss = useCloneProgress((s) => s.dismiss);
 
-  // The source-picker popup owns the "choose-source" phase; idle shows nothing.
   if (phase !== "cloning" && phase !== "done") return null;
 
   const summary = phase === "done" ? buildSummary(outcomes, total, cancelled) : null;
