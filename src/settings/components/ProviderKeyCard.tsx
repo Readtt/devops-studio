@@ -304,8 +304,9 @@ export function ProviderKeyCard({
 }
 
 /** One-line status under the key field: a save error, the live prefix warning,
- *  or the result of a "Test" probe — each with a matching tone + glyph. */
-function KeyStatusLine({
+ *  or the result of a "Test" probe — each with a matching tone + glyph.
+ *  Shared with the local-provider cards so both Test buttons read identically. */
+export function KeyStatusLine({
   error,
   prefixWarn,
   testResult,

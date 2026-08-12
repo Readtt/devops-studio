@@ -1,5 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ComboboxCreatable } from "@/components/ComboboxCreatable";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,9 +25,14 @@ import {
   type ProviderInfo,
 } from "@/modules/ai/config";
 import { clearKey, getAllKeys, setKey } from "@/modules/ai/lib/keyring";
+import { testProviderKey, type KeyTestResult } from "@/modules/ai/lib/testKey";
+import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
-import { usePreferencesStore } from "@/modules/settings/preferences";
+import {
+  localProviderConfig,
+  usePreferencesStore,
+} from "@/modules/settings/preferences";
 import {
   emitKeysChanged,
   onGenerationBusy,
@@ -54,12 +60,42 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ProviderIcon } from "../components/ProviderIcon";
-import { ProviderKeyCard } from "../components/ProviderKeyCard";
+import { KeyStatusLine, ProviderKeyCard } from "../components/ProviderKeyCard";
 import { SectionHeader } from "../components/SectionHeader";
 
 type KeysMap = Record<ProviderId, string | null>;
+
+/** Mirrors `LmModelsResult` in `src-tauri/src/modules/net.rs`. */
+type LmModelsResult = {
+  status: number;
+  models: string[];
+  error: string | null;
+};
+
+/** The drafts a local card holds, in the shape the AI runner resolves models
+ *  from — so Test exercises what's on screen, not what was last saved. */
+function draftLocalConfig(
+  id: ProviderId,
+  baseURL: string,
+  modelId: string,
+): LocalProviderConfig {
+  const url = baseURL.trim();
+  const model = modelId.trim();
+  switch (id) {
+    case "lmstudio":
+      return { lmstudioBaseURL: url, lmstudioModelId: model };
+    case "mlx":
+      return { mlxBaseURL: url, mlxModelId: model };
+    case "ollama":
+      return { ollamaBaseURL: url, ollamaModelId: model };
+    case "openai-compatible":
+      return { openaiCompatibleBaseURL: url, openaiCompatibleModelId: model };
+    default:
+      return {};
+  }
+}
 
 const isLocalProvider = (id: ProviderId): boolean => !providerNeedsKey(id);
 
@@ -547,25 +583,74 @@ function LocalProviderCard({
   const [modelDraft, setModelDraft] = useState(modelId);
   const [contextDraft, setContextDraft] = useState(String(contextLimit ?? ""));
   const [keyDraft, setKeyDraft] = useState("");
-  const [testStatus, setTestStatus] = useState<
-    "idle" | "testing" | "ok" | "fail"
-  >("idle");
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<KeyTestResult | null>(null);
+  const [models, setModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  // Bumped on every fetch and on every URL edit, so a slow reply for a URL the
+  // user has since changed is discarded instead of overwriting the new list.
+  const fetchSeq = useRef(0);
 
   useEffect(() => setUrlDraft(baseURL), [baseURL]);
   useEffect(() => setModelDraft(modelId), [modelId]);
   useEffect(() => setContextDraft(String(contextLimit ?? "")), [contextLimit]);
 
   const supportsKey = provider.id === "openai-compatible";
+  // An unsaved draft key is what the user is trying out, so it wins over the
+  // saved one for both listing and testing.
+  const authKey = supportsKey ? keyDraft.trim() || compatKey || "" : "";
 
-  const test = async () => {
-    setTestStatus("testing");
+  const loadModels = async () => {
+    const base = urlDraft.trim();
+    if (!base) return;
+    const seq = ++fetchSeq.current;
+    setModelsLoading(true);
     try {
-      const status = await invoke<number>("lm_ping", { baseUrl: urlDraft });
-      setTestStatus(status > 0 ? "ok" : "fail");
-    } catch {
-      setTestStatus("fail");
+      const res = await invoke<LmModelsResult>("lm_list_models", {
+        baseUrl: base,
+        apiKey: authKey || null,
+      });
+      if (seq !== fetchSeq.current) return;
+      setModels(res.models);
+      setModelsError(res.error);
+    } catch (e) {
+      if (seq !== fetchSeq.current) return;
+      setModels([]);
+      setModelsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (seq === fetchSeq.current) setModelsLoading(false);
     }
   };
+
+  const onUrlChange = (v: string) => {
+    setUrlDraft(v);
+    fetchSeq.current++;
+    setModels([]);
+    setModelsError(null);
+    setModelsLoading(false);
+  };
+
+  const test = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      setTestResult(
+        await testProviderKey(provider.id, authKey, {
+          ...localProviderConfig(usePreferencesStore.getState()),
+          ...draftLocalConfig(provider.id, urlDraft, modelDraft),
+        }),
+      );
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const modelsHint = !urlDraft.trim()
+    ? "Enter a base URL to list models — or just type the id."
+    : modelsError
+      ? `${modelsError} Type the model id instead.`
+      : "No models returned — type the id.";
 
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card/60 px-3 py-2.5">
@@ -616,38 +701,53 @@ function LocalProviderCard({
           <div className="flex flex-1 gap-1.5">
             <Input
               value={urlDraft}
-              onChange={(e) => setUrlDraft(e.target.value)}
+              onChange={(e) => onUrlChange(e.target.value)}
               onBlur={() => {
                 const v = urlDraft.trim();
                 if (v !== baseURL) void setBaseURL(v);
+                void loadModels();
               }}
               placeholder={meta.urlPlaceholder}
               spellCheck={false}
               className="h-8 flex-1 font-mono text-[11.5px]"
             />
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => void test()}
-              disabled={!urlDraft.trim() || testStatus === "testing"}
-              className="h-8 px-3 text-[11px]"
-            >
-              {testStatus === "testing" ? "Testing…" : "Test"}
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void test()}
+                  disabled={testing || !urlDraft.trim() || !modelDraft.trim()}
+                  className="h-8 px-3 text-[11px]"
+                >
+                  {testing ? "Testing…" : "Test"}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[240px] text-[11px]">
+                Send one tiny request to this endpoint using the model id above
+                — confirms the server, the key, and the model all work together.
+              </TooltipContent>
+            </Tooltip>
           </div>
         </FieldRow>
 
         <FieldRow label="Model ID">
-          <Input
+          <ComboboxCreatable
             value={modelDraft}
-            onChange={(e) => setModelDraft(e.target.value)}
-            onBlur={() => {
-              const v = modelDraft.trim();
+            options={models}
+            // Keep the last list on screen while refreshing — a skeleton on
+            // every open would flash for a already-known endpoint.
+            loading={modelsLoading && models.length === 0}
+            onOpen={() => void loadModels()}
+            onChange={(v) => {
+              setModelDraft(v);
+              // The popover closes on select, so there's no blur to save on.
               if (v !== modelId) void setModelId(v);
             }}
+            emptyHint={modelsHint}
             placeholder={meta.modelPlaceholder}
-            spellCheck={false}
-            className="h-8 font-mono text-[11.5px]"
+            searchPlaceholder="Search or type a model id…"
+            ariaLabel="Model ID"
           />
         </FieldRow>
 
@@ -727,7 +827,7 @@ function LocalProviderCard({
           </FieldRow>
         ) : null}
 
-        <StatusLine status={testStatus} />
+        <KeyStatusLine error={null} prefixWarn={null} testResult={testResult} />
 
         {!modelId.trim() && meta.modelHint ? (
           <p className="text-[10.5px] leading-relaxed text-muted-foreground">
@@ -753,32 +853,6 @@ function FieldRow({
       </span>
       <div className="flex flex-1 items-center">{children}</div>
     </div>
-  );
-}
-
-function StatusLine({
-  status,
-}: {
-  status: "idle" | "testing" | "ok" | "fail";
-}) {
-  if (status === "idle") return null;
-  if (status === "testing") {
-    return (
-      <span className="text-[10.5px] text-muted-foreground">Testing…</span>
-    );
-  }
-  if (status === "ok") {
-    return (
-      <span className="flex items-center gap-1 text-[10.5px] text-muted-foreground">
-        <HugeiconsIcon icon={CheckmarkCircle02Icon} size={11} strokeWidth={2} />
-        Reachable — server responded.
-      </span>
-    );
-  }
-  return (
-    <span className="text-[10.5px] text-destructive/80">
-      Could not reach the server.
-    </span>
   );
 }
 

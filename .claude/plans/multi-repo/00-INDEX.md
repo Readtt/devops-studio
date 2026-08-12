@@ -47,7 +47,7 @@ Do not substitute role-suggesting names in code, comments, prompts, or UI copy.
 
 | # | Phase | File | Status | Commit |
 |---|---|---|---|---|
-| 1 | Custom provider: model dropdown + real Test | `01-custom-provider.md` | ☐ | |
+| 1 | Custom provider: model dropdown + real Test | `01-custom-provider.md` | ☑ | |
 | 2 | Source-link format fixes | `02-source-link-format.md` | ☐ | |
 | 3 | Repo registry + compatibility shim | `03-repo-registry.md` | ☐ | |
 | 4 | Mechanical sweep: delete `sourceRoot` | `04-sourceroot-sweep.md` | ☐ | |
@@ -71,7 +71,18 @@ Phases 9–12 can be reordered once 7–8 land.
 > decision made differently than planned. **If a phase discovers the plan is wrong, stop and record
 > it here rather than improvising across phase boundaries.**
 
-_(none yet)_
+**Phase 1 — bug #11 is NOT fixed; it is only not inherited.** The plan said to fix the substring
+test while porting `BranchPicker`'s not-in-list fallback into `ComboboxCreatable`, and separately said
+not to touch `BranchPicker`. `ComboboxCreatable` has no `sentinel` prop (nothing in its spec needs
+one), so the buggy `sentinel?.value.includes(value)` comparison has no analogue to fix — the fallback
+is just `if (value && !seen.has(value))`. **`BranchPicker.tsx:91` still ships the substring test.**
+Whoever runs Phase 14 should either fix it there or strike it from the bug table — do not read the
+Phase 1 commit as having closed it.
+
+**Phase 1 — verification is partial.** Automated checks all pass (`tsc` clean, 922 frontend tests,
+134 Rust tests incl. 5 new `extract_model_ids` cases, `vite build` clean). The plan's Verify steps
+1–5 need a live OpenAI-compatible endpoint plus a valid and an invalid key, which this session had
+no access to. **Those five are unrun**, not passed.
 
 ---
 
