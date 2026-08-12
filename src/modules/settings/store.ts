@@ -81,6 +81,25 @@ export type BestPracticeFile = {
   enabled: boolean;
 };
 
+/** One source repository in the workspace registry.
+ *
+ *  Deliberately carries no role, kind, tier, or relationship field: the app has
+ *  to work for any combination of repos and must encode nothing about how they
+ *  relate. A repo is a name and a path. List order is display order — never
+ *  dependency order — and no position is semantically special. */
+export type WorkspaceRepo = {
+  /** Stable id. Survives rename and path move. Generated on add. */
+  id: string;
+  /** Display name AND the namespace the AI addresses files through, so it must
+   *  be unique across the list and slug-safe (no path separators). Defaults to
+   *  the folder basename. */
+  name: string;
+  /** Absolute path to the repo root. */
+  root: string;
+  /** ADO binding used when building published code links. null until resolved. */
+  ado: { repoId: string; repoName: string; project: string } | null;
+};
+
 export type Preferences = {
   theme: ThemePref;
   defaultModelId: ModelId;
@@ -117,8 +136,12 @@ export type Preferences = {
   preferredAiCli: string;
   zoomLevel: number;
   shortcuts: Record<ShortcutId, KeyBinding[]>;
-  /** Absolute path to the user's source directory. Code-link rows in the Bug
-   *  pane resolve relative paths against this when opening the code viewer. */
+  /** Source repositories the app reads code from. Flat list — no active repo,
+   *  no named profiles. Every code-reading surface sees all of them. */
+  repos: WorkspaceRepo[];
+  /** Compatibility view of `repos[0]?.root`, derived on load and on every
+   *  registry write. Never persisted on its own. Goes away once every read
+   *  site routes through the registry. */
   sourceRoot: string | null;
   /** Master switch: may the AI read the source directory (read-only
    *  Read/Glob/Grep) to ground its answers? Applies to every surface —
@@ -178,6 +201,9 @@ const KEY_DEFAULT_SHELL_PATH = "defaultShellPath";
 const KEY_PREFERRED_AI_CLI = "preferredAiCli";
 const KEY_ZOOM_LEVEL = "zoomLevel";
 const KEY_SHORTCUTS = "shortcuts";
+const KEY_REPOS = "repos";
+// Read exactly once, by the repo-registry migration in loadPreferences. Never
+// written again — the registry is the persisted source of truth.
 const KEY_SOURCE_ROOT = "sourceRoot";
 const KEY_CODE_SEARCH_ENABLED = "codeSearchEnabled";
 const KEY_CONTEXT_GUARD_ENABLED = "contextGuardEnabled";
@@ -242,6 +268,9 @@ export const DEFAULT_PREFERENCES: Preferences = {
   preferredAiCli: "claude",
   zoomLevel: 1.0,
   shortcuts: {} as Record<ShortcutId, KeyBinding[]>,
+  // Must be a real array, not left undefined: preferences.ts spreads these as
+  // the zustand initial state, so consumers map over it before hydration.
+  repos: [],
   sourceRoot: null,
   codeSearchEnabled: true,
   contextGuardEnabled: true,
@@ -272,6 +301,170 @@ function sanitizeModelId(id: string | undefined, fallback: ModelId): ModelId {
   return id && isKnownModelId(id) ? id : fallback;
 }
 
+/** Mint a repo id. Same shape as newAttachmentId — crypto.randomUUID exists in
+ *  every context Tauri gives us, with a timestamp fallback for the rare one
+ *  where it doesn't. */
+function newRepoId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `repo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** Last path segment of a repo root, for both separators. */
+export function repoBasename(root: string): string {
+  const trimmed = root.replace(/[\\/]+$/, "");
+  const cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return cut >= 0 ? trimmed.slice(cut + 1) : trimmed;
+}
+
+/** Compare two roots as the OS would: separator- and case-insensitive, so the
+ *  same folder can't be registered twice under two spellings. */
+function rootKey(root: string): string {
+  return root.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
+}
+
+/** The name doubles as the namespace the AI addresses files through, so path
+ *  separators must not survive it. Everything else is the user's business. */
+export function sanitizeRepoName(raw: string): string {
+  return raw.replace(/[\\/]+/g, "-").replace(/\s+/g, " ").trim();
+}
+
+/** Resolve `desired` to a name no one else in `taken` is using, suffixing -2,
+ *  -3, … Comparison is case-insensitive because repo-path matching is. */
+export function uniqueRepoName(desired: string, taken: Iterable<string>): string {
+  const used = new Set([...taken].map((n) => n.toLowerCase()));
+  const base = sanitizeRepoName(desired) || "repo";
+  if (!used.has(base.toLowerCase())) return base;
+  // Bounded: with N names taken, one of N+1 candidates is always free.
+  for (let i = 2; i <= used.size + 2; i++) {
+    const candidate = `${base}-${i}`;
+    if (!used.has(candidate.toLowerCase())) return candidate;
+  }
+  return `${base}-${newRepoId()}`;
+}
+
+function normalizeAdo(raw: unknown): WorkspaceRepo["ado"] {
+  if (!raw || typeof raw !== "object") return null;
+  const { repoId, repoName, project } = raw as Record<string, unknown>;
+  if (
+    typeof repoId !== "string" ||
+    typeof repoName !== "string" ||
+    typeof project !== "string"
+  ) {
+    return null;
+  }
+  return { repoId, repoName, project };
+}
+
+/** Coerce anything claiming to be a repo list into a well-formed one: drop
+ *  entries with no root, drop repeats of a root, and force names unique and
+ *  slug-safe.
+ *
+ *  This runs on load AND on every write because nothing downstream validates:
+ *  preferences.ts blind-sets whatever a change event carries (`set({[key]:
+ *  value})`), so a malformed payload from any window would otherwise land in
+ *  the store verbatim. Normalising — rather than rejecting — means whatever is
+ *  in the store is always usable; the Settings UI validates first and is where
+ *  the user-facing error lives. */
+export function normalizeRepos(raw: unknown): WorkspaceRepo[] {
+  if (!Array.isArray(raw)) return [];
+  const out: WorkspaceRepo[] = [];
+  const roots = new Set<string>();
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const { id, name, root, ado } = entry as Record<string, unknown>;
+    if (typeof root !== "string" || !root.trim()) continue;
+    const key = rootKey(root);
+    if (roots.has(key)) continue;
+    roots.add(key);
+    out.push({
+      id: typeof id === "string" && id ? id : newRepoId(),
+      name: uniqueRepoName(
+        (typeof name === "string" && name.trim()) || repoBasename(root),
+        out.map((r) => r.name),
+      ),
+      root: root.trim(),
+      ado: normalizeAdo(ado),
+    });
+  }
+  return out;
+}
+
+/** Build a registry entry for `root`, named so it doesn't collide with `taken`. */
+export function createRepo(root: string, taken: Iterable<string> = []): WorkspaceRepo {
+  return {
+    id: newRepoId(),
+    name: uniqueRepoName(repoBasename(root), taken),
+    root: root.trim(),
+    ado: null,
+  };
+}
+
+/** The single root every pre-registry surface reads.
+ *
+ *  `repos[0]` is a default, not a designation — it carries no meaning beyond
+ *  "some default was needed". Nothing may branch on a repo's position. */
+export function primaryRepoRoot(repos: WorkspaceRepo[]): string | null {
+  return repos[0]?.root ?? null;
+}
+
+/** Every registry write goes through here.
+ *
+ *  Routes through writePref so the cross-window event fires — the Settings
+ *  window is a separate webview and never sees a write that skips it. The
+ *  second emit keeps the derived `sourceRoot` view in step for the surfaces
+ *  that still read a single root; it goes away with the field. */
+async function writeRepos(repos: WorkspaceRepo[]): Promise<WorkspaceRepo[]> {
+  const next = normalizeRepos(repos);
+  await writePref(KEY_REPOS, next);
+  await emit(PREFS_CHANGED_EVENT, {
+    key: KEY_SOURCE_ROOT,
+    value: primaryRepoRoot(next),
+  });
+  return next;
+}
+
+/** The registry as persisted, which is authoritative across windows — the
+ *  plugin store lives in the Rust process, so this sees another window's
+ *  writes. Read-modify-write helpers below start here, never from a snapshot. */
+async function readRepos(): Promise<WorkspaceRepo[]> {
+  return normalizeRepos(await store.get<unknown>(KEY_REPOS));
+}
+
+/** Resolve the registry at boot, seeding it from the pre-registry single root
+ *  the first time. A folder launched via the "Open in DevOps Studio" shell verb
+ *  registers and moves to the front, which is what it did when there was only
+ *  one root to take over. */
+async function loadRepos(
+  get: <T>(k: string) => T | undefined,
+): Promise<WorkspaceRepo[]> {
+  const stored = normalizeRepos(get<unknown>(KEY_REPOS));
+  // The one and only read of the legacy key.
+  const legacy = stored.length
+    ? null
+    : (get<string | null>(KEY_SOURCE_ROOT) ?? null);
+  // Drains on first read, so consume it exactly once.
+  const launched = consumeLaunchDir() ?? null;
+
+  let next = legacy ? [createRepo(legacy)] : stored;
+  if (launched) {
+    const key = rootKey(launched);
+    const already = next.find((r) => rootKey(r.root) === key);
+    next = already
+      ? [already, ...next.filter((r) => r !== already)]
+      : [createRepo(launched, next.map((r) => r.name)), ...next];
+  }
+
+  const unchanged =
+    next.length === stored.length && next.every((r, i) => r === stored[i]);
+  if (unchanged) return stored;
+  // Persisted here rather than on next write: a seed that never lands is
+  // re-minted with a fresh id on every launch.
+  await writeRepos(next).catch(() => undefined);
+  return next;
+}
+
 export async function loadPreferences(): Promise<Preferences> {
   // Single IPC roundtrip — fetching keys individually fans out to one
   // `plugin:store|get` per setting and is the dominant boot cost.
@@ -287,6 +480,7 @@ export async function loadPreferences(): Promise<Preferences> {
       .then(() => store.save())
       .catch(() => undefined);
   }
+  const repos = await loadRepos(get);
   return {
     theme: get<ThemePref>(KEY_THEME) ?? DEFAULT_PREFERENCES.theme,
     // A retired model id persisted from an older build would crash the picker
@@ -360,13 +554,8 @@ export async function loadPreferences(): Promise<Preferences> {
     shortcuts:
       get<Record<ShortcutId, KeyBinding[]>>(KEY_SHORTCUTS) ??
       DEFAULT_PREFERENCES.shortcuts,
-    sourceRoot:
-      // A folder launched via the "Open in DevOps Studio" shell verb becomes
-      // the active source for the session (consumed once so a re-read can't
-      // replay it over a source the user changes later).
-      consumeLaunchDir() ??
-      get<string | null>(KEY_SOURCE_ROOT) ??
-      DEFAULT_PREFERENCES.sourceRoot,
+    repos,
+    sourceRoot: primaryRepoRoot(repos),
     codeSearchEnabled:
       get<boolean>(KEY_CODE_SEARCH_ENABLED) ??
       DEFAULT_PREFERENCES.codeSearchEnabled,
@@ -395,8 +584,73 @@ export async function loadPreferences(): Promise<Preferences> {
   };
 }
 
+/** Replace the registry wholesale. Names are forced unique and slug-safe on the
+ *  way in; the Settings UI validates first, this is the backstop. */
+export async function setRepos(value: WorkspaceRepo[]): Promise<void> {
+  await writeRepos(value);
+}
+
+/** Register `root`, or return the entry already covering it. Idempotent, so
+ *  adding the same folder twice can't produce two repos pointing at it. */
+export async function addRepo(
+  root: string,
+  name?: string,
+): Promise<WorkspaceRepo> {
+  const current = await readRepos();
+  const key = rootKey(root);
+  const existing = current.find((r) => rootKey(r.root) === key);
+  if (existing) return existing;
+  const taken = current.map((r) => r.name);
+  const repo = createRepo(root, taken);
+  if (name) repo.name = uniqueRepoName(name, taken);
+  await writeRepos([...current, repo]);
+  return repo;
+}
+
+/** Drop a repo from the registry. Nothing on disk is touched. */
+export async function removeRepo(id: string): Promise<void> {
+  const current = await readRepos();
+  await writeRepos(current.filter((r) => r.id !== id));
+}
+
+export async function renameRepo(id: string, name: string): Promise<void> {
+  const current = await readRepos();
+  await writeRepos(
+    current.map((r) =>
+      r.id === id
+        ? {
+            ...r,
+            name: uniqueRepoName(
+              name,
+              current.filter((o) => o.id !== id).map((o) => o.name),
+            ),
+          }
+        : r,
+    ),
+  );
+}
+
+export async function setRepoAdo(
+  id: string,
+  ado: WorkspaceRepo["ado"],
+): Promise<void> {
+  const current = await readRepos();
+  await writeRepos(current.map((r) => (r.id === id ? { ...r, ado } : r)));
+}
+
+/** Pre-registry setter: collapses the workspace to the one folder handed in.
+ *  Its callers become explicit registry edits as their surfaces land. */
 export async function setSourceRoot(value: string | null): Promise<void> {
-  await writePref(KEY_SOURCE_ROOT, value);
+  if (!value) {
+    await writeRepos([]);
+    return;
+  }
+  const current = await readRepos();
+  const key = rootKey(value);
+  // Keep the existing entry when it's the same folder, so its id and ADO
+  // binding survive a re-pick.
+  const existing = current.find((r) => rootKey(r.root) === key);
+  await writeRepos([existing ?? createRepo(value)]);
 }
 
 export async function setCodeSearchEnabled(value: boolean): Promise<void> {
@@ -627,6 +881,8 @@ export async function onPreferencesChange(
     [KEY_PREFERRED_AI_CLI]: "preferredAiCli",
     [KEY_ZOOM_LEVEL]: "zoomLevel",
     [KEY_SHORTCUTS]: "shortcuts",
+    [KEY_REPOS]: "repos",
+    // Not a stored key — writeRepos emits it so the derived view stays live.
     [KEY_SOURCE_ROOT]: "sourceRoot",
     [KEY_CODE_SEARCH_ENABLED]: "codeSearchEnabled",
     [KEY_CONTEXT_GUARD_ENABLED]: "contextGuardEnabled",

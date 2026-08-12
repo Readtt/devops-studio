@@ -101,6 +101,47 @@ made unreachable. `src/modules/git/trackingBranch.ts` and its test still exist a
 published links fall back to `main` on a detached HEAD / non-repo, which the `&& sourceDirBranch`
 guard already prevented.
 
+**Phase 3 — `Preferences.sourceRoot` is now DERIVED, and `setSourceRoot` writes the registry.**
+The plan said to stop writing `KEY_SOURCE_ROOT` but left the existing setter unmentioned. Leaving it
+writing the legacy key would have broken Phase 4's "behaviour-preserving by construction" claim:
+once reads flip to the registry, nothing reads that key, so picking a source folder (`App.tsx:907`)
+and cloning (`cloneProgressStore.ts:219`) would silently stop working. So:
+
+- `loadPreferences` computes `sourceRoot: primaryRepoRoot(repos)`. Nothing writes `KEY_SOURCE_ROOT`.
+- `writeRepos` (the one path every registry write goes through) emits a **second**
+  `PREFS_CHANGED_EVENT` for `sourceRoot` so the derived value stays live cross-window. That is why
+  `[KEY_SOURCE_ROOT]: "sourceRoot"` is still in the key map for a key that is no longer stored.
+- `setSourceRoot` collapses the registry to the one folder handed in, reusing the existing entry
+  when the root is unchanged so its id and ADO binding survive a re-pick.
+
+**Phase 4 therefore deletes three things together**: the `sourceRoot` field, the second `emit` in
+`writeRepos`, and the `[KEY_SOURCE_ROOT]` key-map entry. It should NOT need to touch `setSourceRoot`
+— Phase 6 still replaces its clone caller with an append, as planned.
+
+**Phase 3 — a launched folder is registered, not dropped.** The plan seeds only when the registry is
+empty, which would have made the "Open in DevOps Studio" shell verb a silent no-op for anyone who
+already has a repo (today it overrides the single root). `loadRepos` now registers the launched
+folder and moves it to the front, so the single-root surfaces still see it. Consequence worth
+knowing: the launched folder now **persists**, where before it was session-only — the registry has
+no session-scoped entry.
+
+**Phase 3 — validation normalises instead of rejecting, and runs on read as well as write.**
+Rejecting inside `setRepos` cannot stop a malformed payload, because `preferences.ts` blind-sets
+whatever a change event carries and a hand-edited settings file bypasses setters entirely. So
+`normalizeRepos` runs on load and on every write: drops entries with no root, drops repeats of a
+root (separator- and case-insensitive), mints missing ids, drops malformed `ado`, and forces names
+unique and slug-safe. **Phase 5's inline validation is still the UX** — this only ever fires on a bug.
+
+**Phase 3 — what later phases can import** from `settings/store.ts`: `normalizeRepos`, `createRepo`,
+`repoBasename`, `sanitizeRepoName`, `uniqueRepoName`, `primaryRepoRoot`, and the setters `setRepos` /
+`addRepo` / `removeRepo` / `renameRepo` / `setRepoAdo`. `addRepo` returns the entry already covering
+a root instead of adding a second one, so Phase 5's "Add folder…" and Phase 6's clone-append can
+call it blindly. `usePrimaryRepoRoot()` and `getRepos()` are in `settings/preferences.ts`.
+
+**Phase 3 — verification.** `tsc` clean, `vite build` clean, 969 frontend tests green (25 new in
+`settings/repos.test.ts`, each assertion proven by mutating the source). Verify steps 1–4 need a
+running app; see the phase report.
+
 ---
 
 ## Shared: the data model
