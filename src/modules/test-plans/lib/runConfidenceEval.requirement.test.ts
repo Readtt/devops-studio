@@ -22,7 +22,7 @@ function input(over: Partial<ConfidenceEvalInput> = {}): ConfidenceEvalInput {
       title: "Archive selected contacts",
       steps: [{ index: 1, action: "Click archive", expected: "Row hides" }],
     },
-    sourceRoot: "C:/src/app",
+    repos: [{ id: "r1", name: "repo-one", root: "C:/src/app", ado: null }],
     modelId: "claude-opus-5" as ConfidenceEvalInput["modelId"],
     keys: {} as ConfidenceEvalInput["keys"],
     ...over,

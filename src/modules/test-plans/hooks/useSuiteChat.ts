@@ -29,7 +29,6 @@ import {
   localProviderConfig,
   usePreferencesStore,
 } from "@/modules/settings/preferences";
-import { primaryRepoRoot } from "@/modules/settings/store";
 import {
   newSuiteChatMessageId,
   streamSuiteChatTask,
@@ -828,10 +827,9 @@ export const useSuiteChat = create<Store>((set, get) => ({
     const keys = await chat.ensureApiKeys();
     const modelId = curr.modelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
-    // Global code-search toggle gates source access for every surface.
-    const sourceRoot = prefs.codeSearchEnabled
-      ? primaryRepoRoot(prefs.repos)
-      : null;
+    // Global code-search toggle gates source access for every surface; when
+    // it's on, every configured repo is readable.
+    const repos = prefs.codeSearchEnabled ? prefs.repos : [];
     const priorMessages = curr.messages;
     // Best-practices standards injected as context; vision support depends on
     // the chosen model.
@@ -886,7 +884,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
         keys,
         modelId,
         local: localProviderConfig(prefs),
-        sourceRoot,
+        repos,
         customInstructions: prefs.customInstructions || undefined,
         onText: appendDelta,
         onToolEvent: mergeToolEvent,

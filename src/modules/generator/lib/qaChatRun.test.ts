@@ -6,12 +6,13 @@ const streamTask = vi.fn();
 vi.mock("@/modules/ai/lib/taskRunner", () => ({
   streamTask: (...a: unknown[]) => streamTask(...a),
 }));
-// Mirrors the real contract: a tool set when there's a source dir to read,
-// nothing when there isn't. Which one it is now decides whether a banked
-// transcript can be replayed at all, so a flat `undefined` would hide that.
+// Mirrors the real contract: a tool set when there's a repo to read, nothing
+// when there isn't. Which one it is now decides whether a banked transcript can
+// be replayed at all, so a flat `undefined` would hide that.
+const REPOS = [{ id: "r1", name: "repo-one", root: "/src", ado: null }];
 vi.mock("@/modules/test-plans/lib/suiteChatTools", () => ({
-  buildSuiteChatTools: (root: string | null) =>
-    root ? ({ read_file: {} } as never) : undefined,
+  buildSuiteChatTools: (repos: unknown[]) =>
+    repos.length > 0 ? ({ read_file: {} } as never) : undefined,
 }));
 
 import {
@@ -36,7 +37,7 @@ const base: ChatTaskInput & { onText: (d: string) => void } = {
   newQuestion: "does the draft cover the undo path?",
   modelId: "gpt-5.4-mini" as never,
   keys: {} as never,
-  sourceRoot: "/src",
+  repos: REPOS,
   onText: () => undefined,
 };
 
@@ -208,7 +209,7 @@ describe("draft-chat memory — a turn remembers what it read", () => {
   it("replays prose, not tool blocks, when this turn has no tools", async () => {
     await streamChatTask({
       ...base,
-      sourceRoot: null,
+      repos: [],
       history: [
         turn("user", "q1"),
         {

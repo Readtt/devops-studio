@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createGenerationSessionStore } from "./useGenerationSession";
 import type { ReviewedBug, ReviewedCase } from "../lib/draftBatchSchema";
 import type { GenerationRun } from "../lib/history";
-import type { GeneratorCheckpointV1 } from "@/modules/ai/lib/checkpointApi";
+import type { GeneratorCheckpointV2 } from "@/modules/ai/lib/checkpointApi";
 
 // Neutralize the debounced draft autosave (and any other Tauri IPC) so calling
 // real store actions in node doesn't reach for a backend that isn't there.
@@ -116,15 +116,15 @@ describe("useGenerationSession — auto-fail when a bug is attached", () => {
 });
 
 function mkCheckpointPayload(
-  partial: Partial<GeneratorCheckpointV1> = {},
-): GeneratorCheckpointV1 {
+  partial: Partial<GeneratorCheckpointV2> = {},
+): GeneratorCheckpointV2 {
   return {
-    v: 1,
+    v: 2,
     surface: "generator",
     runId: "run-cp-1",
     createdAt: "2026-06-11T00:00:00.000Z",
     modelId: "claude-sonnet-5",
-    sourceRoot: null,
+    repos: [],
     form: {
       requirements: "Users can reset a forgotten password.",
       changesets: "",

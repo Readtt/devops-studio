@@ -53,8 +53,8 @@ import {
   sanitizeTranscriptMessages,
   type CheckpointOutcome,
   type CheckpointWriter,
-  type GeneratorCheckpointV1,
-  type GeneratorRefineCheckpointV1,
+  type GeneratorCheckpointV2,
+  type GeneratorRefineCheckpointV2,
   type TranscriptCheckpoint,
 } from "@/modules/ai/lib/checkpointApi";
 import {
@@ -355,7 +355,7 @@ export type SessionState = {
   resumeAnalyze: () => Promise<void>;
   /** Restore the form + resume affordance from a persisted checkpoint. Pure
    *  state, no IPC — the caller already read the row. */
-  loadCheckpoint: (payload: GeneratorCheckpointV1, updatedAt: string) => void;
+  loadCheckpoint: (payload: GeneratorCheckpointV2, updatedAt: string) => void;
   /** Throw away the resume point (and its persisted row) for this run. */
   discardCheckpoint: () => void;
   /** Cancel an in-flight analyze and return to the input phase. Aborts the
@@ -602,7 +602,7 @@ function withPartialText(
 /** The resume affordance derived from the payload we just flushed, so what the
  *  UI offers and what's actually on disk can't drift. */
 function resumableFrom(
-  payload: GeneratorCheckpointV1,
+  payload: GeneratorCheckpointV2,
   outcome: CheckpointOutcome,
 ): NonNullable<SessionState["resumable"]> {
   return {
@@ -617,7 +617,7 @@ function resumableFrom(
 
 /** Same idea for a follow-up round, keyed by the row it was flushed to. */
 function refineResumableFrom(
-  payload: GeneratorRefineCheckpointV1,
+  payload: GeneratorRefineCheckpointV2,
   outcome: CheckpointOutcome,
 ): NonNullable<SessionState["refineResumable"]> {
   return {
@@ -638,14 +638,14 @@ type RefineCheckpointCtx = {
   writer: CheckpointWriter;
   buildPayload: (
     outcome: CheckpointOutcome | null,
-  ) => GeneratorRefineCheckpointV1;
+  ) => GeneratorRefineCheckpointV2;
 };
 
 /** The bookkeeping one follow-up round is recorded under. Lives in the round's
  *  checkpoint so a round finished by a resume still lands in history as the
  *  round the user started — same timestamp, same before-counts — rather than a
  *  second round dated at resume time. */
-type RefineRoundMeta = GeneratorRefineCheckpointV1["round"];
+type RefineRoundMeta = GeneratorRefineCheckpointV2["round"];
 
 /** Add this round's outcome to the thinking history.
  *
@@ -1047,7 +1047,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     // "cancelled" outcome from outside the run's own scope.
     let analyzeWriter: CheckpointWriter | null = null;
     let analyzeCheckpointPayload:
-      | ((outcome: CheckpointOutcome | null) => GeneratorCheckpointV1)
+      | ((outcome: CheckpointOutcome | null) => GeneratorCheckpointV2)
       | null = null;
     /** Final answer streamed so far, kept so a run that dies mid-answer can
      *  persist what it had written. */
@@ -1090,7 +1090,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
        *  be the live one rather than the table's. */
       budget: RunBudget;
       writer: CheckpointWriter;
-      buildPayload: (outcome: CheckpointOutcome | null) => GeneratorCheckpointV1;
+      buildPayload: (outcome: CheckpointOutcome | null) => GeneratorCheckpointV2;
     }): Promise<void> => {
       const { result, writer, buildPayload } = args;
       const cases: ReviewedCase[] = result.batch.cases.map((c) => ({
@@ -1860,9 +1860,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         : [];
     const contextBlocks = [...bpBlocks, ...bugBlocks];
 
-    const sourceRoot = prefs.codeSearchEnabled
-      ? primaryRepoRoot(prefs.repos)
-      : null;
+    // Every configured repo, or none at all — the app can't know which repos a
+    // spec touches, so narrowing is the user's explicit act, not a default.
+    const repos = prefs.codeSearchEnabled ? prefs.repos : [];
     const customInstructions = prefs.customInstructions || undefined;
     const prepared = prepareQaAnalystRun({
       requirements,
@@ -1876,7 +1876,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       suggestBugs,
       keys,
       modelId,
-      sourceRoot,
+      repos,
       contextBlocks,
       customInstructions,
     });
@@ -1901,13 +1901,13 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       createdAt,
     });
     analyzeWriter = writer;
-    const basePayload: GeneratorCheckpointV1 = {
-      v: 1,
+    const basePayload: GeneratorCheckpointV2 = {
+      v: 2,
       surface: "generator",
       runId,
       createdAt,
       modelId,
-      sourceRoot,
+      repos,
       customInstructions,
       form: {
         requirements,
@@ -1940,7 +1940,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     let transcript: TranscriptCheckpoint | null = null;
     const buildPayload = (
       outcome: CheckpointOutcome | null,
-    ): GeneratorCheckpointV1 => ({
+    ): GeneratorCheckpointV2 => ({
       ...basePayload,
       activity: get().activityLog,
       transcript: withPartialText(transcript, analyzePartialText),
@@ -2137,7 +2137,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     let transcript: TranscriptCheckpoint | null = base;
     const buildPayload = (
       outcome: CheckpointOutcome | null,
-    ): GeneratorCheckpointV1 => ({
+    ): GeneratorCheckpointV2 => ({
       ...payload,
       activity: get().activityLog,
       transcript: withPartialText(transcript, analyzePartialText),
@@ -2149,7 +2149,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       modelId: payload.modelId,
       userPrompt: payload.prepared.userPrompt,
       attachments: payload.prepared.attachments,
-      sourceRoot: payload.sourceRoot,
+      repos: payload.repos,
       customInstructions: payload.customInstructions,
     };
 
@@ -3051,9 +3051,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           ? await bugsToContextBlocks(workItemIds)
           : [];
       const contextBlocks = [...bpBlocks, ...bugBlocks];
-      const sourceRoot = prefs.codeSearchEnabled
-        ? primaryRepoRoot(prefs.repos)
-        : null;
+      const repos = prefs.codeSearchEnabled ? prefs.repos : [];
 
       // Assemble the prompt separately from running it, exactly as analyze
       // does — that split is what lets the round be checkpointed BEFORE the
@@ -3069,7 +3067,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         suggestBugs: s.suggestBugs,
         keys,
         modelId,
-        sourceRoot,
+        repos,
         contextBlocks,
         userPromptOverride: userPrompt,
       });
@@ -3098,14 +3096,14 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           cwd: sessionRunId,
           createdAt,
         });
-        const basePayload: GeneratorRefineCheckpointV1 = {
-          v: 1,
+        const basePayload: GeneratorRefineCheckpointV2 = {
+          v: 2,
           surface: "generator-refine",
           runId: refineRunId,
           sessionRunId,
           createdAt,
           modelId,
-          sourceRoot,
+          repos,
           customInstructions: prepared.customInstructions,
           round,
           prepared: {
@@ -3118,7 +3116,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         };
         const buildPayload = (
           outcome: CheckpointOutcome | null,
-        ): GeneratorRefineCheckpointV1 => ({
+        ): GeneratorRefineCheckpointV2 => ({
           ...basePayload,
           activity: get().activityLog,
           transcript,
@@ -3299,7 +3297,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     let transcript: TranscriptCheckpoint | null = base;
     const buildPayload = (
       outcome: CheckpointOutcome | null,
-    ): GeneratorRefineCheckpointV1 => ({
+    ): GeneratorRefineCheckpointV2 => ({
       ...payload,
       activity: get().activityLog,
       transcript,
@@ -3313,7 +3311,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       modelId: payload.modelId,
       userPrompt: payload.prepared.userPrompt,
       attachments: payload.prepared.attachments,
-      sourceRoot: payload.sourceRoot,
+      repos: payload.repos,
       customInstructions: payload.customInstructions,
     };
 
@@ -3577,7 +3575,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         modelId,
         local: localProviderConfig(prefs),
         contextBlocks: chatContextBlocks,
-        sourceRoot: prefs.codeSearchEnabled ? primaryRepoRoot(prefs.repos) : null,
+        repos: prefs.codeSearchEnabled ? prefs.repos : [],
         customInstructions: prefs.customInstructions || undefined,
         onText: appendDelta,
         onToolEvent: mergeToolEvent,

@@ -32,6 +32,8 @@ import {
   type TestCase,
 } from "@/modules/ado";
 import { buildSuiteChatTools } from "./suiteChatTools";
+import { renderRepoRoster } from "@/modules/ai/lib/repoPaths";
+import type { WorkspaceRepo } from "@/modules/settings/store";
 import { PLAIN_LANGUAGE_RULES } from "@/modules/ai/lib/plainLanguage";
 import {
   collectContextImages,
@@ -402,10 +404,10 @@ export type SuiteChatTaskInput = SuiteChatRunInput & {
   modelId: ModelId;
   keys: ProviderKeys;
   local?: LocalProviderConfig;
-  /** When set, the runner exposes read-only Read/Glob/Grep tools to the model
-   *  backed by the user's source directory so answers are code-grounded. When
-   *  null, the run is text-only and the prompt warns the model. */
-  sourceRoot: string | null;
+  /** When non-empty, the runner exposes read-only Read/Glob/Grep tools to the
+   *  model across every one of these repos so answers are code-grounded. Empty
+   *  ⇒ the run is text-only and the prompt warns the model. */
+  repos: WorkspaceRepo[];
   /** User's freeform "Custom instructions" from Settings — appended to the
    *  system prompt on every surface. Empty/absent ⇒ base prompt unchanged. */
   customInstructions?: string;
@@ -422,14 +424,14 @@ export type SuiteChatTaskInput = SuiteChatRunInput & {
 export async function streamSuiteChatTask(
   input: SuiteChatTaskInput & { onText: (delta: string) => void },
 ): Promise<SuiteChatRunResult> {
-  const tools = buildSuiteChatTools(input.sourceRoot);
+  const tools = buildSuiteChatTools(input.repos);
   const shared = {
     modelId: input.modelId,
     keys: input.keys,
     local: input.local ?? {},
     systemPrompt: SUITE_CHAT_SYSTEM_PROMPT,
     customInstructions: input.customInstructions,
-    contextPrompt: buildSuiteChatContext(input, input.sourceRoot),
+    contextPrompt: buildSuiteChatContext(input, input.repos),
     priorMessages: historyMessages(input.history),
     prompt: input.newQuestion.trim(),
     attachments: [
@@ -503,12 +505,13 @@ export async function streamSuiteChatTask(
  *  hit, and every turn re-bought the entire conversation at full price. */
 function buildSuiteChatContext(
   input: SuiteChatRunInput,
-  sourceRoot: string | null,
+  repos: WorkspaceRepo[],
 ): string {
   const suiteLine = renderSuiteLine(input);
-  const sourceLine = sourceRoot
-    ? `Source directory: ${sourceRoot} (use the fs tools to verify cases against actual code).`
-    : "Source directory: NOT SET — code grounding isn't available. Tell the user if they ask for it.";
+  const sourceLine =
+    repos.length > 0
+      ? `Source repos (use the fs tools to verify cases against actual code):\n${renderRepoRoster(repos)}`
+      : "Source repos: NONE CONFIGURED — code grounding isn't available. Tell the user if they ask for it.";
   const casesBlock = renderCasesBlock(input.cases, input.confidence);
   const contextText = formatContextBlocks(input.contextBlocks ?? []);
   // Same renderer the generator uses — a coverage answer is only trustworthy

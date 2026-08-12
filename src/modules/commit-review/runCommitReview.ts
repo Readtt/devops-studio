@@ -26,6 +26,7 @@ import { focusPathsFromCandidates, focusPatchOnFiles } from "./verifyFocus";
 import type { ModelMessage } from "ai";
 import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
+import type { WorkspaceRepo } from "@/modules/settings/store";
 import {
   collectContextImages,
   formatContextBlocks,
@@ -78,9 +79,9 @@ export type RunCommitReviewInput = {
   modelId: ModelId;
   keys: ProviderKeys;
   local?: LocalProviderConfig;
-  /** Local checkout the Read/Glob/Grep tools read. null ⇒ code search is off;
+  /** Source repos the Read/Glob/Grep tools read. Empty ⇒ code search is off;
    *  the review then works from the diff alone (degraded — see the pane warning). */
-  sourceRoot: string | null;
+  repos: WorkspaceRepo[];
   /** The selected commits' diffs + metadata, from `git_commit_diff`. One entry
    *  is the common case; multiple are reviewed together as one combined change. */
   diffs: CommitDiff[];
@@ -156,7 +157,7 @@ export function unverifiedFindings(candidates: CandidateFinding[]): Finding[] {
 export async function runCommitReview(
   input: RunCommitReviewInput,
 ): Promise<RunCommitReviewResult> {
-  const tools = buildSuiteChatTools(input.sourceRoot);
+  const tools = buildSuiteChatTools(input.repos);
   const contextImages = collectContextImages(input.contextBlocks);
   const attachments = [...input.attachments, ...contextImages];
 
@@ -477,9 +478,10 @@ export function buildInvestigatePrompt(input: RunCommitReviewInput): string {
     ? `\n\n> Some reviewed commit(s) predate the working tree (at \`${diffs[0]?.headSha}\`). Your tools read the CURRENT tree, which may differ from those commits' state — see the working-tree caveat in your instructions.`
     : "";
 
-  const noTools = input.sourceRoot
-    ? ""
-    : "\n\n> No code-search tools are available this run (code search is off in Settings). Review the diff in isolation; you cannot grep callers or verify blast radius, so keep confidence modest and don't claim cross-file effects you can't see.";
+  const noTools =
+    input.repos.length > 0
+      ? ""
+      : "\n\n> No code-search tools are available this run (code search is off in Settings). Review the diff in isolation; you cannot grep callers or verify blast radius, so keep confidence modest and don't claim cross-file effects you can't see.";
 
   const contextText = formatContextBlocks(input.contextBlocks);
   const contextSection = contextText

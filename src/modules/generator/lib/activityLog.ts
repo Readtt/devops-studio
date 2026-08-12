@@ -107,7 +107,14 @@ export function summarizeToolInput(
       .trim()
       .replace(/^["'`]+|["'`]+$/g, "")
       .trim();
-    return sub || "(root)";
+    return sub || "(all repos)";
+  }
+  // A command runs inside ONE repo, so which one is half of what the row means
+  // once more than one is configured.
+  if (name === "run_command") {
+    const command = get("command") ?? toolName;
+    const repo = get("repo");
+    return repo ? `${repo}: ${command}` : command;
   }
   // Generic fallback — pick the first string-valued key that looks like a path
   // or query, otherwise just say the tool name.

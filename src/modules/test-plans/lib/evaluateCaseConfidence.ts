@@ -31,10 +31,11 @@ export async function evaluateCaseConfidence(
   const chat = useChatStore.getState();
   const prefs = usePreferencesStore.getState();
   const modelId = chat.selectedModelId;
-  // Global code-search toggle gates source access for every surface.
-  const sourceRoot = prefs.codeSearchEnabled
-    ? primaryRepoRoot(prefs.repos)
-    : null;
+  // Global code-search toggle gates source access for every surface; when it's
+  // on, every configured repo is readable.
+  const repos = prefs.codeSearchEnabled ? prefs.repos : [];
+  // Provenance still stamps ONE repo — see the staleness note below.
+  const sourceRoot = repos.length > 0 ? primaryRepoRoot(repos) : null;
   // Stamp the source state we're grading against (branch + HEAD sha) so a stored
   // verdict can later be flagged stale once the working tree moves past it — the
   // same provenance the generator captures at publish time. Best-effort: a
@@ -57,7 +58,7 @@ export async function evaluateCaseConfidence(
   });
   return evaluateConfidence({
     testCase,
-    sourceRoot,
+    repos,
     sourceSha,
     sourceBranch,
     modelId,

@@ -18,6 +18,7 @@ import type { ModelMessage } from "ai";
 import { type LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { streamTask } from "@/modules/ai/lib/taskRunner";
 import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
+import type { WorkspaceRepo } from "@/modules/settings/store";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import type { ReviewedBug, ReviewedCase } from "./draftBatchSchema";
 import {
@@ -126,9 +127,9 @@ export type ChatRunInput = {
    *  per-step rather than once at the end so a turn that is cancelled — or
    *  fails — still banks the reads it already paid for. */
   onTranscript?: (messages: ModelMessage[]) => void;
-  /** Source directory for the read-only tools. null ⇒ run tool-less (code
-   *  search disabled or no source set). */
-  sourceRoot?: string | null;
+  /** Source repos the read-only tools read. Empty ⇒ run tool-less (code search
+   *  disabled or no repos configured). */
+  repos?: WorkspaceRepo[];
 };
 
 export type ChatRunResult = {
@@ -162,7 +163,7 @@ export async function streamChatTask(
   // live tool-call strip, and citation grounding — previously it called
   // streamText directly with no tools, which is why tool calls never showed
   // and source citations couldn't be grounded in real code.
-  const tools = buildSuiteChatTools(input.sourceRoot ?? null);
+  const tools = buildSuiteChatTools(input.repos ?? []);
   const shared = {
     modelId: input.modelId,
     keys: input.keys,
@@ -171,8 +172,8 @@ export async function streamChatTask(
     customInstructions: input.customInstructions,
     contextPrompt: buildChatContext(input),
     // A banked transcript is only replayable while the tools that produced it
-    // are still on the request. `sourceRoot` is re-read from preferences every
-    // turn, so turning code search off — or clearing the source directory —
+    // are still on the request. `repos` is re-read from preferences every turn,
+    // so turning code search off — or removing every repo —
     // between two questions in the same draft chat left the history carrying
     // tool-call/tool-result blocks with no tool definitions behind them, and
     // every follow-up failed with a provider 400 until the user turned it back

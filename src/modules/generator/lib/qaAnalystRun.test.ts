@@ -9,12 +9,13 @@ vi.mock("@/modules/ai/lib/taskRunner", () => ({
   streamTask: (...a: unknown[]) => streamTask(...a),
 }));
 
-// buildSuiteChatTools returns a sentinel tool set when (and only when) a source
-// root is supplied.
+// buildSuiteChatTools returns a sentinel tool set when (and only when) it is
+// given at least one repo.
 const TOOLS = { read_file: {}, list_files: {}, grep: {} };
 vi.mock("@/modules/test-plans/lib/suiteChatTools", () => ({
-  buildSuiteChatTools: (root: string | null) => (root ? TOOLS : undefined),
+  buildSuiteChatTools: (repos: unknown[]) => (repos.length > 0 ? TOOLS : undefined),
 }));
+const REPOS = [{ id: "r1", name: "repo-one", root: "C:/repo", ado: null }];
 
 import {
   RESUME_TOPUP_TOKENS,
@@ -120,7 +121,7 @@ function runnerArg(): Record<string, unknown> {
 
 describe("runQaAnalyst tool wiring", () => {
   it("passes read-only tools to the runner when a source root is set", async () => {
-    await runQaAnalyst({ ...base, sourceRoot: "C:/repo" });
+    await runQaAnalyst({ ...base, repos: REPOS });
     const arg = runnerArg();
     expect(arg.tools).toBe(TOOLS);
     expect(arg.schema).toBeDefined();
@@ -128,7 +129,7 @@ describe("runQaAnalyst tool wiring", () => {
   });
 
   it("runs tool-less (tools: null) when no source root", async () => {
-    await runQaAnalyst({ ...base, sourceRoot: null });
+    await runQaAnalyst({ ...base, repos: [] });
     expect(runnerArg().tools).toBeNull();
   });
 
@@ -151,7 +152,7 @@ describe("runQaAnalyst tool wiring", () => {
       text: "{}",
       durationMs: 1,
     });
-    const out = await runQaAnalyst({ ...base, sourceRoot: "C:/repo" });
+    const out = await runQaAnalyst({ ...base, repos: REPOS });
     expect(out.batch.cases).toHaveLength(1);
   });
 
@@ -167,7 +168,7 @@ describe("runQaAnalyst tool wiring", () => {
       durationMs: 1,
       finishReason: "length",
     });
-    const out = await runQaAnalyst({ ...base, sourceRoot: "C:/repo" });
+    const out = await runQaAnalyst({ ...base, repos: REPOS });
     expect(out.finishReason).toBe("length");
   });
 
@@ -188,7 +189,7 @@ describe("runQaAnalyst tool wiring", () => {
       durationMs: 1,
     });
     const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const out = await runQaAnalyst({ ...base, sourceRoot: null });
+    const out = await runQaAnalyst({ ...base, repos: [] });
     expect(out.batch.cases).toHaveLength(1);
     err.mockRestore();
   });
@@ -207,7 +208,7 @@ describe("runQaAnalyst tool wiring", () => {
       finalText: "",
       durationMs: 1,
     });
-    const out = await runQaAnalyst({ ...base, sourceRoot: "C:/repo" });
+    const out = await runQaAnalyst({ ...base, repos: REPOS });
     expect(out.batch.cases).toEqual([]);
   });
 
@@ -267,7 +268,7 @@ describe("runQaAnalyst tool wiring", () => {
       },
     );
 
-    const out = await runQaAnalyst({ ...base, sourceRoot: "C:/repo" });
+    const out = await runQaAnalyst({ ...base, repos: REPOS });
 
     expect(streamTask).toHaveBeenCalledTimes(2);
     const finish = streamTask.mock.calls[1][0];
@@ -294,7 +295,7 @@ describe("runQaAnalyst tool wiring", () => {
       durationMs: 1,
       stepsUsed: 40,
     });
-    const out = await runQaAnalyst({ ...base, sourceRoot: "C:/repo" });
+    const out = await runQaAnalyst({ ...base, repos: REPOS });
     expect(streamTask).toHaveBeenCalledTimes(1);
     expect(out.reason).toBe("step_cap");
   });
@@ -307,7 +308,7 @@ describe("runQaAnalyst tool wiring", () => {
       finalText: "",
       durationMs: 1,
     });
-    const out = await runQaAnalyst({ ...base, sourceRoot: "C:/repo" });
+    const out = await runQaAnalyst({ ...base, repos: REPOS });
     expect(streamTask).toHaveBeenCalledTimes(1);
     expect(out.ok).toBe(false);
   });
@@ -324,7 +325,7 @@ describe("runQaAnalyst tool wiring", () => {
       finishReason: "length",
       durationMs: 1,
     });
-    const out = await runQaAnalyst({ ...base, sourceRoot: "C:/repo" });
+    const out = await runQaAnalyst({ ...base, repos: REPOS });
     expect(out.batch.cases.map((c) => c.title)).toEqual([
       "The case that landed before the cut",
     ]);
@@ -333,7 +334,7 @@ describe("runQaAnalyst tool wiring", () => {
 
 describe("engine dispatch", () => {
   it("streams the tool-bearing path (never runTask)", async () => {
-    await runQaAnalyst({ ...base, sourceRoot: "C:/repo" });
+    await runQaAnalyst({ ...base, repos: REPOS });
     expect(streamTask).toHaveBeenCalledTimes(1);
     expect(runTask).not.toHaveBeenCalled();
     // streamTask requires an onText sink even when the caller doesn't want one.
@@ -341,7 +342,7 @@ describe("engine dispatch", () => {
   });
 
   it("keeps the tool-less path on runTask so generateObject still applies", async () => {
-    await runQaAnalyst({ ...base, sourceRoot: null });
+    await runQaAnalyst({ ...base, repos: [] });
     expect(runTask).toHaveBeenCalledTimes(1);
     expect(streamTask).not.toHaveBeenCalled();
   });
@@ -353,7 +354,7 @@ describe("engine dispatch", () => {
       return OK_RESULT;
     });
     const seen: string[] = [];
-    await executeQaAnalystRun(prepareQaAnalystRun({ ...base, sourceRoot: "C:/repo" }), {
+    await executeQaAnalystRun(prepareQaAnalystRun({ ...base, repos: REPOS }), {
       keys: {} as never,
       onText: (d) => seen.push(d),
     });
@@ -503,7 +504,7 @@ describe("executeQaAnalystRun passthroughs", () => {
       stepsUsed: 24,
       usage: { inputTokens: 100, totalTokens: 140 },
     });
-    const out = await runQaAnalyst({ ...base, sourceRoot: "C:/repo" });
+    const out = await runQaAnalyst({ ...base, repos: REPOS });
     expect(out.ok).toBe(false);
     expect(out.reason).toBe("step_cap");
     expect(out.stepsUsed).toBe(24);
@@ -514,7 +515,7 @@ describe("executeQaAnalystRun passthroughs", () => {
   it("forwards maxSteps, resumeMessages and onCheckpoint to the runner", async () => {
     const onCheckpoint = vi.fn();
     const resumeMessages = [{ role: "user" as const, content: "keep going" }];
-    await executeQaAnalystRun(prepareQaAnalystRun({ ...base, sourceRoot: "C:/repo" }), {
+    await executeQaAnalystRun(prepareQaAnalystRun({ ...base, repos: REPOS }), {
       keys: {} as never,
       maxSteps: 8,
       resumeMessages,
@@ -533,7 +534,7 @@ describe("executeQaAnalystRun passthroughs", () => {
   });
 
   it("defaults both budgets to the generator surface entries", async () => {
-    await executeQaAnalystRun(prepareQaAnalystRun({ ...base, sourceRoot: null }), {
+    await executeQaAnalystRun(prepareQaAnalystRun({ ...base, repos: [] }), {
       keys: {} as never,
     });
     expect(runnerArg().maxSteps).toBe(SURFACE_STEP_CAPS.generator);
@@ -541,7 +542,7 @@ describe("executeQaAnalystRun passthroughs", () => {
   });
 
   it("forwards a resume's token top-up as the call's budget", async () => {
-    await executeQaAnalystRun(prepareQaAnalystRun({ ...base, sourceRoot: null }), {
+    await executeQaAnalystRun(prepareQaAnalystRun({ ...base, repos: [] }), {
       keys: {} as never,
       tokenBudget: 500_000,
     });

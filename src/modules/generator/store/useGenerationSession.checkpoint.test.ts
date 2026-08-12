@@ -25,7 +25,7 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   FINISH_NOW_NUDGE,
   TRUNCATED_ANSWER_NUDGE,
-  type GeneratorCheckpointV1,
+  type GeneratorCheckpointV2,
 } from "@/modules/ai/lib/checkpointApi";
 import { canOfferResume } from "@/modules/ai/lib/errorClass";
 import {
@@ -87,15 +87,15 @@ describe("useGenerationSession — checkpointing a cancelled analyze", () => {
 });
 
 function mkCheckpointPayload(
-  partial: Partial<GeneratorCheckpointV1> = {},
-): GeneratorCheckpointV1 {
+  partial: Partial<GeneratorCheckpointV2> = {},
+): GeneratorCheckpointV2 {
   return {
-    v: 1,
+    v: 2,
     surface: "generator",
     runId: "run-cp-1",
     createdAt: "2026-06-11T00:00:00.000Z",
     modelId: "claude-sonnet-5",
-    sourceRoot: null,
+    repos: [],
     form: {
       requirements: "Users can reset a forgotten password.",
       changesets: "",

@@ -66,7 +66,7 @@ import {
   deleteCheckpoint,
   getCheckpoint,
   listCheckpoints,
-  type CommitReviewCheckpointV1,
+  type CommitReviewCheckpointV2,
 } from "@/modules/ai/lib/checkpointApi";
 import type { CandidateFinding } from "./schema";
 
@@ -86,10 +86,10 @@ const mockListCheckpoints = vi.mocked(listCheckpoints);
 type WriterCall = { kind: "save" | "flush" | "delete"; payload?: unknown };
 let writerLog: WriterCall[] = [];
 
-function lastFlushed(): CommitReviewCheckpointV1 | undefined {
+function lastFlushed(): CommitReviewCheckpointV2 | undefined {
   const flushes = writerLog.filter((w) => w.kind === "flush");
   return flushes[flushes.length - 1]?.payload as
-    | CommitReviewCheckpointV1
+    | CommitReviewCheckpointV2
     | undefined;
 }
 
@@ -148,16 +148,16 @@ function cand(id: string): CandidateFinding {
 }
 
 function checkpoint(
-  over: Partial<CommitReviewCheckpointV1> = {},
-): CommitReviewCheckpointV1 {
+  over: Partial<CommitReviewCheckpointV2> = {},
+): CommitReviewCheckpointV2 {
   return {
-    v: 1,
+    v: 2,
     surface: "commit-review",
     runId: "crun-1",
     createdAt: "2026-01-01T00:00:00.000Z",
     modelId: DEFAULT_MODEL_ID,
     cwd: "C:/repo",
-    sourceRoot: "C:/repo",
+    repos: [],
     inputs: {
       selectedShas: ["aaa"],
       diffs: [commitDiffOf("aaa")],
@@ -585,7 +585,7 @@ describe("resume", () => {
     seedResumable(1);
     mockGetCheckpoint.mockResolvedValue(
       checkpointRow(
-        checkpoint({ modelId: "gone-model" as CommitReviewCheckpointV1["modelId"] }),
+        checkpoint({ modelId: "gone-model" as CommitReviewCheckpointV2["modelId"] }),
       ),
     );
 
@@ -642,7 +642,7 @@ describe("run — checkpoint lifecycle", () => {
 
     // The inputs are on disk BEFORE the provider is touched…
     expect(writerLog[0].kind).toBe("flush");
-    const base = writerLog[0].payload as CommitReviewCheckpointV1;
+    const base = writerLog[0].payload as CommitReviewCheckpointV2;
     expect(base.inputs.diffs.map((d) => d.sha)).toEqual(["aaa"]);
     expect(base.stage).toBe("investigate");
     // …and gone once the findings have a durable home in the row.
@@ -687,7 +687,7 @@ describe("run — checkpoint lifecycle", () => {
 
     // Flush (not a throttled save), carrying the stage the resume picks up at.
     const flushed = writerLog.filter((w) => w.kind === "flush");
-    const candidatesFlush = flushed[1]?.payload as CommitReviewCheckpointV1;
+    const candidatesFlush = flushed[1]?.payload as CommitReviewCheckpointV2;
     expect(candidatesFlush.stage).toBe("verify");
     expect(candidatesFlush.stage1Candidates).toEqual([cand("f1")]);
     expect(candidatesFlush.transcript).toBeNull();

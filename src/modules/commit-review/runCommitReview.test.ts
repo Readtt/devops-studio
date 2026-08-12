@@ -28,6 +28,8 @@ import {
   TRUNCATED_ANSWER_NUDGE,
 } from "@/modules/ai/lib/checkpointApi";
 import type { CandidateFinding } from "./schema";
+
+const REPOS = [{ id: "r1", name: "repo-one", root: "C:/repo", ado: null }];
 import type { CommitDiff } from "./gitCommitApi";
 
 function diff(rawPatch: string, over: Partial<CommitDiff> = {}): CommitDiff {
@@ -49,11 +51,11 @@ function diff(rawPatch: string, over: Partial<CommitDiff> = {}): CommitDiff {
 }
 
 function investigate(diffs: CommitDiff[]): string {
-  // Only diffs / contextBlocks / sourceRoot are read by the prompt builder.
+  // Only diffs / contextBlocks / repos are read by the prompt builder.
   return buildInvestigatePrompt({
     diffs,
     contextBlocks: [],
-    sourceRoot: "C:/repo",
+    repos: REPOS,
   } as unknown as Parameters<typeof buildInvestigatePrompt>[0]);
 }
 
@@ -139,7 +141,7 @@ function input(over: Partial<RunCommitReviewInput> = {}): RunCommitReviewInput {
     modelId: "claude-sonnet-4-5" as RunCommitReviewInput["modelId"],
     keys: {} as RunCommitReviewInput["keys"],
     // null ⇒ no tools built, so the engine needs nothing from the fs layer.
-    sourceRoot: null,
+    repos: [],
     diffs: [diff("@@ -1 +1 @@")],
     contextBlocks: [],
     attachments: [],
@@ -574,7 +576,7 @@ describe("buildVerifyPrompt — the verify stage's window", () => {
       {
         diffs,
         contextBlocks: [],
-        sourceRoot: "C:/repo",
+        repos: REPOS,
       } as unknown as RunCommitReviewInput,
       candidates,
     );

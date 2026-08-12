@@ -10,7 +10,8 @@ vi.mock("@/modules/ai/lib/taskRunner", () => ({
   runTask: (...a: unknown[]) => runTask(...a),
 }));
 vi.mock("./suiteChatTools", () => ({
-  buildSuiteChatTools: () => undefined,
+  buildSuiteChatTools: (repos: unknown[]) =>
+    repos.length > 0 ? ({ read_file: {} } as never) : undefined,
 }));
 
 import {
@@ -34,7 +35,7 @@ function input(over: Partial<ConfidenceEvalInput> = {}): ConfidenceEvalInput {
       title: "Archive selected contacts",
       steps: [{ index: 1, action: "Click archive", expected: "Row hides" }],
     },
-    sourceRoot: "C:/src/app",
+    repos: [{ id: "r1", name: "repo-one", root: "C:/src/app", ado: null }],
     modelId: "claude-opus-5" as ConfidenceEvalInput["modelId"],
     keys: {} as ConfidenceEvalInput["keys"],
     ...over,

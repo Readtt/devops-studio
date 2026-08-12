@@ -18,6 +18,8 @@ import { type ProviderKeys } from "@/modules/ai/lib/keyring";
 import { runTask } from "@/modules/ai/lib/taskRunner";
 import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { buildSuiteChatTools } from "./suiteChatTools";
+import { renderRepoRoster } from "@/modules/ai/lib/repoPaths";
+import type { WorkspaceRepo } from "@/modules/settings/store";
 import {
   formatContextBlocks,
   type ContextBlock,
@@ -48,7 +50,8 @@ export type EvalCase = {
 
 export type ConfidenceEvalInput = {
   testCase: EvalCase;
-  sourceRoot: string | null;
+  /** Source repos the grader may read. Empty ⇒ nothing to ground against. */
+  repos: WorkspaceRepo[];
   /** Short HEAD sha of the source dir at eval time — stamped onto the verdict so
    *  the UI can flag it stale once the tree moves. Null when not a repo / code
    *  search off. */
@@ -257,7 +260,7 @@ async function runConfidenceOnce(
   system: string,
   prompt: string,
 ): Promise<ConfidenceVerdictLLM | null> {
-  const tools = buildSuiteChatTools(input.sourceRoot);
+  const tools = buildSuiteChatTools(input.repos);
   // Schema-validated, temperature-0. With code-search tools the runner runs the
   // agentic loop (generateText) then validates the model's final text against
   // the schema; tool-less it uses generateObject. Either way the verdict shape
@@ -309,9 +312,10 @@ function abortError(): Error {
  *  system prompt plus the grounding every case in a run is graded against.
  *  Exported for the test that pins its byte-stability. */
 export function buildEvalSystem(input: ConfidenceEvalInput): string {
-  const sourceLine = input.sourceRoot
-    ? `Source directory: ${input.sourceRoot} — use the file tools to trace each step.`
-    : "No source directory is set — you cannot ground this; return Unknown with low confidence.";
+  const sourceLine =
+    input.repos.length > 0
+      ? `Source repos — use the file tools to trace each step:\n${renderRepoRoster(input.repos)}`
+      : "No source repos are configured — you cannot ground this; return Unknown with low confidence.";
   const requirementBlock = renderRequirementBlock(input.requirement, {
     maxBodyChars: CONFIDENCE_REQUIREMENT_CHARS,
     unresolvedId: input.requirementId ?? null,

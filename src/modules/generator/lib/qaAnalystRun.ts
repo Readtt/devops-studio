@@ -21,6 +21,7 @@ import {
 import type { ModelMessage } from "ai";
 import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
+import type { WorkspaceRepo } from "@/modules/settings/store";
 import {
   DraftBatchLLMSchema,
   clampBugLinks,
@@ -161,10 +162,11 @@ export type RunInput = {
   modelId: ModelId;
   /** Local-provider config (base URLs + model ids) so a local model resolves. */
   local?: LocalProviderConfig;
-  /** When set (global code-search toggle on + a source dir), the analyzer gets
-   *  read-only Read/Glob/Grep tools so it can trace the spec against real code
-   *  — deeper, code-grounded cases. null ⇒ tool-less (spec + attachments only). */
-  sourceRoot?: string | null;
+  /** Source repos the analyzer may read (global code-search toggle on ⇒ every
+   *  configured repo). With any, it gets read-only Read/Glob/Grep across all of
+   *  them so it can trace the spec against real code — deeper, code-grounded
+   *  cases. Empty ⇒ tool-less (spec + attachments only). */
+  repos?: WorkspaceRepo[];
   /** Structured per-step activity for the streaming log UI. Called for each
    *  tool call (with input + result) and for "thinking" steps without tools. */
   onActivity?: (entry: ActivityEntry) => void;
@@ -233,7 +235,7 @@ export type PreparedAnalystRun = {
   /** Session attachments merged with context-block images — the exact vision
    *  set the request carries. */
   attachments: RunAttachment[];
-  sourceRoot: string | null;
+  repos: WorkspaceRepo[];
   customInstructions?: string;
 };
 
@@ -251,7 +253,7 @@ export function prepareQaAnalystRun(input: RunInput): PreparedAnalystRun {
       ...input.attachments,
       ...collectContextImages(input.contextBlocks ?? []),
     ],
-    sourceRoot: input.sourceRoot ?? null,
+    repos: input.repos ?? [],
     customInstructions: input.customInstructions,
   };
 }
@@ -296,7 +298,7 @@ export async function executeQaAnalystRun(
   // spec across real files instead of guessing from the prompt alone. SAFETY:
   // these are READ-ONLY (read_file / list_files / grep); the runner never
   // injects write/edit/bash tools.
-  const tools = buildSuiteChatTools(prepared.sourceRoot);
+  const tools = buildSuiteChatTools(prepared.repos);
 
   // Schema-validated, temperature-0 structured output via the shared runner.
   // With tools the runner runs the agentic read loop then validates the

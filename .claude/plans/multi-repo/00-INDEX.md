@@ -53,7 +53,7 @@ Do not substitute role-suggesting names in code, comments, prompts, or UI copy.
 | 4 | Mechanical sweep: delete `sourceRoot` | `04-sourceroot-sweep.md` | ☑ | `b2cd9a4` |
 | 5 | Settings: "Source repos" block | `05-settings-repos.md` | ☑ | `0801e2f` |
 | 6 | Status bar: multi-repo | `06-status-bar.md` | ☑ | `ad366e5` |
-| 7 | **AI tool layer — the core fix** | `07-ai-tool-layer.md` | ☐ | |
+| 7 | **AI tool layer — the core fix** | `07-ai-tool-layer.md` | ☑ | `PENDING` |
 | 8 | Prompts | `08-prompts.md` | ☐ | |
 | 9 | Generator | `09-generator.md` | ☐ | |
 | 10 | Commit Review | `10-commit-review.md` | ☐ | |
@@ -256,6 +256,65 @@ state; drilling in lists that repo's branches under a header naming it; the dirt
 the repo; and two switches started back to back render two independent capsules, neither cancelling
 the other. **Verify step 5 (a git change made from the Settings window) is the one still unrun** —
 it needs two real Tauri windows; `gitOps.test.ts` pins the both-bus subscription it depends on.
+
+**Phase 7 — the checkpoint types are renamed `…V2`, not just re-versioned.** The plan said the
+version change was `CHECKPOINT_PAYLOAD_VERSION` 1 → 2 and nothing else, which would have left three
+types named `GeneratorCheckpointV1` / `GeneratorRefineCheckpointV1` / `CommitReviewCheckpointV1`
+declaring `v: 2`. The rename is mechanical (12 files, `tsc`-verified) and the naming convention the
+codebase already uses. `checkpointApi.test.ts`'s "returns null when v is not 1" became "returns null
+for a superseded payload version" and now feeds `v: 1`.
+
+**Phase 7 — `joinPath` now re-separates the tail, and that was a live bug.** Joining a
+forward-slashed relative path onto a Windows root produced `C:\repo\src/auth/x.ts` — accepted by
+Windows, but two spellings of one file, which is enough that the `fs_stat` ambiguity probe missed a
+path it had just built. `resolveRepoPath` emits the root's own separator throughout. Found by
+driving the real tool layer in the webview, NOT by the unit tests, which had encoded the mixed form
+as expected. Anything comparing a resolved path against a fixture must use the root's separator.
+
+**Phase 7 — `path` echoes what the model sent; `corrected` carries the canonical form.** Only when
+they differ. The plan said "echo `corrected` when a prefix was inferred" and left the shape open;
+duplicating the same string into two keys reads as noise, so `read_file`'s result keeps its existing
+`path: <what you asked for>` and adds `corrected: "<repo>/<path>"` when the resolver had to work for
+it. Phase 8's prompt should not promise a different shape.
+
+**Phase 7 — `grep` did NOT gain a `repo` param; `run_command` did.** Per the plan. A grep spans every
+repo and is narrowed with `glob`, which is matched **inside each repo** against that repo's own root
+— so a `<repo>/…` prefix in a glob matches nothing. `emptyScanHint` now says that explicitly,
+because it is the trap a model walks into first. If Phases 9–11 find the model still fighting it,
+adding an optional `repo` to grep is the fix, not changing the glob semantics.
+
+**Phase 7 — a per-repo failure travels as data, not as a thrown error.** One unreadable root (moved,
+unmounted, deleted from disk but still in the registry) must not take code search down for the repos
+that do answer. `grep` and `list_files` return their hits plus `errors: [{repo, error}]`. This wasn't
+in the plan and is load-bearing at N > 1.
+
+**Phase 7 — `renderRepoRoster` (in `repoPaths.ts`) is the shared prompt block.** `runSuiteChat` and
+`runConfidenceEval` had a `Source directory: <root>` line that would have been a lie at N > 1, so
+both now render the flat name+path roster. **That is the only prompt text this phase touched** —
+Phase 8 still owns the addressing-rule paragraph and the other four prompt sites, and should build
+on this helper rather than a fourth copy.
+
+**Phase 7 — `cleanPathArg` moved to `repoPaths.ts`** (exported) and `suiteChatTools` imports it.
+`resolvePathHint` and the local `joinPath` are gone. `activityLog.ts` still mirrors the
+quote-stripping deliberately, to stay dependency-free.
+
+**Phase 7 — `evaluateCaseConfidence` still resolves ONE root for provenance.** `sourceSha` /
+`sourceBranch` stamp a single repo's HEAD (`primaryRepoRoot`), while the tools now read all of them.
+A verdict graded across three repos is therefore stamped stale by one repo's movement. **Phase 11
+owns** deciding whether that stamp becomes per-repo or is dropped.
+
+**Phase 7 — verification.** `tsc` clean, `vite build` clean, 1023 frontend tests green (+36; 19 new
+in `repoPaths.test.ts`, 17 in `suiteChatTools.test.ts`). Eleven mutations were each caught by exactly
+the intended test — first-repo-only grep, concatenate-instead-of-interleave, whole-cap-per-repo
+listing, first-repo-only listing, silent repo default in `run_command`, swallowed per-repo errors,
+lost repo attribution, dropped `checkReadable`, `..` allowed to escape, an uncaught `fs_stat` probe,
+and an out-of-repo absolute path accepted. Verify steps 2–5 were driven in the **real main webview**
+over CDP against a mocked Tauri IPC boundary at N=3, exercising the shipped module: grep reaching all
+three repos and interleaving under a cap of 9, `list_files` spanning all three repo-prefixed,
+`fs_stat` probing a bare path to the one repo holding it, `~/.ssh/id_rsa` and an in-repo `.env`
+both refused without an `invoke`, `run_command` naming the three repos and then running in the one
+asked for, zero console errors. **Verify step 1 is unrun** — a real generator analyze needs API keys
+and three real repos, which this session had neither of.
 
 **Phase 6 found a real bug in its own first draft**, worth knowing because the pattern recurs: the
 repo popover's `open` is controlled, so a programmatic `setOpen(false)` never fires `onOpenChange` —

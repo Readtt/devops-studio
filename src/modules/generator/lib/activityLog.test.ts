@@ -178,18 +178,29 @@ describe("summarizeToolInput · list_files", () => {
   });
 
   // Used to fall through to the tool name, rendering "list_files list_files".
-  it("says root rather than repeating the tool name", () => {
-    expect(summarizeToolInput("list_files", {})).toBe("(root)");
+  it("names the scope rather than repeating the tool name", () => {
+    expect(summarizeToolInput("list_files", {})).toBe("(all repos)");
   });
 
-  it("says root for an empty subpath", () => {
-    expect(summarizeToolInput("list_files", { subpath: "" })).toBe("(root)");
+  it("names the scope for an empty subpath", () => {
+    expect(summarizeToolInput("list_files", { subpath: "" })).toBe("(all repos)");
   });
 
-  // The tool now lists the root for a quoted-empty subpath, so the label has to
-  // agree — showing `""` next to a full listing reads as a mismatch.
-  it("says root for a quoted-empty subpath, matching what the tool lists", () => {
-    expect(summarizeToolInput("list_files", { subpath: '""' })).toBe("(root)");
+  // A subpath-less call fans out across every configured repo, so the label has
+  // to agree — showing `""` next to a full listing reads as a mismatch.
+  it("names the scope for a quoted-empty subpath, matching what the tool lists", () => {
+    expect(summarizeToolInput("list_files", { subpath: '""' })).toBe("(all repos)");
+  });
+
+  // A command runs inside ONE repo, and which one is half of what the row means.
+  it("names the repo a command ran in", () => {
+    expect(
+      summarizeToolInput("run_command", { command: "git log", repo: "repo-two" }),
+    ).toBe("repo-two: git log");
+  });
+
+  it("shows a command bare when no repo was named", () => {
+    expect(summarizeToolInput("run_command", { command: "git log" })).toBe("git log");
   });
 
   it("strips surrounding quotes off a real subpath", () => {

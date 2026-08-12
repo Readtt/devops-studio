@@ -46,7 +46,7 @@ import {
   sanitizeTranscriptMessages,
   type CheckpointOutcome,
   type CheckpointWriter,
-  type CommitReviewCheckpointV1,
+  type CommitReviewCheckpointV2,
   type TranscriptCheckpoint,
 } from "@/modules/ai/lib/checkpointApi";
 import {
@@ -299,7 +299,7 @@ function toTranscript(
 /** The resume affordance derived from the payload we just flushed, so what the
  *  UI offers and what's actually on disk can't drift. */
 function resumableFrom(
-  payload: CommitReviewCheckpointV1,
+  payload: CommitReviewCheckpointV2,
   outcome: CheckpointOutcome,
 ): NonNullable<CommitReviewSlice["resumable"]> {
   return {
@@ -324,7 +324,7 @@ function isLiveRun(get: () => State, tabId: number, runId: string): boolean {
  *  share one set of terminal paths. */
 type CheckpointCtx = {
   writer: CheckpointWriter;
-  buildPayload: (outcome: CheckpointOutcome | null) => CommitReviewCheckpointV1;
+  buildPayload: (outcome: CheckpointOutcome | null) => CommitReviewCheckpointV2;
 };
 
 /** Terminal handling for a run that RESOLVED — shared by run() and resume(). */
@@ -1174,14 +1174,14 @@ export const useCommitReview = create<State>((set, get) => ({
         createdAt,
       });
       writer = w;
-      const basePayload: CommitReviewCheckpointV1 = {
-        v: 1,
+      const basePayload: CommitReviewCheckpointV2 = {
+        v: 2,
         surface: "commit-review",
         runId,
         createdAt,
         modelId: effectiveModelId,
         cwd: slice.cwd,
-        sourceRoot: prefs.codeSearchEnabled ? slice.cwd : null,
+        repos: prefs.codeSearchEnabled ? prefs.repos : [],
         customInstructions: prefs.customInstructions || undefined,
         inputs: {
           selectedShas: slice.selectedShas,
@@ -1204,7 +1204,7 @@ export const useCommitReview = create<State>((set, get) => ({
       let transcript: TranscriptCheckpoint | null = null;
       const build = (
         outcome: CheckpointOutcome | null,
-      ): CommitReviewCheckpointV1 => ({
+      ): CommitReviewCheckpointV2 => ({
         ...basePayload,
         stage: cpStage,
         stage1Candidates: cpCandidates,
@@ -1219,7 +1219,7 @@ export const useCommitReview = create<State>((set, get) => ({
         modelId: effectiveModelId,
         keys: await chat.ensureApiKeys(),
         local: localProviderConfig(prefs),
-        sourceRoot: basePayload.sourceRoot,
+        repos: basePayload.repos,
         diffs,
         contextBlocks,
         attachments: slice.attachments,
@@ -1361,7 +1361,7 @@ export const useCommitReview = create<State>((set, get) => ({
     let transcript: TranscriptCheckpoint | null = payload.transcript;
     const build = (
       outcome: CheckpointOutcome | null,
-    ): CommitReviewCheckpointV1 => ({
+    ): CommitReviewCheckpointV2 => ({
       ...payload,
       stage: cpStage,
       stage1Candidates: cpCandidates,
@@ -1379,7 +1379,7 @@ export const useCommitReview = create<State>((set, get) => ({
         local: localProviderConfig(prefs),
         // Every input is frozen at what the run started with — re-reading the
         // working tree here would review code the transcript never saw.
-        sourceRoot: payload.sourceRoot,
+        repos: payload.repos,
         diffs: payload.inputs.diffs,
         contextBlocks: payload.inputs.contextBlocks,
         attachments: payload.inputs.attachments,

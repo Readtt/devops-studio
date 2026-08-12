@@ -5,6 +5,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...a: unknown[]) => invoke(...a),
 }));
 
+import type { WorkspaceRepo } from "@/modules/settings/store";
 import {
   buildSuiteChatTools,
   capToolResult,
@@ -14,13 +15,22 @@ import {
 } from "./suiteChatTools";
 
 const ROOT = "C:\\Users\\mudas\\source\\repos\\iSyncKit";
+const ROOT_B = "C:\\Users\\mudas\\source\\repos\\iSyncKit.Web";
+const ROOT_C = "C:\\Users\\mudas\\source\\repos\\Shared";
+
+const ONE: WorkspaceRepo[] = [{ id: "r1", name: "iSyncKit", root: ROOT, ado: null }];
+const THREE: WorkspaceRepo[] = [
+  ...ONE,
+  { id: "r2", name: "iSyncKit.Web", root: ROOT_B, ado: null },
+  { id: "r3", name: "Shared", root: ROOT_C, ado: null },
+];
 
 /** The AI SDK's `tool()` is an identity helper, so `execute` is directly
  *  callable — but its typed signature wants the SDK's call options, which the
  *  implementations ignore. Cast to the shape we actually exercise. */
-function callTool(name: string, args: unknown) {
-  const tools = buildSuiteChatTools(ROOT);
-  if (!tools) throw new Error("expected tools for a non-null source root");
+function callTool(name: string, args: unknown, repos: WorkspaceRepo[] = ONE) {
+  const tools = buildSuiteChatTools(repos);
+  if (!tools) throw new Error("expected tools for a non-empty repo list");
   const t = (tools as Record<string, unknown>)[name] as {
     execute: (a: unknown) => Promise<unknown>;
   };
@@ -73,18 +83,24 @@ describe("list_files · subpath sanitizing", () => {
 
   it("strips surrounding quotes off a real subpath", async () => {
     await callTool("list_files", { subpath: '"src/auth"' });
-    expect(rootArg()).toBe(`${ROOT}\\src/auth`);
+    expect(rootArg()).toBe(`${ROOT}\\src\\auth`);
   });
 
   it("still joins an ordinary subpath", async () => {
     await callTool("list_files", { subpath: "src/auth" });
-    expect(rootArg()).toBe(`${ROOT}\\src/auth`);
+    expect(rootArg()).toBe(`${ROOT}\\src\\auth`);
   });
 
   it("returns the error to the model instead of throwing", async () => {
     invoke.mockRejectedValue("not a directory: nope");
     const out = await callTool("list_files", { subpath: "nope" });
     expect(out).toEqual({ error: "not a directory: nope", subpath: "nope" });
+  });
+
+  it("addresses every listed file through its repo", async () => {
+    invoke.mockResolvedValue({ files: ["src/a.ts"], truncated: false });
+    const out = (await callTool("list_files", {})) as { files: string[] };
+    expect(out.files).toEqual(["iSyncKit/src/a.ts"]);
   });
 });
 
@@ -169,7 +185,7 @@ describe("read_file · path sanitizing", () => {
   // joined verbatim and came back as "cannot find the path specified".
   it("strips surrounding quotes off a relative path", async () => {
     await callTool("read_file", { path: '"src/app.ts"' });
-    expect(pathArg()).toBe(`${ROOT}\\src/app.ts`);
+    expect(pathArg()).toBe(`${ROOT}\\src\\app.ts`);
   });
 
   it("strips surrounding quotes off an absolute path", async () => {
@@ -177,14 +193,18 @@ describe("read_file · path sanitizing", () => {
     expect(pathArg()).toBe(`${ROOT}\\src\\app.ts`);
   });
 
-  it("falls back to the root for a quoted-empty path", async () => {
-    await callTool("read_file", { path: '""' });
-    expect(pathArg()).toBe(ROOT);
+  // Reading "the root" was never a real request, and the resolver is where a
+  // meaningless path stops now — a refusal the model can read beats an error
+  // from Rust about a directory.
+  it("refuses a quoted-empty path without calling Rust", async () => {
+    const out = (await callTool("read_file", { path: '""' })) as { error: string };
+    expect(out.error).toMatch(/empty path/i);
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it("still joins an ordinary relative path", async () => {
     await callTool("read_file", { path: "src/app.ts" });
-    expect(pathArg()).toBe(`${ROOT}\\src/app.ts`);
+    expect(pathArg()).toBe(`${ROOT}\\src\\app.ts`);
   });
 });
 
@@ -255,8 +275,8 @@ describe("every tool is capped", () => {
   });
 
   it("routes the whole live tool set through capToolResult", async () => {
-    const tools = buildSuiteChatTools(ROOT);
-    if (!tools) throw new Error("expected tools for a non-null source root");
+    const tools = buildSuiteChatTools(ONE);
+    if (!tools) throw new Error("expected tools for a non-empty repo list");
     const names = Object.keys(tools);
     expect(names.length).toBeGreaterThan(0);
 
@@ -281,8 +301,8 @@ describe("per-message aggregate cap", () => {
   /** One run's tool map, called the way the SDK calls it: every tool call of a
    *  step receives that step's `messages` array, and a new array next step. */
   function session() {
-    const tools = buildSuiteChatTools(ROOT);
-    if (!tools) throw new Error("expected tools for a non-null source root");
+    const tools = buildSuiteChatTools(ONE);
+    if (!tools) throw new Error("expected tools for a non-empty repo list");
     return (name: string, args: unknown, messages: unknown[]) => {
       const t = (tools as Record<string, unknown>)[name] as {
         execute: (a: unknown, o: unknown) => Promise<unknown>;
@@ -346,7 +366,12 @@ describe("per-message aggregate cap", () => {
     const step: unknown[] = [];
     for (let i = 0; i < 5; i++) {
       const out = await call("run_command", { command: "git status" }, step);
-      expect(out).toEqual({ returncode: 0, output: "ok", truncated: false });
+      expect(out).toEqual({
+        returncode: 0,
+        output: "ok",
+        truncated: false,
+        repo: "iSyncKit",
+      });
     }
   });
 });
@@ -388,7 +413,11 @@ describe("grep · result shaping", () => {
     const out = (await callTool("grep", { pattern: "hit" })) as {
       hits: Array<Record<string, unknown>>;
     };
-    expect(out.hits[0]).toEqual({ rel: "src/a.ts", line: 7, text: "hit" });
+    expect(out.hits[0]).toEqual({
+      rel: "iSyncKit/src/a.ts",
+      line: 7,
+      text: "hit",
+    });
   });
 
   it("collapses to per-file counts under filesOnly", async () => {
@@ -407,8 +436,8 @@ describe("grep · result shaping", () => {
     };
     expect(out.hits).toBeUndefined();
     expect(out.files).toEqual([
-      { rel: "src/a.ts", matches: 2, firstLine: 4 },
-      { rel: "src/b.ts", matches: 1, firstLine: 2 },
+      { rel: "iSyncKit/src/a.ts", matches: 2, firstLine: 4 },
+      { rel: "iSyncKit/src/b.ts", matches: 1, firstLine: 2 },
     ]);
   });
 
@@ -470,6 +499,202 @@ describe("clipAroundMatch", () => {
       expect(hasLoneSurrogate(out), `cap ${cap} produced a lone surrogate`).toBe(false);
       expect(out).toContain("NEEDLE");
     }
+  });
+});
+
+// The reported problem: work spans repos, and pointing the app at one of them
+// truncates coverage silently. These pin that every configured repo is read.
+describe("fan-out across repos", () => {
+  /** `fs_grep` answering with `count` hits per repo, labelled by root. */
+  function grepPerRepo(count: Record<string, number>) {
+    invoke.mockImplementation(async (cmd: string, args: { root: string }) => {
+      if (cmd !== "fs_grep") throw new Error(`unexpected command ${cmd}`);
+      const n = count[args.root] ?? 0;
+      const tag = args.root.slice(args.root.lastIndexOf("\\") + 1);
+      return {
+        hits: Array.from({ length: n }, (_, i) => ({
+          path: `${args.root}\\f${i}.ts`,
+          rel: `${tag}-f${i}.ts`,
+          line: i + 1,
+          text: "NEEDLE",
+        })),
+        truncated: false,
+        files_scanned: n,
+      };
+    });
+  }
+
+  beforeEach(() => {
+    invoke.mockReset();
+  });
+
+  it("greps every repo, not just the first", async () => {
+    grepPerRepo({ [ROOT]: 1, [ROOT_B]: 1, [ROOT_C]: 1 });
+    await callTool("grep", { pattern: "NEEDLE" }, THREE);
+    expect(invoke.mock.calls.map((c) => c[1].root).sort()).toEqual(
+      [ROOT, ROOT_B, ROOT_C].sort(),
+    );
+  });
+
+  // Straight concatenation lets one repo's 80 hits fill the cap and hide the
+  // others entirely — the same silent coverage loss, one layer down.
+  it("interleaves so a hit-heavy repo can't crowd the others out of the cap", async () => {
+    grepPerRepo({ [ROOT]: 80, [ROOT_B]: 3, [ROOT_C]: 3 });
+    const out = (await callTool(
+      "grep",
+      { pattern: "NEEDLE", maxResults: 10 },
+      THREE,
+    )) as { hits: Array<{ rel: string }> };
+    expect(out.hits).toHaveLength(10);
+    const repos = new Set(out.hits.map((h) => h.rel.split("/")[0]));
+    expect(repos).toEqual(new Set(["iSyncKit", "iSyncKit.Web", "Shared"]));
+  });
+
+  it("sums files_scanned across repos", async () => {
+    grepPerRepo({ [ROOT]: 2, [ROOT_B]: 3, [ROOT_C]: 4 });
+    const out = (await callTool("grep", { pattern: "NEEDLE" }, THREE)) as {
+      files_scanned: number;
+    };
+    expect(out.files_scanned).toBe(9);
+  });
+
+  // A root the user moved or unmounted must not take the readable repos with
+  // it — otherwise one stale registry entry breaks code search entirely.
+  it("reports a failing repo alongside the repos that answered", async () => {
+    invoke.mockImplementation(async (_cmd: string, args: { root: string }) => {
+      if (args.root === ROOT_B) throw "no such directory";
+      return {
+        hits: [{ path: "p", rel: "a.ts", line: 1, text: "NEEDLE" }],
+        truncated: false,
+        files_scanned: 1,
+      };
+    });
+    const out = (await callTool("grep", { pattern: "NEEDLE" }, THREE)) as {
+      hits: Array<{ rel: string }>;
+      errors: Array<{ repo: string; error: string }>;
+    };
+    expect(out.hits.map((h) => h.rel)).toEqual(["iSyncKit/a.ts", "Shared/a.ts"]);
+    expect(out.errors).toEqual([
+      { repo: "iSyncKit.Web", error: "no such directory" },
+    ]);
+  });
+
+  it("lists every repo, each with an equal share of the cap", async () => {
+    invoke.mockImplementation(async (_cmd: string, args: { root: string }) => ({
+      files: [args.root === ROOT_B ? "web.ts" : "a.ts"],
+      truncated: false,
+    }));
+    const out = (await callTool("list_files", { limit: 30 }, THREE)) as {
+      files: string[];
+    };
+    expect(out.files).toEqual([
+      "iSyncKit/a.ts",
+      "iSyncKit.Web/web.ts",
+      "Shared/a.ts",
+    ]);
+    expect(invoke.mock.calls.map((c) => c[1].limit)).toEqual([10, 10, 10]);
+  });
+
+  it("names the repo whose listing failed", async () => {
+    invoke.mockImplementation(async (_cmd: string, args: { root: string }) => {
+      if (args.root === ROOT_B) throw "not a directory";
+      return { files: ["src/a.ts"], truncated: false };
+    });
+    const out = (await callTool("list_files", {}, THREE)) as {
+      files: string[];
+      errors: Array<{ repo: string; error: string }>;
+    };
+    expect(out.files).toEqual(["iSyncKit/src/a.ts", "Shared/src/a.ts"]);
+    expect(out.errors).toEqual([
+      { repo: "iSyncKit.Web", error: "not a directory" },
+    ]);
+  });
+
+  it("drills into one repo when the subpath names it", async () => {
+    invoke.mockResolvedValue({ files: ["login.ts"], truncated: false });
+    const out = (await callTool(
+      "list_files",
+      { subpath: "Shared/src/auth" },
+      THREE,
+    )) as { files: string[] };
+    expect(rootArg()).toBe(`${ROOT_C}\\src\\auth`);
+    expect(out.files).toEqual(["Shared/src/auth/login.ts"]);
+  });
+});
+
+// A cwd can only ever be one place, so `run_command` is the one tool that has
+// to be told which repo it means.
+describe("run_command · choosing a repo", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue({ returncode: 0, output: "ok", truncated: false });
+  });
+
+  it("needs no repo when only one is configured", async () => {
+    await callTool("run_command", { command: "git log" }, ONE);
+    expect(lastPayload<{ root: string }>().root).toBe(ROOT);
+  });
+
+  it("refuses without one at several repos, naming them", async () => {
+    const out = (await callTool("run_command", { command: "git log" }, THREE)) as {
+      error: string;
+    };
+    expect(out.error).toContain("iSyncKit, iSyncKit.Web, Shared");
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("runs in the named repo", async () => {
+    const out = (await callTool(
+      "run_command",
+      { command: "git log", repo: "Shared" },
+      THREE,
+    )) as { repo: string };
+    expect(lastPayload<{ root: string }>().root).toBe(ROOT_C);
+    expect(out.repo).toBe("Shared");
+  });
+
+  it("refuses a repo name that isn't configured", async () => {
+    const out = (await callTool(
+      "run_command",
+      { command: "git log", repo: "nope" },
+      THREE,
+    )) as { error: string };
+    expect(out.error).toMatch(/No repo named "nope"/);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
+// Bug #5: the tool layer had no path containment at all. `workspace.rs`'s
+// resolve_path is identity, so this resolver is the only thing between the
+// model and the user's home directory.
+describe("containment at the tool boundary", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue({ kind: "text", content: "hi", size: 2 });
+  });
+
+  it("refuses a read outside every configured repo", async () => {
+    const out = (await callTool(
+      "read_file",
+      { path: "C:/Users/mudas/.ssh/id_rsa" },
+      THREE,
+    )) as { error: string };
+    expect(out.error).toBeTruthy();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("refuses a secret file that does sit inside a repo", async () => {
+    const out = (await callTool(
+      "read_file",
+      { path: "iSyncKit/.env.production" },
+      THREE,
+    )) as { error: string };
+    expect(out.error).toMatch(/sensitive-file pattern/);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("gives up its tools entirely when no repo is configured", () => {
+    expect(buildSuiteChatTools([])).toBeUndefined();
   });
 });
 

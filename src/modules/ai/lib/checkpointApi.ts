@@ -28,6 +28,7 @@ import type { ActivityEntry } from "@/modules/generator/lib/activityLog";
 import type { Coverage } from "@/modules/generator/lib/qaAnalystRun";
 import type { CandidateFinding } from "@/modules/commit-review/schema";
 import type { CommitDiff } from "@/modules/commit-review/gitCommitApi";
+import type { WorkspaceRepo } from "@/modules/settings/store";
 
 export type CheckpointUsage = {
   inputTokens?: number;
@@ -80,13 +81,16 @@ export type CheckpointOutcome = {
   message?: string;
 };
 
-export type GeneratorCheckpointV1 = {
-  v: 1;
+export type GeneratorCheckpointV2 = {
+  v: 2;
   surface: "generator";
   runId: string;
   createdAt: string;
   modelId: ModelId;
-  sourceRoot: string | null;
+  /** The repos the run reads. Restored from HERE on resume, never from live
+   *  prefs — a resumed run must read the repos it started with, or its
+   *  replayed transcript stops matching what the tools now see. */
+  repos: WorkspaceRepo[];
   customInstructions?: string;
   form: {
     requirements: string;
@@ -123,8 +127,8 @@ export type GeneratorCheckpointV1 = {
  *  immediately re-sent can't have the older run's trailing throttled write land
  *  on the newer run's row. `sessionRunId` is what ties the row back to the draft
  *  it belongs to — that's the key the review pane probes on. */
-export type GeneratorRefineCheckpointV1 = {
-  v: 1;
+export type GeneratorRefineCheckpointV2 = {
+  v: 2;
   surface: "generator-refine";
   /** This round's own id — see the per-round rationale above. */
   runId: string;
@@ -136,7 +140,10 @@ export type GeneratorRefineCheckpointV1 = {
   sessionRunId: string;
   createdAt: string;
   modelId: ModelId;
-  sourceRoot: string | null;
+  /** The repos the run reads. Restored from HERE on resume, never from live
+   *  prefs — a resumed run must read the repos it started with, or its
+   *  replayed transcript stops matching what the tools now see. */
+  repos: WorkspaceRepo[];
   customInstructions?: string;
   /** The follow-up itself plus the bookkeeping its RefineRound is recorded
    *  under, so a resumed round lands in history as the round the user started
@@ -157,14 +164,17 @@ export type GeneratorRefineCheckpointV1 = {
   lastOutcome: CheckpointOutcome | null;
 };
 
-export type CommitReviewCheckpointV1 = {
-  v: 1;
+export type CommitReviewCheckpointV2 = {
+  v: 2;
   surface: "commit-review";
   runId: string;
   createdAt: string;
   modelId: ModelId;
   cwd: string;
-  sourceRoot: string | null;
+  /** The repos the run reads. Restored from HERE on resume, never from live
+   *  prefs — a resumed run must read the repos it started with, or its
+   *  replayed transcript stops matching what the tools now see. */
+  repos: WorkspaceRepo[];
   customInstructions?: string;
   inputs: {
     selectedShas: string[];
@@ -182,11 +192,15 @@ export type CommitReviewCheckpointV1 = {
 };
 
 export type CheckpointPayload =
-  | GeneratorCheckpointV1
-  | GeneratorRefineCheckpointV1
-  | CommitReviewCheckpointV1;
+  | GeneratorCheckpointV2
+  | GeneratorRefineCheckpointV2
+  | CommitReviewCheckpointV2;
 
-export const CHECKPOINT_PAYLOAD_VERSION = 1;
+/** Bumped to 2 when the payloads swapped a single `sourceRoot` for the repo
+ *  registry. v1 rows need no migration and no prune: `parseCheckpointRow`
+ *  returns null on a version mismatch, every consumer already skips nulls, and
+ *  stale rows age out under keep-10-per-surface. */
+export const CHECKPOINT_PAYLOAD_VERSION = 2;
 export const MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
 
 /** Every surface a checkpoint row can belong to. The envelope guard reads this,
@@ -311,8 +325,9 @@ function isValidEnvelope(json: unknown): json is CheckpointPayload {
   );
 }
 
-/** Defensive parse. JSON.parse in try/catch; envelope guard: v === 1 and a
- *  known surface (CHECKPOINT_SURFACES) → otherwise null. When
+/** Defensive parse. JSON.parse in try/catch; envelope guard: v ===
+ *  CHECKPOINT_PAYLOAD_VERSION and a known surface (CHECKPOINT_SURFACES) →
+ *  otherwise null. When
  *  transcript is present, validate transcript.messages with
  *  z.array(modelMessageSchema).safeParse (modelMessageSchema is exported by
  *  the `ai` package); on failure DEGRADE: return the payload with
