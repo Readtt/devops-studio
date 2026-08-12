@@ -339,6 +339,24 @@ export function uniqueRepoName(desired: string, taken: Iterable<string>): string
   return `${base}-${newRepoId()}`;
 }
 
+/** Inline validation for a name the user typed, against the names of the OTHER
+ *  repos. Returns null when it's usable, else the message to show under it.
+ *
+ *  Lives next to `sanitizeRepoName` / `uniqueRepoName` so the UX can't drift
+ *  from the backstop: those two silently rewrite a bad name (`repo` → `repo-2`),
+ *  which is right for a malformed settings file and wrong for someone typing. */
+export function validateRepoName(
+  raw: string,
+  taken: Iterable<string>,
+): string | null {
+  const name = raw.trim();
+  if (!name) return "Name can't be empty.";
+  if (/[\\/]/.test(raw)) return "Name can't contain / or \\.";
+  const used = new Set([...taken].map((n) => n.trim().toLowerCase()));
+  if (used.has(name.toLowerCase())) return "Another repo already uses that name.";
+  return null;
+}
+
 function normalizeAdo(raw: unknown): WorkspaceRepo["ado"] {
   if (!raw || typeof raw !== "object") return null;
   const { repoId, repoName, project } = raw as Record<string, unknown>;

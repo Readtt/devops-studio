@@ -54,6 +54,7 @@ import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { useEffect } from "react";
 import { SectionHeader } from "../components/SectionHeader";
 import { SettingRow } from "../components/SettingRow";
+import { SourceReposPanel } from "./SourceReposSection";
 
 // Lower bound is 80% — below that, the app's 11-12 px UI density starts
 // clipping (test-plan tree, generator review grid). Mirrors lib/useZoom.ts.
@@ -120,7 +121,7 @@ export function GeneralSection() {
     <div className="flex flex-col gap-6">
       <SectionHeader
         title="General"
-        description="Appearance and startup behavior."
+        description="Appearance, startup behavior, and the repositories you work in."
       />
 
       <div className="flex flex-col gap-2">
@@ -352,6 +353,11 @@ export function GeneralSection() {
             ) : null}
           </div>
         </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <Label>Source repos</Label>
+        <SourceReposPanel />
       </div>
     </div>
   );

@@ -51,7 +51,7 @@ Do not substitute role-suggesting names in code, comments, prompts, or UI copy.
 | 2 | Source-link format fixes | `02-source-link-format.md` | ☑ | `fbf5297` |
 | 3 | Repo registry + compatibility shim | `03-repo-registry.md` | ☑ | `a4f1399` |
 | 4 | Mechanical sweep: delete `sourceRoot` | `04-sourceroot-sweep.md` | ☑ | `b2cd9a4` |
-| 5 | Settings: "Source repos" block | `05-settings-repos.md` | ☐ | |
+| 5 | Settings: "Source repos" block | `05-settings-repos.md` | ☑ | |
 | 6 | Status bar: multi-repo | `06-status-bar.md` | ☐ | |
 | 7 | **AI tool layer — the core fix** | `07-ai-tool-layer.md` | ☐ | |
 | 8 | Prompts | `08-prompts.md` | ☐ | |
@@ -166,6 +166,41 @@ props — those come straight from `App.tsx`'s own hook and are Phase 6/11's to 
 **Phase 4 — verification.** `tsc` clean, `vite build` clean, 969 frontend tests green (no new
 tests; this phase is behaviour-preserving, so the existing suite is the regression net). No Rust
 touched. **Verify step 3 — the live walkthrough of every surface — is unrun**, not passed.
+
+**Phase 5 — the block lives in its own file**, `src/settings/sections/SourceReposSection.tsx`,
+exporting `SourceReposPanel`. It is still the 7th block of General exactly as planned — General
+renders `<Label>Source repos</Label>` (the file-local helper, as instructed) wrapping the panel.
+Splitting it follows the `BestPracticesPanel` precedent (own file, rendered as a block of Models)
+and keeps `GeneralSection.tsx` from doubling in size.
+
+**Phase 5 — "Set ADO repo…" is NOT in the `⋯` menu.** The plan allowed present-but-disabled or
+deferred; deferred won, because a disabled item with no explanation is the "menu item that silently
+does nothing" the plan warns against. The ADO cell still renders "not linked" as specified, with a
+tooltip saying code links can't deep-link yet. **Phase 12 adds the menu item**, next to `Rename` and
+above `Remove from workspace`.
+
+**Phase 5 — name validation is `validateRepoName` in `settings/store.ts`**, not local to the
+component, so the UX rule and the `uniqueRepoName` backstop can't drift. Phase 12+ should reuse it
+for any other repo-name entry point. Rename commits on **blur/Enter, never per keystroke** —
+`renameRepo` re-uniquifies, so live-writing turns "repo" into "repo-2" under the user's cursor the
+moment the typed prefix momentarily collides.
+
+**Phase 5 — `fs_stat` on `<dir>/.git` is the repo test in "Scan a folder…"**, not a `.git`
+directory listing, because a worktree or submodule stores `.git` as a FILE. Both spellings are a
+real repo, and `fs_stat` accepts either. Paths are joined with the separator the parent already
+uses, so a Windows root doesn't come back half-forward-slashed and miss the registry's dedup key.
+
+**Phase 5 — verification is REAL, including the live steps.** `tsc` clean, `vite build` clean, 974
+frontend tests green (+5 new; the three substantive assertions each proven by mutating
+`validateRepoName` — dropping the empty check, neutering the separator check, and making uniqueness
+case-sensitive each fail exactly one test). Verify steps 3, 4, and the empty state were driven in
+the **real settings webview** over CDP against a mocked Tauri IPC boundary (fixture: 3 repos, one
+detached, one non-git). Confirmed: duplicate rename → inline error + `aria-invalid`, nothing
+persisted; valid rename persists; scan lists exactly the git dirs and marks already-registered ones
+disabled/"already added"; confirm adds only the new roots; zero console errors throughout.
+**Verify step 2 (cross-window liveness) is the one still unrun** — it needs two real Tauri windows,
+which the browser harness can't provide. The `repos` key-map entry it depends on is pinned by
+`repos.test.ts` "maps the repos key so the other window's write lands in the store".
 
 ---
 

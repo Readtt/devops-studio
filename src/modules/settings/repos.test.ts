@@ -62,6 +62,8 @@ import {
   setRepoAdo,
   setRepos,
   setSourceRoot,
+  uniqueRepoName,
+  validateRepoName,
   type WorkspaceRepo,
 } from "./store";
 
@@ -326,5 +328,49 @@ describe("repos preference · setters", () => {
 
     await setRepoAdo("id-one", null);
     expect(stored()?.[0].ado).toBeNull();
+  });
+});
+
+// The Settings name field validates BEFORE writing, because the write-side
+// backstop would otherwise "fix" a collision by renaming behind the user.
+describe("repos preference · name validation", () => {
+  it("accepts a fresh name", () => {
+    expect(validateRepoName("repo-three", ["repo-one", "repo-two"])).toBeNull();
+  });
+
+  it("rejects empty and whitespace-only names", () => {
+    expect(validateRepoName("", [])).toBe("Name can't be empty.");
+    expect(validateRepoName("   ", [])).toBe("Name can't be empty.");
+  });
+
+  it("rejects path separators, which would break AI repo-prefixed paths", () => {
+    expect(validateRepoName("a/b", [])).toBe("Name can't contain / or \\.");
+    expect(validateRepoName("a\\b", [])).toBe("Name can't contain / or \\.");
+  });
+
+  it("rejects a name another repo already uses, case-insensitively", () => {
+    const taken = ["repo-one"];
+    expect(validateRepoName("repo-one", taken)).toBe(
+      "Another repo already uses that name.",
+    );
+    expect(validateRepoName("REPO-ONE", taken)).toBe(
+      "Another repo already uses that name.",
+    );
+    expect(validateRepoName("  repo-one  ", taken)).toBe(
+      "Another repo already uses that name.",
+    );
+    // A stored name should already be trimmed, but preferences.ts blind-sets
+    // whatever a change event carries — so the comparison trims both sides.
+    expect(validateRepoName("repo-one", ["  repo-one  "])).toBe(
+      "Another repo already uses that name.",
+    );
+  });
+
+  it("agrees with uniqueRepoName: a name it accepts survives the write path", () => {
+    // Drift here is the failure mode — the field says OK, then the registry
+    // silently stores something else.
+    const taken = ["repo-one", "repo-two"];
+    expect(validateRepoName("repo-three", taken)).toBeNull();
+    expect(uniqueRepoName("repo-three", taken)).toBe("repo-three");
   });
 });
