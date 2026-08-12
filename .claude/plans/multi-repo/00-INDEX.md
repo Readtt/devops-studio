@@ -54,7 +54,7 @@ Do not substitute role-suggesting names in code, comments, prompts, or UI copy.
 | 5 | Settings: "Source repos" block | `05-settings-repos.md` | ☑ | `0801e2f` |
 | 6 | Status bar: multi-repo | `06-status-bar.md` | ☑ | `ad366e5` |
 | 7 | **AI tool layer — the core fix** | `07-ai-tool-layer.md` | ☑ | `f166137` |
-| 8 | Prompts | `08-prompts.md` | ☐ | |
+| 8 | Prompts | `08-prompts.md` | ☑ | `770deb1` |
 | 9 | Generator | `09-generator.md` | ☐ | |
 | 10 | Commit Review | `10-commit-review.md` | ☐ | |
 | 11 | Remaining surfaces | `11-remaining-surfaces.md` | ☐ | |
