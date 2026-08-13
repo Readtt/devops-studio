@@ -79,11 +79,6 @@ export function summarizeToolInput(
   if (name === "read" || name === "read_file") {
     return get("file_path") ?? get("path") ?? toolName;
   }
-  if (name === "glob") {
-    const pattern = get("pattern") ?? "";
-    const path = get("path");
-    return path ? `${pattern} (in ${path})` : pattern || toolName;
-  }
   if (name === "grep") {
     const pattern = get("pattern") ?? "";
     // `glob` is a string[] in the suite-chat schema (a string in the Claude CLI
@@ -273,22 +268,8 @@ export function formatToolResult(
     };
   }
 
-  if (name === "glob") {
-    const hits = Array.isArray(o.hits)
-      ? (o.hits as unknown[]).filter((x): x is string => typeof x === "string")
-      : [];
-    const truncated = o.truncated === true;
-    return {
-      summary: `${hits.length}${truncated ? "+" : ""} file${hits.length === 1 ? "" : "s"}`,
-      text: hits.join("\n") || "(no files matched)",
-    };
-  }
-
-  // Two listing shapes, and only one of them has a live producer.
   // `list_files` (suite-chat tools → Rust fs_list_files) returns a flat
-  // `files: string[]`; the `list_directory` branch below returns
-  // `entries: {name, kind}[]` and is kept for transcripts that predate the
-  // deletion of the orphaned ai/tools stack. Reading `entries` for both is
+  // `files: string[]`. Reading the OTHER listing shape's `entries` key here is
   // why every list_files call used to render "0 entries" no matter how many
   // paths came back — which read as "the AI found nothing".
   if (name === "list_files") {
@@ -299,21 +280,6 @@ export function formatToolResult(
     return {
       summary: `${files.length}${truncated ? "+" : ""} file${files.length === 1 ? "" : "s"}`,
       text: files.join("\n") || "(no files)",
-    };
-  }
-
-  if (name === "list_directory") {
-    const entries = Array.isArray(o.entries)
-      ? (o.entries as Array<Record<string, unknown>>)
-      : [];
-    const lines = entries.map((e) => {
-      const n = typeof e.name === "string" ? e.name : "";
-      const kind = typeof e.kind === "string" ? e.kind : "";
-      return kind === "dir" || kind === "directory" ? `${n}/` : n;
-    });
-    return {
-      summary: `${entries.length} entr${entries.length === 1 ? "y" : "ies"}`,
-      text: lines.join("\n") || "(empty)",
     };
   }
 

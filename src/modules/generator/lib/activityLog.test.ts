@@ -50,29 +50,6 @@ describe("formatToolResult · list_files", () => {
   });
 });
 
-// The `{ entries: [{name, kind}] }` shape came from the ai/tools stack that
-// has since been deleted. Two similar names, two different shapes — the
-// formatter still has to render an older transcript that carries this one.
-describe("formatToolResult · list_directory", () => {
-  it("still formats the entries shape with a trailing slash on dirs", () => {
-    const r = formatToolResult("list_directory", {
-      entries: [
-        { name: "src", kind: "dir" },
-        { name: "a.ts", kind: "file" },
-      ],
-    });
-    expect(r.summary).toBe("2 entries");
-    expect(r.text).toBe("src/\na.ts");
-  });
-
-  it("uses the singular for one entry", () => {
-    const r = formatToolResult("list_directory", {
-      entries: [{ name: "a.ts", kind: "file" }],
-    });
-    expect(r.summary).toBe("1 entry");
-  });
-});
-
 // `glob` is a string[] in the suite-chat schema, but summarizeToolInput's
 // `get()` only returns strings — so the filter was silently dropped and every
 // grep row showed a bare pattern. That made "0 files scanned" (which means the
