@@ -59,7 +59,7 @@ Do not substitute role-suggesting names in code, comments, prompts, or UI copy.
 | 10 | Commit Review | `10-commit-review.md` | ☑ | `9d76efd` |
 | 11 | Remaining surfaces | `11-remaining-surfaces.md` | ☑ | `e5e6d38` |
 | 12 | ADO repo binding | `12-ado-binding.md` | ☑ | `4800598` |
-| 13 | Cleanup | `13-cleanup.md` | ☐ | |
+| 13 | Cleanup | `13-cleanup.md` | ☑ | `8cb7e6c` |
 | 14 | Full review + delete these docs | `14-review-and-cleanup.md` | ☐ | |
 
 Phases 1 and 2 are independent of multi-repo and of each other. Phases 3→7 are strictly ordered.
