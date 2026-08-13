@@ -118,8 +118,9 @@ input → analyzing → review → publishing → done
 Phase UIs live in `src/modules/generator/GeneratorPane.tsx` and its sibling
 components (there is no `phases/` directory). The analyzer runs through
 `qaAnalystRun.ts` → the shared `runTask` (schema-validated `DraftBatch`,
-`temperature: 0`); when code search is on it gets read-only Read/Glob/Grep tools
-so cases are grounded in real code.
+`temperature: 0`); when code search is on it gets the shared read-only tool set
+(`read_file` / `list_files` / `grep` / `run_command`, built by
+`buildSuiteChatTools`) so cases are grounded in real code.
 
 Generator can re-target itself mid-session via `setTarget(planId, suiteId)` so reusing an open tab from the context menu actually updates the form.
 
@@ -223,7 +224,7 @@ the matching repo secrets.
 - **Don't regenerate shadcn components** from the registry — we customized them. If you must update, diff carefully.
 - **Don't reintroduce WSL code** — that module was intentionally removed. (The embedded terminal *is* back as a developer-mode pane; see `src/modules/terminal/` and `src-tauri/src/modules/pty.rs`.)
 - **Don't add comments that just restate the code.** This codebase generally writes a comment only when there's a non-obvious "why."
-- **One feature, one phase commit.** When in doubt, look at `.claude/plans/humming-coalescing-petal.md` for the phased remediation plan.
+- **One feature, one phase commit.** Multi-step work gets a plan file under `.claude/plans/`, one commit per phase; the plan is deleted once its last phase lands, so the git history is the record.
 - **Skeleton loaders, not spinners.** When a list is loading, show shadcn `<Skeleton>` rows that mirror the eventual content.
 - **Verify UI changes by driving them, not just by typechecking.** `.claude/skills/drive-ui/` clicks, types into, and screenshots the real React tree over CDP with the Tauri IPC boundary mocked — it needs `pnpm dev` only, no Rust build, because both windows are plain Vite entries. Mocking the boundary is what lets you drive states this machine can't produce (twenty repos, a detached HEAD, an ADO call that 500s). Read its SKILL.md before hand-rolling browser automation: synthetic `blur` events don't reach React, Radix ignores `el.click()`, and screen-capturing the real Tauri window fails outright from an agent shell.
 - **Tooltips on every icon-only button.** Use `<Tooltip><TooltipTrigger asChild>…</TooltipTrigger><TooltipContent side="bottom" className="text-[11px]">…</TooltipContent></Tooltip>`.
@@ -252,7 +253,7 @@ Tabs are a discriminated union (`AppTab` in `src/modules/tabs/store/types.ts`). 
 | `suite-chat`  | `planId + suiteId`              | Per-suite chat. Threads live inside the tab via the switcher.    |
 | `generator`   | `runId` (only when set)         | Fresh generator drafts deliberately stack; bound drafts dedup.   |
 | `terminal`    | **never**                       | Each `pty_spawn` is a real OS process — N tabs = N shells.       |
-| `commit-review` | `cwd` (fresh) / `rehydrateRunId` | Re-opening "Commit Review" focuses the existing fresh review for that source dir; a saved run reopens its own tab. **Duplicate** clones for a parallel review on the same commits. |
+| `commit-review` | **the fresh review** / `rehydrateRunId` | A review spans the whole workspace, so there is exactly one fresh one to focus (it used to be one per source dir); a saved run reopens its own tab. **Duplicate** clones for a parallel review on the same commits. |
 
 When you add a new kind, set the rule explicitly. The dedup rule is also where the user's "why can't I open two of these?" frustration lives — if a kind doesn't dedup naturally, it should NOT dedup in the openTab switch.
 
