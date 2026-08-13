@@ -22,11 +22,14 @@ export function launchGenerator(): void {
   });
 }
 
-export function launchTerminal(): void {
-  const liveSourceRoot = primaryRepoRoot(getRepos());
+/** `cwd` omitted ⇒ the first configured repo (some default is needed and no
+ *  repo is special); pass one explicitly to open the shell in that repo, or
+ *  `null` for the app's own process cwd. */
+export function launchTerminal(cwd?: string | null): void {
+  const fallback = primaryRepoRoot(getRepos());
   useTabsStore.getState().openTab({
     kind: "terminal",
-    cwd: liveSourceRoot ?? null,
+    cwd: cwd === undefined ? fallback ?? null : cwd,
   });
 }
 

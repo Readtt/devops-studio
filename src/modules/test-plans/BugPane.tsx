@@ -29,15 +29,16 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { LinkedWorkItem } from "@/modules/ado";
 import { EditableText } from "@/modules/generator/components/EditableText";
-import { usePrimaryRepoRoot } from "@/modules/settings/preferences";
+import { usePreferencesStore } from "@/modules/settings/preferences";
 
 type Props = {
   bugId: number;
 };
 
 export function BugPane({ bugId }: Props) {
-  // Code links are stored relative, so they resolve against the source root.
-  const sourceRoot = usePrimaryRepoRoot();
+  // Code links are stored repo-relative; the viewer resolves them. All this
+  // needs to know is whether there's anywhere to look.
+  const repos = usePreferencesStore((s) => s.repos);
   const [bug, setBug] = useState<Bug | null>(null);
   const [conn, setConn] = useState<ConnectionStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -253,7 +254,12 @@ export function BugPane({ bugId }: Props) {
           ) : (
             <ul className="flex flex-col gap-1">
               {codeLinks.map((l, i) => {
-                const absPath = resolveAbsPath(sourceRoot, l.file);
+                // The viewer resolves `<repo>/<path>` itself (and finds a
+                // legacy bare path by searching every repo), so the row hands
+                // over what the bug recorded rather than joining it against one
+                // repo here — which is how a link naming repo-two used to open
+                // repo-one's file, or nothing.
+                const canOpen = repos.length > 0;
                 return (
                   <li
                     key={`${l.file}:${l.startLine}:${i}`}
@@ -268,28 +274,28 @@ export function BugPane({ bugId }: Props) {
                     <button
                       type="button"
                       onClick={() => {
-                        if (!absPath) return;
+                        if (!canOpen) return;
                         window.dispatchEvent(
                           new CustomEvent("devops-studio:open-code-viewer", {
                             detail: {
-                              path: absPath,
+                              path: l.file,
                               startLine: l.startLine,
                               endLine: l.endLine ?? l.startLine,
                             },
                           }),
                         );
                       }}
-                      disabled={!absPath}
+                      disabled={!canOpen}
                       className={cn(
                         "min-w-0 flex-1 truncate text-left font-mono text-foreground/85",
-                        absPath
+                        canOpen
                           ? "hover:text-primary hover:underline"
                           : "cursor-not-allowed opacity-60",
                       )}
                       title={
-                        absPath
+                        canOpen
                           ? "Open in the code viewer"
-                          : "Pick a source directory to enable this link"
+                          : "Add a source repo in Settings to enable this link"
                       }
                     >
                       {l.file}
@@ -484,14 +490,4 @@ function formatDate(iso: string): string {
   } catch {
     return iso;
   }
-}
-
-/** Join the user-picked sourceRoot with a relative file path from a code link.
- *  Returns null when no sourceRoot is known — the BugPane disables the link
- *  in that case with a helpful tooltip rather than guessing. */
-function resolveAbsPath(sourceRoot: string | null, file: string): string | null {
-  if (!sourceRoot) return null;
-  const trimmedRoot = sourceRoot.replace(/[\\/]+$/, "");
-  const trimmedFile = file.replace(/^[\\/]+/, "");
-  return `${trimmedRoot}/${trimmedFile}`;
 }

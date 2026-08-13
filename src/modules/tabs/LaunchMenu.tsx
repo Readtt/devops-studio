@@ -4,8 +4,11 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import type { WorkspaceRepo } from "@/modules/settings/store";
 import {
+  ArrowLeft01Icon,
   CommandLineIcon,
+  FolderIcon,
   Search01Icon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
@@ -38,11 +41,13 @@ import { useState, type ReactNode } from "react";
 
 export type LaunchMenuActions = {
   onGenerator: () => void;
-  onTerminal: () => void;
-  /** Disabled when there's no source root. */
+  /** `cwd` omitted ⇒ the launcher's own default (the first configured repo). */
+  onTerminal: (cwd?: string | null) => void;
+  /** Disabled on an empty workspace. */
   onCommitReview: () => void;
-  /** Used in the per-entry descriptions and to gate the Review entry. */
-  sourceRoot?: string | null;
+  /** Configured source repos. Drive the per-entry descriptions, the Review
+   *  gate, and — past one repo — which repo a new terminal opens in. */
+  repos: WorkspaceRepo[];
 };
 
 export function LaunchMenu({
@@ -86,6 +91,46 @@ export function LaunchMenuItems({
   actions: LaunchMenuActions;
   onClose: () => void;
 }) {
+  // Second level, in place rather than as a nested popover: a terminal opens in
+  // exactly one directory, so past one repo the launcher has to ask which. Same
+  // drill-in shape the status-bar repo switcher uses.
+  const [pickingRepo, setPickingRepo] = useState(false);
+  const repos = actions.repos;
+  const close = () => {
+    setPickingRepo(false);
+    onClose();
+  };
+
+  if (pickingRepo) {
+    return (
+      <>
+        <LaunchMenuItem
+          icon={ArrowLeft01Icon}
+          label="Back"
+          description="Return to the launcher"
+          onSelect={() => setPickingRepo(false)}
+        />
+        <div className="my-1 h-px bg-border/50" />
+        {/* Capped like every other long list in the app — twenty repos must not
+            push the popover past the viewport. */}
+        <div className="max-h-[280px] overflow-y-auto">
+          {repos.map((repo) => (
+            <LaunchMenuItem
+              key={repo.id}
+              icon={FolderIcon}
+              label={repo.name}
+              description={compactPath(repo.root)}
+              onSelect={() => {
+                close();
+                actions.onTerminal(repo.root);
+              }}
+            />
+          ))}
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       <LaunchMenuItem
@@ -93,7 +138,7 @@ export function LaunchMenuItems({
         label="New generation"
         description="Generate test cases from a feature spec — the QA workflow this app was built for."
         onSelect={() => {
-          onClose();
+          close();
           actions.onGenerator();
         }}
       />
@@ -101,12 +146,18 @@ export function LaunchMenuItems({
         icon={CommandLineIcon}
         label="New terminal"
         description={
-          actions.sourceRoot
-            ? `Default shell in ${compactPath(actions.sourceRoot)}`
-            : "Default shell in app cwd — pick a source dir for project context"
+          repos.length > 1
+            ? `Pick which of your ${repos.length} repos the shell opens in`
+            : repos.length === 1
+              ? `Default shell in ${compactPath(repos[0].root)}`
+              : "Default shell in app cwd — add a source repo for project context"
         }
         onSelect={() => {
-          onClose();
+          if (repos.length > 1) {
+            setPickingRepo(true);
+            return;
+          }
+          close();
           actions.onTerminal();
         }}
       />
@@ -114,13 +165,13 @@ export function LaunchMenuItems({
         icon={Search01Icon}
         label="Commit review"
         description={
-          actions.sourceRoot
-            ? "AI bug review of a single commit's changes — severity-ranked findings with one-click fixes"
-            : "Set a source directory in Settings first"
+          repos.length > 0
+            ? "AI bug review of selected commits — severity-ranked findings with one-click fixes"
+            : "Add a source repo in Settings first"
         }
-        disabled={!actions.sourceRoot}
+        disabled={repos.length === 0}
         onSelect={() => {
-          onClose();
+          close();
           actions.onCommitReview();
         }}
       />

@@ -498,6 +498,79 @@ repo chips, no scope row, a plain "Local changes" trigger. Zero console errors. 
 two-repo review, and interrupt→adopt) are unrun live** — they need API keys and two real repos;
 both are pinned by store tests.
 
+**Phase 11 — the code viewer routes through `resolveRepoPath`, which brings its READ GATE with it.**
+The plan said to route both resolvers through it; what that also imports is `checkReadable` (21 secret
+basenames, 25 protected dirs) and the traversal guard. So a citation or a bug code link pointing at
+`.env` / `id_rsa` no longer opens in the viewer, and `repo-one/../../secrets` is refused rather than
+resolved. That is a deliberate widening: a bug's code links are third-party data (anyone on the ADO
+project can edit them) and this is the app's one containment point. The fuzzy fallback re-applies the
+gate on its own hit, so the search can't route around it.
+
+**Phase 11 — `resolveSourcePath` / `resolveSourcePathDeep` now take `repos` and return
+`{ path, repo }`.** The repo is what the tab records and the title/header render from; it is null for
+an absolute path outside every repo, which still opens (the viewer is a user action on a path they
+clicked, not a model read). The deep resolver's order is: `resolveRepoPath` → `fs_resolve_source_path`
+inside the repo it bound to → fan out across every repo → naive join. **A fan-out hit in several repos
+takes the first in registry order** — unavoidable for a bare filename, but the pane header now shows
+`<repo>/<path>`, so a wrong guess is visible instead of silent (which is bug the plan named).
+
+**Phase 11 — the pane header shows the virtual path at EVERY repo count, including one.** At N=1 that
+replaces `C:\dev\repo-one\src\x.ts` with `repo-one/src/x.ts` — a visible change at one repo, which the
+"identical at one repo" principle otherwise forbids. It is the plan's own instruction, it matches how
+every other surface addresses files, and the absolute path is one hover away (the header gained a
+tooltip carrying it). Nothing else about the viewer changes at N=1.
+
+**Phase 11 — title disambiguation is `planViewerTitle` in `src/modules/tabs/codeViewerTitles.ts`**, not
+inline in `App.tsx`. It returns the new tab's title AND the retitles for the tabs it collides with, so
+both sides of a collision get prefixed in one decision (a lone prefixed tab beside an unprefixed one
+reads as an odd one out). Collisions are same-basename + different repo; two `index.ts` from the SAME
+repo stay bare, because the prefix wouldn't tell them apart. Un-prefixing when the other tab closes is
+deliberately not done — the prefixed title is still true.
+
+**Phase 11 — `ConfidenceVerdict.sources[]` replaces the scalar stamp, and the scalar is NOT written
+any more.** New verdicts carry `sources: {repoId, repoName, branch, sha}[]`; `sourceSha`/`sourceBranch`
+stay on the type as `@deprecated` and are read as the FIRST repo's (which is what they were), per the
+plan. Writing both would be two records of one fact. `verdictSourceState(verdict, CurrentSource[])` is
+the new signature — stale iff any recorded repo's own head moved, uncomparable repos (no stamp, no live
+sha, repo left the workspace) drop out rather than counting as moved.
+
+**Phase 11 — Suite Chat's `repoScope` lives on the per-SUITE slice, beside `filter`.** Not on the tab
+and not on the thread (the plan is explicit that scope is per message): it belongs to the composer, it
+applies to the next message sent, and a sent message keeps what it was sent with. It is in-memory only,
+so a reopened chat reads everything again — the default everywhere else too. The chip row is
+`RepoScopeChips` in the composer, above the input, gated on `codeSearchEnabled && repos.length > 1`
+exactly like the generator's and the reviewer's.
+
+**Phase 11 — the palette DISABLES "Open Terminal" at zero repos** (as well as "Review a commit"). At
+zero repos it did exactly what the row below it does — "Open Terminal (default directory)" — so two
+identical commands sat next to each other. The launcher's terminal row stays ENABLED at zero repos,
+because it has no default-directory sibling and disabling it would remove the ability outright.
+
+**Phase 11 — `LaunchMenuActions.sourceRoot` became `repos: WorkspaceRepo[]`,** and `launchTerminal`
+takes an optional `cwd`. Past one repo the launcher's "New terminal" row drills IN PLACE into a repo
+list (same shape as the status-bar switcher) rather than opening a nested popover — Radix portals
+fight, and the popover unmounts its children on close, so the drill-in state resets by itself.
+
+**Phase 11 — verification is REAL, including the live steps.** `tsc` clean, `vite build` clean, 1165
+frontend tests green (+39: 15 in `resolveSourcePath.test.ts`, 8 in `codeViewerTitles.test.ts`, 6 in
+`useSuiteChat.repoScope.test.ts`, 4 in `evaluateCaseConfidence.test.ts`, +6 in the confidence suite).
+Fourteen mutations were each caught by exactly the intended test — every stamp compared to the first
+repo's head (both in the pure function and in the bulk-run skip), a first-repo-only fuzzy fan-out, the
+traversal guard dropped, the read gate dropped on the fuzzy hit and on the sync resolver, the virtual
+path forced back to absolute, a first-repo-only provenance probe, a propagating probe failure, null
+shas kept, the code-search gate dropped (twice), the send path ignoring the scope, the null-collapse
+dropped, and a workspace-wide scope key. Verify steps 3–6 were driven in the **real main webview** over
+CDP against a mocked Tauri IPC boundary at N=3, N=2, N=1 and N=0
+(`.claude/skills/drive-ui/drive-phase11{,-chat,-confidence}.mjs`): the same filename from two repos
+opens two tabs, each read from its own root, both titles prefixed; a bare path is found in whichever
+repo holds it; a terminal opened in repo-two asks **repo-two** for its base branches and types
+repo-two's base into the shell (bug #6, end to end); the launcher lists every repo; the palette
+describes the workspace and goes disabled-with-a-reason at zero repos; the chat's chips deselect one
+repo at a time and say when nothing is left; at one repo there is no chip row at all; and a verdict
+graded against repo-two stays fresh while repo-one moves, while a pre-multi-repo scalar stamp still
+renders. Zero console errors throughout. **Verify steps 1 and 2 are unrun live** — a real Suite Chat
+answer and a real confidence run need API keys and real repos; both are pinned by tests.
+
 **Phase 6 found a real bug in its own first draft**, worth knowing because the pattern recurs: the
 repo popover's `open` is controlled, so a programmatic `setOpen(false)` never fires `onOpenChange` —
 the drilled-into repo was never cleared and the next open showed the previous repo's branches. Any

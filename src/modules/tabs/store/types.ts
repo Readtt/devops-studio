@@ -26,8 +26,14 @@ export type GeneratorTab = TabBase & {
 
 export type CodeViewerTab = TabBase & {
   kind: "code-viewer";
-  /** Absolute path inside the user's source root. */
+  /** Absolute path on disk. */
   path: string;
+  /** Repo the path was resolved to, for the header's `<repo>/…` form and the
+   *  basename-collision title prefix. Absent when the path couldn't be
+   *  attributed (outside every configured repo) or on tabs persisted before
+   *  multi-repo — dedup is on the absolute path, which is unambiguous either
+   *  way, so nothing depends on it being set. */
+  repoName?: string | null;
   startLine?: number;
   endLine?: number;
 };

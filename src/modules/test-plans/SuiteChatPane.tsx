@@ -89,10 +89,9 @@ import {
   type ContextSegment,
 } from "@/modules/ai/lib/contextEstimate";
 import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
-import {
-  usePreferencesStore,
-  usePrimaryRepoRoot,
-} from "@/modules/settings/preferences";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+import { RepoScopeChips } from "@/components/RepoScopeChips";
+import { scopedRepos } from "@/modules/ai/lib/repoScope";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowDown01Icon,
@@ -160,19 +159,21 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
   const dismissError = useSuiteChat((s) => s.dismissError);
   const setModel = useSuiteChat((s) => s.setModel);
   const setFilter = useSuiteChat((s) => s.setFilter);
+  const toggleRepo = useSuiteChat((s) => s.toggleRepo);
   const markEditApplied = useSuiteChat((s) => s.markEditApplied);
   const clearEditApplied = useSuiteChat((s) => s.clearEditApplied);
   const newThread = useSuiteChat((s) => s.newThread);
   const setActiveThread = useSuiteChat((s) => s.setActiveThread);
   const deleteThread = useSuiteChat((s) => s.deleteThread);
   const renameThread = useSuiteChat((s) => s.renameThread);
-  const sourceRoot = usePrimaryRepoRoot();
+  const repos = usePreferencesStore((s) => s.repos);
+  const repoScope = useSuiteChat((s) => s.bySuite.get(suiteKey)?.repoScope ?? null);
   const codeSearchEnabled = usePreferencesStore((s) => s.codeSearchEnabled);
-  // Code grounding requires BOTH a source dir AND the global code-search toggle
-  // — the send path gates on both (useSuiteChat), so the onboarding hint must
-  // too, or it promises grounding the model never actually gets. Both are live
-  // store selectors, so this stays reactive.
-  const hasSource = codeSearchEnabled && !!sourceRoot;
+  // Code grounding requires BOTH a configured repo AND the global code-search
+  // toggle — the send path gates on both (useSuiteChat), so the onboarding hint
+  // must too, or it promises grounding the model never actually gets. Both are
+  // live store selectors, so this stays reactive.
+  const hasSource = codeSearchEnabled && repos.length > 0;
   const globalModelId = useChatStore((s) => s.selectedModelId);
   const availability = useModelAvailability();
 
@@ -906,6 +907,25 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
         bugChips={
           <WorkItemChips items={bugCtx.selected} onRemove={bugCtx.remove} />
         }
+        repoScope={
+          // Which repos the NEXT message may read. Only worth a control once
+          // there's a choice to make, and only when anything reads source at
+          // all — with code search off the row would be asking about reads that
+          // never happen.
+          hasSource && repos.length > 1 ? (
+            <RepoScopeChips
+              repos={repos}
+              scope={repoScope}
+              onToggle={(repoId) => toggleRepo(planId, suiteId, repoId)}
+              label="Repos this chat can read"
+              hint={
+                scopedRepos(repos, repoScope).length === 0
+                  ? "Nothing selected — answers can't cite code at all."
+                  : "Applies to the next message. Deselect one to keep this chat out of it."
+              }
+            />
+          ) : null
+        }
       />
     </div>
   );
@@ -1637,6 +1657,7 @@ function Composer({
   onDismissAttachmentError,
   mention,
   bugChips,
+  repoScope,
   modelId,
   modelLabel,
   extraSegments,
@@ -1659,6 +1680,8 @@ function Composer({
   mention?: WorkItemMention;
   /** Attached work-item chips, rendered above the input. */
   bugChips?: React.ReactNode;
+  /** Per-message repo scope row, rendered above the input. Absent at one repo. */
+  repoScope?: React.ReactNode;
   /** Active model for this thread — drives the context meter's window. */
   modelId?: string;
   modelLabel?: string;
@@ -1714,6 +1737,7 @@ function Composer({
           className="mb-2"
         />
         {bugChips ? <div className="mb-1.5">{bugChips}</div> : null}
+        {repoScope ? <div className="mb-2">{repoScope}</div> : null}
         <BestPracticeNotice className="mb-2" />
         <ContextGuardNotice
           usage={guard.usage}
@@ -2286,8 +2310,8 @@ function Onboarding({
       <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">
         The full case list is in scope.
         {hasSource
-          ? " Source directory is set — answers can reference real code."
-          : " No source dir yet — answers will be limited to case-definition review."}
+          ? " Your source repos are readable — answers can reference real code."
+          : " No source repos yet — answers will be limited to case-definition review."}
       </p>
       <div className="mt-2.5 flex flex-wrap gap-1.5">
         {prompts.map((p) => (

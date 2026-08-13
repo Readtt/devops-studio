@@ -101,6 +101,35 @@ describe("useSuiteConfidence.start discovery", () => {
     expect(passed.map((t) => t.id)).toEqual([2, 3]);
   });
 
+  it("re-scores against each verdict's OWN repos, not the first repo's head", async () => {
+    // Two repos; the FIRST one has moved. A verdict graded only against the
+    // second is still fresh — going stale because an unrelated repo moved is
+    // the whole failure this per-repo comparison exists to prevent.
+    const one = createRepo("C:/repo-one");
+    const two = createRepo("C:/repo-two");
+    usePreferencesStore.setState({ repos: [one, two], codeSearchEnabled: true });
+    invoke.mockImplementation((_cmd: string, args: { path: string }) =>
+      Promise.resolve({
+        branch: "main",
+        commit: args.path === one.root ? "moved11" : "bbb2222",
+        isRepo: true,
+      }),
+    );
+    listSuiteCases.mockResolvedValue([ref(1), ref(2), ref(3)]);
+    getConfidenceMany.mockResolvedValue(
+      new Map<number, unknown>([
+        // read repo-two only, still where it was → skip
+        [1, { sources: [{ repoId: two.id, repoName: two.name, branch: "main", sha: "bbb2222" }] }],
+        // read repo-one, which moved → re-score
+        [2, { sources: [{ repoId: one.id, repoName: one.name, branch: "main", sha: "old1111" }] }],
+        // case 3 has no verdict → score
+      ]) as never,
+    );
+    await useSuiteConfidence.getState().start(1, 2, "Suite");
+    const passed = scoreCases.mock.calls[0][0] as Array<{ id: number }>;
+    expect(passed.map((t) => t.id)).toEqual([2, 3]);
+  });
+
   it("keeps skipping already-scored cases when source staleness can't be determined (no repo)", async () => {
     // sourceRoot null (beforeEach) → currentSha null → every stamped verdict is
     // 'unknown', so the legacy skip-already-scored behavior is preserved.

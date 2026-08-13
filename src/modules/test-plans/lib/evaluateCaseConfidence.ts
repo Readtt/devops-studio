@@ -8,11 +8,10 @@ import {
   localProviderConfig,
   usePreferencesStore,
 } from "@/modules/settings/preferences";
-import { primaryRepoRoot } from "@/modules/settings/store";
 import { supportsVision } from "@/modules/ai/config";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import { evaluateConfidence, type EvalCase } from "./runConfidenceEval";
-import type { ConfidenceVerdict } from "./confidence";
+import type { ConfidenceVerdict, VerdictSource } from "./confidence";
 import type { TargetRequirement } from "@/modules/ado";
 import type { GitRepoInfo } from "@/modules/git";
 
@@ -34,33 +33,36 @@ export async function evaluateCaseConfidence(
   // Global code-search toggle gates source access for every surface; when it's
   // on, every configured repo is readable.
   const repos = prefs.codeSearchEnabled ? prefs.repos : [];
-  // Provenance still stamps ONE repo — see the staleness note below.
-  const sourceRoot = repos.length > 0 ? primaryRepoRoot(repos) : null;
-  // Stamp the source state we're grading against (branch + HEAD sha) so a stored
-  // verdict can later be flagged stale once the working tree moves past it — the
-  // same provenance the generator captures at publish time. Best-effort: a
-  // non-repo / git failure just leaves the verdict unstamped (staleness = unknown).
-  let sourceSha: string | null = null;
-  let sourceBranch: string | null = null;
-  if (sourceRoot) {
-    try {
-      const info = await invoke<GitRepoInfo>("git_repo_info", {
-        path: sourceRoot,
-      });
-      sourceSha = info.commit ?? null;
-      sourceBranch = info.branch ?? null;
-    } catch {
-      // leave unstamped
-    }
-  }
+  // Stamp the source state we're grading against (branch + HEAD sha) PER REPO,
+  // so a stored verdict is flagged stale once any repo it read moves past it —
+  // the same provenance the generator captures at publish time. Best-effort and
+  // per repo: one unreadable root only costs its own stamp.
+  const sources = (
+    await Promise.all(
+      repos.map(async (repo) => {
+        try {
+          const info = await invoke<GitRepoInfo>("git_repo_info", {
+            path: repo.root,
+          });
+          return {
+            repoId: repo.id,
+            repoName: repo.name,
+            branch: info.branch ?? null,
+            sha: info.commit ?? null,
+          };
+        } catch {
+          return null;
+        }
+      }),
+    )
+  ).filter((s): s is VerdictSource => s !== null && s.sha !== null);
   const { blocks } = await loadBestPracticeBlocks(prefs.bestPracticeFiles, {
     visionCapable: supportsVision(modelId),
   });
   return evaluateConfidence({
     testCase,
     repos,
-    sourceSha,
-    sourceBranch,
+    sources,
     modelId,
     keys: await chat.ensureApiKeys(),
     local: localProviderConfig(prefs),

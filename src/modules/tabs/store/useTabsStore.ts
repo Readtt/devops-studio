@@ -50,6 +50,9 @@ export type OpenTabInput =
   | {
       kind: "code-viewer";
       path: string;
+      /** Repo the path resolved to; the caller (App's openCodeViewerTab) owns
+       *  resolution, so the store just records what it was told. */
+      repoName?: string | null;
       title?: string;
       startLine?: number;
       endLine?: number;
@@ -345,6 +348,7 @@ export const useTabsStore = create<TabsState>()(
               kind: "code-viewer",
               title: input.title ?? input.path.split(/[\\/]/).pop() ?? input.path,
               path: input.path,
+              repoName: input.repoName ?? null,
               startLine: input.startLine,
               endLine: input.endLine,
               pinned: input.pinned ?? false,

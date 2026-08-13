@@ -19,6 +19,7 @@ import {
   type WorkItemRef,
 } from "@/modules/ado";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
+import type { WorkspaceRepo } from "@/modules/settings/store";
 import { cn } from "@/lib/utils";
 import { useTestPlans } from "@/modules/test-plans";
 import {
@@ -61,9 +62,10 @@ type Props = {
   /** Open any ADO work item (not just cases/bugs) found by the text search.
    *  Bugs/test cases open their pane; other types open in Azure DevOps. */
   onOpenWorkItem?: (wi: WorkItemRef) => void;
-  /** Absolute path of the user's source directory — surfaced in the
-   *  "Open Terminal at source root" command's subtitle. */
-  sourceRoot?: string | null;
+  /** Configured source repos — surfaced in the Developer commands' subtitles
+   *  and what gates them: an empty workspace has nothing to review or open a
+   *  project shell in. */
+  repos?: WorkspaceRepo[];
 };
 
 /**
@@ -85,7 +87,7 @@ export function CommandPalette({
   onOpenTerminal,
   onOpenCommitReview,
   onOpenWorkItem,
-  sourceRoot,
+  repos = [],
 }: Props) {
   const [query, setQuery] = useState("");
   const { plans, configured, project, refreshConnection } = useTestPlans();
@@ -295,18 +297,19 @@ export function CommandPalette({
             {onOpenCommitReview ? (
               <CommandItem
                 value="open-commit-review"
+                disabled={repos.length === 0}
                 onSelect={() => run(() => onOpenCommitReview())}
               >
                 <HugeiconsIcon icon={Search01Icon} size={12} strokeWidth={1.75} />
                 <div className="flex min-w-0 flex-col">
                   <span>Review a commit</span>
-                  {sourceRoot ? (
+                  {repos.length > 0 ? (
                     <span className="truncate text-[10.5px] text-muted-foreground">
-                      Bug-scan a single commit's changes · {sourceRoot}
+                      Bug-scan selected commits · {describeRepos(repos)}
                     </span>
                   ) : (
                     <span className="text-[10.5px] text-muted-foreground/70">
-                      Pick a source directory from the status bar first
+                      Add a source repo in Settings first
                     </span>
                   )}
                 </div>
@@ -315,6 +318,9 @@ export function CommandPalette({
             {onOpenTerminal ? (
               <CommandItem
                 value="open-terminal"
+                // With no repo this row would land in the app's own cwd — which
+                // is exactly what the next row does, and says so.
+                disabled={repos.length === 0}
                 onSelect={() => run(() => onOpenTerminal())}
               >
                 <HugeiconsIcon
@@ -324,13 +330,18 @@ export function CommandPalette({
                 />
                 <div className="flex min-w-0 flex-col">
                   <span>Open Terminal</span>
-                  {sourceRoot ? (
+                  {repos.length > 0 ? (
                     <span className="truncate text-[10.5px] text-muted-foreground">
-                      {sourceRoot}
+                      {/* One shell, one directory: name the repo it lands in
+                          rather than the whole workspace. */}
+                      {repos[0].root}
+                      {repos.length > 1
+                        ? ` · use the + launcher to pick another of your ${repos.length} repos`
+                        : ""}
                     </span>
                   ) : (
                     <span className="text-[10.5px] text-muted-foreground/70">
-                      Pick a source directory from the status bar to land here
+                      Add a source repo in Settings to land there
                     </span>
                   )}
                 </div>
@@ -634,4 +645,14 @@ function useDebouncedLookup<T extends TestCase | Bug>(
   }, [id, fetcher]);
 
   return state;
+}
+
+/** Workspace identity for a command subtitle. At one repo that's still its
+ *  path — the only thing that distinguishes it. Past one, a path says nothing
+ *  about the rest, so the names do the work, and past three even those stop
+ *  fitting on one truncating line. */
+function describeRepos(repos: WorkspaceRepo[]): string {
+  if (repos.length === 1) return repos[0].root;
+  if (repos.length <= 3) return repos.map((r) => r.name).join(", ");
+  return `${repos.length} repos`;
 }

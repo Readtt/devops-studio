@@ -52,6 +52,19 @@ const LegacyVerdictLLMSchema = z.object({
   caveats: z.array(z.string()).default([]),
 });
 
+/** One repo's source state at evaluation time. A verdict graded across three
+ *  repos carries three of these — comparing all of them against one repo's HEAD
+ *  is how a verdict reads as permanently stale for the wrong reason. */
+export type VerdictSource = {
+  repoId: string;
+  repoName: string;
+  /** Branch at evaluation time. Provenance/display only — staleness is decided
+   *  by {@link VerdictSource.sha} (the same branch moves). */
+  branch: string | null;
+  /** Short HEAD sha. Null when the repo wasn't readable at eval time. */
+  sha: string | null;
+};
+
 /** Full persisted verdict. */
 export type ConfidenceVerdict = ConfidenceVerdictLLM & {
   /** ISO-8601 timestamp the verdict was produced. */
@@ -60,15 +73,17 @@ export type ConfidenceVerdict = ConfidenceVerdictLLM & {
   modelId: string;
   /** Number of self-consistency runs that fed this verdict (1 = single pass). */
   runs?: number;
-  /** Short SHA of the source-dir HEAD this verdict was evaluated against (when
-   *  code search was on and the source dir was a repo). Lets the UI flag the
-   *  verdict as stale once the working tree moves past it — a branch switch or
-   *  new commits — instead of showing a guess as if it still reflects the code.
-   *  Absent on verdicts evaluated without source access or saved before this
-   *  stamp existed; the staleness check degrades to "unknown" then. */
+  /** Source state of every repo the grader could read, so the UI can flag the
+   *  verdict stale once any of them moves past it — a branch switch or new
+   *  commits — instead of showing a guess as if it still reflects the code.
+   *  Empty/absent when code search was off or no repo was readable; the
+   *  staleness check degrades to "unknown" then. */
+  sources?: VerdictSource[];
+  /** @deprecated Single-repo stamp from verdicts saved before the workspace
+   *  held more than one. Still READ (as the first repo's, which is what it
+   *  was) so old verdicts keep their staleness hint; never written. */
   sourceSha?: string | null;
-  /** Source-dir branch at evaluation time. Provenance/display only — staleness
-   *  is decided by {@link sourceSha} (same branch can move). */
+  /** @deprecated Companion of {@link sourceSha}. */
   sourceBranch?: string | null;
   /** @deprecated Legacy confidence-in-outcome from verdicts produced before the
    *  pass-likelihood reframe. Absent on new verdicts; read only as a fallback by
@@ -76,30 +91,98 @@ export type ConfidenceVerdict = ConfidenceVerdictLLM & {
   confidence?: number;
 };
 
-/** How a stored verdict relates to the CURRENT source-dir HEAD, for the panel's
+/** Live HEAD of one configured repo, for the staleness comparison. */
+export type CurrentSource = {
+  repoId: string;
+  repoName: string;
+  sha: string | null;
+};
+
+/** One repo's stamp lined up against its own live HEAD. */
+export type ComparedSource = {
+  repoName: string;
+  branch: string | null;
+  evaluatedSha: string;
+  currentSha: string;
+};
+
+/** How a stored verdict relates to the CURRENT source, for the panel's
  *  staleness hint:
- *  - `fresh`   — evaluated against the code that's checked out right now.
- *  - `stale`   — the tree has moved since (branch switch / new commits); the
+ *  - `fresh`   — every repo it was graded against is where it was.
+ *  - `stale`   — at least one of them moved (branch switch / new commits); the
  *                verdict may no longer reflect reality, so prompt a re-evaluate.
- *  - `unknown` — can't compare (verdict has no source stamp, or there's no live
- *                source-dir commit — non-repo, or code search was off). */
+ *  - `unknown` — nothing to compare (no source stamp, or no live commit for any
+ *                stamped repo — non-repo, removed from the workspace, or code
+ *                search was off). */
 export type VerdictSourceState =
-  | { kind: "fresh"; sha: string }
-  | { kind: "stale"; evaluatedSha: string; currentSha: string }
+  | { kind: "fresh"; repos: ComparedSource[] }
+  | { kind: "stale"; moved: ComparedSource[] }
   | { kind: "unknown" };
 
+/**
+ * Stale iff ANY repo the verdict was graded against has moved. Each stamp is
+ * compared to its OWN repo's live HEAD — a verdict scored against repo-one and
+ * compared to repo-two's HEAD would read as stale forever.
+ *
+ * Repos that can't be compared (no stamp, or no live sha) drop out rather than
+ * counting as moved: an unreadable repo is unknown, not changed.
+ */
 export function verdictSourceState(
-  verdict: { sourceSha?: string | null },
-  currentSha: string | null | undefined,
+  verdict: {
+    sources?: VerdictSource[] | null;
+    sourceSha?: string | null;
+    sourceBranch?: string | null;
+  },
+  current: CurrentSource[],
 ): VerdictSourceState {
-  const evaluatedSha = (verdict.sourceSha ?? "").trim();
-  const cur = (currentSha ?? "").trim();
-  if (!evaluatedSha || !cur) return { kind: "unknown" };
+  const compared: ComparedSource[] = [];
+  for (const rec of recordedSources(verdict, current)) {
+    const evaluatedSha = (rec.sha ?? "").trim();
+    if (!evaluatedSha) continue;
+    const live = current.find((c) => c.repoId === rec.repoId);
+    const currentSha = (live?.sha ?? "").trim();
+    if (!currentSha) continue;
+    compared.push({
+      repoName: rec.repoName,
+      branch: rec.branch,
+      evaluatedSha,
+      currentSha,
+    });
+  }
+  if (compared.length === 0) return { kind: "unknown" };
   // Compare on a 7-char prefix — defensive against differing abbreviation
   // lengths, mirroring the commit-review head-moved check.
-  return evaluatedSha.slice(0, 7) === cur.slice(0, 7)
-    ? { kind: "fresh", sha: evaluatedSha }
-    : { kind: "stale", evaluatedSha, currentSha: cur };
+  const moved = compared.filter(
+    (c) => c.evaluatedSha.slice(0, 7) !== c.currentSha.slice(0, 7),
+  );
+  return moved.length > 0
+    ? { kind: "stale", moved }
+    : { kind: "fresh", repos: compared };
+}
+
+/** What the verdict recorded. A pre-multi-repo verdict has a bare sha and no
+ *  repo — it was graded against the one source dir, which is the first repo, so
+ *  that's what it's compared against. Not migrated: the scalar stays on disk
+ *  exactly as written. */
+function recordedSources(
+  verdict: {
+    sources?: VerdictSource[] | null;
+    sourceSha?: string | null;
+    sourceBranch?: string | null;
+  },
+  current: CurrentSource[],
+): VerdictSource[] {
+  if (verdict.sources && verdict.sources.length > 0) return verdict.sources;
+  const legacy = (verdict.sourceSha ?? "").trim();
+  if (!legacy || current.length === 0) return [];
+  return [
+    {
+      repoId: current[0].repoId,
+      repoName: current[0].repoName,
+      branch: verdict.sourceBranch ?? null,
+      sha: legacy,
+    },
+  ];
 }
 
 /** Pass-readiness — the single 0–100 "how safe is it to just mark this case

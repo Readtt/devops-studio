@@ -440,7 +440,7 @@ export function TerminalPane({ tabId, sessionId, cwd, shellId: _shellId }: Props
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col bg-background">
-      {!exited ? <QuickPromptsStrip sessionId={sessionId} /> : null}
+      {!exited ? <QuickPromptsStrip sessionId={sessionId} cwd={cwd} /> : null}
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <div

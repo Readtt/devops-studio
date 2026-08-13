@@ -32,6 +32,7 @@ import {
   type ConfidenceVerdict,
   type ConfidenceVerdictLLM,
   type PredictedOutcome,
+  type VerdictSource,
 } from "./confidence";
 import {
   renderRequirementBlock,
@@ -52,12 +53,10 @@ export type ConfidenceEvalInput = {
   testCase: EvalCase;
   /** Source repos the grader may read. Empty ⇒ nothing to ground against. */
   repos: WorkspaceRepo[];
-  /** Short HEAD sha of the source dir at eval time — stamped onto the verdict so
-   *  the UI can flag it stale once the tree moves. Null when not a repo / code
-   *  search off. */
-  sourceSha?: string | null;
-  /** Source-dir branch at eval time (provenance/display only). */
-  sourceBranch?: string | null;
+  /** Branch + HEAD sha of each repo the grader can read, at eval time — stamped
+   *  onto the verdict so the UI can flag it stale once any of them moves.
+   *  Empty when nothing was readable / code search is off. */
+  sources?: VerdictSource[];
   modelId: ModelId;
   keys: ProviderKeys;
   local?: LocalProviderConfig;
@@ -142,10 +141,11 @@ export async function evaluateConfidence(
     evaluatedAt: new Date().toISOString(),
     modelId: input.modelId,
     runs,
-    // Provenance: the source state this verdict was graded against, so the UI
-    // can flag it stale once the working tree moves past it.
-    sourceSha: input.sourceSha ?? null,
-    sourceBranch: input.sourceBranch ?? null,
+    // Provenance: the source state this verdict was graded against, per repo,
+    // so the UI can flag it stale once any of them moves past it. The legacy
+    // scalar stamp is deliberately NOT written alongside — one verdict, one
+    // record of what it read.
+    sources: input.sources ?? [],
   };
 }
 

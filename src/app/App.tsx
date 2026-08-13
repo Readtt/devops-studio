@@ -85,6 +85,8 @@ import {
   useTabsStore,
 } from "@/modules/tabs/store/useTabsStore";
 import { findLeaf, findLeafByTab } from "@/modules/tabs/store/paneTreeOps";
+import type { CodeViewerTab } from "@/modules/tabs/store/types";
+import { planViewerTitle } from "@/modules/tabs/codeViewerTitles";
 import type { GenerationSessionStore } from "@/modules/generator/store/useGenerationSession";
 
 /** Read the active tab id of the currently-focused leaf without subscribing.
@@ -441,20 +443,14 @@ function AppShell() {
        *  instead of the focused leaf. */
       besideLeafId?: string;
     }) => {
-      // Bug code refs and analyst Read entries arrive as relative paths
-      // (e.g. "src/auth/sms.ts") — and sometimes as a bare filename the model
-      // abbreviated to. Resolving against the user's sourceRoot here is the
-      // single point that fixes every dispatcher; the deep resolver also asks
-      // the backend to locate the real file when a naive join would 404.
-      const liveSourceRoot = primaryRepoRoot(getRepos());
-      const absPath =
-        (await resolveSourcePathDeep(liveSourceRoot, input.path)) ?? input.path;
-      const titleFor = (p: string) => {
-        const base = p.replace(/\\/g, "/").split("/").pop() || p;
-        return input.startLine
-          ? `${base}:${input.startLine}${input.endLine && input.endLine !== input.startLine ? `–${input.endLine}` : ""}`
-          : base;
-      };
+      // Bug code refs and analyst Read entries arrive as `<repo>/src/auth/sms.ts`
+      // — and sometimes as a bare filename the model abbreviated to. Resolving
+      // here is the single point that fixes every dispatcher; the deep resolver
+      // binds the path to its repo and asks the backend to locate the real file
+      // when a naive join would 404.
+      const resolved = await resolveSourcePathDeep(getRepos(), input.path);
+      const absPath = resolved?.path ?? input.path;
+      const repoName = resolved?.repo?.name ?? null;
       const existingTabs = useTabsStore.getState().tabs;
       const reused = Object.values(existingTabs).some(
         (t) =>
@@ -463,18 +459,31 @@ function AppShell() {
           t.startLine === input.startLine &&
           t.endLine === input.endLine,
       );
+      const plan = planViewerTitle(
+        {
+          path: absPath,
+          repoName,
+          startLine: input.startLine,
+          endLine: input.endLine,
+        },
+        Object.values(existingTabs).filter(
+          (t): t is CodeViewerTab => t.kind === "code-viewer",
+        ),
+      );
       const viewerInput = {
         kind: "code-viewer" as const,
         path: absPath,
+        repoName,
         startLine: input.startLine,
         endLine: input.endLine,
-        title: input.title ?? titleFor(absPath),
+        title: input.title ?? plan.title,
       };
       const store = useTabsStore.getState();
       const id =
         input.besideLeafId && !reused
           ? store.openTabBeside(input.besideLeafId, viewerInput)
           : store.openTab(viewerInput);
+      for (const r of plan.retitle) store.renameTab(r.id, r.title);
       // When the tab is reused, props don't change so React's effect won't
       // re-run the scroll + pulse. Nudge the pane via a window event so
       // re-clicking the same chip still lands the user on the right line.
@@ -892,9 +901,10 @@ function AppShell() {
       window.removeEventListener("devops-studio:duplicate-generator", onDup);
   }, [genStoresApi, performGeneratorDuplicate]);
 
-  // Source-directory picker. Persists to preferences so the BugPane's code-link
-  // rows can resolve relative paths the next time the user opens the app.
+  // Source-directory picker. Collapses the workspace to the folder chosen, so
+  // it's only offered where there's at most one repo (see StatusBarGit).
   const sourceRoot = usePrimaryRepoRoot();
+  const repos = usePreferencesStore((s) => s.repos);
   const pickSourceDir = useCallback(async () => {
     try {
       const picked = await openDialog({
@@ -1257,7 +1267,7 @@ function AppShell() {
             onGenerator: launchGenerator,
             onTerminal: launchTerminal,
             onCommitReview: launchCommitReview,
-            sourceRoot,
+            repos,
           }}
           align="center"
           side="bottom"
@@ -1273,7 +1283,7 @@ function AppShell() {
         </LaunchMenu>
       </div>
     ),
-    [sourceRoot],
+    [repos],
   );
 
   const paneTree = useTabsStore((s) => s.paneTree);
@@ -1599,7 +1609,7 @@ function AppShell() {
               openCommitReviewTab();
             }}
             onOpenWorkItem={openWorkItem}
-            sourceRoot={sourceRoot}
+            repos={repos}
           />
 
           <AlertDialog

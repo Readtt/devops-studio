@@ -17,7 +17,7 @@ import {
   launchGenerator,
   launchTerminal,
 } from "./launchActions";
-import { usePrimaryRepoRoot } from "@/modules/settings/preferences";
+import { usePreferencesStore } from "@/modules/settings/preferences";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { PlusSignIcon } from "@hugeicons/core-free-icons";
 import {
@@ -154,13 +154,13 @@ export const LeafPane = memo(function LeafPane({ leaf, emptyState }: Props) {
  *  LaunchMenuItems into the content.
  */
 function NewTabInlineLauncher() {
-  const sourceRoot = usePrimaryRepoRoot();
+  const repos = usePreferencesStore((s) => s.repos);
   const [open, setOpen] = useState(false);
   const actions = {
     onGenerator: launchGenerator,
     onTerminal: launchTerminal,
     onCommitReview: launchCommitReview,
-    sourceRoot,
+    repos,
   };
   return (
     <Popover open={open} onOpenChange={setOpen}>
