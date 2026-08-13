@@ -52,9 +52,12 @@ const PRIORITY = ["main", "master", "develop"];
 
 /**
  * Branch picker with fuzzy search, capped to ~280px height so the
- * dropdown stays readable on long branch lists. Used by:
- *   - Code Review pane (base branch)
- *   - Azure DevOps settings (tracking branch)
+ * dropdown stays readable on long branch lists.
+ *
+ * Currently unused: both former consumers dropped their branch selects (the
+ * ADO settings row became a read-only explainer once publish started tracking
+ * each repo's live branch). Kept because CLAUDE.md names it the pattern any
+ * new branch-picker surface must adopt, rather than hand-rolling a Select.
  *
  * Why a Combobox instead of plain Select: large monorepos can have
  * hundreds of branches. A Select with no search forces the user to
@@ -87,8 +90,11 @@ export function BranchPicker({
       }
     }
     // Then the saved value (if it's somehow off the list — stale config),
-    // then everything else alphabetically.
-    if (value && !seen.has(value) && !sentinel?.value.includes(value)) {
+    // then everything else alphabetically. Compared by equality, not
+    // `includes`: the sentinel is one exact value, and a substring test hides
+    // any branch whose name happens to sit inside it ("$current" swallows a
+    // real branch called `current`).
+    if (value && !seen.has(value) && sentinel?.value !== value) {
       out.push(value);
       seen.add(value);
     }
