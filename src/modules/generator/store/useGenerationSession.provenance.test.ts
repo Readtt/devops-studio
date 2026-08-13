@@ -3,7 +3,7 @@ import { createGenerationSessionStore } from "./useGenerationSession";
 import type { ReviewedBug, ReviewedCase } from "../lib/draftBatchSchema";
 import { parseSourceLinks } from "@/modules/test-plans/lib/sourceLinksParser";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { createRepo } from "@/modules/settings/store";
+import { createRepo, type WorkspaceRepo } from "@/modules/settings/store";
 
 const BRANCH = "feature/2fa";
 const SHA = "9f3c1ab";
@@ -218,6 +218,77 @@ describe("publish binds each link to the repo its path names", () => {
   it("emits no block at all when every link is unclaimable", async () => {
     const { block } = await publish(true, [{ filePath: "src/auth/login.cs" }]);
     expect(block).toBeNull();
+  });
+});
+
+// A published link is a deep link into ADO Repos, which resolves on the ADO
+// repo NAME inside its OWN project — neither of which the workspace folder name
+// or the connection's project can be trusted to supply.
+describe("publish records the ADO repo a link belongs to", () => {
+  const bound = (root: string, name: string, ado: NonNullable<WorkspaceRepo["ado"]>) => ({
+    ...createRepo(root),
+    name,
+    ado,
+  });
+
+  beforeEach(() => {
+    resetDoubles();
+  });
+
+  it("publishes the bound repo's ADO name, project and id", async () => {
+    usePreferencesStore.setState({
+      repos: [
+        bound("C:/src/repo-one", "repo-one", {
+          repoId: "guid-one",
+          repoName: "Contoso.Api",
+          project: "Payments",
+        }),
+      ],
+    });
+
+    const { link } = await publish(true, [
+      { filePath: "repo-one/src/auth/login.cs" },
+    ]);
+    expect(link.repoName).toBe("Contoso.Api");
+    expect(link.project).toBe("Payments");
+    expect(link.repoId).toBe("guid-one");
+  });
+
+  it("gives each repo its own project when a case spans two", async () => {
+    usePreferencesStore.setState({
+      repos: [
+        bound("C:/src/repo-one", "repo-one", {
+          repoId: "guid-one",
+          repoName: "Contoso.Api",
+          project: "Payments",
+        }),
+        bound("C:/src/repo-two", "repo-two", {
+          repoId: "guid-two",
+          repoName: "Contoso.Web",
+          project: "Storefront",
+        }),
+      ],
+    });
+
+    const { block } = await publish(true, [
+      { filePath: "repo-one/src/auth/login.cs" },
+      { filePath: "repo-two/src/app.ts" },
+    ]);
+    const links = parseSourceLinks(block ?? "");
+    expect(links.map((l) => [l.repoName, l.project])).toEqual([
+      ["Contoso.Api", "Payments"],
+      ["Contoso.Web", "Storefront"],
+    ]);
+  });
+
+  it("falls back to the workspace name and no project when unbound", async () => {
+    usePreferencesStore.setState({ repos: [createRepo("C:/src/repo-one")] });
+
+    const { link } = await publish(true, [
+      { filePath: "repo-one/src/auth/login.cs" },
+    ]);
+    expect(link.repoName).toBe("repo-one");
+    expect(link.project).toBeUndefined();
   });
 });
 

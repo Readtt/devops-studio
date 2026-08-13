@@ -571,6 +571,81 @@ graded against repo-two stays fresh while repo-one moves, while a pre-multi-repo
 renders. Zero console errors throughout. **Verify steps 1 and 2 are unrun live** — a real Suite Chat
 answer and a real confidence run need API keys and real repos; both are pinned by tests.
 
+**Phase 12 — matching has THREE tiers, not two.** The plan's "exact normalised remote → basename"
+misses every SSH (`git@ssh.dev.azure.com:v3/org/project/repo`) and legacy (`{org}.visualstudio.com`)
+remote, which can never string-match the `dev.azure.com/{org}/{project}/_git/{repo}` URL the API
+reports. Those would have fallen through to the basename tier, which is the one that can bind the
+WRONG PROJECT. So the middle tier parses `{project, repo}` out of either URL shape and compares
+those. `parseAdoRemote` handles `…/{project}/_git/{repo}` (dev.azure.com, visualstudio.com, on-prem
+collections) and `…/v3/{org}/{project}/{repo}` (SSH).
+
+**Phase 12 — the basename tier requires a UNIQUE match across the org.** `ado_list_repos` is org-wide
+and repo names repeat across projects (`shared` in two projects is the normal case). Binding one of
+several would record a plausible name with a wrong project — exactly the failure this phase exists to
+remove — so several candidates means unbound, and the picker is the answer. Same rule for a `RepoRef`
+whose `project` can't be resolved at all: `bindingForAdoRepo` returns null rather than writing a
+blank project, because the deep link is `{org}/{project}/_git/{repo}`.
+
+**Phase 12 — binding is at the ADD SITES, not a sweep.** `autoBindRepos(repos)` is called after every
+add (Settings' "Add folder…" and scan-confirm, `StatusBarGit`'s picker, `App.tsx`'s `setSourceRoot`
+picker, and the clone batch) and skips repos that already carry a binding — so it costs one org-wide
+REST call per add, and a repo with no ADO counterpart isn't re-probed on every settings visit. That
+made `setSourceRoot` return the surviving `WorkspaceRepo` (it had no return value); callers ignoring
+it are unaffected. **A future add site must call it too** — nothing enforces this.
+
+**Phase 12 — the published `repoName` and `repoId` now come from the binding**, not just `project`.
+The plan said "keep keying the URL on `repoName`, just make the name come from the binding"; the id
+is the same decision one field over, and `repoId` was previously the model's invented string or a
+copy of the name (write-only — nothing reads it). A bound repo publishes `{ado.repoName, ado.project,
+ado.repoId}`; an unbound one is byte-identical to Phase 9's output.
+
+**Phase 12 — `SourceLink.project` is optional and MUST stay optional.** `parseLine` drops a line
+missing a required key, so requiring `project` erases the links on every case published before this
+phase. Proven by mutation: making it required fails 14 of the 21 parser tests, including the dedicated
+"keeps a link published before `project` existed".
+
+**Phase 12 — `TestCasePane` no longer needs `conn.project`.** The gate was `conn && conn.orgUrl &&
+conn.project`; it is now `conn?.orgUrl && (link.project || conn?.project)`, so a link carrying its own
+project deep-links even when the connection has none selected. Everything else about the row is
+unchanged.
+
+**Phase 12 — the ADO cell IS the picker trigger, and the `⋯` item opens the same popover.** Phase 5
+deferred "Set ADO repo…"; it is now there (disabled with no connection, which the row explains one
+inch away), alongside a new "Detect from remote" for when a remote changes. `AdoRepoPicker`
+(`src/components/AdoRepoPicker.tsx`, next to `BranchPicker`/`DeveloperPicker`) owns its own
+`listRepos()` fetch per instance rather than taking `repos` as a prop like `DeveloperPicker` — there
+is no shared hook to hoist it into, and the alternatives were an eager fetch on every Settings open or
+a session-long cache that hides a repo created in ADO five minutes ago. It also renders its own
+tooltip sandwich (`Popover > Tooltip > TooltipTrigger > PopoverTrigger`), because the house nesting
+order puts `PopoverTrigger` innermost and the caller would otherwise have to import it.
+
+**Phase 12 — the `⋯` → picker hand-off is deferred by a tick.** A `DropdownMenu` closes on select and
+returns focus as it unmounts, which cancels a `Popover` opened in the same tick; `setTimeout(open, 0)`
+is what makes the menu item work at all. Same family as Phase 6's controlled-Radix note.
+
+**Phase 12 — scope limit, restated because it will come up.** `ado_list_repos` is org-wide but every
+other repo API is project-scoped through `project_api(&conn, …)`. This phase fixes the **web URL**
+only; cross-project `getFile` / diffs / branches need Rust signature changes and are **out of scope**.
+
+**Phase 12 — verification is REAL, including the live steps.** `tsc` clean, `vite build` clean, 1190
+frontend tests green (+25: 19 in `ado/repoBinding.test.ts`, 3 in the parser suite, 3 in the provenance
+suite), 135 Rust tests incl. one new `repo_info_reports_origin_url_when_one_is_configured`. Eight
+mutations were each caught by exactly the intended test — an ambiguous basename match allowed, the
+project+repo tier dropped, userinfo left in the normalised remote, a blank project accepted, publish
+using the workspace name, publish dropping the project, and `project` made a required parser key. A
+ninth (auto-bind not skipping bound repos) **survived**, and the two `autoBindRepos` tests were
+strengthened until it didn't: one now asserts `invoke` is never called at all, the other gives the
+already-bound repo a remote that WOULD match. Verify steps 2–5 were driven in the **real settings
+webview** over CDP against a mocked Tauri IPC boundary (`.claude/skills/drive-ui/drive-phase12.mjs`,
+3 repos across 2 projects, one name shared by both): detect binds by remote and records the OWNING
+project, a GitHub-remote repo says why it stayed unbound and writes nothing, the picker groups by
+project and lists both `shared`s, hand-picking the Storefront one persists it, "Not linked" clears it,
+and with no connection every row reads "connect Azure DevOps to link repos" with both linking actions
+disabled. Zero console errors. `example.mjs` gained an `ado_get_connection` fixture — without one the
+harness's own rows now render the disconnected copy. **Verify steps 1 and 6 (three real ADO remotes,
+and a real publish across two projects) are unrun live** — they need a real org and PAT; both paths
+are pinned by tests.
+
 **Phase 6 found a real bug in its own first draft**, worth knowing because the pattern recurs: the
 repo popover's `open` is controlled, so a programmatic `setOpen(false)` never fires `onOpenChange` —
 the drilled-into repo was never cleared and the next open showed the previous repo's branches. Any

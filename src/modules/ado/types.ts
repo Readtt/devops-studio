@@ -348,6 +348,10 @@ export type AdoDiffSummary = z.infer<typeof AdoDiffSummarySchema>;
 export const SourceLinkSchema = z.object({
   repoId: z.string(),
   repoName: z.string(),
+  /** ADO project owning `repoName`. Optional: a workspace repo with no ADO
+   *  binding records none, and every case published before repo binding
+   *  existed has none either — both fall back to the connection's project. */
+  project: z.string().nullable().optional(),
   generationBranch: z.string(),
   generationSha: z.string(),
   trackingBranch: z.string(),

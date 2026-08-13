@@ -37,6 +37,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { cn } from "@/lib/utils";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
+import { autoBindRepos } from "@/modules/ado/repoBinding";
 import { addRepo, type WorkspaceRepo } from "@/modules/settings/store";
 import {
   EMPTY_STATUS,
@@ -446,7 +447,8 @@ function RepoList({
         defaultPath: repos[0]?.root ?? undefined,
       });
       if (typeof picked === "string" && picked.length > 0) {
-        await addRepo(picked);
+        const added = await addRepo(picked);
+        void autoBindRepos([added]);
         onAdded();
       }
     } catch {

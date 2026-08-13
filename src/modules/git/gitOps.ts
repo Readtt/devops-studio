@@ -10,6 +10,9 @@ export type GitRepoInfo = {
   commit: string | null;
   isRepo: boolean;
   detached: boolean;
+  /** `origin`'s URL, which is what binds this repo to an ADO repository.
+   *  Null when there's no `origin` remote. */
+  remoteUrl: string | null;
 };
 
 export const EMPTY_REPO_INFO: GitRepoInfo = {
@@ -17,6 +20,7 @@ export const EMPTY_REPO_INFO: GitRepoInfo = {
   commit: null,
   isRepo: false,
   detached: false,
+  remoteUrl: null,
 };
 
 /** Working-tree state vs HEAD and upstream — echoes Rust `GitStatusSummary`. */

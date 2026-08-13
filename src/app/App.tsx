@@ -71,6 +71,7 @@ import {
   CloneProgressCapsule,
 } from "@/modules/git";
 import { getConnection, type WorkItemRef } from "@/modules/ado";
+import { autoBindRepos } from "@/modules/ado/repoBinding";
 import { ActionToast } from "@/components/ActionToast";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { AzureDevOpsBrand } from "@/components/AzureDevOpsBrand";
@@ -914,7 +915,8 @@ function AppShell() {
         defaultPath: sourceRoot ?? undefined,
       });
       if (typeof picked === "string" && picked.length > 0) {
-        await setSourceRoot(picked);
+        const repo = await setSourceRoot(picked);
+        if (repo) void autoBindRepos([repo]);
       }
     } catch {
       // User cancelled or no permission — nothing to do.

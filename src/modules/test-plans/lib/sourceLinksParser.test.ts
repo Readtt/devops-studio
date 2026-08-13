@@ -83,6 +83,18 @@ describe("round-trip", () => {
     expect(roundTrip(l)?.repoId).toBe("abc-123");
   });
 
+  it("carries the ADO project the repo is bound to", () => {
+    const l = link({ project: "Payments" });
+    expect(renderBlock([l])).toContain("project: Payments");
+    expect(roundTrip(l)).toEqual(l);
+  });
+
+  it("writes no project key for an unbound repo", () => {
+    const rendered = renderBlock([link({ project: null })]);
+    expect(rendered).not.toContain("project:");
+    expect(roundTrip(link({ project: null }))?.project).toBeUndefined();
+  });
+
   it("escapes slashes inside values so the separator stays unambiguous", () => {
     // Pins the wire format: ` / ` separates fields, so a value's own slashes
     // must not be plain ASCII slashes. This is why unescape exists.
@@ -111,6 +123,16 @@ describe("parseSourceLinks", () => {
 
   it("drops a line with no file", () => {
     expect(parseSourceLinks(block("repo: repo-one / branch: main"))).toEqual([]);
+  });
+
+  it("keeps a link published before `project` existed", () => {
+    // The whole reason `project` is optional: requiring it would drop every
+    // link on every case published by an older build.
+    const parsed = parseSourceLinks(
+      block("repo: repo-one / branch: main / file: src ∕ app.ts / repo-id: abc"),
+    );
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].project).toBeUndefined();
   });
 
   it("reads a link published before the unescape existed", () => {

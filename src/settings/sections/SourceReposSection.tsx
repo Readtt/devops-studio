@@ -1,3 +1,4 @@
+import { AdoRepoPicker } from "@/components/AdoRepoPicker";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -23,13 +24,21 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { getConnection, type RepoRef } from "@/modules/ado";
+import {
+  autoBindRepos,
+  bindRepo,
+  bindingForAdoRepo,
+} from "@/modules/ado/repoBinding";
 import type { DirEntry } from "@/modules/ai/lib/native";
 import { useReposGitInfo, type GitRepoInfo } from "@/modules/git";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   addRepo,
+  onAdoConnectionChanged,
   removeRepo,
   renameRepo,
+  setRepoAdo,
   validateRepoName,
   type WorkspaceRepo,
 } from "@/modules/settings/store";
@@ -38,11 +47,14 @@ import {
   FolderAddIcon,
   FolderSearchIcon,
   GitBranchIcon,
+  Link01Icon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
+  RefreshIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useEffect, useRef, useState } from "react";
 
@@ -69,6 +81,7 @@ function sameRoot(a: string, b: string): boolean {
 export function SourceReposPanel() {
   const repos = usePreferencesStore((s) => s.repos);
   const branches = useReposGitInfo();
+  const adoConnected = useAdoConnected();
   const [scan, setScan] = useState<ScanState | null>(null);
   const [renameId, setRenameId] = useState<string | null>(null);
 
@@ -81,7 +94,8 @@ export function SourceReposPanel() {
         defaultPath: repos[0]?.root ?? undefined,
       });
       if (typeof picked === "string" && picked.length > 0) {
-        await addRepo(picked);
+        const added = await addRepo(picked);
+        void autoBindRepos([added]);
       }
     } catch {
       // User cancelled — nothing to do.
@@ -137,6 +151,7 @@ export function SourceReposPanel() {
                 .filter((r) => r.id !== repo.id)
                 .map((r) => r.name)}
               git={branches.get(repo.id)}
+              adoConnected={adoConnected}
               renameRequested={renameId === repo.id}
               onRenameHandled={() => setRenameId(null)}
               onRequestRename={() => setRenameId(repo.id)}
@@ -189,6 +204,7 @@ function RepoRow({
   repo,
   otherNames,
   git,
+  adoConnected,
   renameRequested,
   onRenameHandled,
   onRequestRename,
@@ -196,13 +212,55 @@ function RepoRow({
   repo: WorkspaceRepo;
   otherNames: string[];
   git: GitRepoInfo | undefined;
+  adoConnected: boolean;
   renameRequested: boolean;
   onRenameHandled: () => void;
   onRequestRename: () => void;
 }) {
   const [draft, setDraft] = useState(repo.name);
   const [error, setError] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [detecting, setDetecting] = useState(false);
+  const [adoNote, setAdoNote] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // A binding that landed (from here or another window) answers whatever the
+  // note was complaining about.
+  useEffect(() => {
+    if (repo.ado) setAdoNote(null);
+  }, [repo.ado]);
+
+  const detect = async () => {
+    setDetecting(true);
+    setAdoNote(null);
+    const outcome = await bindRepo(repo).catch(
+      () => ({ status: "unavailable", message: "Couldn't reach Azure DevOps." }) as const,
+    );
+    setDetecting(false);
+    if (outcome.status === "no-match") {
+      setAdoNote(
+        "No Azure DevOps repository matches this folder's remote or name. Pick one with “Set ADO repo…”.",
+      );
+    } else if (outcome.status === "unavailable") {
+      setAdoNote(outcome.message);
+    }
+  };
+
+  const pick = (ref: RepoRef | null) => {
+    if (!ref) {
+      void setRepoAdo(repo.id, null);
+      return;
+    }
+    const ado = bindingForAdoRepo(ref);
+    if (!ado) {
+      setAdoNote(
+        `Azure DevOps didn't report which project ${ref.name} belongs to, so code links can't be built for it.`,
+      );
+      return;
+    }
+    setAdoNote(null);
+    void setRepoAdo(repo.id, ado);
+  };
 
   // Follow a rename that landed elsewhere (another window, or the registry
   // de-duping the name we just sent) without stomping an in-progress edit.
@@ -256,8 +314,21 @@ function RepoRow({
           className="h-7 w-[180px] text-[11.5px]"
         />
         <BranchCell git={git} />
-        <AdoCell repo={repo} />
-        <RowMenu repo={repo} onRename={onRequestRename} />
+        <AdoCell
+          repo={repo}
+          connected={adoConnected}
+          detecting={detecting}
+          open={pickerOpen}
+          onOpenChange={setPickerOpen}
+          onPick={pick}
+        />
+        <RowMenu
+          repo={repo}
+          adoConnected={adoConnected}
+          onRename={onRequestRename}
+          onSetAdoRepo={() => setPickerOpen(true)}
+          onDetectAdoRepo={() => void detect()}
+        />
       </div>
 
       <Tooltip>
@@ -274,6 +345,12 @@ function RepoRow({
       {error ? (
         <p className="pl-1 text-[10.5px] leading-relaxed text-destructive">
           {error}
+        </p>
+      ) : null}
+
+      {adoNote ? (
+        <p className="pl-1 text-[10.5px] leading-relaxed text-muted-foreground">
+          {adoNote}
         </p>
       ) : null}
     </div>
@@ -320,34 +397,92 @@ function BranchCell({ git }: { git: GitRepoInfo | undefined }) {
   );
 }
 
-function AdoCell({ repo }: { repo: WorkspaceRepo }) {
+/** Which ADO repository this folder publishes code links into.
+ *
+ *  Clickable at every state EXCEPT "no connection": a picker listing nothing,
+ *  with no way to fix it from here, is worse than a sentence saying what to do. */
+function AdoCell({
+  repo,
+  connected,
+  detecting,
+  open,
+  onOpenChange,
+  onPick,
+}: {
+  repo: WorkspaceRepo;
+  connected: boolean;
+  detecting: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onPick: (ref: RepoRef | null) => void;
+}) {
+  if (!connected) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="ml-auto shrink-0 truncate text-[10.5px] text-muted-foreground/60">
+            connect Azure DevOps to link repos
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
+          Code links deep-link into an Azure DevOps repository, so linking needs
+          a connection. Set one up on the Azure DevOps page.
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span
-          className={cn(
-            "ml-auto shrink-0 truncate text-[10.5px]",
-            repo.ado ? "text-muted-foreground" : "text-muted-foreground/60",
-          )}
-        >
-          {repo.ado ? `ADO: ${repo.ado.repoName}` : "not linked"}
+    <AdoRepoPicker
+      value={repo.ado?.repoId ?? null}
+      onChange={onPick}
+      open={open}
+      onOpenChange={onOpenChange}
+      tooltip={
+        repo.ado
+          ? `Code links published from this repo point at ${repo.ado.repoName} in ${repo.ado.project}. Click to change it.`
+          : "No Azure DevOps repository resolved yet, so code links from this repo can't deep-link into ADO. Click to pick one."
+      }
+    >
+      <button
+        type="button"
+        aria-label={`Azure DevOps repository for ${repo.name}`}
+        className={cn(
+          "ml-auto flex h-6 min-w-0 shrink items-center gap-1 rounded-md border border-transparent px-1.5 text-[10.5px] transition-colors",
+          "hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.04]",
+          repo.ado ? "text-muted-foreground" : "text-muted-foreground/60",
+        )}
+      >
+        <HugeiconsIcon
+          icon={Link01Icon}
+          size={11}
+          strokeWidth={1.75}
+          className="shrink-0"
+        />
+        <span className="truncate">
+          {detecting
+            ? "linking…"
+            : repo.ado
+              ? `ADO: ${repo.ado.repoName}`
+              : "not linked"}
         </span>
-      </TooltipTrigger>
-      <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
-        {repo.ado
-          ? `Code links published from this repo point at ${repo.ado.repoName} in ${repo.ado.project}.`
-          : "No Azure DevOps repository resolved yet, so code links from this repo can't deep-link into ADO."}
-      </TooltipContent>
-    </Tooltip>
+      </button>
+    </AdoRepoPicker>
   );
 }
 
 function RowMenu({
   repo,
+  adoConnected,
   onRename,
+  onSetAdoRepo,
+  onDetectAdoRepo,
 }: {
   repo: WorkspaceRepo;
+  adoConnected: boolean;
   onRename: () => void;
+  onSetAdoRepo: () => void;
+  onDetectAdoRepo: () => void;
 }) {
   return (
     <DropdownMenu>
@@ -369,16 +504,34 @@ function RowMenu({
           </DropdownMenuTrigger>
         </TooltipTrigger>
         <TooltipContent side="bottom" className="text-[11px]">
-          Rename or remove this repo
+          Rename, link to Azure DevOps, or remove this repo
         </TooltipContent>
       </Tooltip>
-      <DropdownMenuContent align="end" className="min-w-44 p-1">
+      <DropdownMenuContent align="end" className="min-w-52 p-1">
         <DropdownMenuItem
           onSelect={onRename}
           className="flex items-center gap-2 text-[12px]"
         >
           <HugeiconsIcon icon={PencilEdit02Icon} size={13} strokeWidth={1.75} />
           Rename
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={!adoConnected}
+          // Deferred: the menu closes on select and hands focus back as it
+          // unmounts, which cancels a popover opened in the same tick.
+          onSelect={() => setTimeout(onSetAdoRepo, 0)}
+          className="flex items-center gap-2 text-[12px]"
+        >
+          <HugeiconsIcon icon={Link01Icon} size={13} strokeWidth={1.75} />
+          Set ADO repo…
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={!adoConnected}
+          onSelect={onDetectAdoRepo}
+          className="flex items-center gap-2 text-[12px]"
+        >
+          <HugeiconsIcon icon={RefreshIcon} size={13} strokeWidth={1.75} />
+          Detect from remote
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem
@@ -392,6 +545,39 @@ function RowMenu({
       </DropdownMenuContent>
     </DropdownMenu>
   );
+}
+
+/** Whether the app can reach the ADO org at all — `configured` is org URL +
+ *  PAT, which is exactly what the org-wide repo list needs. Re-read on the
+ *  connection event so linking lights up the moment the user connects, without
+ *  reopening Settings. */
+function useAdoConnected(): boolean {
+  const [connected, setConnected] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const read = () => {
+      void getConnection()
+        .then((s) => {
+          if (!cancelled) setConnected(s.configured);
+        })
+        .catch(() => {
+          if (!cancelled) setConnected(false);
+        });
+    };
+    read();
+    let unlisten: UnlistenFn | null = null;
+    void onAdoConnectionChanged(read).then((un) => {
+      if (cancelled) un();
+      else unlisten = un;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  return connected;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -465,7 +651,11 @@ function ScanDialog({
     try {
       // Sequential: addRepo is read-modify-write against the shared registry,
       // so racing them would let later writes clobber earlier ones.
-      for (const candidate of toAdd) await addRepo(candidate.root);
+      const added: WorkspaceRepo[] = [];
+      for (const candidate of toAdd) added.push(await addRepo(candidate.root));
+      // One org-wide fetch for the whole batch, and not worth waiting on — the
+      // repos are in the workspace either way.
+      void autoBindRepos(added);
     } finally {
       setAdding(false);
       onClose();

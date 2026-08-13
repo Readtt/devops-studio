@@ -652,18 +652,22 @@ export async function setRepoAdo(
 }
 
 /** Pre-registry setter: collapses the workspace to the one folder handed in.
- *  Its callers become explicit registry edits as their surfaces land. */
-export async function setSourceRoot(value: string | null): Promise<void> {
+ *  Its callers become explicit registry edits as their surfaces land. Returns
+ *  the surviving entry, which is what an ADO auto-bind needs. */
+export async function setSourceRoot(
+  value: string | null,
+): Promise<WorkspaceRepo | null> {
   if (!value) {
     await writeRepos([]);
-    return;
+    return null;
   }
   const current = await readRepos();
   const key = rootKey(value);
   // Keep the existing entry when it's the same folder, so its id and ADO
   // binding survive a re-pick.
   const existing = current.find((r) => rootKey(r.root) === key);
-  await writeRepos([existing ?? createRepo(value)]);
+  const next = await writeRepos([existing ?? createRepo(value)]);
+  return next[0] ?? null;
 }
 
 export async function setCodeSearchEnabled(value: boolean): Promise<void> {

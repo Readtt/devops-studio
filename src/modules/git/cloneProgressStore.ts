@@ -1,7 +1,8 @@
 import { create } from "zustand";
 
 import { useActionToast } from "@/components/actionToastStore";
-import { addRepo } from "@/modules/settings/store";
+import { autoBindRepos } from "@/modules/ado/repoBinding";
+import { addRepo, type WorkspaceRepo } from "@/modules/settings/store";
 
 import {
   cancelClone,
@@ -178,7 +179,12 @@ export const useCloneProgress = create<State>((set, get) => ({
     try {
       // Sequential: addRepo is read-modify-write against the shared registry,
       // so racing them would let later writes clobber earlier ones.
-      for (const o of successes) await addRepo(o.path as string);
+      const added: WorkspaceRepo[] = [];
+      for (const o of successes) added.push(await addRepo(o.path as string));
+      // These came from ADO, so their remotes match exactly — bind them to the
+      // repos they were cloned from. Not awaited: the clone is what the user
+      // is waiting on.
+      void autoBindRepos(added);
       emitSourceGitChanged();
       useActionToast.getState().show({
         tone: "ok",

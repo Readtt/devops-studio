@@ -3,8 +3,8 @@
  * delimited Markdown chunk so we don't need ADO custom fields. See plan §D.
  *
  *   <!-- devops-studio:source-links:v1 -->
- *   - repo: MyApp / branch: main / file: src ∕ auth ∕ login.cs / symbol: LoginController.Authenticate / lines: 42-78 / sha: abc123 / repo-id: 6f1e…
- *   - repo: MyApp / branch: main / file: src ∕ auth ∕ sms.cs / symbol: SmsSender.Send / repo-id: 6f1e…
+ *   - repo: MyApp / project: Payments / branch: main / file: src ∕ auth ∕ login.cs / symbol: LoginController.Authenticate / lines: 42-78 / sha: abc123 / repo-id: 6f1e…
+ *   - repo: MyApp / project: Payments / branch: main / file: src ∕ auth ∕ sms.cs / symbol: SmsSender.Send / repo-id: 6f1e…
  *   <!-- /devops-studio:source-links -->
  *
  * Every link occupies one line of `key: value` pairs separated by ` / `. Since
@@ -14,7 +14,10 @@
  *
  * Only `repo` and `file` are required. Everything else is optional — notably
  * `branch`, absent whenever the case was published without source-branch
- * tagging — and an empty value reads as an absent one. Unknown keys are
+ * tagging, and `project`, absent for an unbound repo and for every case
+ * published before repo binding existed — and an empty value reads as an
+ * absent one. Making any of them required would drop the whole line, i.e.
+ * silently erase the links on cases an older build published. Unknown keys are
  * ignored so a newer build's extra fields don't invalidate the whole link.
  */
 import type { SourceLink } from "@/modules/ado";
@@ -63,6 +66,10 @@ export function renderBlock(links: SourceLink[]): string {
 
 function renderLine(l: SourceLink): string {
   const parts: string[] = [`repo: ${escape(l.repoName)}`];
+  // Absent for an unbound repo, and for every case published before repo
+  // binding — the reader falls back to the connection's project, which is what
+  // those links always meant.
+  if (l.project) parts.push(`project: ${escape(l.project)}`);
   // An empty branch means no provenance was stamped, which is a legitimate
   // state ("Tag with source branch" off, detached HEAD, non-git source dir).
   // Emit no key at all rather than a blank one.
@@ -95,6 +102,7 @@ function parseLine(line: string): SourceLink | null {
   return {
     repoId: fields.get("repo-id") ?? repoName,
     repoName,
+    project: fields.get("project"),
     generationBranch: fields.get("generation-branch") ?? trackingBranch,
     generationSha: fields.get("sha") ?? "",
     trackingBranch,

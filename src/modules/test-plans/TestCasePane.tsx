@@ -422,11 +422,15 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
           ) : (
             <ul className="flex flex-col gap-1">
               {links.map((l, i) => {
+                // The link's own project, because a workspace repo can live in
+                // a different ADO project than the connection. Falling back to
+                // the connection's is what every pre-binding link meant.
+                const project = l.project || conn?.project;
                 const webUrl =
-                  conn && conn.orgUrl && conn.project
+                  conn?.orgUrl && project
                     ? buildAdoReposWebUrl({
                         orgUrl: conn.orgUrl,
-                        project: conn.project,
+                        project,
                         repoName: l.repoName,
                         branch: l.trackingBranch || "main",
                         filePath: l.filePath,

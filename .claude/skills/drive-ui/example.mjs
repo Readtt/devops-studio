@@ -44,6 +44,15 @@ const FIXTURE = {
       ],
     },
     fs_stat: { "C:\\dev\\clones\\alpha\\.git": { size: 4096 } },
+    // Without a connection the ADO cell reads "connect Azure DevOps to link
+    // repos" instead of offering the picker.
+    ado_get_connection: {
+      configured: true,
+      hasPat: true,
+      orgUrl: "https://dev.azure.com/contoso",
+      project: "Payments",
+      defaultTrackingBranch: "$current",
+    },
   },
 };
 

@@ -3949,6 +3949,12 @@ function namedRepos(
  *  source-branch tagging (the map is then empty by design), in which case the
  *  link still records repo + path, just nothing about where it came from.
  *
+ *  The ADO identity (`repoName` / `project` / `repoId`) comes from the repo's
+ *  BINDING when it has one, because that is what a deep link resolves against:
+ *  the workspace name is the user's label for a folder, and the project isn't
+ *  necessarily the connection's. An unbound repo publishes under its workspace
+ *  name with no project, exactly as it did before binding existed.
+ *
  *  A link that names no repo — no usable prefix, no legacy `repoName` — is
  *  DROPPED rather than written blank: `parseSourceLinks` requires a repo, so a
  *  blank one publishes a line that can never be read back, a dead link sitting
@@ -3962,13 +3968,14 @@ function renderSourceLinksBlock(
   const sl: SourceLink[] = [];
   for (const l of links) {
     const repo = linkRepo(l, repos);
-    const repoName = repo?.name ?? l.repoName;
+    const repoName = repo?.ado?.repoName ?? repo?.name ?? l.repoName;
     if (!repoName) continue;
     const stamp = repo ? provenance.get(repo.id) : undefined;
     const branch = stamp?.branch ?? "";
     sl.push({
-      repoId: l.repoId ?? repoName,
+      repoId: repo?.ado?.repoId ?? l.repoId ?? repoName,
       repoName,
+      project: repo?.ado?.project ?? undefined,
       filePath: l.filePath,
       symbol: l.symbol ?? undefined,
       lineRange: l.lineRange ?? undefined,
