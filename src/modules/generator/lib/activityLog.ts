@@ -284,10 +284,12 @@ export function formatToolResult(
     };
   }
 
-  // Two listing tools, two result shapes. `list_files` (suite-chat tools →
-  // Rust fs_list_files) returns a flat `files: string[]`; `list_directory`
-  // (ai/tools/fs) returns `entries: {name, kind}[]`. Reading `entries` for both
-  // is why every list_files call used to render "0 entries" no matter how many
+  // Two listing shapes, and only one of them has a live producer.
+  // `list_files` (suite-chat tools → Rust fs_list_files) returns a flat
+  // `files: string[]`; the `list_directory` branch below returns
+  // `entries: {name, kind}[]` and is kept for transcripts that predate the
+  // deletion of the orphaned ai/tools stack. Reading `entries` for both is
+  // why every list_files call used to render "0 entries" no matter how many
   // paths came back — which read as "the AI found nothing".
   if (name === "list_files") {
     const files = Array.isArray(o.files)

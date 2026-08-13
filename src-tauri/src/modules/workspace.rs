@@ -8,9 +8,12 @@ use serde::Deserialize;
 // frontend callers, and the cwd snapshot's only reader was the registry
 // bootstrap — so all of it was removed. The live launch-dir mechanism is
 // the argv-based `LaunchDir` state in lib.rs (`get_launch_dir`). Path
-// safety for AI tool calls is enforced in the frontend tool layer
-// (src/modules/ai/lib/security.ts); direct user actions (code viewer,
-// attachments) read arbitrary user files by design, like any editor.
+// safety for AI tool calls is enforced in the frontend tool layer: every
+// path the model sends goes through `resolveRepoPath`
+// (src/modules/ai/lib/repoPaths.ts), which confines it to a configured
+// repo root and then runs the src/modules/ai/lib/security.ts gates.
+// Direct user actions (code viewer, attachments) read arbitrary user
+// files by design, like any editor.
 
 // Kept as a single-variant enum so the frontend's existing
 // `{ kind: "local" }` payloads keep deserializing. WSL support lived here

@@ -30,7 +30,6 @@ import {
   bindRepo,
   bindingForAdoRepo,
 } from "@/modules/ado/repoBinding";
-import type { DirEntry } from "@/modules/ai/lib/native";
 import { useReposGitInfo, type GitRepoInfo } from "@/modules/git";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
@@ -587,6 +586,14 @@ function useAdoConnected(): boolean {
 type ScanCandidate = { root: string; name: string };
 /** `found: null` is the walk still running — distinct from `[]`, "nothing here". */
 type ScanState = { parent: string; found: ScanCandidate[] | null };
+
+/** One `fs_read_dir` row (`src-tauri/src/modules/fs/tree.rs`). */
+type DirEntry = {
+  name: string;
+  kind: "file" | "dir" | "symlink";
+  size: number;
+  mtime: number;
+};
 
 /** One level down from `parent`, keeping the directories that carry a `.git`.
  *  A worktree or submodule has `.git` as a FILE, so this stats it rather than

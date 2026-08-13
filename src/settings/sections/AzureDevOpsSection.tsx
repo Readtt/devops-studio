@@ -9,10 +9,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { AzureDevOpsBrand } from "@/components/AzureDevOpsBrand";
-import {
-  usePreferencesStore,
-  usePrimaryRepoRoot,
-} from "@/modules/settings/preferences";
+import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   emitAdoConnectionChanged,
   setCodeSearchEnabled,
@@ -59,7 +56,7 @@ export function AzureDevOpsSection() {
   const [patVisible, setPatVisible] = useState(false);
   const [hasStoredPat, setHasStoredPat] = useState(false);
   const gitInfo = usePrimaryRepoGitInfo();
-  const sourceRoot = usePrimaryRepoRoot();
+  const hasRepo = usePreferencesStore((s) => s.repos.length > 0);
   const codeSearchEnabled = usePreferencesStore((s) => s.codeSearchEnabled);
   const [status, setStatus] = useState<StatusBadge>({ kind: "unverified" });
   const [saving, setSaving] = useState(false);
@@ -349,7 +346,7 @@ export function AzureDevOpsSection() {
                   <span className="font-mono text-foreground/80">main</span>{" "}
                   until you check out a branch.
                 </span>
-              ) : sourceRoot ? (
+              ) : hasRepo ? (
                 <span className="text-muted-foreground">
                   Not a git repository — links fall back to{" "}
                   <span className="font-mono text-foreground/80">main</span>.

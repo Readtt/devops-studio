@@ -3,10 +3,7 @@ export {
   useReposGitInfo,
   useReposStatus,
 } from "./useReposGit";
-export {
-  CURRENT_BRANCH_SENTINEL,
-  resolveTrackingBranch,
-} from "./trackingBranch";
+export { CURRENT_BRANCH_SENTINEL } from "./trackingBranch";
 export {
   EMPTY_REPO_INFO,
   EMPTY_STATUS,

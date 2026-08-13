@@ -553,10 +553,11 @@ function AppShell() {
   const openTerminalTab = useCallback(
     (input?: { cwd?: string | null; shellId?: string | null }) => {
       // Resolve cwd at call time. If the caller didn't pass one, fall back
-      // to the user's source root — terminals you open from the palette
+      // to the first configured repo — terminals you open from the palette
       // almost always want to land in your project, not the app's process
-      // cwd. Passing null explicitly lets a caller opt out and use whatever
-      // Rust's default cwd resolution gives back.
+      // cwd. No repo is special; some default is simply needed. Passing null
+      // explicitly lets a caller opt out and use whatever Rust's default cwd
+      // resolution gives back.
       const liveSourceRoot = primaryRepoRoot(getRepos());
       const cwd =
         input?.cwd === undefined ? liveSourceRoot ?? null : input.cwd;

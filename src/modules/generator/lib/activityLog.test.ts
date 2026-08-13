@@ -50,8 +50,9 @@ describe("formatToolResult · list_files", () => {
   });
 });
 
-// The sibling tool in ai/tools/fs.ts returns `{ entries: [{name, kind}] }`.
-// Two similar names, two different shapes — both must keep working.
+// The `{ entries: [{name, kind}] }` shape came from the ai/tools stack that
+// has since been deleted. Two similar names, two different shapes — the
+// formatter still has to render an older transcript that carries this one.
 describe("formatToolResult · list_directory", () => {
   it("still formats the entries shape with a trailing slash on dirs", () => {
     const r = formatToolResult("list_directory", {

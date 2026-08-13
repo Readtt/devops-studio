@@ -4,6 +4,7 @@ import {
   checkReadableCanonical,
   checkShellCommand,
   checkWritable,
+  checkWritableCanonical,
 } from "./security";
 
 describe("checkReadable — secret basenames", () => {
@@ -173,6 +174,62 @@ describe("checkReadableCanonical — symlink defense + always-recheck", () => {
     );
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.canonical).toBe("/home/me/Documents/notes.txt");
+  });
+});
+
+describe("checkWritableCanonical — new-file creates resolve the parent", () => {
+  const identity = async (p: string) => p;
+  /** A path that doesn't exist yet: `fs_canonicalize` rejects, exactly as the
+   *  Rust command does, which is what sends the check down the parent path. */
+  const onlyParentExists =
+    (existing: Record<string, string>) => async (p: string) => {
+      const hit = existing[p];
+      if (hit === undefined) throw new Error(`no such file: ${p}`);
+      return hit;
+    };
+
+  it("catches a symlinked PARENT when the target itself doesn't exist", async () => {
+    // The whole reason writes canonicalize the parent: `./project` is a
+    // symlink into ~/.ssh, so `./project/config` would land there even though
+    // the literal path looks harmless and the file isn't there to resolve.
+    const r = await checkWritableCanonical(
+      "/home/me/project/config",
+      onlyParentExists({ "/home/me/project": "/home/me/.ssh" }),
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  it("returns the canonical parent joined to the tail on a clean create", async () => {
+    const r = await checkWritableCanonical(
+      "/home/me/work/repo/new.ts",
+      onlyParentExists({ "/home/me/work/repo": "/home/me/work/repo" }),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.canonical).toBe("/home/me/work/repo/new.ts");
+  });
+
+  it("falls back to the literal path when neither target nor parent exists", async () => {
+    const nothingExists = async (p: string) => {
+      throw new Error(`no such file: ${p}`);
+    };
+    const r = await checkWritableCanonical("/home/me/gone/new.ts", nothingExists);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.canonical).toBe("/home/me/gone/new.ts");
+  });
+
+  it("refuses a system directory that only the initial check can see", async () => {
+    // Rejected before canonicalize is ever called — a write deny-prefix is not
+    // a read restriction, so this is the gate checkWritable adds.
+    expect(
+      await checkWritableCanonical("C:\\Windows\\System32\\evil.dll", identity),
+    ).toMatchObject({ ok: false });
+  });
+
+  it("rechecks the canonical form of an existing target", async () => {
+    const symlinkResolves = async (p: string) =>
+      p === "/home/me/notes.txt" ? "/home/me/.ssh/authorized_keys" : p;
+    const r = await checkWritableCanonical("/home/me/notes.txt", symlinkResolves);
+    expect(r.ok).toBe(false);
   });
 });
 

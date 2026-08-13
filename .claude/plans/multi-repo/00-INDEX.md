@@ -646,6 +646,61 @@ harness's own rows now render the disconnected copy. **Verify steps 1 and 6 (thr
 and a real publish across two projects) are unrun live** — they need a real org and PAT; both paths
 are pinned by tests.
 
+**Phase 13 — `ai/lib/native.ts` was NOT dead, and the plan's deletion list was wrong about it.**
+`SourceReposSection.tsx:33` imports `type DirEntry` from it — added by Phase 5's folder scan, after
+this plan was written. The other four files (`ai/tools/{tools,fs,search,context}.ts`) were dead
+exactly as described. `DirEntry` moved to its one consumer, beside the `invoke<DirEntry[]>` call,
+which is the house pattern: every `fs_*` response type is declared where it is invoked
+(`ReadResult` is separately declared in `bestPractices.ts`, `CodeViewerPane.tsx`, `ApplyPatchCard.tsx`
+and `suiteChatTools.ts`). There is no shared frontend fs-types module and this phase did not add one.
+
+**Phase 13 — the `suiteChatTools.ts` comment the plan wanted corrected no longer exists.** Phase 7's
+rewrite took it with the code it annotated; `:506-507` is now `messageRefOf`'s doc. Nothing to fix.
+`workspace.rs` was corrected as planned, and now names `resolveRepoPath` as the entry point rather
+than `security.ts` alone.
+
+**Phase 13 — `resolveTrackingBranch` deleted, `CURRENT_BRANCH_SENTINEL` kept** (the decision Phase 2
+deferred here). Multi-repo branch resolution does not reuse it: Phase 9's publish probes each repo the
+batch names and stamps that repo's own branch, with **no** `main` fallback, which is the opposite of
+what this helper did. `trackingBranch.ts` survives holding only the sentinel, which
+`AzureDevOpsSection` still writes; `trackingBranch.test.ts` went with the function.
+
+**Phase 13 — the shim stays, and keeps its name.** `primaryRepoRoot` / `usePrimaryRepoRoot` have four
+live call sites that genuinely want "some default is needed": the terminal cwd (`App.tsx:561`,
+`launchActions.ts:29`), the source-dir picker's `defaultPath` seed (`App.tsx:908`), and
+`usePrimaryRepoGitInfo` (`useReposGit.ts:132`). Renaming to `firstRepoRoot` was considered and
+rejected — Phase 6 deliberately kept "primary" in `usePrimaryRepoGitInfo` as a truthful name, and a
+split vocabulary for one concept is worse than the apologetic doc comment both helpers already carry.
+Two *other* call sites were removed because they read a root to answer a **count** question: the
+refine composer's `codeSearchOn` and the ADO section's code-link explainer now read
+`repos.length > 0`. Behaviour-identical; they just say what they mean.
+
+**Phase 13 — `activityLog`'s `list_directory` branch is KEPT, comment corrected.** Its only producer
+was the deleted `ai/tools/fs.ts`, so it is unreachable for new runs, but the formatter also renders
+older transcripts and the same is true of its `glob` branch — which this phase was not asked about.
+Phase 14 should decide both together rather than half of it here. Same for
+`ToolCallStrip.tsx:252`'s icon case, which already tolerates other non-tool aliases (`read`).
+
+**Phase 13 — two free one-liners in `agent.ts`, one deliberate non-fix.** `modelIdOverride` is gone
+(declared, never read). The model cache key is now `JSON.stringify([...])` rather than a
+space-joined string: a model id or base URL containing the delimiter could otherwise let two
+configurations share a key and hand back the wrong endpoint's model. The cache is still never
+evicted — deliberately, and now commented: the key is a configuration tuple, so it grows with
+distinct configurations, not with requests.
+
+**Phase 13 — verification.** `pnpm build` clean, `cargo check` clean, **1191** frontend tests green
+(+5 in `security.test.ts` for `checkWritableCanonical`, −4 with `trackingBranch.test.ts`). Both new
+security tests were proven by mutation: dropping the parent-canonicalize fallback and skipping the
+canonical recheck each failed exactly one test and no others. Greps confirm nothing imports the five
+deleted files, and `src/modules/ado/native.ts` (the live one) is untouched. Driven in the real
+webviews over CDP against a mocked Tauri IPC boundary (`.claude/skills/drive-ui/drive-phase13.mjs`,
+plus `example.mjs` unchanged): the folder scan still lists only git directories — that is the
+relocated `DirEntry` end to end — the code-link explainer says "Set a source directory" at zero repos
+and "Not a git repository" for a configured non-git repo, and the main window boots with the tool
+stack gone. Zero console errors in all four runs. The plan's "every AI surface still works" step is
+covered by tests, not live: a real tool call needs a real model, which the mocked boundary can't
+serve — `repoPaths.test.ts` and `security.test.ts` are what pin containment.
+
 **Phase 6 found a real bug in its own first draft**, worth knowing because the pattern recurs: the
 repo popover's `open` is controlled, so a programmatic `setOpen(false)` never fires `onOpenChange` —
 the drilled-into repo was never cleared and the next open showed the previous repo's branches. Any

@@ -23,13 +23,15 @@ const localProxyFetch = createProxyFetch({ allowPrivateNetwork: true });
 const cloudProxyFetch = proxyFetch;
 
 export type BuildModelOptions = {
-  modelIdOverride?: string;
   lmstudioBaseURL?: string;
   mlxBaseURL?: string;
   ollamaBaseURL?: string;
   openaiCompatibleBaseURL?: string;
 };
 
+// Keyed by the whole provider configuration, so it grows with the number of
+// distinct configurations a user has used this session — not with requests.
+// Never evicted, deliberately: there is nothing per-run in the key.
 const modelCache = new Map<string, LanguageModel>();
 
 export async function buildLanguageModel(
@@ -56,7 +58,18 @@ export async function buildLanguageModel(
   const mlxURL = options.mlxBaseURL ?? MLX_DEFAULT_BASE_URL;
   const ollamaURL = options.ollamaBaseURL ?? OLLAMA_DEFAULT_BASE_URL;
   const compatURL = options.openaiCompatibleBaseURL ?? "";
-  const cacheKey = `${provider} ${key} ${resolvedModelId} ${lmstudioURL} ${mlxURL} ${ollamaURL} ${compatURL}`;
+  // JSON, not a delimiter-joined string: a model id or base URL carrying the
+  // delimiter would otherwise let two different configurations share a key,
+  // and the hit would silently answer with the wrong endpoint's model.
+  const cacheKey = JSON.stringify([
+    provider,
+    key,
+    resolvedModelId,
+    lmstudioURL,
+    mlxURL,
+    ollamaURL,
+    compatURL,
+  ]);
   const hit = modelCache.get(cacheKey);
   if (hit) return hit;
 
