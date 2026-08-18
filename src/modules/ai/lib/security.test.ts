@@ -104,6 +104,29 @@ describe("checkReadable — protected directories", () => {
     });
   });
 
+  it("does not treat a user directory named etc/sys/proc as the system one", () => {
+    // The system dirs are ordinary words, so they are matched at the ROOT only.
+    // Segment-substring matching refuses a whole repo living under any of them:
+    // `D:\dev\sys\backend` is `/dev/sys/backend` after the drive strip, and the
+    // repo reads as configured while the AI can never open a file in it.
+    expect(checkReadable("C:/dev/sys/backend/src/Program.cs")).toMatchObject({
+      ok: true,
+    });
+    expect(checkReadable("/home/me/work/etc/config.json")).toMatchObject({
+      ok: true,
+    });
+    expect(checkReadable("/home/me/proc/handler.ts")).toMatchObject({
+      ok: true,
+    });
+    // The repo ROOT itself, which `settle` now gates on every single call.
+    expect(checkReadable("D:/dev/sys/backend")).toMatchObject({ ok: true });
+    // Still blocked at the root, where they really are the system dirs.
+    expect(checkReadable("/sys/class/dmi/id/product_uuid")).toMatchObject({
+      ok: false,
+    });
+    expect(checkReadable("/etc")).toMatchObject({ ok: false });
+  });
+
   it("rejects path-segment look-alikes (.sshx is not .ssh)", () => {
     // The comparator must use segment-boundary matching, not raw substring.
     expect(checkReadable("/home/me/.sshx/file")).toMatchObject({ ok: true });

@@ -12,7 +12,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { WorkspaceRepo } from "@/modules/settings/store";
-import { checkReadable } from "./security";
+import { checkReadableCanonical } from "./security";
 
 export type RepoPathResult =
   | {
@@ -81,7 +81,7 @@ export async function resolveRepoPath(
   if (ABSOLUTE.test(cleaned)) {
     for (const repo of repos) {
       const rel = relativeUnder(repo.root, cleaned);
-      if (rel !== null) return settle(repo, rel, cleaned);
+      if (rel !== null) return await settle(repo, rel, cleaned);
     }
     return {
       ok: false,
@@ -92,10 +92,12 @@ export async function resolveRepoPath(
   const cut = cleaned.indexOf("/");
   const head = cut === -1 ? cleaned : cleaned.slice(0, cut);
   const named = repos.find((r) => r.name.toLowerCase() === head.toLowerCase());
-  if (named) return settle(named, cut === -1 ? "" : cleaned.slice(cut + 1), cleaned);
+  if (named) {
+    return await settle(named, cut === -1 ? "" : cleaned.slice(cut + 1), cleaned);
+  }
 
   // A forgotten prefix is unambiguous when there is only one repo to mean.
-  if (repos.length === 1) return settle(repos[0], cleaned, cleaned);
+  if (repos.length === 1) return await settle(repos[0], cleaned, cleaned);
 
   const hits = (
     await Promise.all(
@@ -105,7 +107,7 @@ export async function resolveRepoPath(
     )
   ).filter((r): r is WorkspaceRepo => r !== null);
 
-  if (hits.length === 1) return settle(hits[0], cleaned, cleaned);
+  if (hits.length === 1) return await settle(hits[0], cleaned, cleaned);
   if (hits.length === 0) {
     return {
       ok: false,
@@ -141,12 +143,20 @@ export function splitRepoPath(
 }
 
 /** Apply the containment gates and build the result. `given` is the normalized
- *  input, used only to decide whether the model needs correcting. */
-function settle(
+ *  input, used only to decide whether the model needs correcting.
+ *
+ *  Gated on the CANONICAL path, not just the literal one: `..` is resolved
+ *  above, but a symlink or NTFS junction inside a repo is not a `..` and the
+ *  Rust side follows it (`fs_read_file` is `std::fs::read`, and
+ *  `workspace.rs`'s `resolve_path` is identity). `vendor/cache → C:\Users\me`
+ *  would otherwise make every file on the machine readable through a path that
+ *  looks entirely repo-local. The old tool stack ran this check; the stack was
+ *  deleted with it. */
+async function settle(
   repo: WorkspaceRepo,
   rel: string,
   given: string,
-): RepoPathResult {
+): Promise<RepoPathResult> {
   const within = normalizeRelative(rel);
   if (within === null) {
     return {
@@ -154,18 +164,30 @@ function settle(
       reason: `Refused: "${given}" points outside ${repo.name}.`,
     };
   }
-  const absPath = within ? joinPath(repo.root, within) : repo.root;
-  const gate = checkReadable(absPath);
+  const literal = within ? joinPath(repo.root, within) : repo.root;
+  const gate = await checkReadableCanonical(literal, canonicalize);
   if (!gate.ok) return { ok: false, reason: gate.reason };
 
   const virtualPath = within ? `${repo.name}/${within}` : repo.name;
   return {
     ok: true,
     repo,
-    absPath,
+    // The canonical form when there is one, so the read can't land on a
+    // different file than the one that was just cleared.
+    absPath: gate.canonical,
     virtualPath,
     ...(given === virtualPath ? {} : { corrected: virtualPath }),
   };
+}
+
+/** Rejecting is how `checkReadableCanonical` is told "no canonical form" — it
+ *  then falls back to the literal path. A backend that answers with anything
+ *  but a real path has to take that route too, or the non-path lands in
+ *  `absPath` and the read goes nowhere. */
+async function canonicalize(path: string): Promise<string> {
+  const out = await invoke<string>("fs_canonicalize", { path });
+  if (typeof out !== "string" || !out) throw new Error("no canonical path");
+  return out;
 }
 
 /** Forward slashes, no `./` lead, no trailing separator, no doubled separators
@@ -199,11 +221,20 @@ function normalizeRelative(rel: string): string | null {
  *  separator- and case-insensitive, like the registry's own dedup key: a path
  *  that round-trips through a tool result or an event payload comes back in
  *  whichever spelling that layer preferred. */
-function relativeUnder(root: string, abs: string): string | null {
+/** `abs`'s path relative to `root`, or null when it isn't under it — the
+ *  containment test itself, and the reason this module claims to be the app's
+ *  only containment point.
+ *
+ *  Exported so the code viewer's fuzzy resolver shares this exact rule rather
+ *  than keeping its own copy: two spellings of "is this path inside that repo"
+ *  is one refactor away from being two different answers. Normalizes `abs`
+ *  itself rather than trusting the caller to have done it. */
+export function relativeUnder(root: string, abs: string): string | null {
   const r = root.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  const a = abs.toLowerCase();
-  if (a === r) return "";
-  if (a.startsWith(`${r}/`)) return abs.slice(r.length + 1);
+  const a = abs.replace(/\\/g, "/");
+  const lower = a.toLowerCase();
+  if (lower === r) return "";
+  if (lower.startsWith(`${r}/`)) return a.slice(r.length + 1);
   return null;
 }
 

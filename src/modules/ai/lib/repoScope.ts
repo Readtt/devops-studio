@@ -34,6 +34,11 @@ export function toggleRepoScope(
   repoId: string,
 ): string[] | null {
   const ids = repos.map((r) => r.id);
+  // A chip rendered from a snapshot the registry has moved past can name a repo
+  // that is no longer configured. Adding it would push `next` up to `ids.length`
+  // and collapse the scope to null — silently re-including every repo the user
+  // deselected.
+  if (!ids.includes(repoId)) return scope;
   const current = scope === null ? ids : scope.filter((id) => ids.includes(id));
   const next = current.includes(repoId)
     ? current.filter((id) => id !== repoId)

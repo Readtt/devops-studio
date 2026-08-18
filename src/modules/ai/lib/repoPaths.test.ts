@@ -36,14 +36,42 @@ beforeEach(() => {
 });
 
 describe("resolveRepoPath · addressing", () => {
-  it("resolves a repo-prefixed path without touching the filesystem", async () => {
+  it("resolves a repo-prefixed path without probing for it", async () => {
     const out = await resolveRepoPath("repo-two/src/app.ts", MANY);
     expect(out).toMatchObject({
       ok: true,
       absPath: "C:\\src\\repo-two\\src\\app.ts",
       virtualPath: "repo-two/src/app.ts",
     });
-    expect(invoke).not.toHaveBeenCalled();
+    // The prefix names the repo outright, so the ambiguity probe never runs.
+    // The canonical read gate still does — see the symlink case below.
+    expect(
+      invoke.mock.calls.filter(([cmd]) => cmd === "fs_stat"),
+    ).toHaveLength(0);
+  });
+
+  it("refuses a path whose canonical form escapes into a protected dir", async () => {
+    // `vendor/cache` is a junction to the user's home; nothing about the
+    // literal path says so, and Rust follows it.
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd !== "fs_canonicalize") throw new Error(`unexpected ${cmd}`);
+      return "/home/me/.ssh/id_rsa";
+    });
+    const out = await resolveRepoPath("repo-two/vendor/cache/id_rsa", MANY);
+    expect(out.ok).toBe(false);
+  });
+
+  it("reads through to the canonical path when it is still allowed", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd !== "fs_canonicalize") throw new Error(`unexpected ${cmd}`);
+      return "C:\\real\\repo-two\\src\\app.ts";
+    });
+    const out = await resolveRepoPath("repo-two/src/app.ts", MANY);
+    expect(out).toMatchObject({
+      ok: true,
+      absPath: "C:\\real\\repo-two\\src\\app.ts",
+      virtualPath: "repo-two/src/app.ts",
+    });
   });
 
   it("matches the repo name case-insensitively", async () => {

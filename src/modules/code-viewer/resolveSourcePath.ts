@@ -13,7 +13,12 @@
 // find the right repo's copy of it.
 
 import { invoke } from "@tauri-apps/api/core";
-import { joinPath, resolveRepoPath, splitRepoPath } from "@/modules/ai/lib/repoPaths";
+import {
+  joinPath,
+  relativeUnder,
+  resolveRepoPath,
+  splitRepoPath,
+} from "@/modules/ai/lib/repoPaths";
 import { checkReadable } from "@/modules/ai/lib/security";
 import type { WorkspaceRepo } from "@/modules/settings/store";
 
@@ -127,10 +132,14 @@ export async function resolveSourcePathDeep(
   // root on the Rust side it would resolve to a real file OUTSIDE it, which is
   // the containment `resolveRepoPath` just turned this input down for.
   if (!needle || needle.split(/[\\/]/).includes("..")) return null;
-  for (const repo of repos) {
-    const found = await findInRepo(repo, needle);
-    if (found) return { path: found, repo };
-  }
+  // Fanned out, not walked one repo at a time: `fs_resolve_source_path` walks
+  // the tree on a miss, and this runs on the click path with nothing on screen
+  // to say so — serialized, an unresolvable citation costs the SUM of every
+  // repo's walk. Taking the first non-null keeps registry order, which is the
+  // tie-break this function documents.
+  const found = await Promise.all(repos.map((repo) => findInRepo(repo, needle)));
+  const hit = found.findIndex((p) => p !== null);
+  if (hit !== -1) return { path: found[hit] as string, repo: repos[hit] };
   return resolveSourcePath(repos, file);
 }
 
@@ -167,14 +176,4 @@ function repoOwning(
   absPath: string,
 ): WorkspaceRepo | null {
   return repos.find((r) => relativeUnder(r.root, absPath) !== null) ?? null;
-}
-
-/** The part of `abs` below `root`, or null when it isn't under it. */
-function relativeUnder(root: string, abs: string): string | null {
-  const r = root.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  const a = abs.replace(/\\/g, "/");
-  const lower = a.toLowerCase();
-  if (lower === r) return "";
-  if (lower.startsWith(`${r}/`)) return a.slice(r.length + 1);
-  return null;
 }

@@ -71,4 +71,14 @@ describe("toggleRepoScope", () => {
     expect(toggleRepoScope([ONE.id, "id-deleted", THREE.id], MANY, TWO.id))
       .toBeNull();
   });
+
+  it("ignores a repo that is no longer configured", () => {
+    // A chip rendered from a snapshot the registry has moved past. Adding the
+    // dead id would push the count to `ids.length` and collapse the scope to
+    // null — silently re-including every repo the user deselected.
+    expect(toggleRepoScope([ONE.id], [ONE, TWO], "id-deleted")).toEqual([
+      ONE.id,
+    ]);
+    expect(toggleRepoScope(null, [ONE, TWO], "id-deleted")).toBeNull();
+  });
 });

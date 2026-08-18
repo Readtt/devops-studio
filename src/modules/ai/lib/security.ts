@@ -59,11 +59,15 @@ const SECRET_BASENAME_PATTERNS: RegExp[] = [
 ];
 
 /**
- * Protected directories. Matched as **exact path** OR **prefix where the next
- * char is a separator** — never raw substring. Listed without trailing slash;
- * the comparator handles separators.
+ * Protected directories that legitimately appear at ANY depth — a tool dir
+ * under the user's home, a `.git` inside a repo. Matched as a whole path
+ * segment run: exact path, or prefix where the next char is a separator.
+ *
+ * Every entry here is named distinctively enough that a directory carrying the
+ * name IS the thing (`.ssh`, `.aws`, `library/keychains`). Nothing generic
+ * belongs in this list — see {@link PROTECTED_AT_ROOT}.
  */
-const PROTECTED_DIRS = [
+const PROTECTED_ANYWHERE = [
   "/.ssh",
   "/.gnupg",
   "/.aws",
@@ -78,11 +82,26 @@ const PROTECTED_DIRS = [
   "/.terraform.d",
   "/library/keychains",
   "/library/cookies",
-  // System dirs holding host secrets/PII/process state. Per-PID files under
-  // /proc leak env vars and command lines from other processes; /sys exposes
-  // kernel state and hardware identifiers. /etc and /private/etc hold global
-  // config that frequently contains credentials in basenames the regex won't
-  // match (passwd, shadow, master.passwd, *.cnf, *.conf with creds).
+  // Windows user profile equivalents (post drive-strip + lowercase).
+  "/appdata/roaming/microsoft/credentials",
+  "/appdata/local/microsoft/credentials",
+  "/appdata/roaming/gcloud",
+];
+
+/**
+ * System dirs holding host secrets/PII/process state, matched ONLY at the
+ * filesystem root. Per-PID files under /proc leak env vars and command lines
+ * from other processes; /sys exposes kernel state and hardware identifiers.
+ * /etc and /private/etc hold global config that frequently contains credentials
+ * in basenames the regex won't match (passwd, shadow, master.passwd, *.cnf).
+ *
+ * Root-anchored because these names are ordinary words that a user's own tree
+ * is entitled to use. Matched as a segment substring — the rule the rest of the
+ * list follows — a repo at `D:\dev\sys\backend` is `/dev/sys/backend` after the
+ * drive strip, contains `/sys/`, and every read in it is refused with a message
+ * naming a directory the user has never heard of.
+ */
+const PROTECTED_AT_ROOT = [
   "/etc",
   "/private/etc",
   "/proc",
@@ -91,10 +110,6 @@ const PROTECTED_DIRS = [
   "/var/root",
   "/private/var/db",
   "/private/var/root",
-  // Windows user profile equivalents (post drive-strip + lowercase).
-  "/appdata/roaming/microsoft/credentials",
-  "/appdata/local/microsoft/credentials",
-  "/appdata/roaming/gcloud",
 ];
 
 /**
@@ -190,6 +205,22 @@ function isUnderProtected(cmp: string, dir: string): boolean {
   return (cmp + "/").includes(dir + "/");
 }
 
+/** Exact path or descendant, anchored at the root. See {@link PROTECTED_AT_ROOT}. */
+function isAtProtectedRoot(cmp: string, dir: string): boolean {
+  return cmp === dir || cmp.startsWith(dir + "/");
+}
+
+/** The protected dir `cmp` sits in, or null. */
+function protectedDirFor(cmp: string): string | null {
+  for (const dir of PROTECTED_ANYWHERE) {
+    if (isUnderProtected(cmp, dir)) return dir;
+  }
+  for (const dir of PROTECTED_AT_ROOT) {
+    if (isAtProtectedRoot(cmp, dir)) return dir;
+  }
+  return null;
+}
+
 function describeProtected(dir: string): string {
   // "/.ssh" -> ".ssh", "/.config/gh" -> ".config/gh"
   return dir.replace(/^\//, "");
@@ -216,13 +247,12 @@ export function checkReadable(path: string): SafetyResult {
   }
 
   const cmp = comparisonForm(path);
-  for (const dir of PROTECTED_DIRS) {
-    if (isUnderProtected(cmp, dir)) {
-      return {
-        ok: false,
-        reason: `Refused: path is inside a protected directory (${describeProtected(dir)}).`,
-      };
-    }
+  const dir = protectedDirFor(cmp);
+  if (dir) {
+    return {
+      ok: false,
+      reason: `Refused: path is inside a protected directory (${describeProtected(dir)}).`,
+    };
   }
 
   return { ok: true };
