@@ -9,12 +9,11 @@
 // module-level abort maps.
 
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
 import { listSuiteCases } from "@/modules/ado";
 import { hasKeyForModel } from "@/modules/ai";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import type { GitRepoInfo } from "@/modules/git";
+import { gitRepoInfo } from "@/modules/git/gitOps";
 import { getConfidenceMany } from "../lib/confidenceApi";
 import {
   verdictSourceState,
@@ -33,9 +32,7 @@ async function currentSources(): Promise<CurrentSource[]> {
   return Promise.all(
     repos.map(async (repo) => {
       try {
-        const info = await invoke<GitRepoInfo>("git_repo_info", {
-          path: repo.root,
-        });
+        const info = await gitRepoInfo(repo.root);
         return { repoId: repo.id, repoName: repo.name, sha: info.commit ?? null };
       } catch {
         return { repoId: repo.id, repoName: repo.name, sha: null };

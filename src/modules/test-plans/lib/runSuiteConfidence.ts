@@ -8,7 +8,11 @@
 // user cancel (AbortError) stops the loop immediately.
 
 import { getCase } from "@/modules/ado";
-import { evaluateCaseConfidence } from "./evaluateCaseConfidence";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+import {
+  evaluateCaseConfidence,
+  readRepoSources,
+} from "./evaluateCaseConfidence";
 import { fromTestCase } from "./runConfidenceEval";
 import { resolveSuiteRequirement } from "./resolveSuiteRequirement";
 import { saveConfidence } from "./confidenceApi";
@@ -51,6 +55,12 @@ export async function scoreCases(
   target?: { planId: number | null; suiteId: number | null },
 ): Promise<void> {
   const req = await resolveSuiteRequirement(target?.planId, target?.suiteId);
+  // Same reasoning as the requirement below: HEAD can't move under a batch, and
+  // probing it per case costs one git subprocess per repo per case.
+  const prefs = usePreferencesStore.getState();
+  const sources = await readRepoSources(
+    prefs.codeSearchEnabled ? prefs.repos : [],
+  );
   for (const c of cases) {
     if (cb.signal.aborted) return;
     if (!cb.claim(c.id)) {
@@ -68,6 +78,7 @@ export async function scoreCases(
         // run by the case count for no new information.
         requirement: req.requirement,
         requirementId: req.requirementId,
+        sources,
       });
       if (cb.signal.aborted) return; // cancelled while this case was scoring
       await saveConfidence(c.id, verdict);
