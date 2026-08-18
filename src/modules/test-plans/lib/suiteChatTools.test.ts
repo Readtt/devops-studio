@@ -550,6 +550,34 @@ describe("fan-out across repos", () => {
     expect(repos).toEqual(new Set(["iSyncKit", "iSyncKit.Web", "Shared"]));
   });
 
+  it("reports truncated when the MERGE drops hits, not just the repos", async () => {
+    // Each repo fits comfortably under its own Rust cap and answers
+    // `truncated: false`; only the interleave overflows. Reporting the repos'
+    // flag verbatim tells the model it has seen every reference to the symbol
+    // when it has seen a third of them.
+    grepPerRepo({ [ROOT]: 80, [ROOT_B]: 3, [ROOT_C]: 3 });
+    const out = (await callTool(
+      "grep",
+      { pattern: "NEEDLE", maxResults: 10 },
+      THREE,
+    )) as { truncated: boolean };
+    expect(out.truncated).toBe(true);
+  });
+
+  it("caps the filesOnly list instead of letting the result be discarded", async () => {
+    // filesOnly scans at the Rust ceiling by design, but the ANSWER still has
+    // to fit: past TOOL_RESULT_CAP the whole result is replaced by a
+    // mid-structure preview, so the model loses the scan entirely.
+    grepPerRepo({ [ROOT]: 80, [ROOT_B]: 80, [ROOT_C]: 80 });
+    const out = (await callTool(
+      "grep",
+      { pattern: "NEEDLE", filesOnly: true, maxResults: 5 },
+      THREE,
+    )) as { files: unknown[]; truncated: boolean };
+    expect(out.files).toHaveLength(5);
+    expect(out.truncated).toBe(true);
+  });
+
   it("sums files_scanned across repos", async () => {
     grepPerRepo({ [ROOT]: 2, [ROOT_B]: 3, [ROOT_C]: 4 });
     const out = (await callTool("grep", { pattern: "NEEDLE" }, THREE)) as {
@@ -661,6 +689,37 @@ describe("run_command · choosing a repo", () => {
     )) as { error: string };
     expect(out.error).toMatch(/No repo named "nope"/);
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  // Rust rejects ABSOLUTE paths and nothing else, so `..` is how a command
+  // reads a sibling repo the user deselected — or anything else next to the
+  // root. This is the only tool whose paths never reach `resolveRepoPath`.
+  it.each([
+    "cat ../Shared/appsettings.Production.json",
+    "cat ..\\Shared\\secrets.json",
+    'cat "../Shared/x"',
+    "ls ..",
+    // Not a path argument but a flag VALUE, which repoints the whole command
+    // at another repo — `git --git-dir=..` reads a sibling's history without
+    // any argument that looks like a path.
+    "git --git-dir=../Shared/.git log --oneline",
+  ])("refuses a command that climbs out of the repo: %s", async (command) => {
+    const out = (await callTool(
+      "run_command",
+      { command, repo: "iSyncKit" },
+      THREE,
+    )) as { error: string };
+    expect(out.error).toMatch(/climbs out of the repo/);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("still allows a path that merely contains dots", async () => {
+    await callTool(
+      "run_command",
+      { command: "cat src/app..config", repo: "iSyncKit" },
+      THREE,
+    );
+    expect(invoke).toHaveBeenCalled();
   });
 });
 

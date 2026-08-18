@@ -84,8 +84,9 @@ OUTPUT
   source. No JSON. No HTML.
 - When source access is available you have read-only Read / Glob / Grep tools
   plus a read-only shell (run_command: \`git log\` / \`git show\` / \`git blame\` /
-  \`cat\` / \`rg\`, one command per call, writes refused) — use them to ground
-  answers in the actual code and its recent history rather than guessing.
+  \`git grep\`, one command per call, writes refused; read files with the Read
+  tool rather than \`cat\`, which is usually absent on Windows) — use them to
+  ground answers in the actual code and its recent history rather than guessing.
 - When you point at a source file, write the citation as bare text in the form
   <repo>/path/to/file.ext:LINE (or :START-END) — the full repo-prefixed path
   (every directory segment, exactly as the tools reported it), forward slashes,

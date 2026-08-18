@@ -117,7 +117,7 @@ export function buildSuiteChatTools(repos: WorkspaceRepo[]) {
           let content = lines.slice(start, end).join("\n");
           let truncated = end < lines.length;
           if (content.length > READ_BYTE_CAP) {
-            content = content.slice(0, READ_BYTE_CAP);
+            content = sliceWholeChars(content, READ_BYTE_CAP);
             truncated = true;
           }
           return {
@@ -243,8 +243,13 @@ export function buildSuiteChatTools(repos: WorkspaceRepo[]) {
           ),
         );
         const scanned = parts.reduce((n, p) => n + (p.out?.files_scanned ?? 0), 0);
+        // Per-repo truncation only. The MERGE has a cap of its own, and each
+        // branch below folds its own overflow in: three repos that each fit
+        // comfortably under the Rust ceiling still overflow once interleaved,
+        // and answering `truncated: false` there tells the model it has seen
+        // every reference to the symbol when it has seen a third of them.
+        const repoTruncated = parts.some((p) => p.out?.truncated);
         const base = {
-          truncated: parts.some((p) => p.out?.truncated),
           files_scanned: scanned,
           // `files_scanned` counts files AFTER the glob filter, so 0 means
           // nothing was ever read — which is NOT evidence the pattern is
@@ -254,41 +259,50 @@ export function buildSuiteChatTools(repos: WorkspaceRepo[]) {
           ...repoErrors(parts),
         };
         if (filesOnly) {
+          // The SCAN ignores the caller's cap (see above); the ANSWER can't —
+          // every repo contributing hundreds of file rows serializes past
+          // TOOL_RESULT_CAP, and an over-cap result is replaced wholesale by a
+          // mid-structure preview, so the model loses the scan instead of
+          // getting its first N files.
+          const files = interleave(
+            parts.map((p) =>
+              summariseByFile(p.out?.hits ?? []).map((f) => ({
+                ...f,
+                rel: `${p.repo.name}/${f.rel}`,
+              })),
+            ),
+          );
           return {
             ...base,
-            files: interleave(
-              parts.map((p) =>
-                summariseByFile(p.out?.hits ?? []).map((f) => ({
-                  ...f,
-                  rel: `${p.repo.name}/${f.rel}`,
-                })),
-              ),
-            ),
+            truncated: repoTruncated || files.length > lineCap,
+            files: files.slice(0, lineCap),
           };
         }
         const re = displayMatcher(pattern, caseInsensitive ?? false);
+        // Round-robin, then truncate. Concatenating instead lets one repo's
+        // 80 hits fill the cap and hide another repo entirely — which is the
+        // silent coverage loss this whole feature exists to end.
+        // `path` is dropped: it duplicates `rel` on every hit, and `rel` is
+        // now the repo-prefixed form read_file takes.
+        const hits = interleave(
+          parts.map((p) =>
+            (p.out?.hits ?? []).map((h) => ({
+              rel: `${p.repo.name}/${h.rel}`,
+              line: h.line,
+              text: clipAroundMatch(h.text, re, GREP_LINE_CAP),
+            })),
+          ),
+        );
         return {
           ...base,
-          // Round-robin, then truncate. Concatenating instead lets one repo's
-          // 80 hits fill the cap and hide another repo entirely — which is the
-          // silent coverage loss this whole feature exists to end.
-          // `path` is dropped: it duplicates `rel` on every hit, and `rel` is
-          // now the repo-prefixed form read_file takes.
-          hits: interleave(
-            parts.map((p) =>
-              (p.out?.hits ?? []).map((h) => ({
-                rel: `${p.repo.name}/${h.rel}`,
-                line: h.line,
-                text: clipAroundMatch(h.text, re, GREP_LINE_CAP),
-              })),
-            ),
-          ).slice(0, lineCap),
+          truncated: repoTruncated || hits.length > lineCap,
+          hits: hits.slice(0, lineCap),
         };
       },
     }),
 
     run_command: tool({
-      description: `Run ONE read-only command inside ONE of the user's source repos (${names}) and get its output back — a real terminal, but read-only. Best for inspecting git history and the working tree: \`git log --oneline -20\`, \`git show <sha>\`, \`git diff\`, \`git blame <file>\`, \`git status\`, plus \`ls\`, \`cat\`, \`head\`, \`tail\`, \`grep\`/\`rg\`, \`find\`, \`tree\`, \`wc\`. Rules: one command per call (no pipes, redirection, or chaining), no absolute paths, read-only programs only — anything that writes, deletes, or executes is refused. Use this to answer 'what recently changed here / is this code stable or risky' instead of guessing.`,
+      description: `Run ONE read-only command inside ONE of the user's source repos (${names}) and get its output back — a real terminal, but read-only. Reach for git, the one program guaranteed to be installed: \`git log --oneline -20\`, \`git show <sha>\`, \`git show <sha>:<path>\` (a file as of that commit), \`git diff\`, \`git blame <file>\`, \`git status\`, \`git ls-files\`, \`git grep <pattern>\`, \`git for-each-ref --sort=-committerdate refs/heads\` (branches), \`git check-ignore -v <path>\`. \`ls\`/\`cat\`/\`head\`/\`tail\`/\`grep\`/\`rg\` are allowed but are usually ABSENT on Windows, and \`find\`/\`tree\` there are unrelated Microsoft programs of the same name — read, list and search with the read_file / list_files / grep tools instead, and keep this one for git. Rules: one command per call (no pipes, redirection, or chaining), no absolute paths — anything that writes, deletes, or executes is refused. Use this to answer 'what recently changed here / is this code stable or risky' instead of guessing.`,
       inputSchema: z.object({
         command: z
           .string()
@@ -308,6 +322,13 @@ export function buildSuiteChatTools(repos: WorkspaceRepo[]) {
       execute: async ({ command, repo }) => {
         const target = pickRepo(repo, repos);
         if (!target.ok) return { error: target.reason, command };
+        if (CLIMBS_OUT.test(command)) {
+          return {
+            error:
+              "Refused: `..` climbs out of the repo. Paths in a command are relative to the repo it runs in — to read another repo, call again with that `repo`.",
+            command,
+          };
+        }
         try {
           const out = await invoke<{
             returncode: number;
@@ -324,6 +345,16 @@ export function buildSuiteChatTools(repos: WorkspaceRepo[]) {
     }),
   } as const);
 }
+
+/** A `..` path segment anywhere in a command line.
+ *
+ *  `run_command` is the one tool that doesn't route its paths through
+ *  `resolveRepoPath`, and the Rust validator only rejects ABSOLUTE paths — so
+ *  `cat ../other-repo/appsettings.json` runs, reading a repo the user may have
+ *  deselected in the Repos chips, or anything else beside the repo root. Every
+ *  legitimate use of this tool is repo-relative; another repo is reachable by
+ *  passing `repo`, which is what the scope is enforced on. */
+const CLIMBS_OUT = /(^|[^\w.])\.\.($|[\\/])/;
 
 /** Mirror of the Rust `GrepResponse`. */
 type GrepResponse = {
@@ -449,7 +480,9 @@ export function capToolResult(
   const previewLen = Math.min(TOOL_RESULT_PREVIEW, cap);
   return {
     error: `result too large: ${serialized.length} characters (cap ${cap})`,
-    ...(previewLen > 0 ? { preview: serialized.slice(0, previewLen) } : {}),
+    ...(previewLen > 0
+      ? { preview: sliceWholeChars(serialized, previewLen) }
+      : {}),
     hint:
       (previewLen > 0
         ? `Only the first ${previewLen} characters of the raw result are above, cut mid-structure. `
@@ -563,6 +596,15 @@ export function clipAroundMatch(
 function isLowSurrogate(text: string, i: number): boolean {
   const c = text.charCodeAt(i);
   return c >= 0xdc00 && c <= 0xdfff;
+}
+
+/** `text.slice(0, end)` that never cuts a surrogate pair in half. Same hazard
+ *  {@link clipAroundMatch} guards: a lone surrogate survives JSON.stringify and
+ *  reaches the provider as a malformed string, which is a 400 for the whole
+ *  request — not just a mangled character. */
+function sliceWholeChars(text: string, end: number): string {
+  if (end >= text.length) return text;
+  return text.slice(0, end > 0 && isLowSurrogate(text, end) ? end - 1 : end);
 }
 
 /** Collapse hits into one row per file for `filesOnly` scans. */
