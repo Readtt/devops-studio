@@ -47,7 +47,11 @@ export function BranchSwitchDialog() {
         if (!open && confirm) cancel(confirm.cwd);
       }}
     >
-      <AlertDialogContent className="max-w-[440px]">
+      {/* Keyed by repo so a second queued confirm REMOUNTS instead of swapping
+          its text in under the user's cursor: without this the dialog never
+          closes between two dirty repos, focus stays on the same button, and a
+          key repeat meant for the first repo checks out the second. */}
+      <AlertDialogContent key={confirm?.cwd ?? "none"} className="max-w-[440px]">
         {confirm ? (
           <Body
             confirm={confirm}

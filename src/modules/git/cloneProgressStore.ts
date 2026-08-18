@@ -184,8 +184,18 @@ export const useCloneProgress = create<State>((set, get) => ({
       // These came from ADO, so their remotes match exactly — bind them to the
       // repos they were cloned from. Not awaited: the clone is what the user
       // is waiting on.
+      //
+      // Runs even when a newer batch has taken the capsule: binding is the only
+      // thing that ever binds these repos (`autoBindRepos` runs at add sites,
+      // never again), so skipping it would leave them unlinked forever and
+      // every code link published against them would deep-link into the wrong
+      // ADO project. Same for the git refresh — the repos exist either way.
       void autoBindRepos(added);
       emitSourceGitChanged();
+      // Only the NARRATION belongs to the batch that owns the capsule: a run
+      // cancelled or restarted while these writes were in flight must not have
+      // its outcome announced by this one.
+      if (get().runToken !== runToken) return;
       useActionToast.getState().show({
         tone: "ok",
         message:

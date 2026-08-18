@@ -34,11 +34,17 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { useActionToast } from "@/components/actionToastStore";
 import { cn } from "@/lib/utils";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { autoBindRepos } from "@/modules/ado/repoBinding";
-import { addRepo, type WorkspaceRepo } from "@/modules/settings/store";
+import {
+  addRepo,
+  onGetSourceCodeRequested,
+  type WorkspaceRepo,
+} from "@/modules/settings/store";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   EMPTY_STATUS,
   emitSourceGitChanged,
@@ -70,6 +76,23 @@ export function StatusBarGit({ onPickDir }: { onPickDir: () => void }) {
   const sourceRoot = single?.root ?? null;
   const status = (single ? statuses.get(single.id) : undefined) ?? EMPTY_STATUS;
 
+  // The Get source code wizard is hosted here rather than inside a switcher so
+  // it can be opened at ANY repo count — including from the Settings window,
+  // which runs the clone through this window's pipeline, not a second one.
+  const [sourceDialogOpen, setSourceDialogOpen] = useState(false);
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+    void onGetSourceCodeRequested(() => setSourceDialogOpen(true)).then((un) => {
+      if (cancelled) un();
+      else unlisten = un;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
   return (
     <div className="flex h-5 items-stretch overflow-hidden rounded-md border border-border/60 bg-card text-[10.5px]">
       {multi ? (
@@ -81,12 +104,24 @@ export function StatusBarGit({ onPickDir }: { onPickDir: () => void }) {
       <span aria-hidden className="w-px self-stretch bg-border/70" />
 
       {multi ? (
-        <ReposSwitcher repos={repos} statuses={statuses} />
+        <ReposSwitcher
+          repos={repos}
+          statuses={statuses}
+          onGetSourceCode={() => setSourceDialogOpen(true)}
+        />
       ) : sourceRoot && status.isRepo ? (
         <BranchSwitcher cwd={sourceRoot} status={status} />
       ) : (
         <GetSourceCodeButton sourceRoot={sourceRoot} notRepoButSet={!!sourceRoot} />
       )}
+
+      {/* Seeded with a configured repo so the destination defaults to the
+          folder the others already live in. */}
+      <GetSourceCodeDialog
+        open={sourceDialogOpen}
+        onOpenChange={setSourceDialogOpen}
+        sourceRoot={sourceRoot}
+      />
     </div>
   );
 }
@@ -312,7 +347,13 @@ function BranchSwitcher({
         </TooltipContent>
       </Tooltip>
 
-      <PopoverContent side="top" align="start" sideOffset={6} className="w-[300px] p-0">
+      <PopoverContent
+        side="top"
+        align="start"
+        sideOffset={6}
+        className="w-[300px] p-0"
+        onOpenAutoFocus={focusCommandSurface}
+      >
         <BranchList cwd={cwd} status={status} onClose={() => setOpen(false)} />
       </PopoverContent>
     </Popover>
@@ -323,9 +364,11 @@ function BranchSwitcher({
 function ReposSwitcher({
   repos,
   statuses,
+  onGetSourceCode,
 }: {
   repos: WorkspaceRepo[];
   statuses: Map<string, GitStatusSummary>;
+  onGetSourceCode: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [drilledId, setDrilledId] = useState<string | null>(null);
@@ -402,7 +445,13 @@ function ReposSwitcher({
         </TooltipContent>
       </Tooltip>
 
-      <PopoverContent side="top" align="start" sideOffset={6} className="w-[300px] p-0">
+      <PopoverContent
+        side="top"
+        align="start"
+        sideOffset={6}
+        className="w-[300px] p-0"
+        onOpenAutoFocus={focusCommandSurface}
+      >
         {drilled ? (
           <BranchList
             cwd={drilled.root}
@@ -418,6 +467,10 @@ function ReposSwitcher({
             busyOf={(repo) => isBranchOpBusy(toasts.get(repo.root))}
             onPick={(repo) => setDrilledId(repo.id)}
             onAdded={close}
+            onGetSourceCode={() => {
+              close();
+              onGetSourceCode();
+            }}
           />
         )}
       </PopoverContent>
@@ -431,33 +484,47 @@ function RepoList({
   busyOf,
   onPick,
   onAdded,
+  onGetSourceCode,
 }: {
   repos: WorkspaceRepo[];
   statusOf: (repo: WorkspaceRepo) => GitStatusSummary;
   busyOf: (repo: WorkspaceRepo) => boolean;
   onPick: (repo: WorkspaceRepo) => void;
   onAdded: () => void;
+  onGetSourceCode: () => void;
 }) {
   const addFolder = async () => {
+    let picked: string | string[] | null;
     try {
-      const picked = await openDialog({
+      picked = await openDialog({
         directory: true,
         multiple: false,
         title: "Choose a source repository",
         defaultPath: repos[0]?.root ?? undefined,
       });
-      if (typeof picked === "string" && picked.length > 0) {
-        const added = await addRepo(picked);
-        void autoBindRepos([added]);
-        onAdded();
-      }
     } catch {
-      // User cancelled — nothing to do.
+      return; // the picker itself failed to open
+    }
+    if (typeof picked !== "string" || picked.length === 0) return; // cancelled
+    try {
+      const added = await addRepo(picked);
+      void autoBindRepos([added]);
+      onAdded();
+    } catch {
+      // `openDialog` RESOLVES null on cancel rather than throwing, so this is a
+      // real registry-write failure. Silently doing nothing leaves the popover
+      // sitting open with no reason to retry.
+      useActionToast.getState().show({
+        tone: "error",
+        message: "Couldn't add that folder.",
+      });
     }
   };
 
   return (
-    <Command>
+    // `tabIndex` so the popover can hand focus here when there's no search box
+    // to take it — cmdk routes arrow keys off this element's keydown.
+    <Command tabIndex={-1}>
       {/* A search box earns its space only once scanning the list is work. */}
       {repos.length > 6 ? <CommandInput placeholder="Find a repo…" /> : null}
       <CommandList className="max-h-[280px]">
@@ -475,12 +542,22 @@ function RepoList({
         </CommandGroup>
       </CommandList>
       <div className="-mb-1 border-t border-border/50">
-        <div className="flex items-center px-1.5 py-1.5">
+        <div className="flex items-center gap-0.5 px-1.5 py-1.5">
           <FooterAction
             icon={FolderAddIcon}
             label="Add folder…"
-            tooltip="Add another repository to the workspace. Every AI feature starts reading it; nothing on disk is touched."
+            tooltip="Add a repository already on this machine. Every AI feature starts reading it; nothing on disk is touched."
             onClick={() => void addFolder()}
+          />
+          {/* Same wizard, and deliberately the same words, as the "Get source
+              code" segment — which only shows when NO repo is configured, so
+              the moment a tester had one the way to get the next one off Azure
+              DevOps disappeared. This is where they come looking for it. */}
+          <FooterAction
+            icon={CloudDownloadIcon}
+            label="Get source code…"
+            tooltip="Clone a repository onto this machine — using your Azure DevOps token, or any HTTPS URL — and add it to the workspace."
+            onClick={onGetSourceCode}
           />
         </div>
       </div>
@@ -633,8 +710,10 @@ function BranchList({
       if (res.status === "fetched") {
         setLastFetched(Date.now());
         // Reuse the current load signal so a list that unmounted (or a cwd that
-        // changed) while the fetch was in flight cancels this reload too.
-        loadBranches(loadSignal.current ?? undefined);
+        // changed) while the fetch was in flight cancels this reload too. No
+        // signal means exactly that case — the effect's cleanup cleared it —
+        // so there is nothing left to reload into.
+        if (loadSignal.current) loadBranches(loadSignal.current);
         // A fetch updates the cached origin/<branch> ref, which is what the
         // ahead/behind chips read — nudge the status poll so "Pull latest ↓N"
         // reflects what we just learned instead of lagging until the 30 s tick.
@@ -839,6 +918,27 @@ function BranchRow({
       ) : null}
     </CommandItem>
   );
+}
+
+/**
+ * Where a switcher popover should put focus when it opens.
+ *
+ * Radix focuses the first TABBABLE node in the content, and cmdk rows are
+ * `role="option"` divs — not tabbable. In the repo list, which only grows a
+ * search box past six repos, that made the footer's "Add folder…" the first
+ * tabbable node: a tooltip-backed button, and Radix Tooltip opens on focus, so
+ * merely opening the switcher fired a tooltip for an action nobody had reached
+ * for. Aim at the cmdk surface instead — its input when there is one, else the
+ * list root, which is the element that routes arrow keys either way.
+ */
+function focusCommandSurface(e: Event) {
+  const content = (e.currentTarget ?? e.target) as HTMLElement | null;
+  const target =
+    content?.querySelector<HTMLElement>("[cmdk-input]") ??
+    content?.querySelector<HTMLElement>("[cmdk-root]");
+  if (!target) return;
+  e.preventDefault();
+  target.focus();
 }
 
 /** A compact, tooltip-backed action in the switcher footer (Fetch / Pull). */
