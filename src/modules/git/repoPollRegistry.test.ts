@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
   gitListener: null as ((root?: string) => void) | null,
-  focusListener: null as ((e: { payload: boolean }) => void) | null,
+  focusListeners: new Set<(e: { payload: boolean }) => void>(),
 }));
 
 vi.mock("./gitOps", () => ({
@@ -22,9 +22,9 @@ vi.mock("./gitOps", () => ({
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     onFocusChanged: async (fn: (e: { payload: boolean }) => void) => {
-      h.focusListener = fn;
+      h.focusListeners.add(fn);
       return () => {
-        h.focusListener = null;
+        h.focusListeners.delete(fn);
       };
     },
   }),
@@ -71,14 +71,43 @@ function track<T>(read: (root: string) => Promise<T>, empty: T, roots: string[])
 
 beforeEach(() => {
   h.gitListener = null;
-  h.focusListener = null;
+  h.focusListeners.clear();
 });
+
+/** Every focus listener the registry currently has registered. */
+function fireFocus() {
+  for (const fn of [...h.focusListeners]) fn({ payload: true });
+}
 
 afterEach(() => {
   __resetRootPolls();
 });
 
 describe("subscribeRootPoll", () => {
+  // `onFocusChanged` resolves asynchronously, and `useRootPoll` unsubscribes
+  // and resubscribes whenever `roots` changes (a repo added, the registry
+  // hydrating, StrictMode's double mount). A cycle inside that window used to
+  // register a second listener while keeping only one of the two handles — the
+  // orphan then fired for the rest of the session, costing one extra git
+  // subprocess per repo on every window focus.
+  it("registers one focus listener across a stop→start race", async () => {
+    const { calls, read } = reader();
+    const first = subscribeRootPoll(read, "", [A], vi.fn());
+    // Deliberately no settle: the registration is still in flight.
+    first.unsubscribe();
+    const second = subscribeRootPoll(read, "", [A], vi.fn());
+    await settle();
+
+    expect(h.focusListeners.size).toBe(1);
+
+    calls.length = 0;
+    fireFocus();
+    await settle();
+    expect(calls).toEqual([A]);
+
+    second.unsubscribe();
+  });
+
   it("reads each root once no matter how many consumers want it", async () => {
     const { calls, read } = reader();
     const first = subscribeRootPoll(read, "", [A, B], vi.fn());

@@ -144,6 +144,16 @@ export type CommitReviewSlice = {
    *  until a quiet one is down to its floor. Picker state only — a saved review
    *  persists the merged list. */
   commitsByRepo: Record<string, RepoCommitMeta[]>;
+  /** Monotonic token bumped on each `loadCommits`, and the token that last
+   *  wrote each repo's bucket. Two passes overlap routinely — a
+   *  `source-git-changed` event narrows a refresh to one repo while the full
+   *  pass from `ensure` is still reading — and without this the later-RESOLVING
+   *  one wins whichever was issued first, folding pre-switch history back over
+   *  the branch the user just moved to. Per repo rather than per pass so a
+   *  narrowed refresh doesn't throw away a full pass's answer for the repos it
+   *  was the only one reading. */
+  commitsLoadSeq: number;
+  commitsSeqByRepo: Record<string, number>;
   commitsLoading: boolean;
   commitsError: string | null;
   /** Repos whose working tree has uncommitted changes — one "Local changes"
@@ -332,8 +342,15 @@ export function orderShas(
 
 /** Normalise persisted selection keys. Bare shas come from the single-root era
  *  (a persisted tab, or a saved row) and belong to the first repo — the one the
- *  app was pinned to when they were written. */
+ *  app was pinned to when they were written.
+ *
+ *  With no repo to attribute them to — preferences still hydrating on a cold
+ *  start — a bare sha has to stay bare. Minting `":<sha>"` freezes the empty id
+ *  into the key, and `loadCommits`'s ownership filter then drops the whole
+ *  restored selection without a word. Left alone, the same fallback resolves it
+ *  once the registry is live. */
 function normalizeKeys(keys: string[], fallbackRepoId: string): string[] {
+  if (!fallbackRepoId) return keys;
   return keys.map((k) => {
     const { repoId, sha } = splitCommitKey(k, fallbackRepoId);
     return commitKey(repoId, sha);
@@ -728,6 +745,8 @@ function emptySlice(modelId: ModelId | null): CommitReviewSlice {
     repoScope: null,
     commits: [],
     commitsByRepo: {},
+    commitsLoadSeq: 0,
+    commitsSeqByRepo: {},
     commitsLoading: false,
     commitsError: null,
     dirtyRepoIds: [],
@@ -984,7 +1003,12 @@ export const useCommitReview = create<State>((set, get) => ({
     // and the answer is merged back from `commitsByRepo` either way.
     const repos = only ? all.filter((r) => sameRoot(r.root, only)) : all;
     if (repos.length === 0) return;
-    patch(set, tabId, { commitsLoading: true, commitsError: null });
+    const seq = (slice.commitsLoadSeq ?? 0) + 1;
+    patch(set, tabId, {
+      commitsLoading: true,
+      commitsError: null,
+      commitsLoadSeq: seq,
+    });
 
     const results = await Promise.all(
       repos.map(async (repo) => {
@@ -1023,10 +1047,20 @@ export const useCommitReview = create<State>((set, get) => ({
     // lossy by exactly the rows the cap already dropped — losing the unread
     // repos from the picker entirely is not.
     const prior = before.commitsByRepo ?? bucketByRepo(before.commits);
+    const priorSeq = before.commitsSeqByRepo ?? {};
+    // False when a pass issued AFTER this one already answered for that repo:
+    // its read is newer, so ours is stale however much later it landed.
+    const owns = (repoId: string) => (priorSeq[repoId] ?? 0) <= seq;
+    const seqByRepo: Record<string, number> = { ...priorSeq };
     const byRepo: Record<string, RepoCommitMeta[]> = {};
     for (const repo of all) {
       const fresh = results.find((r) => r.repo.id === repo.id);
-      byRepo[repo.id] = fresh ? fresh.commits : (prior[repo.id] ?? []);
+      if (fresh && owns(repo.id)) {
+        byRepo[repo.id] = fresh.commits;
+        seqByRepo[repo.id] = seq;
+      } else {
+        byRepo[repo.id] = prior[repo.id] ?? [];
+      }
     }
 
     const merged = mergeCommits(Object.values(byRepo), MERGED_COMMIT_CAP);
@@ -1035,11 +1069,11 @@ export const useCommitReview = create<State>((set, get) => ({
     // repo, so the others keep whatever was last known rather than reading as
     // clean and losing their "Local changes" row.
     const stillDirty = new Set(
-      only
-        ? before.dirtyRepoIds.filter((id) => !results.some((r) => r.repo.id === id))
-        : [],
+      before.dirtyRepoIds.filter(
+        (id) => !results.some((r) => r.repo.id === id) || !owns(id),
+      ),
     );
-    for (const r of results) if (r.dirty) stillDirty.add(r.repo.id);
+    for (const r of results) if (r.dirty && owns(r.repo.id)) stillDirty.add(r.repo.id);
 
     // A repo removed in Settings loses its rows above; its SELECTION keys have
     // to go with them, or the trigger keeps counting commits that no longer
@@ -1057,15 +1091,23 @@ export const useCommitReview = create<State>((set, get) => ({
             Object.entries(before.diffBySha).filter(([key]) => owned(key)),
           );
 
+    // A pass was issued after this one: the spinner and the error line are
+    // ITS to set, whether it is still running (finishing here would render it
+    // as done) or already finished (re-raising the spinner would leave it up
+    // with nothing left to lower it).
+    const superseded = (before.commitsLoadSeq ?? 0) !== seq;
+
     patch(set, tabId, {
       commits: merged,
       commitsByRepo: byRepo,
-      commitsLoading: false,
+      commitsSeqByRepo: seqByRepo,
+      commitsLoading: superseded ? before.commitsLoading : false,
       selectedShas,
       diffBySha,
       dirtyRepoIds: all.filter((r) => stillDirty.has(r.id)).map((r) => r.id),
-      commitsError:
-        failed.length === 0
+      commitsError: superseded
+        ? (before.commitsError ?? null)
+        : failed.length === 0
           ? // A narrowed pass says nothing about the repos it skipped, so it
             // must not clear an error one of them is still in.
             (only ? (before.commitsError ?? null) : null)
@@ -1912,7 +1954,11 @@ function safeParseCommitShas(
             if (!c || typeof c !== "object") return null;
             const { sha, repoId } = c as ReviewedCommit;
             if (typeof sha !== "string" || sha.length === 0) return null;
-            return commitKey(repoId || fallbackRepoId, sha);
+            // Same rule as `normalizeKeys`: with no repo to name yet the bare
+            // sha is the honest key — `":<sha>"` freezes an empty id in and is
+            // then dropped by the ownership filter.
+            const owner = repoId || fallbackRepoId;
+            return owner ? commitKey(owner, sha) : sha;
           })
           .filter((s): s is string => s !== null);
         if (keys.length > 0) return keys;

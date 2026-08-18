@@ -78,6 +78,7 @@ import {
 } from "@/modules/ado";
 import { autoBindRepos } from "@/modules/ado/repoBinding";
 import { ActionToast } from "@/components/ActionToast";
+import { useActionToast } from "@/components/actionToastStore";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { AzureDevOpsBrand } from "@/components/AzureDevOpsBrand";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
@@ -464,12 +465,17 @@ function AppShell() {
       if (!resolved) {
         const gate = checkReadable(input.path);
         if (!gate.ok) {
-          // No tab, so no pane to render the reason in. Logged rather than
-          // swallowed: a click that does nothing at all is indistinguishable
-          // from a broken button, and this is the one path where that happens.
+          // No tab, so no pane to render the reason in — say it in the toast
+          // capsule instead. A click that does nothing at all is
+          // indistinguishable from a broken button, and this is the one path
+          // where that happens.
           console.warn(
             `[code-viewer] refused to open ${input.path}: ${gate.reason}`,
           );
+          useActionToast.getState().show({
+            tone: "error",
+            message: `Can't open ${input.path} — ${gate.reason.replace(/^Refused: /, "")}`,
+          });
           return;
         }
       }
@@ -507,7 +513,14 @@ function AppShell() {
         input.besideLeafId && !reused
           ? store.openTabBeside(input.besideLeafId, viewerInput)
           : store.openTab(viewerInput);
-      for (const r of plan.retitle) store.renameTab(r.id, r.title);
+      // Only when a tab was actually ADDED. On reuse `openTab` reactivates the
+      // existing tab and discards `plan.title`, so prefixing its siblings for a
+      // collision with a tab that was never created leaves the focused one bare
+      // beside newly-prefixed neighbours — the odd-one-out this planner exists
+      // to avoid.
+      if (!reused) {
+        for (const r of plan.retitle) store.renameTab(r.id, r.title);
+      }
       // When the tab is reused, props don't change so React's effect won't
       // re-run the scroll + pulse. Nudge the pane via a window event so
       // re-clicking the same chip still lands the user on the right line.

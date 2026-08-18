@@ -30,6 +30,12 @@ type Channel<T> = {
   timer: number | null;
   unlistenFocus: (() => void) | null;
   unlistenGit: (() => void) | null;
+  /** Bumped on every stop. `onFocusChanged` resolves asynchronously, so a
+   *  stop→start cycle inside that window (a repo added, `roots` changing,
+   *  StrictMode's double mount) used to register a second listener and keep
+   *  only one of the two handles — the orphan then fired for the rest of the
+   *  session, costing a second git fan-out per repo on every window focus. */
+  generation: number;
 };
 
 /** Keyed by the reader function, which is why those must be module-level
@@ -48,6 +54,7 @@ function channelFor<T>(read: Reader<T>, empty: T): Channel<T> {
     timer: null,
     unlistenFocus: null,
     unlistenGit: null,
+    generation: 0,
   };
   channels.set(read, created as Channel<unknown>);
   return created;
@@ -91,6 +98,7 @@ async function refreshChannel<T>(channel: Channel<T>, only?: string | string[]) 
 }
 
 function startChannel<T>(channel: Channel<T>) {
+  const generation = channel.generation;
   channel.timer = window.setInterval(() => void refreshChannel(channel), REFRESH_MS);
   // Focus catches branch switches made in an external terminal.
   void getCurrentWindow()
@@ -98,7 +106,10 @@ function startChannel<T>(channel: Channel<T>) {
       if (focused) void refreshChannel(channel);
     })
     .then((un) => {
-      if (channel.subscribers.size === 0) un();
+      // A listener whose channel was stopped (or restarted) while this was
+      // pending has nowhere to be stored — the handle slot belongs to the run
+      // that came after it. Unregister rather than leak.
+      if (channel.generation !== generation || channel.subscribers.size === 0) un();
       else channel.unlistenFocus = un;
     })
     .catch(() => {});
@@ -106,6 +117,7 @@ function startChannel<T>(channel: Channel<T>) {
 }
 
 function stopChannel<T>(channel: Channel<T>) {
+  channel.generation++;
   if (channel.timer !== null) window.clearInterval(channel.timer);
   channel.timer = null;
   channel.unlistenFocus?.();

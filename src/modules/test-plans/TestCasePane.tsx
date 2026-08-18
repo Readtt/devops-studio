@@ -442,8 +442,11 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
                     ? buildAdoReposWebUrl({
                         orgUrl: conn.orgUrl,
                         project,
+                        // No branch means none was ever stamped. Publish
+                        // deliberately records nothing rather than a guessed
+                        // default, so the reader must not re-invent one.
                         repoName: l.repoName,
-                        branch: l.trackingBranch || "main",
+                        branch: l.trackingBranch || undefined,
                         filePath,
                         lineRange: l.lineRange ?? undefined,
                       })

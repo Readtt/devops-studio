@@ -2784,26 +2784,32 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         // When the backend already told us there's no test point at all, report
         // that instead — it's the reason any outcome write would fail, and a
         // retry loop against a point that will never exist just wastes time.
+        // Every non-fatal problem below lands in the SAME `error` field, so
+        // they are collected and written once. Written as they happened, the
+        // last one silently erased the others — a case could lose its links and
+        // say only that its outcome didn't stick.
+        const warnings: string[] = [];
+
         // A link whose path names no configured repo can't be published (the
         // parser requires a repo, so a blank one is a dead line). The case is
         // fine and stays "ok" — but say it lost links, because a case that
         // published with no Linked source section is indistinguishable from one
         // the model never found anything to link.
         if (droppedLinks > 0) {
-          updateLog(set, c.uid, {
-            error: `${droppedLinks} source ${droppedLinks === 1 ? "link" : "links"} couldn't be published — the ${droppedLinks === 1 ? "path names" : "paths name"} no configured repo.`,
-          });
+          warnings.push(
+            `${droppedLinks} source ${droppedLinks === 1 ? "link" : "links"} couldn't be published — the ${droppedLinks === 1 ? "path names" : "paths name"} no configured repo.`,
+          );
         }
 
         if (pointWarning) {
-          updateLog(set, c.uid, {
-            // Say the outcome was dropped. Without a point there's nothing to
-            // record it against, and silently ignoring a choice the reviewer
-            // made is how "it published fine" turns into a wrong test report.
-            error: c.desiredOutcome
+          // Say the outcome was dropped. Without a point there's nothing to
+          // record it against, and silently ignoring a choice the reviewer
+          // made is how "it published fine" turns into a wrong test report.
+          warnings.push(
+            c.desiredOutcome
               ? `${pointWarning} Its "${c.desiredOutcome}" outcome wasn't recorded.`
               : pointWarning,
-          });
+          );
         } else if (c.desiredOutcome) {
           try {
             let points = await listTestPoints(planId, suiteId, caseId);
@@ -2821,10 +2827,14 @@ export function createGenerationSessionStore(): GenerationSessionStore {
               outcome: c.desiredOutcome,
             });
           } catch (e) {
-            updateLog(set, c.uid, {
-              error: `Published, but couldn't set the run outcome: ${errToString(e)}`,
-            });
+            warnings.push(
+              `Published, but couldn't set the run outcome: ${errToString(e)}`,
+            );
           }
+        }
+
+        if (warnings.length > 0) {
+          updateLog(set, c.uid, { error: warnings.join(" ") });
         }
       } catch (e) {
         updateLog(set, c.uid, {
@@ -3942,6 +3952,29 @@ function linkRepo(
   return splitRepoPath(link.filePath, repos)?.repo ?? null;
 }
 
+/** A link's path as ADO addresses it: relative to the repo ROOT, with the
+ *  `<repo>/` prefix that the app addresses files by taken off.
+ *
+ *  Publishing the prefixed form is what `repoPaths.ts` says never happens, and
+ *  it breaks the deep link for everyone but the author: the published `repo:`
+ *  is the ADO repository name while the prefix is the WORKSPACE FOLDER name,
+ *  and only the local registry connects the two — so a reader without that
+ *  folder configured can't tell the prefix from a real first directory, and
+ *  every `?path=` it builds 404s.
+ *
+ *  Only stripped when the prefix names the repo the link was attributed to; a
+ *  legacy draft with no prefix at all is already in this form. */
+function linkPathForAdo(
+  link: DraftSourceLink,
+  repo: WorkspaceRepo | null,
+  repos: WorkspaceRepo[],
+): string {
+  if (!repo) return link.filePath;
+  const split = splitRepoPath(link.filePath, repos);
+  if (!split || split.repo.id !== repo.id) return link.filePath;
+  return split.within || link.filePath;
+}
+
 /** The repos a batch's links and code refs actually name — the only ones worth
  *  a git probe at publish time. Deduped, so N cases citing one repo cost one
  *  subprocess, and a repo nobody linked to costs none. */
@@ -4005,7 +4038,7 @@ function renderSourceLinksBlock(
       repoId: repo?.ado?.repoId ?? l.repoId ?? repoName,
       repoName,
       project: repo?.ado?.project ?? undefined,
-      filePath: l.filePath,
+      filePath: linkPathForAdo(l, repo, repos),
       symbol: l.symbol ?? undefined,
       lineRange: l.lineRange ?? undefined,
       generationBranch: branch,

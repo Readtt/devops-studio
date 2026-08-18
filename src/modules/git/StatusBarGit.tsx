@@ -37,6 +37,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useActionToast } from "@/components/actionToastStore";
 import { cn } from "@/lib/utils";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { Skeleton } from "@/components/ui/skeleton";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { autoBindRepos } from "@/modules/ado/repoBinding";
 import {
@@ -382,8 +383,13 @@ function ReposSwitcher({
     setDrilledId(null);
   };
 
-  const statusOf = (repo: WorkspaceRepo) =>
-    statuses.get(repo.id) ?? EMPTY_STATUS;
+  // Undefined until this repo's first poll answers, which is NOT the same thing
+  // as `isRepo: false` — collapsing the two labelled every row "not a git
+  // repository" and disabled it on every cold start. `summaryOf` is the folded
+  // form for the aggregates below, where "not read yet" and "not a repo" both
+  // correctly mean "contributes nothing".
+  const statusOf = (repo: WorkspaceRepo) => statuses.get(repo.id);
+  const summaryOf = (repo: WorkspaceRepo) => statusOf(repo) ?? EMPTY_STATUS;
   // A repo removed from the registry while the popover sat open falls back to
   // the list rather than drilling into nothing.
   const drilled = repos.find((r) => r.id === drilledId) ?? null;
@@ -392,7 +398,7 @@ function ReposSwitcher({
   // many places they're spread across. Falls back to the repo count rather than
   // naming one branch while some repo hasn't got one — the count is never wrong.
   const refs = repos
-    .map((r) => (statusOf(r).isRepo ? branchLabel(statusOf(r)) : null))
+    .map((r) => (summaryOf(r).isRepo ? branchLabel(summaryOf(r)) : null))
     .filter((r): r is string => !!r);
   const distinct = new Set(refs);
   const label =
@@ -401,8 +407,8 @@ function ReposSwitcher({
       : distinct.size > 1
         ? `${distinct.size} branches`
         : `${repos.length} repos`;
-  const dirty = repos.filter((r) => statusOf(r).dirty).length;
-  const parked = repos.some((r) => statusOf(r).parkedHere);
+  const dirty = repos.filter((r) => summaryOf(r).dirty).length;
+  const parked = repos.some((r) => summaryOf(r).parkedHere);
 
   return (
     <Popover
@@ -455,7 +461,7 @@ function ReposSwitcher({
         {drilled ? (
           <BranchList
             cwd={drilled.root}
-            status={statusOf(drilled)}
+            status={summaryOf(drilled)}
             repoName={drilled.name}
             onBack={() => setDrilledId(null)}
             onClose={close}
@@ -487,7 +493,7 @@ function RepoList({
   onGetSourceCode,
 }: {
   repos: WorkspaceRepo[];
-  statusOf: (repo: WorkspaceRepo) => GitStatusSummary;
+  statusOf: (repo: WorkspaceRepo) => GitStatusSummary | undefined;
   busyOf: (repo: WorkspaceRepo) => boolean;
   onPick: (repo: WorkspaceRepo) => void;
   onAdded: () => void;
@@ -572,14 +578,15 @@ function RepoRow({
   onSelect,
 }: {
   repo: WorkspaceRepo;
-  status: GitStatusSummary;
+  /** Undefined until the first poll answers — the row is pending, not bad. */
+  status: GitStatusSummary | undefined;
   busy: boolean;
   onSelect: () => void;
 }) {
   return (
     <CommandItem
       value={repo.name}
-      disabled={busy || !status.isRepo}
+      disabled={busy || status?.isRepo === false}
       onSelect={onSelect}
       className="items-center gap-2"
     >
@@ -588,6 +595,8 @@ function RepoRow({
         <span className="shrink-0 text-[10px] text-muted-foreground">
           working…
         </span>
+      ) : !status ? (
+        <Skeleton className="h-3 w-16 shrink-0" />
       ) : !status.isRepo ? (
         <span className="shrink-0 text-[10px] text-muted-foreground/70">
           not a git repository

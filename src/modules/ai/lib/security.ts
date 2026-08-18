@@ -59,6 +59,34 @@ const SECRET_BASENAME_PATTERNS: RegExp[] = [
 ];
 
 /**
+ * Extensions that make a basename SOURCE CODE whatever it happens to be named.
+ *
+ * The patterns above are about secret STORES, and two of them also match
+ * ordinary code: `Credentials.cs` is a class (the `credentials` pattern matches
+ * on the dot that follows) and `messages.key.ts` is a lookup table. Refusing
+ * those costs an AI surface a file it had every reason to read, and costs the
+ * code viewer — which runs the same gate on a user's own click — a click that
+ * does nothing at all.
+ *
+ * Shell and script extensions are deliberately absent: `credentials.sh` really
+ * is where an `export AWS_SECRET_ACCESS_KEY=…` lives. A basename with no
+ * extension, a trailing dot, or an NTFS stream suffix (`Credentials.cs::$DATA`)
+ * doesn't match here either, so every ambiguous spelling stays gated.
+ */
+const SOURCE_CODE_EXTENSIONS = new Set([
+  "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs",
+  "cs", "vb", "fs", "java", "kt", "kts", "scala", "go", "rs",
+  "py", "rb", "php", "swift", "dart", "lua", "ex", "exs", "hs",
+  "c", "h", "cc", "cpp", "cxx", "hpp", "hxx", "hh", "m", "mm",
+  "sql", "vue", "svelte", "cshtml", "razor",
+]);
+
+function isSourceCode(base: string): boolean {
+  const dot = base.lastIndexOf(".");
+  return dot > 0 && SOURCE_CODE_EXTENSIONS.has(base.slice(dot + 1).toLowerCase());
+}
+
+/**
  * Protected directories that legitimately appear at ANY depth — a tool dir
  * under the user's home, a `.git` inside a repo. Matched as a whole path
  * segment run: exact path, or prefix where the next char is a separator.
@@ -237,12 +265,14 @@ export function checkReadable(path: string): SafetyResult {
   }
 
   const base = basename(path);
-  for (const re of SECRET_BASENAME_PATTERNS) {
-    if (re.test(base)) {
-      return {
-        ok: false,
-        reason: `Refused: "${base}" matches a sensitive-file pattern.`,
-      };
+  if (!isSourceCode(base)) {
+    for (const re of SECRET_BASENAME_PATTERNS) {
+      if (re.test(base)) {
+        return {
+          ok: false,
+          reason: `Refused: "${base}" matches a sensitive-file pattern.`,
+        };
+      }
     }
   }
 

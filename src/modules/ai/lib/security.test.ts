@@ -79,6 +79,50 @@ describe("checkReadable — secret basenames", () => {
   });
 });
 
+// The name heuristics are about secret STORES, and two of them also match
+// ordinary code. Refusing those cost the AI a file it had every reason to read
+// and cost the code viewer — same gate, on a user's own click — a click that
+// did nothing at all.
+describe("checkReadable — source files that trip a secret name", () => {
+  it("allows Credentials.cs and its siblings in other languages", () => {
+    expect(checkReadable("C:/src/app/Auth/Credentials.cs")).toMatchObject({
+      ok: true,
+    });
+    expect(checkReadable("/src/auth/credentials.ts")).toMatchObject({ ok: true });
+    expect(checkReadable("/src/auth/Credentials.java")).toMatchObject({
+      ok: true,
+    });
+  });
+
+  it("allows a source file whose name merely contains .key", () => {
+    expect(checkReadable("/src/i18n/messages.key.ts")).toMatchObject({ ok: true });
+  });
+
+  it("still blocks the real secret stores those patterns are for", () => {
+    expect(checkReadable("/home/me/.aws/credentials")).toMatchObject({
+      ok: false,
+    });
+    expect(checkReadable("/home/me/certs/private.key")).toMatchObject({
+      ok: false,
+    });
+    expect(checkReadable("/home/me/.env")).toMatchObject({ ok: false });
+  });
+
+  it("does not exempt scripts, where an exported secret really does live", () => {
+    expect(checkReadable("/src/credentials.sh")).toMatchObject({ ok: false });
+    expect(checkReadable("/src/credentials.ps1")).toMatchObject({ ok: false });
+  });
+
+  it("does not exempt a stream or trailing-dot spelling of a source name", () => {
+    // Windows opens `Credentials.cs.` as `Credentials.cs`, so an extension the
+    // set doesn't recognise has to fall back to gated, not to allowed.
+    expect(checkReadable("C:/src/credentials.cs::$DATA")).toMatchObject({
+      ok: false,
+    });
+    expect(checkReadable("C:/src/credentials.")).toMatchObject({ ok: false });
+  });
+});
+
 describe("checkReadable — protected directories", () => {
   it("blocks reads under ~/.ssh, .aws, .kube, .git", () => {
     expect(checkReadable("/home/me/.ssh/config")).toMatchObject({ ok: false });

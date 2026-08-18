@@ -16,6 +16,12 @@ let cache: TeamMember[] | null = null;
 let inflight: Promise<TeamMember[]> | null = null;
 /** When the last attempt failed, so remounts don't re-run the fan-out. */
 let failedAt = 0;
+/** Bumped by {@link invalidateTeamMembers}. A fan-out already in flight can't
+ *  be cancelled, so it checks this before writing: a roster for the project we
+ *  just switched AWAY from must not land in the cache, or every reader
+ *  short-circuits on the old project's people for the rest of the session —
+ *  the exact staleness invalidating exists to clear. */
+let generation = 0;
 
 /** How long a failure suppresses retries. Long enough that a picker opening and
  *  closing can't hammer ADO, short enough that fixing a PAT and coming back
@@ -24,15 +30,25 @@ export const TEAM_MEMBERS_RETRY_MS = 60_000;
 
 /** The cache in front of `ado_list_team_members`: one shared fetch, one shared
  *  result, and a backoff after failure. Exported for its own tests — the hook
- *  below is a thin wrapper over exactly this. */
-export function loadTeamMembers(now: number = Date.now()): Promise<TeamMember[]> {
+ *  below is a thin wrapper over exactly this.
+ *
+ *  Takes a CLOCK rather than a timestamp because the failure has to be stamped
+ *  when it happened, not when the request went out: the fan-out is dozens of
+ *  requests and a 429 or a timeout can take most a minute to reject, which used
+ *  to spend most of the backoff window before it began. */
+export function loadTeamMembers(
+  clock: () => number = Date.now,
+): Promise<TeamMember[]> {
   if (cache) return Promise.resolve(cache);
-  if (failedAt && now - failedAt < TEAM_MEMBERS_RETRY_MS) {
+  if (failedAt && clock() - failedAt < TEAM_MEMBERS_RETRY_MS) {
     return Promise.reject(new Error("team members unavailable; backing off"));
   }
   if (!inflight) {
+    const started = generation;
     inflight = listTeamMembers()
       .then((m) => {
+        // Superseded mid-flight: answer this caller, poison nothing.
+        if (started !== generation) return m;
         cache = m;
         failedAt = 0;
         return m;
@@ -40,8 +56,10 @@ export function loadTeamMembers(now: number = Date.now()): Promise<TeamMember[]>
       .catch((e) => {
         // Drop the in-flight promise so a later mount CAN retry — but stamp the
         // failure so "later" means after the backoff, not on the next render.
-        inflight = null;
-        failedAt = now;
+        if (started === generation) {
+          inflight = null;
+          failedAt = clock();
+        }
         throw e;
       });
   }
@@ -54,6 +72,7 @@ export function loadTeamMembers(now: number = Date.now()): Promise<TeamMember[]>
  * people — names that aren't assignable on the work items being created now.
  */
 export function invalidateTeamMembers(): void {
+  generation++;
   cache = null;
   inflight = null;
   failedAt = 0;

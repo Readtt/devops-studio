@@ -7,11 +7,17 @@ const h = vi.hoisted(() => ({
   added: [] as string[],
   toasts: [] as { tone: string; message: string }[],
   fail: new Set<string>(),
+  /** Make the registry write fail — a locked settings file, say. */
+  addFails: false,
+  /** Run inside the registry write, i.e. while the batch is superseded-able. */
+  duringAdd: null as (() => void) | null,
 }));
 
 vi.mock("@/modules/settings/store", () => ({
   addRepo: async (root: string) => {
     h.added.push(root);
+    h.duringAdd?.();
+    if (h.addFails) throw new Error("settings file is locked");
     return { id: root, name: root, root, ado: null };
   },
 }));
@@ -54,6 +60,8 @@ beforeEach(() => {
   h.added = [];
   h.toasts = [];
   h.fail = new Set();
+  h.addFails = false;
+  h.duringAdd = null;
   useCloneProgress.getState().dismiss();
 });
 
@@ -88,6 +96,36 @@ describe("cloneProgressStore", () => {
 
     expect(h.added).toEqual(["C:\\clones\\repo-one"]);
     expect(h.toasts).toEqual([{ tone: "ok", message: "Added repo-one" }]);
+  });
+
+  it("says the clones landed even though the workspace write didn't", async () => {
+    h.addFails = true;
+    await useCloneProgress.getState().startBatch({
+      jobs: [job("repo-one")],
+      destParent: "C:\clones",
+    });
+
+    expect(h.toasts).toEqual([
+      {
+        tone: "error",
+        message: "Cloned repo-one, but couldn't add it to the workspace",
+      },
+    ]);
+  });
+
+  // The success path has always been token-guarded; the failure path wasn't, so
+  // a batch the user cancelled still narrated its outcome over the one they
+  // were actually watching.
+  it("stays quiet when a superseded batch fails to add its clones", async () => {
+    h.addFails = true;
+    h.duringAdd = () => useCloneProgress.getState().cancel();
+
+    await useCloneProgress.getState().startBatch({
+      jobs: [job("repo-one")],
+      destParent: "C:\clones",
+    });
+
+    expect(h.toasts).toEqual([]);
   });
 
   it("says nothing when the whole batch failed", async () => {

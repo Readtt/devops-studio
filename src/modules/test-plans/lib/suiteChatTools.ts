@@ -10,7 +10,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { tool } from "ai";
 import { z } from "zod";
-import { cleanPathArg, resolveRepoPath } from "@/modules/ai/lib/repoPaths";
+import { cleanPathArg, joinPath, resolveRepoPath } from "@/modules/ai/lib/repoPaths";
+import { checkReadable } from "@/modules/ai/lib/security";
 import type { WorkspaceRepo } from "@/modules/settings/store";
 
 /** Mirror of the Rust ReadResult enum's TS shape. Internal — callers don't
@@ -266,7 +267,7 @@ export function buildSuiteChatTools(repos: WorkspaceRepo[]) {
           // getting its first N files.
           const files = interleave(
             parts.map((p) =>
-              summariseByFile(p.out?.hits ?? []).map((f) => ({
+              summariseByFile(readableHits(p.repo, p.out?.hits ?? [])).map((f) => ({
                 ...f,
                 rel: `${p.repo.name}/${f.rel}`,
               })),
@@ -286,7 +287,7 @@ export function buildSuiteChatTools(repos: WorkspaceRepo[]) {
         // now the repo-prefixed form read_file takes.
         const hits = interleave(
           parts.map((p) =>
-            (p.out?.hits ?? []).map((h) => ({
+            readableHits(p.repo, p.out?.hits ?? []).map((h) => ({
               rel: `${p.repo.name}/${h.rel}`,
               line: h.line,
               text: clipAroundMatch(h.text, re, GREP_LINE_CAP),
@@ -390,6 +391,22 @@ async function listOne(
   } catch (e) {
     return { files: [], truncated: false, error: String(e) };
   }
+}
+
+/** Drop hits in files `read_file` would refuse.
+ *
+ *  `read_file` clears every path through `resolveRepoPath`, which runs the read
+ *  gate; grep is handed the repo ROOT and `fs_grep` walks the tree itself, so
+ *  nothing upstream ever sees the files it opened. Without this, `.env` is
+ *  unreadable by name and readable by pattern — a grep for `SECRET|_KEY=`
+ *  returned its matching lines verbatim. Gated on the joined path, not the
+ *  relative one, so the protected-directory rules match the same way they do
+ *  for a read. */
+function readableHits<T extends { rel: string }>(
+  repo: WorkspaceRepo,
+  hits: T[],
+): T[] {
+  return hits.filter((h) => checkReadable(joinPath(repo.root, h.rel)).ok);
 }
 
 async function grepOne(

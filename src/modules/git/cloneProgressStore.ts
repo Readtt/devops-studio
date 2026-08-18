@@ -204,6 +204,10 @@ export const useCloneProgress = create<State>((set, get) => ({
             : `Added ${successes.length} repos`,
       });
     } catch {
+      // Same token guard as the success path: a run cancelled or restarted
+      // while these writes were in flight must not narrate its outcome over
+      // the one the user is actually watching.
+      if (get().runToken !== runToken) return;
       // The clones are on disk either way — say what didn't happen so the user
       // knows to add them from Settings rather than assuming they're in.
       useActionToast.getState().show({

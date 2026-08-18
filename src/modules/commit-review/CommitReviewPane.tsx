@@ -267,7 +267,15 @@ export function CommitReviewPane({ tabId, modelId, rehydrateRunId }: Props) {
 
   // Nothing readable anywhere — no repos configured, or every one of them
   // failed. A partial failure keeps the pane and shows a banner instead.
-  if (repos.length === 0 || (slice.commitsError && slice.commits.length === 0)) {
+  //
+  // A SAVED run is exempt, on the same grounds `openCommitReviewTab` lets it
+  // open at all: its findings are already on disk, so an empty (or since
+  // emptied) workspace must not be allowed to short-circuit past them and make
+  // the review unreachable.
+  if (
+    !rehydrateRunId &&
+    (repos.length === 0 || (slice.commitsError && slice.commits.length === 0))
+  ) {
     return (
       <div className="flex h-full items-center justify-center p-6">
         <div className="max-w-md rounded-md border border-border/60 bg-card/40 p-5 text-center">

@@ -1267,6 +1267,41 @@ describe("loadCommits — the merged timeline", () => {
     expect(slice(1).selectedShas).toEqual(picked);
   });
 
+  // A `source-git-changed` event narrows a refresh to one repo while the full
+  // pass `ensure` kicked off is still awaiting its reads. Both write the same
+  // buckets, and without a token the later-RESOLVING pass wins whichever was
+  // issued first — folding pre-switch history back over the branch the user
+  // just moved to.
+  it("keeps a narrowed refresh's rows when the full pass it raced resolves last", async () => {
+    let releaseFull = () => {};
+    let readsOfA = 0;
+    mockListCommits.mockImplementation(async (cwd) => {
+      if (cwd !== REPO_A.root) return [meta("b1", REPO_B)];
+      readsOfA++;
+      if (readsOfA === 1) {
+        // The full pass, issued first — held until the narrowed one has landed.
+        await new Promise<void>((r) => (releaseFull = r));
+        return [meta("before-switch", REPO_A)];
+      }
+      return [meta("after-switch", REPO_A)];
+    });
+    seed(1, {});
+
+    const full = useCommitReview.getState().loadCommits(1);
+    await useCommitReview.getState().loadCommits(1, REPO_A.root);
+    releaseFull();
+    await full;
+
+    const shas = slice(1).commits.map((c) => c.sha);
+    expect(shas).toContain("after-switch");
+    expect(shas).not.toContain("before-switch");
+    // The repos the narrowed pass never read still get the full pass's answer.
+    expect(shas).toContain("b1");
+    // And the pass that lost the race must not re-raise the spinner it no
+    // longer owns — nothing would be left to lower it.
+    expect(slice(1).commitsLoading).toBe(false);
+  });
+
   it("a status probe failing only hides that repo's local row", async () => {
     mockStatus.mockImplementation(async (cwd) => {
       if (cwd === REPO_A.root) throw new Error("status failed");

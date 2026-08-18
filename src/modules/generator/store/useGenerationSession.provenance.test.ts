@@ -211,9 +211,51 @@ describe("publish binds each link to the repo its path names", () => {
     // read as "one link" while sitting in the user's description forever.
     expect(block?.match(/^- /gm)).toHaveLength(1);
     expect(block).toContain("repo: repo-one");
-    expect(parseSourceLinks(block ?? "")[0].filePath).toBe(
-      "repo-one/src/auth/login.cs",
-    );
+    expect(parseSourceLinks(block ?? "")[0].filePath).toBe("src/auth/login.cs");
+  });
+
+  // ADO's `?path=` resolves against the repo ROOT, so the addressing prefix has
+  // to come off before publish. Left on, the link only resolves on a machine
+  // that has this exact folder configured: the published `repo:` is the ADO
+  // repository name while the prefix is the WORKSPACE FOLDER name, and nothing
+  // in the description connects the two.
+  it("publishes the path relative to the repo, not the addressing prefix", async () => {
+    const { link } = await publish(true, [
+      { filePath: "repo-two/src/api/handler.ts" },
+    ]);
+    expect(link.filePath).toBe("src/api/handler.ts");
+  });
+
+  it("strips the prefix even when the ADO name differs from the folder", async () => {
+    // The case the prefix actively breaks: a reader can't recognise
+    // `repo-two/` as a prefix at all when the link says `repo: Payments.Api`.
+    const bound = createRepo("C:/src/repo-two");
+    usePreferencesStore.setState({
+      repos: [
+        createRepo("C:/src/repo-one"),
+        {
+          ...bound,
+          ado: { repoId: "ado-id", repoName: "Payments.Api", project: "Pay" },
+        },
+      ],
+    });
+
+    const { link } = await publish(true, [
+      { filePath: "repo-two/src/api/handler.ts" },
+    ]);
+    expect(link.repoName).toBe("Payments.Api");
+    expect(link.filePath).toBe("src/api/handler.ts");
+  });
+
+  it("leaves a legacy unprefixed path alone", async () => {
+    // Pre-prefix drafts named their repo in `repoName` and carried a path that
+    // was already repo-relative. Stripping its first segment would eat a real
+    // directory.
+    const { link } = await publish(true, [
+      { repoName: "repo-two", filePath: "src/api/handler.ts" },
+    ]);
+    expect(link.repoName).toBe("repo-two");
+    expect(link.filePath).toBe("src/api/handler.ts");
   });
 
   it("emits no block at all when every link is unclaimable", async () => {

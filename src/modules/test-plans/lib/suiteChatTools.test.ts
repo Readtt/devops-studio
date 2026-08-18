@@ -420,6 +420,43 @@ describe("grep · result shaping", () => {
     });
   });
 
+  // `read_file` clears every path through `resolveRepoPath`, which runs the
+  // read gate; grep is handed the repo ROOT and `fs_grep` walks the tree
+  // itself. Ungated, `.env` was unreadable by name and readable by pattern —
+  // a search for `_KEY=` returned its matching lines verbatim.
+  it("drops hits in files read_file would refuse", async () => {
+    invoke.mockResolvedValue({
+      hits: [
+        { path: "x", rel: ".env", line: 1, text: "API_KEY=sk-live-1234" },
+        { path: "x", rel: "certs/server.pem", line: 3, text: "PRIVATE_KEY=..." },
+        { path: "x", rel: "src/config.ts", line: 9, text: "const API_KEY = env" },
+      ],
+      truncated: false,
+      files_scanned: 3,
+    });
+    const out = (await callTool("grep", { pattern: "KEY" })) as {
+      hits: Array<{ rel: string; text: string }>;
+    };
+    expect(out.hits.map((h) => h.rel)).toEqual(["iSyncKit/src/config.ts"]);
+    expect(JSON.stringify(out)).not.toContain("sk-live-1234");
+  });
+
+  it("drops refused files from the filesOnly scan too", async () => {
+    invoke.mockResolvedValue({
+      hits: [
+        { path: "x", rel: ".env.production", line: 1, text: "SECRET=1" },
+        { path: "x", rel: "src/a.ts", line: 2, text: "SECRET" },
+      ],
+      truncated: false,
+      files_scanned: 2,
+    });
+    const out = (await callTool("grep", {
+      pattern: "SECRET",
+      filesOnly: true,
+    })) as { files: Array<{ rel: string }> };
+    expect(out.files.map((f) => f.rel)).toEqual(["iSyncKit/src/a.ts"]);
+  });
+
   it("collapses to per-file counts under filesOnly", async () => {
     invoke.mockResolvedValue({
       hits: [
