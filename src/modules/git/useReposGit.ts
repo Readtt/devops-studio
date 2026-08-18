@@ -1,29 +1,24 @@
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useMemo, useState } from "react";
 
 import { usePreferencesStore, usePrimaryRepoRoot } from "@/modules/settings/preferences";
-import { sameRoot, type WorkspaceRepo } from "@/modules/settings/store";
+import type { WorkspaceRepo } from "@/modules/settings/store";
 import {
   EMPTY_REPO_INFO,
   EMPTY_STATUS,
   gitRepoInfo,
   gitStatusSummary,
-  onSourceGitChanged,
   type GitRepoInfo,
   type GitStatusSummary,
 } from "./gitOps";
-
-const REFRESH_MS = 30_000;
+import { subscribeRootPoll } from "./repoPollRegistry";
 
 /**
- * Poll `read` for every root in `roots`, keyed by root.
+ * Subscribe to the shared poll for `read` over `roots`.
  *
- * Same cadence the single-root readers always had: every 30 s, on window focus,
- * and the moment an in-app git action lands. A change event that names a root
- * refreshes only that repo; one that names none refreshes all of them.
- *
- * `read` and `empty` must be module-level constants — they're effect deps, so an
- * inline arrow would restart the poll on every render.
+ * The poll itself lives in `repoPollRegistry` — outside React, shared by every
+ * mounted consumer — because each read is a git subprocess per repo and this
+ * hook has many simultaneous callers. `read` and `empty` must be module-level
+ * constants: `read` is the channel's identity, and both are effect deps.
  */
 function useRootPoll<T>(
   roots: string[],
@@ -36,57 +31,11 @@ function useRootPoll<T>(
 
   useEffect(() => {
     const list = JSON.parse(key) as string[];
-    if (list.length === 0) {
-      setByRoot(new Map());
-      return;
-    }
-
-    let cancelled = false;
-    const refresh = async (only?: string) => {
-      const targets = only ? list.filter((r) => sameRoot(r, only)) : list;
-      if (targets.length === 0) return;
-      const results = await Promise.all(
-        targets.map((root) =>
-          read(root)
-            .then((v) => v ?? empty)
-            .catch(() => empty),
-        ),
-      );
-      if (cancelled) return;
-      setByRoot((prev) => {
-        const next = new Map(prev);
-        targets.forEach((root, i) => next.set(root, results[i]));
-        // Drop repos that left the registry while their read was in flight.
-        for (const root of next.keys()) {
-          if (!list.includes(root)) next.delete(root);
-        }
-        return next;
-      });
-    };
-
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), REFRESH_MS);
-
-    // Focus catches branch switches made in an external terminal.
-    let unlistenFocus: (() => void) | null = null;
-    void getCurrentWindow()
-      .onFocusChanged(({ payload: focused }) => {
-        if (focused) void refresh();
-      })
-      .then((un) => {
-        if (cancelled) un();
-        else unlistenFocus = un;
-      })
-      .catch(() => {});
-
-    const unlistenGit = onSourceGitChanged((root) => void refresh(root));
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-      if (unlistenFocus) unlistenFocus();
-      unlistenGit();
-    };
+    const { values, unsubscribe } = subscribeRootPoll(read, empty, list, setByRoot);
+    // Adopt whatever the channel already knows, so a remounted pane paints the
+    // last known branch instead of flashing a skeleton.
+    setByRoot(values);
+    return unsubscribe;
   }, [key, read, empty]);
 
   return byRoot;
