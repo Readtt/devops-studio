@@ -4,15 +4,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-/** Branch + short SHA of one repo — echoes Rust `GitRepoInfo`. */
+/** Branch + short SHA of one repo — echoes Rust `GitRepoInfo`.
+ *
+ *  Deliberately narrow: this is the shape the status bar polls for every
+ *  configured repo every 30 s, so each field here costs a `git` subprocess per
+ *  repo per tick. Anything only one surface needs gets its own command —
+ *  see {@link gitRemoteUrl}. */
 export type GitRepoInfo = {
   branch: string | null;
   commit: string | null;
   isRepo: boolean;
   detached: boolean;
-  /** `origin`'s URL, which is what binds this repo to an ADO repository.
-   *  Null when there's no `origin` remote. */
-  remoteUrl: string | null;
 };
 
 export const EMPTY_REPO_INFO: GitRepoInfo = {
@@ -20,7 +22,6 @@ export const EMPTY_REPO_INFO: GitRepoInfo = {
   commit: null,
   isRepo: false,
   detached: false,
-  remoteUrl: null,
 };
 
 /** Working-tree state vs HEAD and upstream — echoes Rust `GitStatusSummary`. */
@@ -116,6 +117,15 @@ export type GitPullResult = {
 /** Read the branch + short SHA of one repo. */
 export async function gitRepoInfo(path: string): Promise<GitRepoInfo> {
   return invoke<GitRepoInfo>("git_repo_info", { path });
+}
+
+/** `origin`'s URL, or null when the repo has no `origin` (or isn't a repo).
+ *
+ *  Its own command rather than a field on {@link GitRepoInfo}: only the ADO
+ *  binder reads it, and `gitRepoInfo` is on the status bar's 30 s poll for
+ *  every configured repo. */
+export async function gitRemoteUrl(path: string): Promise<string | null> {
+  return invoke<string | null>("git_remote_url", { path });
 }
 
 /** Read the working-tree status summary. Returns a not-a-repo summary (never

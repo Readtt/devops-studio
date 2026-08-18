@@ -40,10 +40,6 @@ pub struct GitRepoInfo {
     pub is_repo: bool,
     /// True for a detached HEAD; the UI prefers showing the commit then.
     pub detached: bool,
-    /// `origin`'s URL, which is what binds a workspace repo to its Azure DevOps
-    /// repository. `None` when there is no `origin` (local-only clone, or a
-    /// remote under another name).
-    pub remote_url: Option<String>,
 }
 
 #[tauri::command]
@@ -55,7 +51,6 @@ pub async fn git_repo_info(path: String) -> Result<GitRepoInfo, String> {
             commit: None,
             is_repo: false,
             detached: false,
-            remote_url: None,
         });
     }
     tauri::async_runtime::spawn_blocking(move || read_info(&path))
@@ -70,7 +65,6 @@ fn read_info(path: &Path) -> Result<GitRepoInfo, String> {
             commit: None,
             is_repo: false,
             detached: false,
-            remote_url: None,
         });
     }
     let branch = current_branch(path);
@@ -81,7 +75,6 @@ fn read_info(path: &Path) -> Result<GitRepoInfo, String> {
         commit,
         is_repo: true,
         detached,
-        remote_url: remote_origin_url(path),
     })
 }
 
@@ -115,6 +108,31 @@ pub(crate) fn remote_origin_url(path: &Path) -> Option<String> {
     let out = run_git(path, &["config", "--get", "remote.origin.url"]).ok()?;
     let trimmed = out.trim();
     if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+}
+
+/// `origin`'s URL, which is what binds a workspace repo to its Azure DevOps
+/// repository. `None` when there is no `origin` (local-only clone, or a remote
+/// under another name).
+///
+/// Deliberately NOT part of `git_repo_info`: that one is the status bar's 30 s
+/// poll, run for every configured repo, and only the ADO binder ever wants this
+/// field. Folding it in put a fourth `git` spawn per repo on the poll path for
+/// a value that changes about once in a repo's lifetime.
+#[tauri::command]
+pub async fn git_remote_url(path: String) -> Result<Option<String>, String> {
+    let path = PathBuf::from(&path);
+    if !path.exists() {
+        return Ok(None);
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        if is_repo(&path) {
+            remote_origin_url(&path)
+        } else {
+            None
+        }
+    })
+    .await
+    .map_err(|e| format!("git_remote_url join: {e}"))
 }
 
 pub(crate) fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
@@ -1116,13 +1134,12 @@ mod tests {
     }
 
     #[test]
-    fn repo_info_reports_origin_url_when_one_is_configured() {
+    fn reports_origin_url_when_one_is_configured() {
         let repo = two_commit_repo();
         // A fresh `git init` has no remote, and `git config --get` exits 1 on a
         // missing key — that must read as "no origin", not as a failed call.
-        let bare = read_info(repo.path()).unwrap();
-        assert!(bare.is_repo);
-        assert_eq!(bare.remote_url, None);
+        assert!(read_info(repo.path()).unwrap().is_repo);
+        assert_eq!(remote_origin_url(repo.path()), None);
 
         git(
             repo.path(),
@@ -1133,9 +1150,8 @@ mod tests {
                 "https://dev.azure.com/org/project/_git/repo-one",
             ],
         );
-        let bound = read_info(repo.path()).unwrap();
         assert_eq!(
-            bound.remote_url.as_deref(),
+            remote_origin_url(repo.path()).as_deref(),
             Some("https://dev.azure.com/org/project/_git/repo-one"),
         );
     }
