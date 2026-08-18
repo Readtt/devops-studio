@@ -178,6 +178,12 @@ export async function pressKey(cdp, key) {
     Enter: { code: "Enter", vk: 13, text: "\r" },
     Escape: { code: "Escape", vk: 27, text: "" },
     Tab: { code: "Tab", vk: 9, text: "\t" },
+    // Arrows carry no text, so they dispatch as rawKeyDown/keyUp only — which
+    // is what cmdk and Radix roving-focus listen for.
+    ArrowDown: { code: "ArrowDown", vk: 40, text: "" },
+    ArrowUp: { code: "ArrowUp", vk: 38, text: "" },
+    ArrowLeft: { code: "ArrowLeft", vk: 37, text: "" },
+    ArrowRight: { code: "ArrowRight", vk: 39, text: "" },
   };
   const k = map[key];
   if (!k) throw new Error(`unmapped key: ${key}`);
