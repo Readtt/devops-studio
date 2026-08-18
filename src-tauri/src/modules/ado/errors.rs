@@ -5,8 +5,13 @@
 
 use serde::Serialize;
 
+// `rename_all` renames VARIANTS; `rename_all_fields` renames their fields. Both
+// are load-bearing: the frontend switches on the kebab-case `kind` and then
+// reads camelCase fields off the same object (`src/modules/ado/types.ts`).
+// Without the second, a 429 reached the user as "retry in undefineds" and a 5xx
+// dropped the body excerpt that says what ADO actually rejected.
 #[derive(Debug, Serialize, Clone)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
+#[serde(tag = "kind", rename_all = "kebab-case", rename_all_fields = "camelCase")]
 pub enum AdoError {
     /// Settings (org/project/PAT) not yet configured.
     NotConfigured,
@@ -78,3 +83,47 @@ impl std::fmt::Display for AdoError {
 impl std::error::Error for AdoError {}
 
 pub type AdoResult<T> = Result<T, AdoError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The frontend switches on `kind` and then reads the variant's FIELDS
+    /// (`src/modules/ado/types.ts`). `rename_all` on an enum renames variants
+    /// only — fields need `rename_all_fields`, and without it a 429 reached the
+    /// UI as "Rate limited — retry in undefineds."
+    #[test]
+    fn variant_fields_are_camel_case_for_the_frontend() {
+        let json = serde_json::to_value(AdoError::RateLimited { retry_after_s: 42 }).unwrap();
+        assert_eq!(json["kind"], "rate-limited");
+        assert_eq!(json["retryAfterS"], 42);
+
+        let json = serde_json::to_value(AdoError::Server {
+            status: 500,
+            body_excerpt: "boom".into(),
+        })
+        .unwrap();
+        assert_eq!(json["kind"], "server");
+        assert_eq!(json["status"], 500);
+        assert_eq!(json["bodyExcerpt"], "boom");
+    }
+
+    /// Single-word fields are unaffected by the casing rule, so the variants the
+    /// UI branches on most keep their exact wire names.
+    #[test]
+    fn single_word_fields_keep_their_names() {
+        let json = serde_json::to_value(AdoError::BadPat {
+            reason: "nope".into(),
+        })
+        .unwrap();
+        assert_eq!(json["kind"], "bad-pat");
+        assert_eq!(json["reason"], "nope");
+
+        let json = serde_json::to_value(AdoError::NotFound {
+            resource: "plan 7".into(),
+        })
+        .unwrap();
+        assert_eq!(json["kind"], "not-found");
+        assert_eq!(json["resource"], "plan 7");
+    }
+}
