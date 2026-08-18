@@ -72,7 +72,7 @@ import {
 import type { WorkspaceRepo } from "@/modules/settings/store";
 import { splitRepoPath } from "@/modules/ai/lib/repoPaths";
 import { scopedRepos, toggleRepoScope } from "@/modules/ai/lib/repoScope";
-import { invoke } from "@tauri-apps/api/core";
+import { gitRepoInfo } from "@/modules/git/gitOps";
 import type {
   DraftSourceLink,
   ReviewedBug,
@@ -2695,10 +2695,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       await Promise.all(
         namedRepos(keptCases, keptBugs, publishRepos).map(async (repo) => {
           try {
-            const info = await invoke<{
-              branch: string | null;
-              commit: string | null;
-            }>("git_repo_info", { path: repo.root });
+            const info = await gitRepoInfo(repo.root);
             provenance.set(repo.id, {
               branch: info?.branch ?? null,
               sha: info?.commit ?? null,
@@ -2717,11 +2714,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       // visible in the log with its original "ok" status + result link.
       if (okByUid.has(c.uid)) continue;
       try {
-        const sourceLinksBlock = renderSourceLinksBlock(
-          c.sourceLinks,
-          publishRepos,
-          provenance,
-        );
+        const { block: sourceLinksBlock, dropped: droppedLinks } =
+          renderSourceLinksBlock(c.sourceLinks, publishRepos, provenance);
         const steps = c.steps.map((s, i) => ({
           index: i + 1,
           action: s.action,
@@ -2790,6 +2784,17 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         // When the backend already told us there's no test point at all, report
         // that instead — it's the reason any outcome write would fail, and a
         // retry loop against a point that will never exist just wastes time.
+        // A link whose path names no configured repo can't be published (the
+        // parser requires a repo, so a blank one is a dead line). The case is
+        // fine and stays "ok" — but say it lost links, because a case that
+        // published with no Linked source section is indistinguishable from one
+        // the model never found anything to link.
+        if (droppedLinks > 0) {
+          updateLog(set, c.uid, {
+            error: `${droppedLinks} source ${droppedLinks === 1 ? "link" : "links"} couldn't be published — the ${droppedLinks === 1 ? "path names" : "paths name"} no configured repo.`,
+          });
+        }
+
         if (pointWarning) {
           updateLog(set, c.uid, {
             // Say the outcome was dropped. Without a point there's nothing to
@@ -3912,11 +3917,29 @@ function linkRepo(
   link: DraftSourceLink,
   repos: WorkspaceRepo[],
 ): WorkspaceRepo | null {
-  const split = splitRepoPath(link.filePath, repos);
-  if (split) return split.repo;
+  // An EXACT prefix match first, ahead of `splitRepoPath`, so the one-repo
+  // tolerance can't run before `repoName` gets a say.
+  const head = link.filePath
+    .replace(/\\/g, "/")
+    .replace(/^\.?\/+/, "")
+    .split("/")[0]
+    ?.toLowerCase();
+  const byPrefix = head
+    ? (repos.find((r) => r.name.toLowerCase() === head) ?? null)
+    : null;
+  if (byPrefix) return byPrefix;
+
+  // A link that RECORDS a repo must be resolved by that name or not at all.
+  // Falling through to the tolerance would, at a workspace narrowed back to one
+  // repo, hand every REMOVED repo's link to the survivor — stamped with the
+  // wrong branch and deep-linked into the wrong ADO repository, which is a page
+  // that resolves and shows an unrelated file rather than a visible 404.
   const legacy = link.repoName?.trim().toLowerCase();
-  if (!legacy) return null;
-  return repos.find((r) => r.name.toLowerCase() === legacy) ?? null;
+  if (legacy) return repos.find((r) => r.name.toLowerCase() === legacy) ?? null;
+
+  // Nothing claims it by name: a genuinely unprefixed path, which the resolver
+  // tolerates at one repo and the publisher matches.
+  return splitRepoPath(link.filePath, repos)?.repo ?? null;
 }
 
 /** The repos a batch's links and code refs actually name — the only ones worth
@@ -3958,18 +3981,24 @@ function namedRepos(
  *  A link that names no repo — no usable prefix, no legacy `repoName` — is
  *  DROPPED rather than written blank: `parseSourceLinks` requires a repo, so a
  *  blank one publishes a line that can never be read back, a dead link sitting
- *  in the user's ADO description forever. */
+ *  in the user's ADO description forever. The count comes back with the block
+ *  so the caller can SAY so: a case that quietly published with no Linked
+ *  source section reads as "the model found nothing worth linking". */
 function renderSourceLinksBlock(
   links: DraftSourceLink[] | undefined,
   repos: WorkspaceRepo[],
   provenance: Map<string, RepoProvenance>,
-): string | null {
-  if (!links || links.length === 0) return null;
+): { block: string | null; dropped: number } {
+  if (!links || links.length === 0) return { block: null, dropped: 0 };
   const sl: SourceLink[] = [];
+  let dropped = 0;
   for (const l of links) {
     const repo = linkRepo(l, repos);
     const repoName = repo?.ado?.repoName ?? repo?.name ?? l.repoName;
-    if (!repoName) continue;
+    if (!repoName) {
+      dropped++;
+      continue;
+    }
     const stamp = repo ? provenance.get(repo.id) : undefined;
     const branch = stamp?.branch ?? "";
     sl.push({
@@ -3984,7 +4013,7 @@ function renderSourceLinksBlock(
       trackingBranch: branch,
     });
   }
-  return sl.length > 0 ? renderBlock(sl) : null;
+  return { block: sl.length > 0 ? renderBlock(sl) : null, dropped };
 }
 
 /** Resolve plan + suite metadata into the structured TargetContext that the

@@ -49,11 +49,10 @@ import { useTestPlans } from "@/modules/test-plans";
 import {
   adoErrorMessage,
   getWorkItemTitles,
-  listTeamMembers,
   OUTCOMES,
   suiteCapabilities,
+  useTeamMembers,
   type ExecutionOutcome,
-  type TeamMember,
 } from "@/modules/ado";
 import { useReposGitInfo, type GitRepoInfo } from "@/modules/git";
 import {
@@ -1930,31 +1929,14 @@ function ReviewPhase({
     [bugs, cases],
   );
 
-  // Team members for the "assign a developer" pickers. Fetched once when there
-  // are bugs to assign; stays empty (picker still usable) if ADO can't list
-  // them. We key the effect on whether bugs exist, not their contents — the
-  // member list rarely changes mid-review and isn't worth refetching per edit.
-  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
-  const [teamMembersLoading, setTeamMembersLoading] = useState(false);
+  // Team members for the "assign a developer" pickers, loaded once there are
+  // bugs to assign. Through the SHARED cache, not a local fetch: listing them
+  // enumerates every team in the project and reads each one's membership, so a
+  // per-pane copy meant three open generator tabs paid that fan-out three times
+  // over — and re-paid it on every remount when ADO was refusing.
   const hasBugs = bugs.length > 0;
-  useEffect(() => {
-    if (!hasBugs) return;
-    let cancelled = false;
-    setTeamMembersLoading(true);
-    void listTeamMembers()
-      .then((m) => {
-        if (!cancelled) setTeamMembers(m);
-      })
-      .catch(() => {
-        if (!cancelled) setTeamMembers([]);
-      })
-      .finally(() => {
-        if (!cancelled) setTeamMembersLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [hasBugs]);
+  const { members: teamMembers, loading: teamMembersLoading } =
+    useTeamMembers(hasBugs);
 
   // The shared assignee when every kept bug points at the same developer, so
   // the "assign all" picker reflects current state instead of the placeholder.

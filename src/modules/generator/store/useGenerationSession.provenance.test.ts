@@ -104,6 +104,7 @@ async function publish(
     block: draft?.sourceLinksBlock ?? null,
     link: parseSourceLinks(draft?.sourceLinksBlock ?? "")[0],
     bugCommitSha: bug?.codeLinks[0]?.commitSha ?? null,
+    publishLog: store.getState().publishLog,
   };
 }
 
@@ -218,6 +219,60 @@ describe("publish binds each link to the repo its path names", () => {
   it("emits no block at all when every link is unclaimable", async () => {
     const { block } = await publish(true, [{ filePath: "src/auth/login.cs" }]);
     expect(block).toBeNull();
+  });
+
+  // Dropping is right; dropping SILENTLY is not. A case that published with no
+  // Linked source section is indistinguishable from one the model found nothing
+  // to link — and a tool-less run at 2+ repos produces exactly these paths.
+  it("reports the dropped links on the publish row", async () => {
+    const { publishLog } = await publish(true, [
+      { filePath: "src/auth/login.cs" },
+      { filePath: "src/auth/session.cs" },
+      { filePath: "repo-one/src/ok.cs" },
+    ]);
+    const row = publishLog.find((e) => e.kind === "case");
+    // Still a success — the case itself published fine.
+    expect(row?.status).toBe("ok");
+    expect(row?.error).toContain("2 source links couldn't be published");
+  });
+
+  it("says nothing when every link published", async () => {
+    const { publishLog } = await publish(true, [
+      { filePath: "repo-one/src/ok.cs" },
+    ]);
+    expect(publishLog.find((e) => e.kind === "case")?.error).toBeUndefined();
+  });
+});
+
+// `splitRepoPath` tolerates a missing prefix at exactly one repo, which is
+// right for the RESOLVER (a wrong guess just fails to open a file) and wrong
+// for publish (a wrong guess is a permanent deep link into the wrong repo).
+describe("publish never re-attributes a removed repo's links", () => {
+  beforeEach(() => {
+    resetDoubles();
+    // The workspace has been narrowed back to one repo — the draft was written
+    // when repo-two was still configured.
+    usePreferencesStore.setState({ repos: [createRepo("C:/src/repo-one")] });
+  });
+
+  it("keeps a link recording a removed repo under its OWN name, unstamped", async () => {
+    const { link } = await publish(true, [
+      { repoName: "repo-two", filePath: "repo-two/src/api/handler.ts" },
+    ]);
+    // The failure this guards: published under repo-one, carrying repo-one's
+    // branch and sha. That deep link RESOLVES — it shows an unrelated file in
+    // the wrong repository, so nothing 404s to signal the mistake.
+    expect(link.repoName).toBe("repo-two");
+    expect(link.repoName).not.toBe("repo-one");
+    // No provenance: the repo isn't in the workspace, so its HEAD is unknown
+    // and repo-one's would be a lie about code this case never came from.
+    expect(link.trackingBranch).toBe("");
+    expect(link.generationSha).toBe("");
+  });
+
+  it("still tolerates a genuinely unprefixed path at one repo", async () => {
+    const { link } = await publish(true, [{ filePath: "src/auth/login.cs" }]);
+    expect(link.repoName).toBe("repo-one");
   });
 });
 

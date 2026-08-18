@@ -374,7 +374,27 @@ describe("analyst system prompt — the repo roster", () => {
 
   it("adds no roster to a tool-less run", async () => {
     await runQaAnalyst({ ...base, repos: [] });
-    expect(runnerArg().systemPrompt as string).not.toContain("SOURCE REPOS");
+    expect(runnerArg().systemPrompt as string).not.toContain(
+      "SOURCE REPOS you can read:",
+    );
+  });
+
+  // The base prompt carries the repo-prefixed path rule unconditionally. With
+  // no roster the model is told to prefix paths with names it was never given,
+  // emits a bare path, and publish drops the link for naming no repo — a case
+  // published with no Linked source section and nothing saying why.
+  it("tells a run with nothing in scope not to emit links at all", async () => {
+    await runQaAnalyst({ ...base, repos: [] });
+    const prompt = runnerArg().systemPrompt as string;
+    expect(prompt).toContain("NO SOURCE REPOS ARE IN SCOPE");
+    expect(prompt).toContain("Do NOT emit sourceLinks");
+  });
+
+  it("says nothing of the sort once a repo is in scope", async () => {
+    await runQaAnalyst({ ...base, repos: REPOS });
+    expect(runnerArg().systemPrompt as string).not.toContain(
+      "NO SOURCE REPOS ARE IN SCOPE",
+    );
   });
 
   // Refine replaces the user turn wholesale, so a roster assembled into

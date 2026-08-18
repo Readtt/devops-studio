@@ -410,7 +410,18 @@ export async function executeQaAnalystRun(
  *  turn wholesale (`userPromptOverride`) — a roster built into `buildUserPrompt`
  *  would reach analyze and silently miss every follow-up round. */
 function analystSystemPrompt(repos: WorkspaceRepo[]): string {
-  if (repos.length === 0) return QA_ANALYST_PROMPT;
+  // No roster means no repo is in scope — code search is off, or the user
+  // deselected every Repos chip. The base prompt still carries REPO_PATH_RULE
+  // ("the first segment is always one of the configured repo names") and still
+  // asks for source links, so without this the model is told to prefix paths
+  // with names it was never given. It emits a bare path, publish can't tell
+  // which repo it means, and the link is dropped — a published case with no
+  // Linked source section at all, and nothing anywhere saying why.
+  if (repos.length === 0) {
+    return `${QA_ANALYST_PROMPT}
+
+NO SOURCE REPOS ARE IN SCOPE for this run — you cannot read any code, so the repo-prefixed path rule above has nothing to name. Do NOT emit sourceLinks or codeRefs: a path you did not read is a guess, and a link that names no repo cannot be published. Write the cases from the spec alone.`;
+  }
   return `${QA_ANALYST_PROMPT}
 
 SOURCE REPOS you can read:
