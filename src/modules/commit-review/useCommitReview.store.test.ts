@@ -420,12 +420,61 @@ describe("refreshSource", () => {
 
     const s = slice(1);
     expect(mockListCommits).toHaveBeenCalledWith(REPO_A.root, expect.any(Number));
-    // Both repos re-listed: the merged timeline has to be re-sorted whole.
-    expect(s.commits.map((c) => c.sha)).toEqual(["new", "new"]);
-    expect(s.dirtyRepoIds).toEqual([REPO_A.id, REPO_B.id]);
+    expect(s.commits.map((c) => c.sha)).toEqual(["new"]);
+    expect(s.dirtyRepoIds).toEqual([REPO_A.id]);
     // The stale local diff was dropped and re-read from the live tree.
     expect(mockWorkingTreeDiff).toHaveBeenCalledWith(REPO_A.root);
     expect(s.diffBySha[LOCAL_A]?.rawPatch).toBe("fresh");
+  });
+
+  // A branch switch moves ONE repo. Re-listing the others spends a `git log`
+  // plus a `git status` per repo to re-learn what they already said.
+  it("re-lists only the repo the event names, keeping the others' rows", async () => {
+    seed(1, {
+      commits: [meta("a-old"), meta("b-old", REPO_B)],
+      commitsByRepo: {
+        [REPO_A.id]: [meta("a-old")],
+        [REPO_B.id]: [meta("b-old", REPO_B)],
+      },
+      dirtyRepoIds: [REPO_B.id],
+      selectedShas: [],
+    });
+    mockListCommits.mockResolvedValue([meta("a-new")]);
+    mockStatus.mockResolvedValue({ dirty: false } as Awaited<
+      ReturnType<typeof gitStatusSummary>
+    >);
+
+    await useCommitReview.getState().refreshSource(1, REPO_A.root);
+
+    const s = slice(1);
+    expect(mockListCommits).toHaveBeenCalledTimes(1);
+    expect(mockListCommits).toHaveBeenCalledWith(REPO_A.root, expect.any(Number));
+    // repo-two never moved, so its rows survive verbatim — and its dirty flag
+    // does too, rather than reading as clean because this pass didn't ask.
+    expect(s.commits.map((c) => c.sha).sort()).toEqual(["a-new", "b-old"]);
+    expect(s.dirtyRepoIds).toEqual([REPO_B.id]);
+  });
+
+  // Merging from the CAPPED list would shave rows off every repo the refresh
+  // skipped, so a quiet repo erodes toward its floor one switch at a time.
+  it("re-merges from what each repo returned, not from the capped timeline", async () => {
+    const bRows = Array.from({ length: 40 }, (_, i) =>
+      meta(`b${i}`, REPO_B, `2026-01-${String((i % 28) + 1).padStart(2, "0")}T00:00:00Z`),
+    );
+    seed(1, {
+      commits: [meta("a-old")], // capped view: only ONE of repo-two's 40 rows
+      commitsByRepo: { [REPO_A.id]: [meta("a-old")], [REPO_B.id]: bRows },
+      selectedShas: [],
+    });
+    mockListCommits.mockResolvedValue([meta("a-new")]);
+    mockStatus.mockResolvedValue({ dirty: false } as Awaited<
+      ReturnType<typeof gitStatusSummary>
+    >);
+
+    await useCommitReview.getState().refreshSource(1, REPO_A.root);
+
+    const s = slice(1);
+    expect(s.commits.filter((c) => c.repoId === REPO_B.id)).toHaveLength(40);
   });
 
   // Only the repo that moved has a stale working tree; dropping the others'
@@ -1178,6 +1227,44 @@ describe("loadCommits — the merged timeline", () => {
     seed(1, {});
     await useCommitReview.getState().loadCommits(1);
     expect(slice(1).dirtyRepoIds).toEqual([REPO_B.id]);
+  });
+
+  // Removing a repo in Settings re-runs this pass (the pane watches the repo
+  // signature). Its commits leave the picker, but its SELECTION keys used to
+  // stay — so the trigger counted commits that no longer had a row, and a run
+  // started against changes it could no longer read.
+  it("drops selections and cached diffs belonging to a removed repo", async () => {
+    mockListCommits.mockImplementation(async (cwd) =>
+      cwd === REPO_A.root ? [meta("a1", REPO_A)] : [meta("b1", REPO_B)],
+    );
+    seed(1, {
+      selectedShas: [K(REPO_A.id, "a1"), K(REPO_B.id, "b1"), LOCAL_B],
+      diffBySha: {
+        [K(REPO_A.id, "a1")]: commitDiffOf("a1"),
+        [K(REPO_B.id, "b1")]: commitDiffOf("b1"),
+      },
+    });
+
+    // Repo B leaves the workspace.
+    usePreferencesStore.setState({ repos: [REPO_A] });
+    await useCommitReview.getState().loadCommits(1);
+
+    const s = slice(1);
+    expect(s.commits.map((c) => c.sha)).toEqual(["a1"]);
+    expect(s.selectedShas).toEqual([K(REPO_A.id, "a1")]);
+    expect(Object.keys(s.diffBySha)).toEqual([K(REPO_A.id, "a1")]);
+  });
+
+  it("leaves selections alone when every repo is still configured", async () => {
+    mockListCommits.mockImplementation(async (cwd) =>
+      cwd === REPO_A.root ? [meta("a1", REPO_A)] : [meta("b1", REPO_B)],
+    );
+    const picked = [K(REPO_A.id, "a1"), K(REPO_B.id, "b1"), LOCAL_B];
+    seed(1, { selectedShas: picked });
+
+    await useCommitReview.getState().loadCommits(1);
+
+    expect(slice(1).selectedShas).toEqual(picked);
   });
 
   it("a status probe failing only hides that repo's local row", async () => {

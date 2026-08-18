@@ -29,6 +29,7 @@ import {
   GitBranchIcon,
   Loading03Icon,
   PencilEdit01Icon,
+  RefreshIcon,
   PlayIcon,
   SparklesIcon,
   Tick02Icon,
@@ -363,6 +364,7 @@ export function CommitReviewPane({ tabId, modelId, rehydrateRunId }: Props) {
           onToggleLocal={(repoId) => void toggleLocalChanges(tabId, repoId)}
           onToggle={(key) => void toggleCommit(tabId, key)}
           onClear={() => clearCommits(tabId)}
+          onRefresh={() => void loadCommits(tabId)}
         />
         {selectionCount > 0 ? (
           <Tooltip>
@@ -559,6 +561,15 @@ export function CommitReviewPane({ tabId, modelId, rehydrateRunId }: Props) {
           ) : null}
           — surrounding code is read from the current tree, which may differ from{" "}
           {movedCommits.length > 1 ? "those commits'" : "this commit's"} state.
+        </Banner>
+      ) : null}
+      {/* A repo that couldn't be read drops out of the picker with nothing to
+          show it did. In the single-repo era one failure emptied `commits` and
+          always produced the full-pane error above; now the review quietly
+          covers less of the workspace than the user thinks it does. */}
+      {slice.commitsError && slice.commits.length > 0 ? (
+        <Banner tone="warn">
+          {slice.commitsError} — this review covers the repos that did answer.
         </Banner>
       ) : null}
       {slice.diffError ? (
@@ -1220,6 +1231,7 @@ function CommitPicker({
   onToggleLocal,
   onToggle,
   onClear,
+  onRefresh,
 }: {
   /** Every repo's commits, already merged newest-first. */
   commits: RepoCommitMeta[];
@@ -1234,6 +1246,8 @@ function CommitPicker({
   onToggleLocal: (repoId: string) => void;
   onToggle: (key: string) => void;
   onClear: () => void;
+  /** Re-read every repo's `git log` + dirty state. */
+  onRefresh: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -1449,32 +1463,65 @@ function CommitPicker({
             </CommandGroup>
             )}
           </CommandList>
-          {selected.length > 0 ? (
-            <div className="flex items-center justify-between gap-2 border-t border-border/50 px-2.5 py-1.5 text-[10.5px] text-muted-foreground">
-              <span className="min-w-0 truncate">
-                {[
-                  localSelectedRepos.length > 1
-                    ? `Local changes in ${localSelectedRepos.length} repos`
-                    : localSelected
-                      ? "Local changes"
+          {/* Always rendered, because Refresh lives here: the list is a cache
+              of `git log`, and a commit made in an external terminal only
+              appears on the 30 s poll, on window focus, or on a branch switch.
+              Waiting for one of those to review work you just committed is the
+              gap this closes. */}
+          <div className="flex items-center justify-between gap-2 border-t border-border/50 px-2.5 py-1.5 text-[10.5px] text-muted-foreground">
+            <span className="min-w-0 truncate">
+              {selected.length > 0
+                ? `${[
+                    localSelectedRepos.length > 1
+                      ? `Local changes in ${localSelectedRepos.length} repos`
+                      : localSelected
+                        ? "Local changes"
+                        : null,
+                    commitSelectedCount > 0
+                      ? `${commitSelectedCount} commit${commitSelectedCount === 1 ? "" : "s"}`
                       : null,
-                  commitSelectedCount > 0
-                    ? `${commitSelectedCount} commit${commitSelectedCount === 1 ? "" : "s"}`
-                    : null,
-                ]
-                  .filter(Boolean)
-                  .join(" + ")}{" "}
-                selected
-              </span>
-              <button
-                type="button"
-                onClick={onClear}
-                className="shrink-0 rounded-sm px-1.5 py-px font-medium text-foreground/70 transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
-              >
-                Clear
-              </button>
-            </div>
-          ) : null}
+                  ]
+                    .filter(Boolean)
+                    .join(" + ")} selected`
+                : multiRepo
+                  ? `${commits.length} commits across ${repos.length} repos`
+                  : `${commits.length} commits`}
+            </span>
+            <span className="flex shrink-0 items-center gap-0.5">
+              {selected.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={onClear}
+                  className="shrink-0 rounded-sm px-1.5 py-px font-medium text-foreground/70 transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
+                >
+                  Clear
+                </button>
+              ) : null}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={onRefresh}
+                    disabled={loading}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-px font-medium text-foreground/70 transition-colors hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-60 disabled:hover:bg-transparent"
+                  >
+                    <HugeiconsIcon
+                      icon={RefreshIcon}
+                      size={11}
+                      strokeWidth={1.75}
+                      className={cn(loading && "animate-spin")}
+                    />
+                    Refresh
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-[280px] text-[11px]">
+                  Re-read every repo&rsquo;s recent commits and uncommitted
+                  state — for work you just committed outside the app. Your
+                  selection is kept.
+                </TooltipContent>
+              </Tooltip>
+            </span>
+          </div>
         </Command>
       </PopoverContent>
     </Popover>

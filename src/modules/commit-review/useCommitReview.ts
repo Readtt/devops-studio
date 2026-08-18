@@ -136,6 +136,14 @@ export type CommitReviewSlice = {
   // --- commit picker (multi-select) ---
   /** Every in-scope repo's commits, merged newest-first and capped. */
   commits: RepoCommitMeta[];
+  /** What each repo actually returned, before the merge cap dropped anything.
+   *
+   *  `commits` is derived from this, never the other way round: a narrowed
+   *  refresh re-reads one repo and re-merges, and merging from the CAPPED list
+   *  would let each pass shave a few more rows off the repos it didn't read
+   *  until a quiet one is down to its floor. Picker state only — a saved review
+   *  persists the merged list. */
+  commitsByRepo: Record<string, RepoCommitMeta[]>;
   commitsLoading: boolean;
   commitsError: string | null;
   /** Repos whose working tree has uncommitted changes — one "Local changes"
@@ -214,7 +222,9 @@ type State = {
     rehydrateRunId?: string | null,
     modelId?: ModelId | null,
   ) => Promise<void>;
-  loadCommits: (tabId: number) => Promise<void>;
+  /** Re-read commit lists + dirty state. `only` narrows it to one repo root;
+   *  the repos it skips keep what they last reported. */
+  loadCommits: (tabId: number, only?: string) => Promise<void>;
   /** Add/remove one change from the selection (by `${repoId}:${sha}` key), then
    *  load any missing diffs. Changing the selection invalidates the findings. */
   toggleCommit: (tabId: number, key: string) => Promise<void>;
@@ -582,6 +592,11 @@ async function adoptInterruptedRun(
   } catch {
     return;
   }
+  // Adoption is a nicety on the mount path; `ensure` awaits it, so anything
+  // thrown here rejects the whole mount and leaves the pane on its spinner.
+  // The Rust command answers with an array or fails, but this is the wrong
+  // place to be right by luck.
+  if (!Array.isArray(entries)) return;
   // Another live tab's run — busy, or already adopted — is not ours to take.
   const claimed = new Set<string>();
   for (const [id, s] of get().byTab) {
@@ -712,6 +727,7 @@ function emptySlice(modelId: ModelId | null): CommitReviewSlice {
     repoIds: null,
     repoScope: null,
     commits: [],
+    commitsByRepo: {},
     commitsLoading: false,
     commitsError: null,
     dirtyRepoIds: [],
@@ -959,10 +975,15 @@ export const useCommitReview = create<State>((set, get) => ({
     }
   },
 
-  loadCommits: async (tabId) => {
+  loadCommits: async (tabId, only) => {
     const slice = get().byTab.get(tabId);
     if (!slice) return;
-    const repos = sliceRepos(slice);
+    const all = sliceRepos(slice);
+    // A branch switch moves ONE repo. Re-listing the others spends a
+    // `git log` + a `git status` per repo to re-learn what they already said,
+    // and the answer is merged back from `commitsByRepo` either way.
+    const repos = only ? all.filter((r) => sameRoot(r.root, only)) : all;
+    if (repos.length === 0) return;
     patch(set, tabId, { commitsLoading: true, commitsError: null });
 
     const results = await Promise.all(
@@ -993,18 +1014,61 @@ export const useCommitReview = create<State>((set, get) => ({
       }),
     );
 
-    const merged = results
-      .flatMap((r) => r.commits)
-      .sort((a, b) => commitTime(b) - commitTime(a))
-      .slice(0, MERGED_COMMIT_CAP);
+    // Fold this pass over what the repos we didn't read last said, then drop
+    // any repo that has since left the workspace.
+    const before = get().byTab.get(tabId);
+    if (!before) return;
+    // A tab rehydrated from a persisted session (or any slice built before this
+    // field existed) has the merged list and no buckets. Re-bucketing it is
+    // lossy by exactly the rows the cap already dropped — losing the unread
+    // repos from the picker entirely is not.
+    const prior = before.commitsByRepo ?? bucketByRepo(before.commits);
+    const byRepo: Record<string, RepoCommitMeta[]> = {};
+    for (const repo of all) {
+      const fresh = results.find((r) => r.repo.id === repo.id);
+      byRepo[repo.id] = fresh ? fresh.commits : (prior[repo.id] ?? []);
+    }
+
+    const merged = mergeCommits(Object.values(byRepo), MERGED_COMMIT_CAP);
     const failed = results.filter((r) => r.error);
+    // Same fold for dirty state: a narrowed pass only learned about its own
+    // repo, so the others keep whatever was last known rather than reading as
+    // clean and losing their "Local changes" row.
+    const stillDirty = new Set(
+      only
+        ? before.dirtyRepoIds.filter((id) => !results.some((r) => r.repo.id === id))
+        : [],
+    );
+    for (const r of results) if (r.dirty) stillDirty.add(r.repo.id);
+
+    // A repo removed in Settings loses its rows above; its SELECTION keys have
+    // to go with them, or the trigger keeps counting commits that no longer
+    // have a row and a run starts against changes it can no longer read. Keyed
+    // through `splitCommitKey`'s fallback so a legacy bare-sha selection still
+    // resolves to the first repo rather than being read as an orphan.
+    const liveIds = new Set(all.map((r) => r.id));
+    const owned = (key: string) =>
+      liveIds.has(splitCommitKey(key, all[0]?.id ?? "").repoId);
+    const selectedShas = before.selectedShas.filter(owned);
+    const diffBySha =
+      selectedShas.length === before.selectedShas.length
+        ? before.diffBySha
+        : Object.fromEntries(
+            Object.entries(before.diffBySha).filter(([key]) => owned(key)),
+          );
+
     patch(set, tabId, {
       commits: merged,
+      commitsByRepo: byRepo,
       commitsLoading: false,
-      dirtyRepoIds: results.filter((r) => r.dirty).map((r) => r.repo.id),
+      selectedShas,
+      diffBySha,
+      dirtyRepoIds: all.filter((r) => stillDirty.has(r.id)).map((r) => r.id),
       commitsError:
         failed.length === 0
-          ? null
+          ? // A narrowed pass says nothing about the repos it skipped, so it
+            // must not clear an error one of them is still in.
+            (only ? (before.commitsError ?? null) : null)
           : failed.length === results.length && failed.length === 1
             ? // The single-repo case reads exactly as it always did.
               failed[0].error
@@ -1136,8 +1200,8 @@ export const useCommitReview = create<State>((set, get) => ({
 
     // Re-read the commit lists + dirty-state for the (possibly new) branches so
     // the picker offers the right commits and the "Local changes" affordances
-    // match the current trees.
-    await get().loadCommits(tabId);
+    // match the current trees. Narrowed to the repo that actually moved.
+    await get().loadCommits(tabId, root);
 
     // A branch switch / pull / stash op rewrote a working tree, so that repo's
     // cached "Local changes" diff is now stale. Drop it (commit diffs are
@@ -1894,4 +1958,49 @@ function errStr(e: unknown): string {
 function commitTime(c: RepoCommitMeta): number {
   const ms = Date.parse(c.date);
   return Number.isNaN(ms) ? Number.NEGATIVE_INFINITY : ms;
+}
+
+/** Split a merged timeline back into one list per repo, newest-first. */
+function bucketByRepo(commits: RepoCommitMeta[]): Record<string, RepoCommitMeta[]> {
+  const out: Record<string, RepoCommitMeta[]> = {};
+  for (const c of commits) (out[c.repoId] ??= []).push(c);
+  return out;
+}
+
+/** Rows every repo is guaranteed in the merged timeline, before the global cap
+ *  gets to drop anything. Without a floor, a repo nobody has touched in months
+ *  contributes ZERO rows — every one of its commits is older than the cap's
+ *  worth of commits from the active repos — and becomes unreachable, because
+ *  the picker's search filters this list rather than re-querying git. */
+const MIN_COMMITS_PER_REPO = 10;
+
+/** Merge every repo's commits into one newest-first timeline, capped, with each
+ *  repo guaranteed its floor of rows. The floor shrinks as repos are added, but
+ *  it bottoms out at one row per repo, so past `cap` repos the guarantee alone
+ *  would overrun the cap — the final slice is what actually enforces it. */
+function mergeCommits(
+  perRepo: RepoCommitMeta[][],
+  cap: number,
+): RepoCommitMeta[] {
+  const newestFirst = (a: RepoCommitMeta, b: RepoCommitMeta) =>
+    commitTime(b) - commitTime(a);
+  const withCommits = perRepo.filter((rows) => rows.length > 0);
+  if (withCommits.length <= 1) {
+    return withCommits.flat().sort(newestFirst).slice(0, cap);
+  }
+  const floor = Math.max(
+    1,
+    Math.min(MIN_COMMITS_PER_REPO, Math.floor(cap / withCommits.length)),
+  );
+  const guaranteed: RepoCommitMeta[] = [];
+  const rest: RepoCommitMeta[] = [];
+  for (const rows of withCommits) {
+    const sorted = [...rows].sort(newestFirst);
+    guaranteed.push(...sorted.slice(0, floor));
+    rest.push(...sorted.slice(floor));
+  }
+  const filler = rest
+    .sort(newestFirst)
+    .slice(0, Math.max(0, cap - guaranteed.length));
+  return [...guaranteed, ...filler].sort(newestFirst).slice(0, cap);
 }

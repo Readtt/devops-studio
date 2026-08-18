@@ -456,12 +456,21 @@ function patchBlock(
   };
 }
 
-/** Each commit's metadata + raw patch, as one labelled section per commit. */
+/** Each commit's metadata + raw patch, as one labelled section per commit.
+ *
+ *  `readableRepos` is the whole workspace the tools can reach, not just the
+ *  repos with a diff in the selection: a finding routinely cites a repo it only
+ *  READ (that's the point of reviewing across repos), and `focusPathsInRepo`
+ *  needs to recognise that prefix as a prefix rather than treat it as the first
+ *  directory of a path in the repo it's currently narrowing. */
 function commitSections(
   diffs: RepoCommitDiff[],
+  readableRepos: readonly string[],
   focusPaths?: readonly string[],
 ): string {
-  const knownRepos = [...new Set(diffs.map((d) => d.repoName))];
+  const knownRepos = [
+    ...new Set([...diffs.map((d) => d.repoName), ...readableRepos]),
+  ];
   if (diffs.length === 1) {
     const d = diffs[0];
     const { label, body } = patchBlock(d, focusPaths, knownRepos);
@@ -522,7 +531,7 @@ export function buildInvestigatePrompt(input: RunCommitReviewInput): string {
     ? `\n\n---\nCONTEXT PROVIDED BY THE DEVELOPER (the ticket / requirements / standards):\n${contextText}`
     : "";
 
-  return `${commitSections(diffs)}${truncationNote}${headWarning}${spanNote}${noTools}${contextSection}
+  return `${commitSections(diffs, input.repos.map((r) => r.name))}${truncationNote}${headWarning}${spanNote}${noTools}${contextSection}
 
 Investigate ${diffs.length > 1 ? "these commits'" : "this commit's"} change and its blast radius, then return the findings JSON.`;
 }
@@ -540,7 +549,11 @@ export function buildVerifyPrompt(
   const contextSection = contextText
     ? `\n\n---\nDEVELOPER CONTEXT (ticket / requirements):\n${contextText}`
     : "";
-  return `${commitSections(diffs, focusPathsFromCandidates(candidates))}${contextSection}
+  return `${commitSections(
+    diffs,
+    input.repos.map((r) => r.name),
+    focusPathsFromCandidates(candidates),
+  )}${contextSection}
 
 ---
 CANDIDATE FINDINGS from the first pass — verify each by trying to refute it, then return verdicts keyed by id:
