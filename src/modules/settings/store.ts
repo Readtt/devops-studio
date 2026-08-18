@@ -356,10 +356,15 @@ export function validateRepoName(
   raw: string,
   taken: Iterable<string>,
 ): string | null {
-  const name = raw.trim();
-  if (!name) return "Name can't be empty.";
   if (/[\\/]/.test(raw)) return "Name can't contain / or \\.";
-  const used = new Set([...taken].map((n) => n.trim().toLowerCase()));
+  // Compared in the form the write path will actually store: `sanitizeRepoName`
+  // collapses runs of whitespace, so "a  b" and "a b" are one name. Validating
+  // the raw text instead accepts the first and lets `uniqueRepoName` snap it to
+  // "a b-2" with nothing shown to the user — the drift this function exists to
+  // prevent.
+  const name = sanitizeRepoName(raw);
+  if (!name) return "Name can't be empty.";
+  const used = new Set([...taken].map((n) => sanitizeRepoName(n).toLowerCase()));
   if (used.has(name.toLowerCase())) return "Another repo already uses that name.";
   return null;
 }
@@ -446,6 +451,37 @@ async function readRepos(): Promise<WorkspaceRepo[]> {
   return normalizeRepos(await store.get<unknown>(KEY_REPOS));
 }
 
+/** Whether what's on disk ALREADY is the normalized list — same length, same
+ *  order, same four fields.
+ *
+ *  Compared field by field rather than by serialising both sides: the store
+ *  hands entries back with their keys in a different order than
+ *  `normalizeRepos` builds them, so a string compare reports "changed" on every
+ *  launch and rewrites (and cross-window-broadcasts) the settings file forever.
+ *  What this has to catch is narrower — a value `normalizeRepos` MINTED or
+ *  rewrote, an id above all. */
+function matchesPersisted(raw: unknown, stored: WorkspaceRepo[]): boolean {
+  if (!Array.isArray(raw)) return stored.length === 0;
+  if (raw.length !== stored.length) return false;
+  return stored.every((repo, i) => {
+    const entry = raw[i];
+    if (!entry || typeof entry !== "object") return false;
+    const { id, name, root, ado } = entry as Record<string, unknown>;
+    const persistedAdo = normalizeAdo(ado);
+    return (
+      id === repo.id &&
+      name === repo.name &&
+      root === repo.root &&
+      (persistedAdo === null
+        ? repo.ado === null
+        : repo.ado !== null &&
+          persistedAdo.repoId === repo.ado.repoId &&
+          persistedAdo.repoName === repo.ado.repoName &&
+          persistedAdo.project === repo.ado.project)
+    );
+  });
+}
+
 /** Resolve the registry at boot, seeding it from the pre-registry single root
  *  the first time. A folder launched via the "Open in DevOps Studio" shell verb
  *  registers and moves to the front, which is what it did when there was only
@@ -453,7 +489,8 @@ async function readRepos(): Promise<WorkspaceRepo[]> {
 async function loadRepos(
   get: <T>(k: string) => T | undefined,
 ): Promise<WorkspaceRepo[]> {
-  const stored = normalizeRepos(get<unknown>(KEY_REPOS));
+  const raw = get<unknown>(KEY_REPOS);
+  const stored = normalizeRepos(raw);
   // The one and only read of the legacy key.
   const legacy = stored.length
     ? null
@@ -470,11 +507,16 @@ async function loadRepos(
       : [createRepo(launched, next.map((r) => r.name)), ...next];
   }
 
+  // Persisted whenever the resolved list differs from what's on disk — either
+  // because we seeded/reordered it, or because NORMALISING it changed
+  // something. The second half matters: `normalizeRepos` mints an id for an
+  // entry that lacks one, and an id that never lands is a fresh id on every
+  // launch, invalidating every persisted repo scope and `<repoId>:<sha>` key.
   const unchanged =
-    next.length === stored.length && next.every((r, i) => r === stored[i]);
+    next.length === stored.length &&
+    next.every((r, i) => r === stored[i]) &&
+    matchesPersisted(raw, stored);
   if (unchanged) return stored;
-  // Persisted here rather than on next write: a seed that never lands is
-  // re-minted with a fresh id on every launch.
   await writeRepos(next).catch(() => undefined);
   return next;
 }
@@ -953,6 +995,22 @@ export async function emitAdoConnectionChanged(): Promise<void> {
 
 export function onAdoConnectionChanged(cb: () => void): Promise<UnlistenFn> {
   return listen(ADO_CONNECTION_CHANGED_EVENT, () => cb());
+}
+
+// Settings asks the MAIN window to run the Get source code wizard rather than
+// hosting it itself. The clone's progress store and its capsule are per-window,
+// so a second copy in Settings would mean two independent batches able to run
+// at once — and `addRepo` is read-modify-write against the shared registry, so
+// interleaved batches would clobber each other's entries.
+const GET_SOURCE_CODE_REQUESTED_EVENT =
+  "devops-studio://get-source-code-requested";
+
+export async function emitGetSourceCodeRequested(): Promise<void> {
+  await emit(GET_SOURCE_CODE_REQUESTED_EVENT);
+}
+
+export function onGetSourceCodeRequested(cb: () => void): Promise<UnlistenFn> {
+  return listen(GET_SOURCE_CODE_REQUESTED_EVENT, () => cb());
 }
 
 // Generation busy state — broadcast by the main window whenever any

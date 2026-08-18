@@ -30,18 +30,22 @@ import {
   bindRepo,
   bindingForAdoRepo,
 } from "@/modules/ado/repoBinding";
+import { joinPath } from "@/modules/ai/lib/repoPaths";
 import { useReposGitInfo, type GitRepoInfo } from "@/modules/git";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   addRepo,
+  emitGetSourceCodeRequested,
   onAdoConnectionChanged,
   removeRepo,
   renameRepo,
+  sameRoot,
   setRepoAdo,
   validateRepoName,
   type WorkspaceRepo,
 } from "@/modules/settings/store";
 import {
+  CloudDownloadIcon,
   Delete02Icon,
   FolderAddIcon,
   FolderSearchIcon,
@@ -54,22 +58,9 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useEffect, useRef, useState } from "react";
-
-/** Join using the separator the parent path already speaks, so a Windows root
- *  doesn't come back half-forward-slashed and fail the registry's dedup key. */
-function joinPath(parent: string, child: string): string {
-  const sep = parent.includes("\\") && !parent.includes("/") ? "\\" : "/";
-  return `${parent.replace(/[\\/]+$/, "")}${sep}${child}`;
-}
-
-/** Compare roots the way the registry does — same folder, either spelling. */
-function sameRoot(a: string, b: string): boolean {
-  const key = (p: string) =>
-    p.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
-  return key(a) === key(b);
-}
 
 /**
  * The workspace's source repos, rendered as a block of the General tab.
@@ -83,21 +74,49 @@ export function SourceReposPanel() {
   const adoConnected = useAdoConnected();
   const [scan, setScan] = useState<ScanState | null>(null);
   const [renameId, setRenameId] = useState<string | null>(null);
+  const [addError, setAddError] = useState<string | null>(null);
 
   const addFolder = async () => {
+    setAddError(null);
+    let picked: string | string[] | null;
     try {
-      const picked = await openDialog({
+      picked = await openDialog({
         directory: true,
         multiple: false,
         title: "Choose a source repository",
         defaultPath: repos[0]?.root ?? undefined,
       });
-      if (typeof picked === "string" && picked.length > 0) {
-        const added = await addRepo(picked);
-        void autoBindRepos([added]);
-      }
     } catch {
-      // User cancelled — nothing to do.
+      // The picker itself failed to open; nothing was chosen.
+      return;
+    }
+    if (typeof picked !== "string" || picked.length === 0) return; // cancelled
+    try {
+      const added = await addRepo(picked);
+      void autoBindRepos([added]);
+    } catch {
+      // `openDialog` RESOLVES null on cancel rather than throwing, so anything
+      // that lands here is a real registry-write failure (settings file locked,
+      // disk full). Swallowing it silently left the user picking a folder that
+      // never appeared, with nothing said.
+      setAddError("Couldn't add that folder. Try again.");
+    }
+  };
+
+  // The wizard runs in the MAIN window — see `emitGetSourceCodeRequested`.
+  // Bring that window forward, or it opens behind Settings and reads as a
+  // button that did nothing.
+  const requestSourceCode = async () => {
+    setAddError(null);
+    try {
+      await emitGetSourceCodeRequested();
+      await getAllWebviewWindows().then((wins) =>
+        wins.find((w) => w.label === "main")?.setFocus(),
+      );
+    } catch {
+      setAddError(
+        "Couldn't open Get source code. Try it from the status bar instead.",
+      );
     }
   };
 
@@ -188,7 +207,32 @@ export function SourceReposPanel() {
             git repositories directly inside it and you choose which to add.
           </TooltipContent>
         </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => void requestSourceCode()}
+            >
+              <HugeiconsIcon
+                icon={CloudDownloadIcon}
+                size={12}
+                strokeWidth={1.75}
+              />
+              Get source code…
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
+            Don&rsquo;t have the repo on this machine yet? Clone it with your
+            Azure DevOps token (or any HTTPS URL) and it&rsquo;s added here when
+            it lands. Opens in the main window.
+          </TooltipContent>
+        </Tooltip>
       </div>
+
+      {addError ? (
+        <p className="text-[11px] leading-relaxed text-destructive">{addError}</p>
+      ) : null}
 
       <ScanDialog
         scan={scan}
@@ -508,7 +552,11 @@ function RowMenu({
       </Tooltip>
       <DropdownMenuContent align="end" className="min-w-52 p-1">
         <DropdownMenuItem
-          onSelect={onRename}
+          // Deferred for the same reason as the item below: the menu hands
+          // focus back to its trigger as it unmounts, which steals the focus
+          // the rename effect just put in the name field — the action looks
+          // like it did nothing.
+          onSelect={() => setTimeout(onRename, 0)}
           className="flex items-center gap-2 text-[12px]"
         >
           <HugeiconsIcon icon={PencilEdit02Icon} size={13} strokeWidth={1.75} />
@@ -633,6 +681,7 @@ function ScanDialog({
 }) {
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
+  const [failed, setFailed] = useState<number>(0);
 
   const found = scan?.found ?? null;
   const rows = (found ?? []).map((c) => ({
@@ -655,17 +704,32 @@ function ScanDialog({
 
   const confirm = async () => {
     setAdding(true);
+    setFailed(0);
+    let misses = 0;
     try {
       // Sequential: addRepo is read-modify-write against the shared registry,
-      // so racing them would let later writes clobber earlier ones.
+      // so racing them would let later writes clobber earlier ones. Per-repo
+      // try/catch because one folder failing (a root that vanished between the
+      // scan and the confirm) must not abandon the rest of the batch.
       const added: WorkspaceRepo[] = [];
-      for (const candidate of toAdd) added.push(await addRepo(candidate.root));
+      for (const candidate of toAdd) {
+        try {
+          added.push(await addRepo(candidate.root));
+        } catch {
+          misses += 1;
+        }
+      }
       // One org-wide fetch for the whole batch, and not worth waiting on — the
       // repos are in the workspace either way.
       void autoBindRepos(added);
     } finally {
       setAdding(false);
-      onClose();
+      setFailed(misses);
+      // Closing on a failure would tear down the only list the user could
+      // retry from, having said nothing. The ones that landed drop out of
+      // `addable` on their own, so what stays is exactly what still needs a
+      // second try.
+      if (misses === 0) onClose();
     }
   };
 
@@ -729,6 +793,13 @@ function ScanDialog({
             </div>
           )}
         </div>
+
+        {failed > 0 ? (
+          <p className="text-[11px] leading-relaxed text-destructive">
+            {failed === 1 ? "1 folder" : `${failed} folders`} couldn&rsquo;t be
+            added — check they still exist, then try again.
+          </p>
+        ) : null}
 
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>

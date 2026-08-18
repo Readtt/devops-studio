@@ -135,6 +135,28 @@ describe("repos preference · migration from the single source root", () => {
     expect(h.emitted).toEqual([]);
   });
 
+  it("does not rewrite an unchanged registry whose keys are in another order", async () => {
+    // serde_json has no `preserve_order`, so the Rust store hands entries back
+    // ALPHABETICALLY while `normalizeRepos` builds them id/name/root/ado.
+    // Comparing the two as JSON text calls that "changed" and rewrites — plus
+    // cross-window-broadcasts — the settings file on every single launch, and
+    // that write is a read-modify-write against a snapshot taken before it.
+    h.data.set("repos", [
+      { ado: null, id: "id-one", name: "repo-one", root: "C:/dev/repo-one" },
+    ]);
+    await loadPreferences();
+    expect(h.emitted).toEqual([]);
+  });
+
+  it("still persists a registry entry whose id it had to mint", async () => {
+    // The half that must keep working: an id that never lands is re-minted on
+    // every launch, invalidating every persisted repo scope and `<repoId>:<sha>`.
+    h.data.set("repos", [{ name: "repo-one", root: "C:/dev/repo-one" }]);
+    const prefs = await loadPreferences();
+    expect(prefs.repos[0].id).toBeTruthy();
+    expect(stored()?.[0].id).toBe(prefs.repos[0].id);
+  });
+
   it("boots clean with no settings at all", async () => {
     const prefs = await loadPreferences();
     expect(prefs.repos).toEqual([]);
