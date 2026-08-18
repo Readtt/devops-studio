@@ -46,6 +46,7 @@ import { GeneratorCallbacksProvider } from "@/modules/generator/callbacksContext
 import { PaneTreeRenderer } from "@/modules/tabs/PaneTreeRenderer";
 import { DndProvider as TabsDndProvider } from "@/modules/tabs/dnd/DndProvider";
 import { resolveSourcePathDeep } from "@/modules/code-viewer/resolveSourcePath";
+import { checkReadable } from "@/modules/ai/lib/security";
 import { ThemeProvider } from "@/modules/theme";
 import { UpdaterStatusPill, UpdaterToast, useUpdater } from "@/modules/updater";
 import {
@@ -70,7 +71,11 @@ import {
   BranchSwitchDialog,
   CloneProgressCapsule,
 } from "@/modules/git";
-import { getConnection, type WorkItemRef } from "@/modules/ado";
+import {
+  getConnection,
+  invalidateTeamMembers,
+  type WorkItemRef,
+} from "@/modules/ado";
 import { autoBindRepos } from "@/modules/ado/repoBinding";
 import { ActionToast } from "@/components/ActionToast";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -450,6 +455,24 @@ function AppShell() {
       // binds the path to its repo and asks the backend to locate the real file
       // when a naive join would 404.
       const resolved = await resolveSourcePathDeep(getRepos(), input.path);
+      // A null resolution means either "couldn't find it" or "the read gate
+      // REFUSED it", and the viewer still wants a path to name in its
+      // not-found hint. Re-run the gate on the raw input so only the first
+      // case reaches the fallback: a bug's code links are third-party data
+      // (anyone on the ADO project can edit them), and `fs_read_file` takes
+      // whatever it is handed — `resolve_path` is identity.
+      if (!resolved) {
+        const gate = checkReadable(input.path);
+        if (!gate.ok) {
+          // No tab, so no pane to render the reason in. Logged rather than
+          // swallowed: a click that does nothing at all is indistinguishable
+          // from a broken button, and this is the one path where that happens.
+          console.warn(
+            `[code-viewer] refused to open ${input.path}: ${gate.reason}`,
+          );
+          return;
+        }
+      }
       const absPath = resolved?.path ?? input.path;
       const repoName = resolved?.repo?.name ?? null;
       const existingTabs = useTabsStore.getState().tabs;
@@ -1116,12 +1139,32 @@ function AppShell() {
       : null;
 
   const [adoConfigured, setAdoConfigured] = useState(false);
+  // Whether this session has already offered the registry to the ADO binder.
+  const sweptBindings = useRef(false);
   useEffect(() => {
     let cancelled = false;
+    // `autoBindRepos` runs at the four ADD sites, so a repo that entered the
+    // registry another way was never offered to it: the one migrated from the
+    // pre-registry `sourceRoot`, and a folder opened via the shell verb. An
+    // upgrading user's existing repo therefore stayed unlinked forever — no ADO
+    // repo on its Settings row, no project on its published code links — while
+    // every repo they cloned afterwards bound normally. Sweep once per session,
+    // and again after a connection change, since a different org can bind repos
+    // the previous one couldn't.
+    const bindUnbound = () => {
+      const repos = usePreferencesStore.getState().repos;
+      // Preferences may not have hydrated on the first tick. Leave the sweep
+      // armed rather than burning it on an empty list.
+      if (repos.length === 0) return;
+      sweptBindings.current = true;
+      void autoBindRepos(repos);
+    };
     const refresh = async () => {
       try {
         const c = await getConnection();
-        if (!cancelled) setAdoConfigured(c.configured);
+        if (cancelled) return;
+        setAdoConfigured(c.configured);
+        if (c.configured && !sweptBindings.current) bindUnbound();
       } catch {
         if (!cancelled) setAdoConfigured(false);
       }
@@ -1139,6 +1182,12 @@ function AppShell() {
     // connected" until an app restart (its store only hydrates once on mount).
     let unlistenConn: (() => void) | undefined;
     void onAdoConnectionChanged(() => {
+      // A new org/project can bind repos the old one couldn't — re-arm.
+      sweptBindings.current = false;
+      // The developer roster is per PROJECT and cached for the session, so
+      // without this a project switch left the assign pickers offering the
+      // previous project's people.
+      invalidateTeamMembers();
       void refresh();
       const tp = useTestPlans.getState();
       tp.reset();

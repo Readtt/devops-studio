@@ -78,6 +78,11 @@ export function AdoRepoPicker({
       });
     return () => {
       cancelled = true;
+      // Closing mid-flight drops the result, so the "loading" we leave behind
+      // is a lie the skip above then believes forever — reopening would never
+      // refetch and the picker would show skeletons for the rest of the
+      // window's life. Clear it back to "never loaded".
+      setState((s) => (s?.kind === "loading" ? null : s));
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);

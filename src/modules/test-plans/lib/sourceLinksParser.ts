@@ -12,6 +12,14 @@
  * DIVISION SLASH: `escape` and `unescape` are a pair, and dropping either end
  * corrupts every path and every slashed branch name on the way back out.
  *
+ * The block is appended verbatim to the ADO work item's Description, which is
+ * an HTML field — so `<`, `>` and `&` are escaped too. A C# symbol is the case
+ * that bites: `Repository<T>.GetAsync` writes a live `<T>` tag, which ADO's
+ * renderer swallows, and the user reads `Repository.GetAsync` in a description
+ * they can't tell has been mangled. `unescape` decodes unconditionally, which
+ * is a no-op on the blocks written before this and repairs the ones where ADO
+ * did the encoding itself.
+ *
  * Only `repo` and `file` are required. Everything else is optional — notably
  * `branch`, absent whenever the case was published without source-branch
  * tagging, and `project`, absent for an unbound repo and for every case
@@ -122,12 +130,32 @@ function parseLineRange(
 }
 
 function escape(s: string): string {
-  // Avoid the " / " separator turning up inside a value.
-  return s.replace(/\s*\/\s*/g, " ∕ ");
+  // Newlines first: a record is ONE line, and `parseLine` only reads lines that
+  // start with `- `, so a value carrying a newline silently truncates the
+  // record — the line range, the provenance sha and the repo id after it all
+  // vanish on the round trip. Then avoid the " / " separator turning up inside
+  // a value. Markup last, and `&` before the others so the ampersands it
+  // introduces aren't escaped a second time.
+  return s
+    .replace(/\s+/g, " ")
+    .replace(/\s*\/\s*/g, " ∕ ")
+    .trim()
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function unescape(s: string): string {
   // Tolerant of the padding `escape` adds and of values that never had a
-  // slash, so already-clean text passes through untouched.
-  return s.replace(/\s*∕\s*/g, "/");
+  // slash, so already-clean text passes through untouched — which is also what
+  // makes this safe to run over blocks written before the markup escaping
+  // existed. `&amp;` LAST, so `&amp;lt;` decodes to the literal `&lt;` rather
+  // than being decoded twice into `<`.
+  return s
+    .replace(/\s*∕\s*/g, "/")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#0*39;/g, "'")
+    .replace(/&amp;/g, "&");
 }

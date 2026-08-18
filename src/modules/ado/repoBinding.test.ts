@@ -40,18 +40,16 @@ function repo(name: string, root: string, ado: WorkspaceRepo["ado"] = null): Wor
   return { id: `id-${name}`, name, root, ado };
 }
 
-/** `git_repo_info` answers per root; anything unlisted is "not a repo". */
+/** `git_remote_url` answers per root; anything unlisted has no `origin`.
+ *
+ *  Asserting the command NAME matters: the remote used to ride along on
+ *  `git_repo_info`, which is the status bar's 30 s poll for every repo. If the
+ *  binder ever reaches for that again, this throws rather than quietly putting
+ *  a fourth git spawn per repo back on the poll path. */
 function remotes(byRoot: Record<string, string | null>) {
   invoke.mockImplementation(async (cmd: string, args: { path: string }) => {
-    if (cmd !== "git_repo_info") throw new Error(`unexpected command ${cmd}`);
-    const remoteUrl = byRoot[args.path] ?? null;
-    return {
-      branch: "main",
-      commit: "abc1234",
-      isRepo: true,
-      detached: false,
-      remoteUrl,
-    };
+    if (cmd !== "git_remote_url") throw new Error(`unexpected command ${cmd}`);
+    return byRoot[args.path] ?? null;
   });
 }
 
@@ -155,6 +153,22 @@ describe("matchAdoRepo", () => {
       ),
     ).toBeNull();
   });
+
+  it("refuses a remote that names an ADO repo we can't see, rather than guessing by name", () => {
+    // The PAT can't read project Gamma. The remote says outright which repo
+    // this is; binding it to Alpha's same-named one produces a deep link that
+    // resolves to a real page showing an unrelated repository's file, so
+    // nothing 404s to signal the mistake.
+    expect(
+      matchAdoRepo(
+        {
+          remoteUrl: "https://dev.azure.com/org/Gamma/_git/repo-one",
+          basename: "repo-one",
+        },
+        ORG,
+      ),
+    ).toBeNull();
+  });
 });
 
 describe("bindRepo", () => {
@@ -235,17 +249,10 @@ describe("autoBindRepos", () => {
           },
         ];
       }
-      if (cmd === "git_repo_info") {
-        return {
-          branch: "main",
-          commit: "abc1234",
-          isRepo: true,
-          detached: false,
-          remoteUrl:
-            args.path === "C:\\src\\two"
-              ? "https://dev.azure.com/org/Beta/_git/repo-two"
-              : "https://dev.azure.com/org/Alpha/_git/repo-one",
-        };
+      if (cmd === "git_remote_url") {
+        return args.path === "C:\\src\\two"
+          ? "https://dev.azure.com/org/Beta/_git/repo-two"
+          : "https://dev.azure.com/org/Alpha/_git/repo-one";
       }
       throw new Error(`unexpected command ${cmd}`);
     });

@@ -41,6 +41,46 @@ describe("round-trip", () => {
     expect(roundTrip(link())).toEqual(link());
   });
 
+  it("keeps every field when a value carries a newline", () => {
+    // A record is ONE line and `parseLine` only reads lines starting with `- `,
+    // so an un-neutralised newline truncates the record: the line range, the
+    // provenance sha and the repo id after it all vanish, and `repo-id`
+    // silently degrades to the repo NAME.
+    const parsed = roundTrip(link({ symbol: "Foo\nBar" }));
+    expect(parsed).toEqual(link({ symbol: "Foo Bar" }));
+  });
+
+  // The block is appended verbatim to the ADO Description, which is an HTML
+  // field. A generic symbol writes a live `<T>` tag: ADO's renderer swallows it
+  // and the user reads `Repository.GetAsync` with no sign anything was lost.
+  it("survives a symbol containing angle brackets", () => {
+    const l = link({ symbol: "Repository<T>.GetAsync" });
+    expect(renderBlock([l])).not.toContain("<T>");
+    expect(roundTrip(l)).toEqual(l);
+  });
+
+  it("survives an ampersand without doubling it", () => {
+    const l = link({ trackingBranch: "feature/a&b", generationBranch: "feature/a&b" });
+    const rendered = renderBlock([l]);
+    expect(rendered).toContain("feature ∕ a&amp;b");
+    expect(roundTrip(l)).toEqual(l);
+  });
+
+  // Decoding runs unconditionally so it repairs a block ADO encoded itself.
+  // `&amp;` must decode LAST or an already-escaped entity decodes twice.
+  it("decodes an entity exactly once", () => {
+    const l = link({ symbol: "a &amp;lt; b" });
+    expect(roundTrip(l)?.symbol).toBe("a &amp;lt; b");
+  });
+
+  // Every case published before the escaping existed carries raw values.
+  it("still reads a legacy block whose values were never encoded", () => {
+    const parsed = parseSourceLinks(
+      block("repo: repo-one / file: app.ts / symbol: Plain.Method"),
+    );
+    expect(parsed[0].symbol).toBe("Plain.Method");
+  });
+
   it("survives a branch containing slashes", () => {
     const l = link({
       trackingBranch: "feature/2fa",

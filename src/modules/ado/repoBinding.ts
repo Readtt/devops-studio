@@ -14,7 +14,7 @@
  *   3. exactly one ADO repo in the org is named like the local folder.
  * Anything else stays unbound; the Settings row's picker is the manual override.
  */
-import { gitRepoInfo } from "@/modules/git/gitOps";
+import { gitRemoteUrl } from "@/modules/git/gitOps";
 import {
   setRepoAdo,
   repoBasename,
@@ -128,6 +128,12 @@ export function matchAdoRepo(
         );
       });
       if (sameRepo.length === 1) return sameRepo[0];
+      // The remote says outright which ADO repository this is, and it isn't
+      // one we can see. Falling through to the basename tier would bind it to
+      // a same-named repo in a DIFFERENT project — a deep link that resolves
+      // to a real page showing an unrelated repository's file, so nothing
+      // 404s to signal the mistake.
+      return null;
     }
   }
 
@@ -150,6 +156,9 @@ export type BindOutcome =
 export async function bindRepo(
   repo: WorkspaceRepo,
   adoRepos?: RepoRef[],
+  /** Remote already read by a sweep, so a batch doesn't pay one serialized git
+   *  round-trip per repo before any binding is written. */
+  remoteUrl?: string | null,
 ): Promise<BindOutcome> {
   let repos = adoRepos;
   if (!repos) {
@@ -161,9 +170,12 @@ export async function bindRepo(
   }
   // A folder that isn't a repo (or has moved) simply has no remote — it can
   // still bind by name.
-  const info = await gitRepoInfo(repo.root).catch(() => null);
+  const remote =
+    remoteUrl !== undefined
+      ? remoteUrl
+      : await gitRemoteUrl(repo.root).catch(() => null);
   const match = matchAdoRepo(
-    { remoteUrl: info?.remoteUrl ?? null, basename: repoBasename(repo.root) },
+    { remoteUrl: remote, basename: repoBasename(repo.root) },
     repos,
   );
   const ado = match ? bindingForAdoRepo(match) : null;
@@ -190,8 +202,14 @@ export async function autoBindRepos(repos: WorkspaceRepo[]): Promise<void> {
     return;
   }
   if (adoRepos.length === 0) return;
-  for (const repo of unbound) {
-    await bindRepo(repo, adoRepos).catch(() => undefined);
+  // Remotes first, in parallel: only the WRITE has to be serialized, and each
+  // repo's git read is independent — a scan-add of twenty folders otherwise
+  // spends twenty serialized round-trips before the first binding lands.
+  const remotes = await Promise.all(
+    unbound.map((r) => gitRemoteUrl(r.root).catch(() => null)),
+  );
+  for (const [i, repo] of unbound.entries()) {
+    await bindRepo(repo, adoRepos, remotes[i]).catch(() => undefined);
   }
 }
 
