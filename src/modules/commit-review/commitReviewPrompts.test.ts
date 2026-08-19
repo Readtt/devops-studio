@@ -114,6 +114,8 @@ describe("commit-review prompts · finding writing contract", () => {
     for (const phrase of [
       // flexed so a maintainability finding needn't invent a failure
       "WHAT goes wrong or what it costs",
+      // user feedback: simpler words on average, not formal register
+      "prefer everyday words",
       // anti-slop: kills sentences that merely sound helpful
       "could move to a different finding unchanged",
       // FindingCard renders prose raw — backticks would display literally
