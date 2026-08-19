@@ -7,6 +7,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.22.1] - 2026-08-19
+
+### Changed
+
+- Commit Review findings are now written to be understood in one read. Each finding opens by tying your change to what now goes wrong, explanations are capped at two short paragraphs of plain full sentences — no fragments, no arrow-chain shorthand, no markdown artifacts — and evidence is a short file:line trace of what was actually checked instead of a wall of text.
+- Finding titles state the consequence: declaratively when the failure was fully traced, as an explicit "can ..." when it depends on a situation the review didn't confirm. Maintainability findings state their ongoing cost instead of an invented failure.
+- Generic filler that only sounds helpful is banned from findings, and in a multi-commit review every finding names the commit it concerns.
+
 ## [0.22.0] - 2026-08-19
 
 ### Added
