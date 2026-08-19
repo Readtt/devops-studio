@@ -153,8 +153,12 @@ EOF
 else
   # Insert the new entry immediately before the first existing version
   # heading (## [). If there's no existing heading, append to end.
-  awk -v entry="$ENTRY" '
-    BEGIN { inserted = 0 }
+  # Via ENVIRON, not -v: awk runs backslash-escape processing over a -v
+  # value, so notes mentioning a Windows path lost their separators and had
+  # the surrounding UTF-8 corrupted into replacement characters. 0.22.0
+  # shipped with `C:\…\other-repo\.git` mangled this way.
+  RELEASE_ENTRY="$ENTRY" awk '
+    BEGIN { entry = ENVIRON["RELEASE_ENTRY"]; inserted = 0 }
     !inserted && /^## \[/ {
       print entry
       print ""
