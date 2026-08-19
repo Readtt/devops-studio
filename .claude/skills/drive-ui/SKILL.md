@@ -39,6 +39,24 @@ drifted from the app, not your feature.
 
 Then copy it, swap the fixture and assertions, keep the shape.
 
+## Stop what you started
+
+Neither process reaps itself. A driver script connects over CDP and
+disconnects; it never owns the lifecycle of the server or the browser, so
+`pnpm dev` keeps holding :1420 and Chrome keeps holding :9333 long after the
+last assertion printed — including past the end of the session that started
+them, if it was backgrounded. **Kill both explicitly when you're done driving.**
+
+```powershell
+Get-NetTCPConnection -State Listen -LocalPort 1420,9333 -EA SilentlyContinue |
+  ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+```
+
+Leaving :1420 held is worse than untidy: `vite.config.ts` sets
+`strictPort: true`, so the next `pnpm dev` doesn't fall back to another port —
+it fails outright, and the failure reads like a broken install rather than a
+server you forgot about.
+
 ## Writing a driver
 
 ```js
