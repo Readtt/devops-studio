@@ -68,10 +68,17 @@ const SECRET_BASENAME_PATTERNS: RegExp[] = [
  * code viewer — which runs the same gate on a user's own click — a click that
  * does nothing at all.
  *
- * Shell and script extensions are deliberately absent: `credentials.sh` really
- * is where an `export AWS_SECRET_ACCESS_KEY=…` lives. A basename with no
- * extension, a trailing dot, or an NTFS stream suffix (`Credentials.cs::$DATA`)
- * doesn't match here either, so every ambiguous spelling stays gated.
+ * SHELL extensions are deliberately absent (`.sh`, `.bash`, `.zsh`, `.ps1`,
+ * `.bat`, `.cmd`): `credentials.sh` really is where an
+ * `export AWS_SECRET_ACCESS_KEY=…` lives. Scripting LANGUAGES are here, because
+ * `credentials.py` / `credentials.rb` are overwhelmingly modules (google-auth
+ * and aws-sdk both ship one) — the residual risk is a project that puts real
+ * keys in one, which the same project would just as happily put in
+ * `settings.py`, a name nothing gates.
+ *
+ * A basename with no extension, a leading dot, a trailing dot, or an NTFS
+ * stream suffix (`Credentials.cs::$DATA`) doesn't match here, so every
+ * ambiguous spelling stays gated.
  */
 const SOURCE_CODE_EXTENSIONS = new Set([
   "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs",
@@ -82,6 +89,14 @@ const SOURCE_CODE_EXTENSIONS = new Set([
 ]);
 
 function isSourceCode(base: string): boolean {
+  // A DOTFILE is never source code, whatever extension follows. Every secret
+  // pattern that begins with a dot names a store rather than a file type
+  // (`.env`, `.netrc`, `.npmrc`, `.pgpass`), so `.env.js` and `.env.ts` are
+  // `.env` with a suffix, not a module — and without this they take the
+  // bypass and hand their contents back. Nothing legitimate is lost: a
+  // dot-leading name that ISN'T a secret pattern (`.eslintrc.js`) never
+  // reaches here.
+  if (base.startsWith(".")) return false;
   const dot = base.lastIndexOf(".");
   return dot > 0 && SOURCE_CODE_EXTENSIONS.has(base.slice(dot + 1).toLowerCase());
 }

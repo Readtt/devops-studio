@@ -330,6 +330,13 @@ export function buildSuiteChatTools(repos: WorkspaceRepo[]) {
             command,
           };
         }
+        const secret = secretOperand(command, target.repo);
+        if (secret) {
+          return {
+            error: `Refused: \`${secret}\` matches a sensitive-file pattern. read_file and grep refuse it too — this shell is not a way around them.`,
+            command,
+          };
+        }
         try {
           const out = await invoke<{
             returncode: number;
@@ -356,6 +363,102 @@ export function buildSuiteChatTools(repos: WorkspaceRepo[]) {
  *  legitimate use of this tool is repo-relative; another repo is reachable by
  *  passing `repo`, which is what the scope is enforced on. */
 const CLIMBS_OUT = /(^|[^\w.])\.\.($|[\\/])/;
+
+/** The first operand of a command that names a file the read gate refuses, or
+ *  null when none does.
+ *
+ *  `run_command` is the last read path with no gate on it. `readableHits` closed
+ *  the same hole for `grep` — `.env` was unreadable by name and readable by
+ *  pattern — but a shell reaches the file directly: `cat .env` where cat
+ *  exists, and `git show HEAD:.env` / `git log -p .env` on any platform, for
+ *  anything tracked.
+ *
+ *  Operands only. The PATTERN argument of a search is skipped, because it is not
+ *  a path and refusing `git grep "\.pem"` would be a refusal about a string. What
+ *  that search can still surface from a tracked secret file is out of reach of a
+ *  path check — the residual this doesn't close. */
+function secretOperand(command: string, repo: WorkspaceRepo): string | null {
+  for (const cand of pathOperands(command)) {
+    if (!checkReadable(joinPath(repo.root, cand)).ok) return cand;
+  }
+  return null;
+}
+
+/** Search programs take a PATTERN before their paths, so the first operand is
+ *  skipped for these. `git` is handled through its subcommand. */
+const PATTERN_FIRST = new Set(["grep", "rg"]);
+
+function pathOperands(command: string): string[] {
+  const tokens = tokenize(command);
+  if (tokens.length < 2) return [];
+  const program = tokens[0].toLowerCase();
+  let args = tokens.slice(1);
+
+  let patternFirst = PATTERN_FIRST.has(program);
+  if (program === "git") {
+    // Drop everything up to and including the subcommand, so a glued
+    // `--git-dir=` (already refused by Rust) and the subcommand itself aren't
+    // read as paths.
+    const sub = args.findIndex((a) => !a.startsWith("-"));
+    if (sub === -1) return [];
+    patternFirst = args[sub].toLowerCase() === "grep";
+    args = args.slice(sub + 1);
+  }
+
+  const out: string[] = [];
+  let skipped = !patternFirst;
+  for (const raw of args) {
+    if (raw === "--") continue;
+    let a = raw;
+    if (a.startsWith("-")) {
+      // A glued flag value can still be a path (`--exclude-from=.env`); a bare
+      // flag never is.
+      const eq = a.indexOf("=");
+      if (eq === -1) continue;
+      a = a.slice(eq + 1);
+    } else if (!skipped) {
+      skipped = true;
+      continue;
+    }
+    if (!a) continue;
+    out.push(a);
+    // `git show <rev>:<path>` addresses a file through a revision, and the
+    // basename of the whole token is `<rev>:<path>`, which matches nothing.
+    const colon = a.lastIndexOf(":");
+    if (colon > 0 && colon < a.length - 1) out.push(a.slice(colon + 1));
+  }
+  return out;
+}
+
+/** Whitespace split that keeps `"..."` / `'...'` runs together — the same rule
+ *  the Rust tokenizer follows, so this sees the operands Rust will. */
+function tokenize(command: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let quote: string | null = null;
+  let started = false;
+  for (const ch of command) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      else cur += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      started = true;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (started || cur) out.push(cur);
+      cur = "";
+      started = false;
+      continue;
+    }
+    cur += ch;
+  }
+  if (started || cur) out.push(cur);
+  return out;
+}
 
 /** Mirror of the Rust `GrepResponse`. */
 type GrepResponse = {

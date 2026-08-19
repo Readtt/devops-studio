@@ -402,9 +402,18 @@ fn is_shell_operator(s: &str) -> bool {
     digits > 0 && s[digits..].starts_with('>')
 }
 
+/// Split on `=` for the same reason `climbs_out` is: git takes paths as glued
+/// flag values, and `--git-dir=C:\other-repo\.git` starts with `-`, so testing
+/// the whole token answers "relative" about a token naming another repository
+/// on disk. That form redirects the WHOLE command, which is worse than a stray
+/// path argument: the `current_dir` we run in stops being what scopes the read.
+fn is_absolute_path(s: &str) -> bool {
+    s.split('=').any(is_absolute_path_part)
+}
+
 /// True for paths that escape the project root: Unix `/…`, a UNC `\\…`, or a
 /// Windows drive `X:\…` / `X:/…`.
-fn is_absolute_path(s: &str) -> bool {
+fn is_absolute_path_part(s: &str) -> bool {
     if s.starts_with('/') || s.starts_with("\\\\") {
         return true;
     }
@@ -601,6 +610,21 @@ mod tests {
         ] {
             let err = validate(&toks(cmd)).expect_err(cmd);
             assert!(err.contains("climbs out"), "{cmd} → {err}");
+        }
+    }
+
+    #[test]
+    fn blocks_an_absolute_path_glued_to_a_flag() {
+        // Same escape as the `..` form above: a glued flag value points git at
+        // another repository, and the token starts with `-` so a whole-token
+        // absolute-path test never looks at the path it carries.
+        for cmd in [
+            r"git --git-dir=C:\Users\me\other-repo\.git log --oneline",
+            "git --work-tree=/etc status",
+            "git --git-dir=//server/share/.git log",
+        ] {
+            let err = validate(&toks(cmd)).expect_err(cmd);
+            assert!(err.contains("Absolute path"), "{cmd} → {err}");
         }
     }
 

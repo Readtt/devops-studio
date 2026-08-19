@@ -155,6 +155,11 @@ export type CommitReviewSlice = {
   commitsLoadSeq: number;
   commitsSeqByRepo: Record<string, number>;
   commitsLoading: boolean;
+  /** The repos that failed their last OWN read, so a narrowed pass can clear
+   *  the one repo it re-read without either wiping the others’ errors or
+   *  keeping its own. {@link CommitReviewSlice.commitsError} is the sentence
+   *  rendered from this, never set independently. */
+  commitsErrorByRepo: Record<string, string>;
   commitsError: string | null;
   /** Repos whose working tree has uncommitted changes — one "Local changes"
    *  target each. Refreshed alongside the commit list. */
@@ -380,6 +385,20 @@ function snapshotDiffMap(
     out[commitKey(tagged.repoId, tagged.sha)] = tagged;
   }
   return out;
+}
+
+/** The commit-list failure line. A one-repo workspace reads exactly as it
+ *  always did — the bare error, no name in front of it, because there is only
+ *  one repo it could be about. */
+function renderCommitsError(
+  all: WorkspaceRepo[],
+  errByRepo: Record<string, string>,
+): string | null {
+  const failed = all.filter((r) => errByRepo[r.id]);
+  if (failed.length === 0) return null;
+  const first = errByRepo[failed[0].id];
+  if (all.length === 1) return first;
+  return `Couldn't read ${failed.map((r) => r.name).join(", ")}: ${first}`;
 }
 
 type SetState = (fn: (s: State) => Partial<State>) => void;
@@ -748,6 +767,7 @@ function emptySlice(modelId: ModelId | null): CommitReviewSlice {
     commitsLoadSeq: 0,
     commitsSeqByRepo: {},
     commitsLoading: false,
+    commitsErrorByRepo: {},
     commitsError: null,
     dirtyRepoIds: [],
     selectedShas: [],
@@ -1051,20 +1071,32 @@ export const useCommitReview = create<State>((set, get) => ({
     // False when a pass issued AFTER this one already answered for that repo:
     // its read is newer, so ours is stale however much later it landed.
     const owns = (repoId: string) => (priorSeq[repoId] ?? 0) <= seq;
+    const priorErr = before.commitsErrorByRepo ?? {};
     const seqByRepo: Record<string, number> = { ...priorSeq };
     const byRepo: Record<string, RepoCommitMeta[]> = {};
+    // Errors fold exactly like the buckets: a pass owns the verdict for the
+    // repos it read and carries the rest forward. Kept per repo because a
+    // sentence can’t be partially edited, and the sentence was the only record:
+    // this pass opens by clearing `commitsError`, so a refresh narrowed to one
+    // repo wiped the "Couldn’t read X" of every repo it never looked at. (The
+    // `only ? before.commitsError : null` that guarded against exactly that
+    // could never fire — `before` is read after the opening patch had already
+    // nulled it.)
+    const errByRepo: Record<string, string> = {};
     for (const repo of all) {
       const fresh = results.find((r) => r.repo.id === repo.id);
       if (fresh && owns(repo.id)) {
         byRepo[repo.id] = fresh.commits;
         seqByRepo[repo.id] = seq;
+        if (fresh.error) errByRepo[repo.id] = fresh.error;
       } else {
         byRepo[repo.id] = prior[repo.id] ?? [];
+        const carried = priorErr[repo.id];
+        if (carried) errByRepo[repo.id] = carried;
       }
     }
 
     const merged = mergeCommits(Object.values(byRepo), MERGED_COMMIT_CAP);
-    const failed = results.filter((r) => r.error);
     // Same fold for dirty state: a narrowed pass only learned about its own
     // repo, so the others keep whatever was last known rather than reading as
     // clean and losing their "Local changes" row.
@@ -1105,16 +1137,11 @@ export const useCommitReview = create<State>((set, get) => ({
       selectedShas,
       diffBySha,
       dirtyRepoIds: all.filter((r) => stillDirty.has(r.id)).map((r) => r.id),
-      commitsError: superseded
-        ? (before.commitsError ?? null)
-        : failed.length === 0
-          ? // A narrowed pass says nothing about the repos it skipped, so it
-            // must not clear an error one of them is still in.
-            (only ? (before.commitsError ?? null) : null)
-          : failed.length === results.length && failed.length === 1
-            ? // The single-repo case reads exactly as it always did.
-              failed[0].error
-            : `Couldn't read ${failed.map((r) => r.repo.name).join(", ")}: ${failed[0].error}`,
+      commitsErrorByRepo: errByRepo,
+      // Rendered from the fold above, so it names every repo currently failing
+      // and no repo that isn't — `superseded` doesn't apply, because the fold
+      // already dropped whatever a newer pass owns.
+      commitsError: renderCommitsError(all, errByRepo),
     });
   },
 
@@ -1638,7 +1665,15 @@ export const useCommitReview = create<State>((set, get) => ({
     // Snapshotted diffs, keyed for the slice. Seeding these (and the selection)
     // as part of the claim is what keeps a resume off the live working tree AND
     // satisfies persistRow's no-diffs early return before the row goes running.
-    const snapshotDiffs = snapshotDiffMap(payload.inputs.diffs, getRepos());
+    //
+    // Keyed against `payload.repos`, not the live registry, for the same reason
+    // the run below is: an untagged diff takes the FIRST repo, and if the user
+    // reordered or removed repos since the interruption, the live first repo is
+    // not the one the run read. The name that falls out here is what
+    // `diffHeader` prints as the diff’s repo and what path focusing
+    // narrows against — so getting it wrong tells the model a diff belongs
+    // to a repo it doesn’t.
+    const snapshotDiffs = snapshotDiffMap(payload.inputs.diffs, payload.repos);
 
     const abort = new AbortController();
     let started = false;
@@ -1670,7 +1705,7 @@ export const useCommitReview = create<State>((set, get) => ({
         resumable: null,
         selectedShas: normalizeKeys(
           payload.inputs.selectedShas,
-          getRepos()[0]?.id ?? "",
+          payload.repos[0]?.id ?? "",
         ),
         diffBySha: { ...curr.diffBySha, ...snapshotDiffs },
         context: curr.context || payload.inputs.context,

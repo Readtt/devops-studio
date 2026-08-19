@@ -113,6 +113,15 @@ describe("checkReadable — source files that trip a secret name", () => {
     expect(checkReadable("/src/credentials.ps1")).toMatchObject({ ok: false });
   });
 
+  it("does not exempt a dotfile that ends in a code extension", () => {
+    // `.env.ts` is `.env` with a suffix, not a module — the source-code bypass
+    // keys on the LAST extension, so without a dotfile guard every `.env.<code
+    // ext>` spelling reads back in full.
+    expect(checkReadable("/src/.env.ts")).toMatchObject({ ok: false });
+    expect(checkReadable("/src/.env.js")).toMatchObject({ ok: false });
+    expect(checkReadable("/home/me/.npmrc.js")).toMatchObject({ ok: false });
+  });
+
   it("does not exempt a stream or trailing-dot spelling of a source name", () => {
     // Windows opens `Credentials.cs.` as `Credentials.cs`, so an extension the
     // set doesn't recognise has to fall back to gated, not to allowed.

@@ -61,6 +61,20 @@ describe("resolveRepoPath · addressing", () => {
     expect(out.ok).toBe(false);
   });
 
+  it("refuses a canonical form that leaves the repo for an ordinary directory", async () => {
+    // The protected-dir lists are not a containment test: `C:/Users/me` is on
+    // neither of them, so a junction pointing there clears the read gate and
+    // only the repo-boundary check can stop it.
+    invoke.mockImplementation(async (cmd: string, args: { path: string }) => {
+      if (cmd !== "fs_canonicalize") throw new Error(`unexpected ${cmd}`);
+      // The ROOT still canonicalizes to itself; only the file walks out.
+      if (args.path === TWO.root) return TWO.root;
+      return "C:/Users/me/Documents/notes.txt";
+    });
+    const out = await resolveRepoPath("repo-two/vendor/cache/notes.txt", MANY);
+    expect(out).toMatchObject({ ok: false });
+  });
+
   it("reads through to the canonical path when it is still allowed", async () => {
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd !== "fs_canonicalize") throw new Error(`unexpected ${cmd}`);

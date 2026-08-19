@@ -750,6 +750,39 @@ describe("run_command · choosing a repo", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
+  // The shell was the way around the read gate every other tool runs: `.env` is
+  // refused by name to read_file and filtered out of grep hits, and `cat .env`
+  // handed it back in full.
+  it.each([
+    "cat .env",
+    "head -n 20 .env.production",
+    "git show HEAD:.env",
+    "git log -p src/config/credentials.pem",
+    "cat config/id_rsa",
+  ])("refuses a command whose operand is a secret file: %s", async (command) => {
+    const out = (await callTool(
+      "run_command",
+      { command, repo: "iSyncKit" },
+      THREE,
+    )) as { error: string };
+    expect(out.error).toMatch(/sensitive-file pattern/);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "git log --oneline -20",
+    "git show HEAD:src/app.ts",
+    "git blame src/auth/login.ts",
+    "git for-each-ref --sort=-committerdate refs/heads",
+    // The PATTERN of a search is a string, not a path — refusing it would be a
+    // refusal about the letters the model typed.
+    'git grep "\.pem" src',
+    'rg "\.env" src',
+  ])("still runs an ordinary read-only command: %s", async (command) => {
+    await callTool("run_command", { command, repo: "iSyncKit" }, THREE);
+    expect(invoke).toHaveBeenCalled();
+  });
+
   it("still allows a path that merely contains dots", async () => {
     await callTool(
       "run_command",

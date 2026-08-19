@@ -167,6 +167,17 @@ async function settle(
   const literal = within ? joinPath(repo.root, within) : repo.root;
   const gate = await checkReadableCanonical(literal, canonicalize);
   if (!gate.ok) return { ok: false, reason: gate.reason };
+  // The gate above re-runs the SECRET and PROTECTED-DIR lists against the
+  // canonical path; it says nothing about "still inside this repo". Containment
+  // has to be re-asserted here, or the junction the doc comment describes walks
+  // out through a gap in both checks: `C:/Users/me` is on neither list, so
+  // `vendor/cache -> C:\Users\me` clears the gate and reads the whole profile.
+  if (!(await canonicalContains(repo.root, gate.canonical))) {
+    return {
+      ok: false,
+      reason: `Refused: "${given}" resolves outside ${repo.name}.`,
+    };
+  }
 
   const virtualPath = within ? `${repo.name}/${within}` : repo.name;
   return {
@@ -178,6 +189,23 @@ async function settle(
     virtualPath,
     ...(given === virtualPath ? {} : { corrected: virtualPath }),
   };
+}
+
+/** Whether a canonical path is still inside a repo.
+ *
+ *  The ROOT is canonicalized too, and only when the literal test fails: a root
+ *  reached through a link of its own — a redirected `Documents`, macOS
+ *  `/tmp` → `/private/tmp` — canonicalizes its own files out from
+ *  under its literal spelling, and refusing those would break every read in the
+ *  repo rather than the escape this is for. An unresolvable root refuses: the
+ *  alternative is trusting a path we just failed to place. */
+async function canonicalContains(root: string, abs: string): Promise<boolean> {
+  if (relativeUnder(root, abs) !== null) return true;
+  try {
+    return relativeUnder(await canonicalize(root), abs) !== null;
+  } catch {
+    return false;
+  }
 }
 
 /** Rejecting is how `checkReadableCanonical` is told "no canonical form" — it

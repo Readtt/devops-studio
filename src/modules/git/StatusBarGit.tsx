@@ -113,7 +113,10 @@ export function StatusBarGit({ onPickDir }: { onPickDir: () => void }) {
       ) : sourceRoot && status.isRepo ? (
         <BranchSwitcher cwd={sourceRoot} status={status} />
       ) : (
-        <GetSourceCodeButton sourceRoot={sourceRoot} notRepoButSet={!!sourceRoot} />
+        <GetSourceCodeButton
+          notRepoButSet={!!sourceRoot}
+          onOpen={() => setSourceDialogOpen(true)}
+        />
       )}
 
       {/* Seeded with a configured repo so the destination defaults to the
@@ -243,41 +246,41 @@ function ReposSegment({ repos }: { repos: WorkspaceRepo[] }) {
  * code it can read without them touching git themselves.
  */
 function GetSourceCodeButton({
-  sourceRoot,
   notRepoButSet,
+  onOpen,
 }: {
-  sourceRoot: string | null;
   notRepoButSet: boolean;
+  /** Opens the wizard StatusBarGit hosts. This segment does NOT mount its own:
+   *  two copies means two sets of wizard state, and the Settings window’s
+   *  `get-source-code-requested` would open one while a click opened the other
+   *  — with nothing stopping both from being on screen at once. */
+  onOpen: () => void;
 }) {
-  const [open, setOpen] = useState(false);
   return (
-    <>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            onClick={() => setOpen(true)}
-            className={SEGMENT_CLASS}
-            aria-label="Get source code"
-          >
-            <HugeiconsIcon icon={CloudDownloadIcon} size={11} strokeWidth={1.75} />
-            <span>Get source code</span>
-          </button>
-        </TooltipTrigger>
-        <TooltipContent
-          side="top"
-          align="start"
-          sideOffset={6}
-          variant="panel"
-          className="max-w-[320px] px-3 py-2 text-[11px] leading-relaxed"
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onOpen}
+          className={SEGMENT_CLASS}
+          aria-label="Get source code"
         >
-          {notRepoButSet
-            ? "This folder isn't a git repository. Clone one here to enable code links and branch switching."
-            : "Clone a repository onto this machine — using your Azure DevOps token, or any HTTPS URL."}
-        </TooltipContent>
-      </Tooltip>
-      <GetSourceCodeDialog open={open} onOpenChange={setOpen} sourceRoot={sourceRoot} />
-    </>
+          <HugeiconsIcon icon={CloudDownloadIcon} size={11} strokeWidth={1.75} />
+          <span>Get source code</span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent
+        side="top"
+        align="start"
+        sideOffset={6}
+        variant="panel"
+        className="max-w-[320px] px-3 py-2 text-[11px] leading-relaxed"
+      >
+        {notRepoButSet
+          ? "This folder isn't a git repository. Clone one here to enable code links and branch switching."
+          : "Clone a repository onto this machine — using your Azure DevOps token, or any HTTPS URL."}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 

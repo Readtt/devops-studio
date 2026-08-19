@@ -1218,6 +1218,42 @@ describe("loadCommits — the merged timeline", () => {
     expect(s.commitsError).toContain("not a git repository");
   });
 
+  // A repo comes back (a network drive reconnects) and the user switches a
+  // branch in it, which narrows the refresh to that repo. The pass that proves
+  // it is readable has to be the pass that clears its error.
+  it("clears a recovered repo’s error on the narrowed pass that re-read it", async () => {
+    let reads = 0;
+    mockListCommits.mockImplementation(async (cwd) => {
+      if (cwd !== REPO_B.root) return [meta("a1", REPO_A)];
+      reads++;
+      if (reads === 1) throw new Error("not a git repository");
+      return [meta("b1", REPO_B)];
+    });
+    seed(1, {});
+
+    await useCommitReview.getState().loadCommits(1);
+    expect(slice(1).commitsError).toContain(REPO_B.name);
+
+    await useCommitReview.getState().loadCommits(1, REPO_B.root);
+
+    expect(slice(1).commitsError).toBeNull();
+  });
+
+  // The mirror of it: a narrowed pass says nothing about the repos it skipped,
+  // so it must not clear an error one of THEM is still in.
+  it("keeps another repo’s error through a narrowed pass", async () => {
+    mockListCommits.mockImplementation(async (cwd) => {
+      if (cwd === REPO_B.root) throw new Error("not a git repository");
+      return [meta("a1", REPO_A)];
+    });
+    seed(1, {});
+
+    await useCommitReview.getState().loadCommits(1);
+    await useCommitReview.getState().loadCommits(1, REPO_A.root);
+
+    expect(slice(1).commitsError).toContain(REPO_B.name);
+  });
+
   it("reports each repo's dirty state independently", async () => {
     mockStatus.mockImplementation(async (cwd) =>
       ({ dirty: cwd === REPO_B.root }) as Awaited<

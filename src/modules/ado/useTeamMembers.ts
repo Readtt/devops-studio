@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { listTeamMembers } from "./native";
 import type { TeamMember } from "./types";
 
@@ -76,6 +76,24 @@ export function invalidateTeamMembers(): void {
   cache = null;
   inflight = null;
   failedAt = 0;
+  // Clearing the module cache is only half of it: every mounted `useTeamMembers`
+  // holds its roster in component state, seeded once, and its effect only re-runs
+  // when `enabled` flips. Without this wake-up an open review tab keeps offering
+  // the PREVIOUS project's people — assignable nowhere — which is the exact
+  // staleness invalidating exists to clear.
+  for (const listen of [...listeners]) listen();
+}
+
+/** Mounted consumers, woken by {@link invalidateTeamMembers}. */
+const listeners = new Set<() => void>();
+
+function subscribe(onChange: () => void): () => void {
+  listeners.add(onChange);
+  return () => listeners.delete(onChange);
+}
+
+function getGeneration(): number {
+  return generation;
 }
 
 /** Tests only — the cache is process-lifetime state. */
@@ -96,6 +114,9 @@ export function useTeamMembers(enabled: boolean): {
 } {
   const [members, setMembers] = useState<TeamMember[]>(() => cache ?? []);
   const [loading, setLoading] = useState(false);
+  // Re-runs the effect on invalidation, so a project switch refetches instead of
+  // leaving a mounted picker on the old roster.
+  const generationTick = useSyncExternalStore(subscribe, getGeneration, getGeneration);
 
   useEffect(() => {
     if (!enabled) return;
@@ -104,6 +125,10 @@ export function useTeamMembers(enabled: boolean): {
       return;
     }
     let alive = true;
+    // Drop what's on screen first: after an invalidation this list is the old
+    // project's people, and holding it through the refetch offers names the new
+    // project can't assign.
+    setMembers([]);
     setLoading(true);
     loadTeamMembers()
       .then((m) => {
@@ -118,7 +143,7 @@ export function useTeamMembers(enabled: boolean): {
     return () => {
       alive = false;
     };
-  }, [enabled]);
+  }, [enabled, generationTick]);
 
   return { members, loading };
 }
