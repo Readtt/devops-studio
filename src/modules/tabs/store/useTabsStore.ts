@@ -50,6 +50,9 @@ export type OpenTabInput =
   | {
       kind: "code-viewer";
       path: string;
+      /** Repo the path resolved to; the caller (App's openCodeViewerTab) owns
+       *  resolution, so the store just records what it was told. */
+      repoName?: string | null;
       title?: string;
       startLine?: number;
       endLine?: number;
@@ -83,8 +86,8 @@ export type OpenTabInput =
     }
   | {
       kind: "commit-review";
-      cwd: string;
-      /** Pre-select commits (full SHAs). Absent ⇒ defaults to HEAD. */
+      /** Pre-select changes, as `${repoId}:${sha}` keys. Absent ⇒ a default is
+       *  picked on mount. */
       selectedShas?: string[] | null;
       /** Per-tab pinned model (persisted). Absent ⇒ inherit global default. */
       modelId?: import("@/modules/ai/config").ModelId | null;
@@ -270,8 +273,9 @@ export const useTabsStore = create<TabsState>()(
               return false;
             case "commit-review":
               // Reopening a specific saved run focuses its tab; the plain
-              // "Commit Review" launcher / palette focuses the existing fresh
-              // review for this source dir instead of stacking duplicates.
+              // "Commit Review" launcher / palette focuses THE fresh review —
+              // a review is workspace-scoped, so there is exactly one of those,
+              // where there used to be one per source dir.
               // (Duplicate explicitly clones via duplicateTab, bypassing this.)
               if (input.rehydrateRunId) {
                 return (
@@ -279,11 +283,7 @@ export const useTabsStore = create<TabsState>()(
                   t.rehydrateRunId === input.rehydrateRunId
                 );
               }
-              return (
-                t.kind === "commit-review" &&
-                !t.rehydrateRunId &&
-                t.cwd === input.cwd
-              );
+              return t.kind === "commit-review" && !t.rehydrateRunId;
           }
           return false;
         });
@@ -348,6 +348,7 @@ export const useTabsStore = create<TabsState>()(
               kind: "code-viewer",
               title: input.title ?? input.path.split(/[\\/]/).pop() ?? input.path,
               path: input.path,
+              repoName: input.repoName ?? null,
               startLine: input.startLine,
               endLine: input.endLine,
               pinned: input.pinned ?? false,
@@ -389,7 +390,6 @@ export const useTabsStore = create<TabsState>()(
               id,
               kind: "commit-review",
               title: input.title ?? "Commit review",
-              cwd: input.cwd,
               selectedShas: input.selectedShas ?? null,
               context: null,
               modelId: input.modelId ?? null,
@@ -556,10 +556,11 @@ export const useTabsStore = create<TabsState>()(
             initialSuiteId: t.initialSuiteId,
           });
         }
-        // commit-review now dedups by cwd in openTab, so a Duplicate must clone
-        // the tab object directly (below) rather than route through openTab —
-        // otherwise it would just reactivate the original. The direct clone
-        // copies cwd/selectedShas/context/modelId so the copy reviews the same thing.
+        // commit-review dedups every fresh review onto one tab in openTab, so a
+        // Duplicate must clone the tab object directly (below) rather than route
+        // through openTab — otherwise it would just reactivate the original. The
+        // direct clone copies selectedShas/context/modelId so the copy reviews
+        // the same thing.
 
         // test-case / bug / code-viewer / suite-chat DEDUP in openTab, so
         // re-opening the same identity would just reactivate the original —

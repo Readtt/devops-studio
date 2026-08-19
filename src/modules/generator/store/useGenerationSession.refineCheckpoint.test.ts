@@ -27,7 +27,7 @@ import { useChatStore } from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   FINISH_NOW_NUDGE,
-  type GeneratorRefineCheckpointV1,
+  type GeneratorRefineCheckpointV2,
 } from "@/modules/ai/lib/checkpointApi";
 import {
   RESUME_TOPUP_TOKENS,
@@ -52,14 +52,14 @@ function invokedCommands(): string[] {
 }
 
 /** Every ai_checkpoint_save payload, parsed, in write order. */
-function savedPayloads(): GeneratorRefineCheckpointV1[] {
+function savedPayloads(): GeneratorRefineCheckpointV2[] {
   return invoke.mock.calls
     .filter((c) => c[0] === "ai_checkpoint_save")
     .map(
       (c) =>
         JSON.parse(
           (c[1] as { input: { payload: string } }).input.payload,
-        ) as GeneratorRefineCheckpointV1,
+        ) as GeneratorRefineCheckpointV2,
     );
 }
 
@@ -417,7 +417,7 @@ describe("resumeRefine — replaying the paid-for round", () => {
 
     // The model this round ran on has since been dropped from the catalogue.
     store.setState({ refineResumable: store.getState().refineResumable });
-    const saved = last(savedPayloads()) as GeneratorRefineCheckpointV1;
+    const saved = last(savedPayloads()) as GeneratorRefineCheckpointV2;
     const retired = JSON.stringify({
       ...saved,
       modelId: "retired-model-x" as ModelId,
@@ -573,13 +573,13 @@ describe("refine — a round that can't apply its result leaves nothing behind",
       surface: "generator-refine",
       cwd: SESSION_RUN_ID,
       payload: JSON.stringify({
-        v: 1,
+        v: 2,
         surface: "generator-refine",
         runId: "rfn-broken",
         sessionRunId: SESSION_RUN_ID,
         createdAt: "2026-08-01T00:00:00.000Z",
         modelId: "claude-sonnet-5",
-        sourceRoot: null,
+        repos: [],
         round: {
           instruction: "x",
           startedAt: "2026-08-01T00:00:00.000Z",
@@ -612,14 +612,14 @@ describe("refine — a round that can't apply its result leaves nothing behind",
 
 describe("probeRefineCheckpoint — resurfacing a round after a restart", () => {
   it("adopts an interrupted follow-up belonging to this draft", async () => {
-    const payload: GeneratorRefineCheckpointV1 = {
-      v: 1,
+    const payload: GeneratorRefineCheckpointV2 = {
+      v: 2,
       surface: "generator-refine",
       runId: "rfn-abc",
       sessionRunId: SESSION_RUN_ID,
       createdAt: "2026-08-01T00:00:00.000Z",
       modelId: "claude-sonnet-5",
-      sourceRoot: null,
+      repos: [],
       round: {
         instruction: "add negative paths",
         startedAt: "2026-08-01T00:00:00.000Z",
@@ -673,13 +673,13 @@ describe("probeRefineCheckpoint — resurfacing a round after a restart", () => 
           surface: "generator-refine",
           cwd: null,
           payload: JSON.stringify({
-            v: 1,
+            v: 2,
             surface: "generator-refine",
             runId: "rfn-other",
             sessionRunId: "some-other-draft",
             createdAt: "2026-08-01T00:00:00.000Z",
             modelId: "claude-sonnet-5",
-            sourceRoot: null,
+            repos: [],
             round: {
               instruction: "someone else's follow-up",
               startedAt: "2026-08-01T00:00:00.000Z",

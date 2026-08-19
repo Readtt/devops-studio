@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { CodeRefChip, parseCodeRef } from "@/components/CodeRefChip";
@@ -10,7 +10,8 @@ import {
   type ConfidenceVerdict,
   type EvidenceItem,
 } from "../lib/confidence";
-import { useSourceDirGitInfo } from "@/modules/git";
+import { useReposGitInfo } from "@/modules/git";
+import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   AlertCircleIcon,
   Cancel01Icon,
@@ -256,33 +257,62 @@ export function ConfidenceDetailPanel({
 
 /**
  * Source-provenance line for a verdict. A confidence score is graded against
- * whatever source was checked out when it ran, so this compares the verdict's
- * stamped HEAD sha to the LIVE source-dir HEAD (via useSourceDirGitInfo, which
+ * whatever source was checked out when it ran, so this compares each repo's
+ * stamped HEAD sha to that SAME repo's live HEAD (via useReposGitInfo, which
  * reacts to branch switches/pulls through SOURCE_GIT_CHANGED_EVENT) and tells
  * the user precisely whether the score still reflects their code:
- *   - stale → amber, prompts a re-evaluate (the tree moved since it ran)
+ *   - stale → amber, prompts a re-evaluate (a repo it read moved since)
  *   - fresh → graded against exactly what's checked out now
- *   - unknown → no provenance (legacy verdict, non-repo, or code search off):
- *     fall back to the honest generic "check your branch" reminder.
+ *   - unknown → no provenance (verdict with no stamp, non-repo, or code search
+ *     off): fall back to the honest generic "check your branch" reminder.
  */
 function VerdictSourceHint({ verdict }: { verdict: ConfidenceVerdict }) {
-  const git = useSourceDirGitInfo();
-  const state = verdictSourceState(verdict, git.isRepo ? git.commit : null);
+  const repos = usePreferencesStore((s) => s.repos);
+  const info = useReposGitInfo();
+  const current = useMemo(
+    () =>
+      repos.map((r) => {
+        const git = info.get(r.id);
+        return {
+          repoId: r.id,
+          repoName: r.name,
+          sha: git?.isRepo ? git.commit : null,
+        };
+      }),
+    [repos, info],
+  );
+  const state = verdictSourceState(verdict, current);
+  // At one repo the name is noise — it's the only thing it could be.
+  const named = repos.length > 1;
 
   if (state.kind === "stale") {
+    const one = state.moved.length === 1 ? state.moved[0] : null;
     return (
       <p className="inline-flex w-fit items-center gap-1 rounded-sm bg-amber-500/12 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
         <HugeiconsIcon icon={GitBranchIcon} size={10} strokeWidth={1.75} className="shrink-0" />
         <span>
           Your source changed since this ran
-          {verdict.sourceBranch ? (
+          {one ? (
             <>
-              {" "}
-              (graded on <span className="font-mono">{verdict.sourceBranch}</span> @{" "}
-              <span className="font-mono">{state.evaluatedSha}</span>, now at{" "}
-              <span className="font-mono">{state.currentSha}</span>)
+              {" ("}
+              {named ? <span className="font-mono">{one.repoName}</span> : null}
+              {named && one.branch ? " on " : null}
+              {one.branch ? (
+                <>
+                  {!named ? "graded on " : null}
+                  <span className="font-mono">{one.branch}</span>
+                </>
+              ) : null}
+              {" @ "}
+              <span className="font-mono">{one.evaluatedSha}</span>, now at{" "}
+              <span className="font-mono">{one.currentSha}</span>)
             </>
-          ) : null}
+          ) : (
+            <>
+              {" ("}
+              {state.moved.map((m) => m.repoName).join(", ")})
+            </>
+          )}
           {" — re-evaluate to refresh."}
         </span>
       </p>
@@ -290,18 +320,30 @@ function VerdictSourceHint({ verdict }: { verdict: ConfidenceVerdict }) {
   }
 
   if (state.kind === "fresh") {
+    const one = state.repos.length === 1 ? state.repos[0] : null;
     return (
       <p className="inline-flex w-fit items-center gap-1 rounded-sm bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
         <HugeiconsIcon icon={GitBranchIcon} size={10} strokeWidth={1.75} className="shrink-0" />
         <span>
           Evaluated against your current source
-          {verdict.sourceBranch ? (
+          {one ? (
             <>
-              {" "}
-              (<span className="font-mono">{verdict.sourceBranch}</span> @{" "}
-              <span className="font-mono">{state.sha}</span>)
+              {" ("}
+              {named ? (
+                <>
+                  <span className="font-mono">{one.repoName}</span>
+                  {one.branch ? " on " : null}
+                </>
+              ) : null}
+              {one.branch ? (
+                <span className="font-mono">{one.branch}</span>
+              ) : null}
+              {" @ "}
+              <span className="font-mono">{one.evaluatedSha}</span>)
             </>
-          ) : null}
+          ) : (
+            <> ({state.repos.length} repos, all unchanged)</>
+          )}
           .
         </span>
       </p>

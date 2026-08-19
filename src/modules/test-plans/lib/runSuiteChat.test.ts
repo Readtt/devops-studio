@@ -6,9 +6,10 @@ const streamTask = vi.fn();
 vi.mock("@/modules/ai/lib/taskRunner", () => ({
   streamTask: (...a: unknown[]) => streamTask(...a),
 }));
+const REPOS = [{ id: "r1", name: "repo-one", root: "/src", ado: null }];
 vi.mock("./suiteChatTools", () => ({
-  buildSuiteChatTools: (root: string | null) =>
-    root ? ({ read_file: {} } as never) : undefined,
+  buildSuiteChatTools: (repos: unknown[]) =>
+    repos.length > 0 ? ({ read_file: {} } as never) : undefined,
 }));
 
 import type { ModelMessage } from "ai";
@@ -30,7 +31,7 @@ const base: SuiteChatTaskInput & { onText: (d: string) => void } = {
   newQuestion: "which acceptance criteria have no covering case?",
   modelId: "gpt-5.4-mini" as never,
   keys: {} as never,
-  sourceRoot: null,
+  repos: [],
   onText: () => undefined,
 };
 
@@ -216,6 +217,13 @@ describe("SUITE_CHAT_SYSTEM_PROMPT", () => {
       SUITE_CHAT_SYSTEM_PROMPT,
     );
   });
+
+  it("teaches the repo-prefixed path form the tools speak", () => {
+    expect(SUITE_CHAT_SYSTEM_PROMPT).toContain("PATHS ARE REPO-PREFIXED");
+    // Citations become chips in the code viewer, so the form the model writes
+    // them in has to be the form that resolves back to a repo.
+    expect(SUITE_CHAT_SYSTEM_PROMPT).toContain("<repo>/path/to/file.ext:LINE");
+  });
 });
 
 // The same "burned its steps reading and never answered" failure the draft Ask
@@ -279,7 +287,7 @@ describe("suite chat — finishing a turn that stopped without answering", () =>
     const deltas: string[] = [];
     const r = await streamSuiteChatTask({
       ...base,
-      sourceRoot: "/src",
+      repos: REPOS,
       onText: (d) => deltas.push(d),
     });
     expect(streamTask).toHaveBeenCalledTimes(2);
@@ -307,7 +315,7 @@ describe("suite chat — finishing a turn that stopped without answering", () =>
       finalText: "criterion 3 is uncovered",
       durationMs: 1,
     });
-    await streamSuiteChatTask({ ...base, sourceRoot: "/src" });
+    await streamSuiteChatTask({ ...base, repos: REPOS });
     expect(streamTask).toHaveBeenCalledTimes(1);
   });
 
@@ -318,7 +326,7 @@ describe("suite chat — finishing a turn that stopped without answering", () =>
       });
       return { ok: true, text: "", finalText: "", stepsUsed: 1, durationMs: 1 };
     });
-    await streamSuiteChatTask({ ...base, sourceRoot: "/src" });
+    await streamSuiteChatTask({ ...base, repos: REPOS });
     expect(streamTask).toHaveBeenCalledTimes(1);
   });
 });

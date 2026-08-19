@@ -1,7 +1,8 @@
 import { create } from "zustand";
 
 import { useActionToast } from "@/components/actionToastStore";
-import { setSourceRoot } from "@/modules/settings/store";
+import { autoBindRepos } from "@/modules/ado/repoBinding";
+import { addRepo, type WorkspaceRepo } from "@/modules/settings/store";
 
 import {
   cancelClone,
@@ -12,10 +13,10 @@ import {
 } from "./cloneOps";
 import { emitSourceGitChanged } from "./gitOps";
 
-// idle → cloning → (choose-source | done)
-//   choose-source: ≥1 repo cloned; the source-picker popup is up.
-//   done: all failed, cancelled, or the user resolved the picker.
-type ClonePhase = "idle" | "cloning" | "choose-source" | "done";
+// idle → cloning → done
+// Every repo that clones successfully joins the workspace; there is no "which
+// one is THE source" question to ask, because every configured repo is read.
+type ClonePhase = "idle" | "cloning" | "done";
 
 /** One repo to clone in a batch. Several of these run one-at-a-time (the Rust
  *  side clones a single repo; sequential keeps progress legible and avoids
@@ -75,8 +76,6 @@ type State = {
   cancel: () => void;
   /** Clear the capsule. */
   dismiss: () => void;
-  /** Resolve the source-picker: adopt `path` as the source dir, or null to skip. */
-  chooseSource: (path: string | null) => void;
 };
 
 let dismissTimer: ReturnType<typeof setTimeout> | null = null;
@@ -105,11 +104,7 @@ export const useCloneProgress = create<State>((set, get) => ({
   runToken: 0,
 
   startBatch: async ({ jobs, destParent }) => {
-    // Reject a new batch while one is still active — "cloning" OR "choose-source"
-    // (clones landed and the source picker is still up). Restarting at
-    // choose-source would wipe the pending picker's outcomes.
-    const phase = get().phase;
-    if (phase === "cloning" || phase === "choose-source" || jobs.length === 0) return;
+    if (get().phase === "cloning" || jobs.length === 0) return;
     clearDismiss();
     const runToken = get().runToken + 1;
     set({
@@ -176,13 +171,52 @@ export const useCloneProgress = create<State>((set, get) => ({
 
     if (get().runToken !== runToken) return;
 
+    set({ phase: "done", repoLabel: null, gitPhase: null, pct: null });
+    dismissTimer = setTimeout(() => get().dismiss(), 5000);
+
     const successes = outcomes.filter((o) => o.status === "cloned" && o.path);
-    if (successes.length > 0) {
-      // Hand off to the source-picker popup — it owns the source-dir decision.
-      set({ phase: "choose-source", repoLabel: null, gitPhase: null, pct: null });
-    } else {
-      set({ phase: "done", repoLabel: null, gitPhase: null, pct: null });
-      dismissTimer = setTimeout(() => get().dismiss(), 5000);
+    if (successes.length === 0) return;
+    try {
+      // Sequential: addRepo is read-modify-write against the shared registry,
+      // so racing them would let later writes clobber earlier ones.
+      const added: WorkspaceRepo[] = [];
+      for (const o of successes) added.push(await addRepo(o.path as string));
+      // These came from ADO, so their remotes match exactly — bind them to the
+      // repos they were cloned from. Not awaited: the clone is what the user
+      // is waiting on.
+      //
+      // Runs even when a newer batch has taken the capsule: binding is the only
+      // thing that ever binds these repos (`autoBindRepos` runs at add sites,
+      // never again), so skipping it would leave them unlinked forever and
+      // every code link published against them would deep-link into the wrong
+      // ADO project. Same for the git refresh — the repos exist either way.
+      void autoBindRepos(added);
+      emitSourceGitChanged();
+      // Only the NARRATION belongs to the batch that owns the capsule: a run
+      // cancelled or restarted while these writes were in flight must not have
+      // its outcome announced by this one.
+      if (get().runToken !== runToken) return;
+      useActionToast.getState().show({
+        tone: "ok",
+        message:
+          successes.length === 1
+            ? `Added ${successes[0].label}`
+            : `Added ${successes.length} repos`,
+      });
+    } catch {
+      // Same token guard as the success path: a run cancelled or restarted
+      // while these writes were in flight must not narrate its outcome over
+      // the one the user is actually watching.
+      if (get().runToken !== runToken) return;
+      // The clones are on disk either way — say what didn't happen so the user
+      // knows to add them from Settings rather than assuming they're in.
+      useActionToast.getState().show({
+        tone: "error",
+        message:
+          successes.length === 1
+            ? `Cloned ${successes[0].label}, but couldn't add it to the workspace`
+            : "Cloned, but couldn't add the repos to the workspace",
+      });
     }
   },
 
@@ -207,28 +241,5 @@ export const useCloneProgress = create<State>((set, get) => ({
   dismiss: () => {
     clearDismiss();
     set({ ...IDLE });
-  },
-
-  chooseSource: (path) => {
-    clearDismiss();
-    if (path) {
-      const label = get().outcomes.find((o) => o.path === path)?.label ?? "the cloned repo";
-      // Only claim success once the source-dir write actually lands. A failed
-      // write must not leave a misleading "Now working in X" toast (and an
-      // unhandled rejection) while the app still points at the old source.
-      void setSourceRoot(path)
-        .then(() => {
-          emitSourceGitChanged();
-          useActionToast.getState().show({ tone: "ok", message: `Now working in ${label}` });
-        })
-        .catch(() => {
-          useActionToast.getState().show({
-            tone: "error",
-            message: `Couldn't switch to ${label}`,
-          });
-        });
-    }
-    set({ phase: "done" });
-    dismissTimer = setTimeout(() => get().dismiss(), 2600);
   },
 }));

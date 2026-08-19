@@ -13,32 +13,51 @@ import {
   Archive02Icon,
   ArrowRight01Icon,
 } from "@hugeicons/core-free-icons";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+import { repoBasename, sameRoot } from "@/modules/settings/store";
 import { useBranchSwitch, type BranchSwitchConfirm } from "./useBranchSwitch";
 
 /**
  * Asked when switching branches with uncommitted work — the Visual-Studio-style
  * "what about my changes?" prompt. Two deliberate, clearly-named outcomes
  * (carry along vs stash aside) so the user always chooses; never silent.
- * Mounted once, globally; reads the pending confirm from the switch store.
+ * Mounted once, globally; reads the pending confirms from the switch store.
+ *
+ * Repos are switched independently, so more than one can be waiting on an
+ * answer. They're asked one at a time — two modals at once would fight.
  */
 export function BranchSwitchDialog() {
-  const confirm = useBranchSwitch((s) => s.confirm);
+  const confirms = useBranchSwitch((s) => s.confirms);
   const confirmSwitch = useBranchSwitch((s) => s.confirmSwitch);
   const cancel = useBranchSwitch((s) => s.cancelConfirm);
+  const repos = usePreferencesStore((s) => s.repos);
+
+  const confirm = confirms.values().next().value ?? null;
+  // Only worth naming the repo once there's more than one to confuse it with.
+  const repoName =
+    confirm && repos.length > 1
+      ? repos.find((r) => sameRoot(r.root, confirm.cwd))?.name ??
+        repoBasename(confirm.cwd)
+      : null;
 
   return (
     <AlertDialog
       open={!!confirm}
       onOpenChange={(open) => {
-        if (!open) cancel();
+        if (!open && confirm) cancel(confirm.cwd);
       }}
     >
-      <AlertDialogContent className="max-w-[440px]">
+      {/* Keyed by repo so a second queued confirm REMOUNTS instead of swapping
+          its text in under the user's cursor: without this the dialog never
+          closes between two dirty repos, focus stays on the same button, and a
+          key repeat meant for the first repo checks out the second. */}
+      <AlertDialogContent key={confirm?.cwd ?? "none"} className="max-w-[440px]">
         {confirm ? (
           <Body
             confirm={confirm}
-            onCarry={() => confirmSwitch("carry")}
-            onStash={() => confirmSwitch("stash")}
+            repoName={repoName}
+            onCarry={() => confirmSwitch(confirm.cwd, "carry")}
+            onStash={() => confirmSwitch(confirm.cwd, "stash")}
           />
         ) : null}
       </AlertDialogContent>
@@ -48,22 +67,38 @@ export function BranchSwitchDialog() {
 
 function Body({
   confirm,
+  repoName,
   onCarry,
   onStash,
 }: {
   confirm: BranchSwitchConfirm;
+  repoName: string | null;
   onCarry: () => void;
   onStash: () => void;
 }) {
   const { branch, from, blocked } = confirm;
   const here = from ?? "this branch";
   const summary = dirtySummary(confirm);
+  const inRepo = repoName ? (
+    <>
+      {" "}
+      in <span className="font-medium text-foreground/85">{repoName}</span>
+    </>
+  ) : null;
 
   return (
     <>
       <AlertDialogHeader>
         <AlertDialogTitle>
           {blocked ? "Your changes don't fit there" : "You have uncommitted changes"}
+          {repoName ? (
+            <>
+              {" "}
+              <span className="font-normal text-muted-foreground">
+                in {repoName}
+              </span>
+            </>
+          ) : null}
         </AlertDialogTitle>
         <AlertDialogDescription>
           {blocked ? (
@@ -76,8 +111,8 @@ function Body({
           ) : (
             <>
               You have {summary} on{" "}
-              <span className="font-mono text-foreground/85">{here}</span>.
-              What should happen to them when you switch to{" "}
+              <span className="font-mono text-foreground/85">{here}</span>
+              {inRepo}. What should happen to them when you switch to{" "}
               <span className="font-mono text-foreground/85">{branch}</span>?
             </>
           )}

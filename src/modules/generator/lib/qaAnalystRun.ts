@@ -21,6 +21,8 @@ import {
 import type { ModelMessage } from "ai";
 import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
+import { renderRepoRoster } from "@/modules/ai/lib/repoPaths";
+import type { WorkspaceRepo } from "@/modules/settings/store";
 import {
   DraftBatchLLMSchema,
   clampBugLinks,
@@ -161,10 +163,11 @@ export type RunInput = {
   modelId: ModelId;
   /** Local-provider config (base URLs + model ids) so a local model resolves. */
   local?: LocalProviderConfig;
-  /** When set (global code-search toggle on + a source dir), the analyzer gets
-   *  read-only Read/Glob/Grep tools so it can trace the spec against real code
-   *  — deeper, code-grounded cases. null ⇒ tool-less (spec + attachments only). */
-  sourceRoot?: string | null;
+  /** Source repos the analyzer may read (global code-search toggle on ⇒ every
+   *  configured repo). With any, it gets read-only Read/Glob/Grep across all of
+   *  them so it can trace the spec against real code — deeper, code-grounded
+   *  cases. Empty ⇒ tool-less (spec + attachments only). */
+  repos?: WorkspaceRepo[];
   /** Structured per-step activity for the streaming log UI. Called for each
    *  tool call (with input + result) and for "thinking" steps without tools. */
   onActivity?: (entry: ActivityEntry) => void;
@@ -233,7 +236,7 @@ export type PreparedAnalystRun = {
   /** Session attachments merged with context-block images — the exact vision
    *  set the request carries. */
   attachments: RunAttachment[];
-  sourceRoot: string | null;
+  repos: WorkspaceRepo[];
   customInstructions?: string;
 };
 
@@ -251,7 +254,7 @@ export function prepareQaAnalystRun(input: RunInput): PreparedAnalystRun {
       ...input.attachments,
       ...collectContextImages(input.contextBlocks ?? []),
     ],
-    sourceRoot: input.sourceRoot ?? null,
+    repos: input.repos ?? [],
     customInstructions: input.customInstructions,
   };
 }
@@ -296,7 +299,7 @@ export async function executeQaAnalystRun(
   // spec across real files instead of guessing from the prompt alone. SAFETY:
   // these are READ-ONLY (read_file / list_files / grep); the runner never
   // injects write/edit/bash tools.
-  const tools = buildSuiteChatTools(prepared.sourceRoot);
+  const tools = buildSuiteChatTools(prepared.repos);
 
   // Schema-validated, temperature-0 structured output via the shared runner.
   // With tools the runner runs the agentic read loop then validates the
@@ -312,7 +315,7 @@ export async function executeQaAnalystRun(
     modelId: prepared.modelId,
     keys: opts.keys,
     local: opts.local ?? {},
-    systemPrompt: QA_ANALYST_PROMPT,
+    systemPrompt: analystSystemPrompt(prepared.repos),
     customInstructions: prepared.customInstructions,
     prompt: prepared.userPrompt,
     attachments: prepared.attachments,
@@ -400,6 +403,29 @@ export async function executeQaAnalystRun(
     usage: r.usage,
     outputCap: r.outputCap,
   };
+}
+
+/** The analyst prompt plus the roster of repos this run may read. It rides on
+ *  the SYSTEM prompt rather than the user turn because refine replaces the user
+ *  turn wholesale (`userPromptOverride`) — a roster built into `buildUserPrompt`
+ *  would reach analyze and silently miss every follow-up round. */
+function analystSystemPrompt(repos: WorkspaceRepo[]): string {
+  // No roster means no repo is in scope — code search is off, or the user
+  // deselected every Repos chip. The base prompt still carries REPO_PATH_RULE
+  // ("the first segment is always one of the configured repo names") and still
+  // asks for source links, so without this the model is told to prefix paths
+  // with names it was never given. It emits a bare path, publish can't tell
+  // which repo it means, and the link is dropped — a published case with no
+  // Linked source section at all, and nothing anywhere saying why.
+  if (repos.length === 0) {
+    return `${QA_ANALYST_PROMPT}
+
+NO SOURCE REPOS ARE IN SCOPE for this run — you cannot read any code, so the repo-prefixed path rule above has nothing to name. Do NOT emit sourceLinks or codeRefs: a path you did not read is a guess, and a link that names no repo cannot be published. Write the cases from the spec alone.`;
+  }
+  return `${QA_ANALYST_PROMPT}
+
+SOURCE REPOS you can read:
+${renderRepoRoster(repos)}`;
 }
 
 export async function runQaAnalyst(input: RunInput): Promise<RunResult> {
@@ -598,13 +624,13 @@ const DRAFT_BATCH_SHAPE = {
         "STEPS TO REPRODUCE:\n1. Click 'Send code again' six times within one minute.\n\n" +
         "EXPECTED RESULT:\nAfter the third request, a message states that no more codes can be sent for a short period.\n\n" +
         "ACTUAL RESULT:\nAll six codes arrive.\n\n" +
-        "TECHNICAL NOTES:\nsendCode never checks the rate-limit counter (src/auth/sms.ts:42-58).\n\n" +
+        "TECHNICAL NOTES:\nsendCode never checks the rate-limit counter (repo-one/src/auth/sms.ts:42-58).\n\n" +
         "ENVIRONMENT:\nn/a",
       severity: "2 - High",
       linkedDraftCaseIndex: 0,
       codeRefs: [
         {
-          file: "src/auth/sms.ts",
+          file: "repo-one/src/auth/sms.ts",
           startLine: 42,
           endLine: 58,
           symbol: "sendCode",

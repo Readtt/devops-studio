@@ -33,7 +33,6 @@ import {
 
 type Props = {
   leaf: LeafNode;
-  sourceRoot: string | null;
   /** Empty-state shown when the leaf has zero tabs. Defaults to nothing —
    *  App.tsx supplies the welcome copy for the root leaf. */
   emptyState?: React.ReactNode;
@@ -50,11 +49,7 @@ type Props = {
  * dragged from another leaf can be dropped on the empty strip area (or
  * anywhere on the body) and lands at the end of this leaf.
  */
-export const LeafPane = memo(function LeafPane({
-  leaf,
-  sourceRoot,
-  emptyState,
-}: Props) {
+export const LeafPane = memo(function LeafPane({ leaf, emptyState }: Props) {
   const tabs = useLeafTabs(leaf.id);
   const focusedLeafId = useFocusedLeafId();
   const focused = focusedLeafId === leaf.id;
@@ -138,7 +133,7 @@ export const LeafPane = memo(function LeafPane({
                   style={{ visibility: visible ? "visible" : "hidden" }}
                   aria-hidden={!visible}
                 >
-                  <TabContent tab={t} sourceRoot={sourceRoot} />
+                  <TabContent tab={t} />
                 </div>
               );
             })}
@@ -159,13 +154,13 @@ export const LeafPane = memo(function LeafPane({
  *  LaunchMenuItems into the content.
  */
 function NewTabInlineLauncher() {
-  const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
+  const repos = usePreferencesStore((s) => s.repos);
   const [open, setOpen] = useState(false);
   const actions = {
     onGenerator: launchGenerator,
     onTerminal: launchTerminal,
     onCommitReview: launchCommitReview,
-    sourceRoot,
+    repos,
   };
   return (
     <Popover open={open} onOpenChange={setOpen}>

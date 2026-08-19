@@ -11,7 +11,6 @@ import { useTabsStore } from "./store/useTabsStore";
 
 type Props = {
   node: PaneNode;
-  sourceRoot: string | null;
   /** Empty-state for the (single, root) leaf when no tabs are open. */
   emptyState?: React.ReactNode;
 };
@@ -25,24 +24,15 @@ type Props = {
  */
 export const PaneTreeRenderer = memo(function PaneTreeRenderer({
   node,
-  sourceRoot,
   emptyState,
 }: Props) {
   if (node.kind === "leaf") {
-    return (
-      <LeafPane leaf={node} sourceRoot={sourceRoot} emptyState={emptyState} />
-    );
+    return <LeafPane leaf={node} emptyState={emptyState} />;
   }
-  return <SplitRenderer node={node} sourceRoot={sourceRoot} />;
+  return <SplitRenderer node={node} />;
 });
 
-function SplitRenderer({
-  node,
-  sourceRoot,
-}: {
-  node: PaneNode & { kind: "split" };
-  sourceRoot: string | null;
-}) {
+function SplitRenderer({ node }: { node: PaneNode & { kind: "split" } }) {
   const childrenIds = node.children.map((c) => c.id).join("|");
   const splitId = node.id;
   const childCount = node.children.length;
@@ -70,7 +60,7 @@ function SplitRenderer({
             defaultSize={`${node.sizes[i] ?? 100 / node.children.length}%`}
             minSize="10%"
           >
-            <PaneTreeRenderer node={child} sourceRoot={sourceRoot} />
+            <PaneTreeRenderer node={child} />
           </ResizablePanel>
           {i < node.children.length - 1 ? <ResizableHandle /> : null}
         </Fragment>

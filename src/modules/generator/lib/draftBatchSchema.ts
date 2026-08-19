@@ -12,10 +12,16 @@ export const TestStepDraftSchema = z.object({
 });
 
 export const DraftSourceLinkSchema = z.object({
-  /** Repo display name (matches what the user attached). */
-  repoName: z.string(),
-  /** Optional repo id; if absent we fall back to repoName for the index. */
+  /** @deprecated The repo now comes from `filePath`'s `<repo>/…` prefix, and
+   *  the prompt no longer asks for this — but drafts generated before that
+   *  change still carry it, and it is the fallback when a path arrives with no
+   *  prefix. REQUIRED until the prompts stopped asking: a required field the
+   *  model was told to omit fails `DraftCaseLLMSchema`, and a case that fails
+   *  it is dropped by the salvager with only a console.error. */
+  repoName: z.string().nullable().optional(),
+  /** Optional repo id; if absent we fall back to the resolved repo name. */
   repoId: z.string().nullable().optional(),
+  /** `<repo>/<path within repo>`, as the read tools reported it. */
   filePath: z.string(),
   symbol: z.string().nullable().optional(),
   lineRange: z
@@ -42,7 +48,7 @@ export const DraftCaseLLMSchema = z.object({
  *  actual source. Mirrors the existing CodeLink shape used by cases so the
  *  publish path can format both through the shared HTML emitter. */
 export const DraftBugCodeRefSchema = z.object({
-  /** Path relative to the user's source directory. */
+  /** `<repo>/<path within repo>`, as the read tools reported it. */
   file: z.string().min(1),
   startLine: z.number().int().nonnegative(),
   endLine: z.number().int().nonnegative().nullable().optional(),

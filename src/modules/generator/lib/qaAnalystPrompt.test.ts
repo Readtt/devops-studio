@@ -59,6 +59,38 @@ describe("QA_ANALYST_PROMPT — proportionality", () => {
   });
 });
 
+// Every path the analyst reads or emits is `<repo>/<path>`. The schema no
+// longer carries the repo separately, so a path that loses its prefix loses
+// the binding with it — the link publishes against the wrong repo's branch, or
+// gets dropped for naming no repo at all.
+describe("QA_ANALYST_PROMPT — repo-prefixed paths", () => {
+  it("states the addressing rule once", () => {
+    expect(QA_ANALYST_PROMPT).toContain("PATHS ARE REPO-PREFIXED");
+    expect(QA_ANALYST_PROMPT).toContain("<repo>/<path within repo>");
+  });
+
+  it("prefixes both worked examples — codeRefs and sourceLinks", () => {
+    expect(QA_ANALYST_PROMPT).toContain('"file": "repo-one/src/auth/login.ts"');
+    expect(QA_ANALYST_PROMPT).toContain(
+      '"filePath": "repo-one/src/auth/login.cs"',
+    );
+  });
+
+  // The field still exists in the schema for older drafts, but asking for it
+  // invites the model to invent one ("MyApp") that binds to no configured repo.
+  it("stops asking the model for a repo name", () => {
+    expect(QA_ANALYST_PROMPT).not.toContain('"repoName"');
+    expect(QA_ANALYST_PROMPT).not.toContain("emit only\n  the repo name");
+  });
+
+  // Still the rule it always was: the prefix is added to the full path, it does
+  // not replace the directory segments under it.
+  it("keeps the no-bare-filename rule", () => {
+    expect(QA_ANALYST_PROMPT).toMatch(/NEVER abbreviate to a bare filename/);
+    expect(QA_ANALYST_PROMPT).toMatch(/never a bare filename/);
+  });
+});
+
 // The plain-language pass exists because generated cases and bugs read like
 // developer notes: QA couldn't follow them, preconditions assumed states
 // nobody explained how to reach, and repro steps leaned on code access the

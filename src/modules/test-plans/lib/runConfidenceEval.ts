@@ -18,6 +18,8 @@ import { type ProviderKeys } from "@/modules/ai/lib/keyring";
 import { runTask } from "@/modules/ai/lib/taskRunner";
 import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { buildSuiteChatTools } from "./suiteChatTools";
+import { renderRepoRoster, splitRepoPath } from "@/modules/ai/lib/repoPaths";
+import type { WorkspaceRepo } from "@/modules/settings/store";
 import {
   formatContextBlocks,
   type ContextBlock,
@@ -30,6 +32,7 @@ import {
   type ConfidenceVerdict,
   type ConfidenceVerdictLLM,
   type PredictedOutcome,
+  type VerdictSource,
 } from "./confidence";
 import {
   renderRequirementBlock,
@@ -48,13 +51,12 @@ export type EvalCase = {
 
 export type ConfidenceEvalInput = {
   testCase: EvalCase;
-  sourceRoot: string | null;
-  /** Short HEAD sha of the source dir at eval time — stamped onto the verdict so
-   *  the UI can flag it stale once the tree moves. Null when not a repo / code
-   *  search off. */
-  sourceSha?: string | null;
-  /** Source-dir branch at eval time (provenance/display only). */
-  sourceBranch?: string | null;
+  /** Source repos the grader may read. Empty ⇒ nothing to ground against. */
+  repos: WorkspaceRepo[];
+  /** Branch + HEAD sha of each repo the grader can read, at eval time — stamped
+   *  onto the verdict so the UI can flag it stale once any of them moves.
+   *  Empty when nothing was readable / code search is off. */
+  sources?: VerdictSource[];
   modelId: ModelId;
   keys: ProviderKeys;
   local?: LocalProviderConfig;
@@ -139,11 +141,59 @@ export async function evaluateConfidence(
     evaluatedAt: new Date().toISOString(),
     modelId: input.modelId,
     runs,
-    // Provenance: the source state this verdict was graded against, so the UI
-    // can flag it stale once the working tree moves past it.
-    sourceSha: input.sourceSha ?? null,
-    sourceBranch: input.sourceBranch ?? null,
+    // Provenance: the source state this verdict was graded against, per repo,
+    // so the UI can flag it stale once any of them moves past it. The legacy
+    // scalar stamp is deliberately NOT written alongside — one verdict, one
+    // record of what it read.
+    sources: citedSources(aggregated, input),
   };
+}
+
+/** Narrow the pre-resolved per-repo stamps to the repos this verdict actually
+ *  CITES, so staleness tracks the code the answer rests on.
+ *
+ *  Staleness is stale-if-ANY (`verdictSourceState`), so stamping every
+ *  configured repo made a commit in a repo the case never touched invalidate the
+ *  verdict. At five repos the odds that none moved between two bulk runs are
+ *  ~zero, which quietly turned the "skip fresh verdicts" gate in
+ *  `useSuiteConfidence` into a no-op and made every bulk run re-score the whole
+ *  suite — on the app’s dominant cost path.
+ *
+ *  Evidence refs are the dependency set we can actually name: the rubric makes
+ *  every step carry `"<repo>/path/file.ext:LINE"`, so the repos in them are the
+ *  ones the answer was traced through. This UNDER-approximates — a repo the
+ *  model read to confirm a negative, and cited nowhere, drops out and won’t flag
+ *  the verdict when it moves. That is the deliberate trade: the cost of missing
+ *  one is a skipped case showing a slightly older PREDICTION (which the panel
+ *  still labels with the repos it compared, and which one click re-evaluates);
+ *  the cost of the old behaviour was re-paying for the entire suite, every time.
+ *
+ *  Two things keep it safe:
+ *   - A verdict that cites NO resolvable repo keeps the full stamp. That is the
+ *     ungrounded verdict ("couldn’t find the code for this step"), and it is
+ *     exactly the one that SHOULD re-run when anything moves, because new code
+ *     anywhere could ground it. Narrowing it to an empty stamp would read as
+ *     `unknown` and be skipped by bulk forever — strictly worse than today.
+ *   - Narrowing only ever removes stamps, never invents them, so a verdict can
+ *     go stale → fresh but never fresh → stale.
+ *
+ *  At ONE repo this is a no-op by construction: the stamp is one repo either
+ *  way. It only bites at the repo counts that introduced the problem. */
+function citedSources(
+  verdict: ConfidenceVerdictLLM,
+  input: ConfidenceEvalInput,
+): VerdictSource[] {
+  const all = input.sources ?? [];
+  if (all.length <= 1) return all;
+
+  const cited = new Set<string>();
+  for (const e of verdict.evidence) {
+    if (!e.ref) continue;
+    const repo = splitRepoPath(e.ref, input.repos)?.repo;
+    if (repo) cited.add(repo.id);
+  }
+  const narrowed = all.filter((s) => cited.has(s.repoId));
+  return narrowed.length > 0 ? narrowed : all;
 }
 
 /** Non-blocking safety caveats layered on the final (aggregated) verdict. A
@@ -257,7 +307,7 @@ async function runConfidenceOnce(
   system: string,
   prompt: string,
 ): Promise<ConfidenceVerdictLLM | null> {
-  const tools = buildSuiteChatTools(input.sourceRoot);
+  const tools = buildSuiteChatTools(input.repos);
   // Schema-validated, temperature-0. With code-search tools the runner runs the
   // agentic loop (generateText) then validates the model's final text against
   // the schema; tool-less it uses generateObject. Either way the verdict shape
@@ -309,9 +359,10 @@ function abortError(): Error {
  *  system prompt plus the grounding every case in a run is graded against.
  *  Exported for the test that pins its byte-stability. */
 export function buildEvalSystem(input: ConfidenceEvalInput): string {
-  const sourceLine = input.sourceRoot
-    ? `Source directory: ${input.sourceRoot} — use the file tools to trace each step.`
-    : "No source directory is set — you cannot ground this; return Unknown with low confidence.";
+  const sourceLine =
+    input.repos.length > 0
+      ? `Source repos — use the file tools to trace each step:\n${renderRepoRoster(input.repos)}`
+      : "No source repos are configured — you cannot ground this; return Unknown with low confidence.";
   const requirementBlock = renderRequirementBlock(input.requirement, {
     maxBodyChars: CONFIDENCE_REQUIREMENT_CHARS,
     unresolvedId: input.requirementId ?? null,

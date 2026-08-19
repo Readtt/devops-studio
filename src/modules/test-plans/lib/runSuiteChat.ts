@@ -32,6 +32,8 @@ import {
   type TestCase,
 } from "@/modules/ado";
 import { buildSuiteChatTools } from "./suiteChatTools";
+import { REPO_PATH_RULE, renderRepoRoster } from "@/modules/ai/lib/repoPaths";
+import type { WorkspaceRepo } from "@/modules/settings/store";
 import { PLAIN_LANGUAGE_RULES } from "@/modules/ai/lib/plainLanguage";
 import {
   collectContextImages,
@@ -299,11 +301,11 @@ Rules for bulk blocks:
 
 WHAT YOU HAVE
 - Every case in the suite (id, title, steps, expected results, description).
-- The user's working source directory (when set) accessible via a set of
+- The user's source repos (listed in the request) accessible via a set of
   read-only filesystem tools — the Claude CLI engine exposes them as
   Read / Glob / Grep, and the BYOK provider engine exposes them as
   read_file / list_files / grep. Behaviour is the same either way:
-  read files, list paths, regex-search. USE THEM to validate that cases
+  read files, list paths, regex-search across every repo at once. USE THEM to validate that cases
   actually map to real code paths, that assertions match actual function
   behaviour, and to surface coverage gaps you can see by walking the code.
 - A read-only shell via run_command — git history + working-tree inspection
@@ -328,10 +330,10 @@ HOW TO ANSWER
   invalidation, but it doesn't assert the session token is purged…"). The
   UI auto-renders bare \`#15310\` as a clickable chip that opens the case
   in-app, so write the id inline — never as a fenced block.
-- Cite source files inline using the form \`path/to/file.ext:LINE\` or
-  \`path/to/file.ext:START-END\`. The UI renders these as clickable chips
+- Cite source files inline using the form \`<repo>/path/to/file.ext:LINE\` or
+  \`<repo>/path/to/file.ext:START-END\`. The UI renders these as clickable chips
   that jump straight into the in-app code viewer ("step 3 expects a 403,
-  but src/auth/loginController.ts:42 returns 401"). Only write a path
+  but repo-one/src/auth/loginController.ts:42 returns 401"). Only write a path
   you actually read with the fs tools.
 - For "review against the code" requests:
     1. Identify the code paths the case claims to exercise (read the steps
@@ -342,10 +344,12 @@ HOW TO ANSWER
 - For "what's missing" requests: list specific gaps, not generic advice.
 - Don't fabricate file paths. If you can't ground a claim in code you've
   actually read, say so.
-- When the source directory isn't available, fall back to reviewing case
+- When no source repos are available, fall back to reviewing case
   definitions on their own merits (clarity, assertion specificity,
   coverage of common edge cases) and call out that code grounding wasn't
   possible.
+
+${REPO_PATH_RULE}
 
 OUTPUT
 - Plain markdown. Bullet lists, short paragraphs, fenced code when quoting
@@ -402,10 +406,10 @@ export type SuiteChatTaskInput = SuiteChatRunInput & {
   modelId: ModelId;
   keys: ProviderKeys;
   local?: LocalProviderConfig;
-  /** When set, the runner exposes read-only Read/Glob/Grep tools to the model
-   *  backed by the user's source directory so answers are code-grounded. When
-   *  null, the run is text-only and the prompt warns the model. */
-  sourceRoot: string | null;
+  /** When non-empty, the runner exposes read-only Read/Glob/Grep tools to the
+   *  model across every one of these repos so answers are code-grounded. Empty
+   *  ⇒ the run is text-only and the prompt warns the model. */
+  repos: WorkspaceRepo[];
   /** User's freeform "Custom instructions" from Settings — appended to the
    *  system prompt on every surface. Empty/absent ⇒ base prompt unchanged. */
   customInstructions?: string;
@@ -422,14 +426,14 @@ export type SuiteChatTaskInput = SuiteChatRunInput & {
 export async function streamSuiteChatTask(
   input: SuiteChatTaskInput & { onText: (delta: string) => void },
 ): Promise<SuiteChatRunResult> {
-  const tools = buildSuiteChatTools(input.sourceRoot);
+  const tools = buildSuiteChatTools(input.repos);
   const shared = {
     modelId: input.modelId,
     keys: input.keys,
     local: input.local ?? {},
     systemPrompt: SUITE_CHAT_SYSTEM_PROMPT,
     customInstructions: input.customInstructions,
-    contextPrompt: buildSuiteChatContext(input, input.sourceRoot),
+    contextPrompt: buildSuiteChatContext(input, input.repos),
     priorMessages: historyMessages(input.history),
     prompt: input.newQuestion.trim(),
     attachments: [
@@ -503,12 +507,13 @@ export async function streamSuiteChatTask(
  *  hit, and every turn re-bought the entire conversation at full price. */
 function buildSuiteChatContext(
   input: SuiteChatRunInput,
-  sourceRoot: string | null,
+  repos: WorkspaceRepo[],
 ): string {
   const suiteLine = renderSuiteLine(input);
-  const sourceLine = sourceRoot
-    ? `Source directory: ${sourceRoot} (use the fs tools to verify cases against actual code).`
-    : "Source directory: NOT SET — code grounding isn't available. Tell the user if they ask for it.";
+  const sourceLine =
+    repos.length > 0
+      ? `Source repos (use the fs tools to verify cases against actual code):\n${renderRepoRoster(repos)}`
+      : "Source repos: NONE CONFIGURED — code grounding isn't available. Tell the user if they ask for it.";
   const casesBlock = renderCasesBlock(input.cases, input.confidence);
   const contextText = formatContextBlocks(input.contextBlocks ?? []);
   // Same renderer the generator uses — a coverage answer is only trustworthy

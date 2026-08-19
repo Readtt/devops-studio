@@ -46,6 +46,11 @@ function pickDefaultBase(branches: string[]): string | null {
 type Props = {
   /** Session id of the PTY this strip writes into. */
   sessionId: string;
+  /** Working directory of THIS terminal. The base-branch detection has to run
+   *  against the repo the shell is actually sitting in — reading the global
+   *  primary repo instead is how a terminal opened in one repo ended up with
+   *  another repo's branches baked into its prompt templates. */
+  cwd: string | null;
 };
 
 /**
@@ -57,23 +62,22 @@ type Props = {
  * The chips read the user's preferred AI CLI from preferences and bake it
  * into the typed text via each prompt's `command` builder.
  */
-export function QuickPromptsStrip({ sessionId }: Props) {
+export function QuickPromptsStrip({ sessionId, cwd }: Props) {
   const cli = usePreferencesStore((s) => s.preferredAiCli);
-  const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
   const [overflowOpen, setOverflowOpen] = useState(false);
-  // Detected default base branch for the user's source dir, refreshed when
-  // the source root changes. Null = not a git repo (or detection failed) —
-  // prompts that mention a base fall back to "the default branch" copy so
-  // they still read sensibly without lying.
+  // Detected default base branch for this terminal's own directory, refreshed
+  // when it changes. Null = not a git repo (or detection failed) — prompts
+  // that mention a base fall back to "the default branch" copy so they still
+  // read sensibly without lying.
   const [baseBranch, setBaseBranch] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!sourceRoot) {
+    if (!cwd) {
       setBaseBranch(null);
       return;
     }
     let cancelled = false;
-    invoke<string[]>("git_branch_list", { cwd: sourceRoot })
+    invoke<string[]>("git_branch_list", { cwd })
       .then((branches) => {
         if (cancelled) return;
         setBaseBranch(pickDefaultBase(branches));
@@ -86,7 +90,7 @@ export function QuickPromptsStrip({ sessionId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [sourceRoot]);
+  }, [cwd]);
 
   const handleType = (prompt: QuickPromptDef) => {
     // Clear whatever the LAST chip typed before typing the new prompt —

@@ -6,18 +6,21 @@ import {
   type CommitReviewSlice,
 } from "./useCommitReview";
 import {
+  commitKey,
+  isLocalKey,
+  splitCommitKey,
   LOCAL_CHANGES_SHA,
-  type CommitDiff,
-  type CommitMeta,
+  type RepoCommitDiff,
+  type RepoCommitMeta,
 } from "./gitCommitApi";
 
-function commit(sha: string): CommitMeta {
-  return { sha } as unknown as CommitMeta;
+function commit(sha: string, repoId = "r1"): RepoCommitMeta {
+  return { sha, repoId, repoName: repoId } as unknown as RepoCommitMeta;
 }
 
 // These two selectors are pure (they read only selectedShas + diffBySha), so we
 // exercise them with a minimal partial slice rather than the full store.
-function diff(sha: string): CommitDiff {
+function diff(sha: string, repoId = "r1"): RepoCommitDiff {
   return {
     sha,
     shortSha: sha.slice(0, 7),
@@ -31,12 +34,14 @@ function diff(sha: string): CommitDiff {
     rawPatch: "",
     truncated: false,
     headSha: "abcdef0",
+    repoId,
+    repoName: repoId,
   };
 }
 
 function slice(
   selectedShas: string[],
-  diffBySha: Record<string, CommitDiff>,
+  diffBySha: Record<string, RepoCommitDiff>,
 ): CommitReviewSlice {
   return { selectedShas, diffBySha } as unknown as CommitReviewSlice;
 }
@@ -73,29 +78,98 @@ describe("allDiffsLoaded", () => {
   });
 });
 
-describe("orderShas", () => {
-  // Commit list as the picker holds it: newest first.
-  const commits = [commit("aaa"), commit("bbb"), commit("ccc")];
-
-  it("orders selected commits to match the commit list (newest first)", () => {
-    expect(orderShas(["ccc", "aaa"], commits)).toEqual(["aaa", "ccc"]);
+describe("commit keys", () => {
+  it("round-trips a repo + sha", () => {
+    expect(splitCommitKey(commitKey("r1", "abc"), "fallback")).toEqual({
+      repoId: "r1",
+      sha: "abc",
+    });
   });
 
-  it("pins Local changes ahead of every commit", () => {
-    expect(orderShas(["bbb", LOCAL_CHANGES_SHA, "aaa"], commits)).toEqual([
-      LOCAL_CHANGES_SHA,
-      "aaa",
-      "bbb",
+  // Persisted tabs and saved rows from the single-root era hold bare shas.
+  it("reads a bare sha as belonging to the fallback repo", () => {
+    expect(splitCommitKey("abc", "r1")).toEqual({ repoId: "r1", sha: "abc" });
+  });
+
+  it("recognises every repo's local sentinel, and only it", () => {
+    expect(isLocalKey(commitKey("r2", LOCAL_CHANGES_SHA))).toBe(true);
+    expect(isLocalKey(LOCAL_CHANGES_SHA)).toBe(true);
+    expect(isLocalKey(commitKey("r2", "abc"))).toBe(false);
+    // A commit whose sha merely CONTAINS the sentinel isn't one.
+    expect(isLocalKey(commitKey("r2", "localish"))).toBe(false);
+  });
+});
+
+describe("orderShas", () => {
+  // Merged commit list as the picker holds it: newest first, repos interleaved.
+  const commits = [
+    commit("aaa", "r1"),
+    commit("bbb", "r2"),
+    commit("ccc", "r1"),
+  ];
+  const repoIds = ["r1", "r2"];
+  const k = commitKey;
+
+  it("orders selected commits to match the merged list (newest first)", () => {
+    expect(orderShas([k("r1", "ccc"), k("r1", "aaa")], commits, repoIds)).toEqual([
+      k("r1", "aaa"),
+      k("r1", "ccc"),
     ]);
   });
 
-  it("dedupes repeated shas (incl. the local sentinel)", () => {
+  it("interleaves repos by the merged list's order, not by repo", () => {
     expect(
-      orderShas(["aaa", "aaa", LOCAL_CHANGES_SHA, LOCAL_CHANGES_SHA], commits),
-    ).toEqual([LOCAL_CHANGES_SHA, "aaa"]);
+      orderShas([k("r1", "ccc"), k("r2", "bbb"), k("r1", "aaa")], commits, repoIds),
+    ).toEqual([k("r1", "aaa"), k("r2", "bbb"), k("r1", "ccc")]);
   });
 
-  it("sorts unknown shas (rebased-away commits) last", () => {
-    expect(orderShas(["zzz", "bbb"], commits)).toEqual(["bbb", "zzz"]);
+  it("pins every repo's Local changes ahead of every commit, in repo order", () => {
+    expect(
+      orderShas(
+        [
+          k("r2", "bbb"),
+          k("r2", LOCAL_CHANGES_SHA),
+          k("r1", LOCAL_CHANGES_SHA),
+          k("r1", "aaa"),
+        ],
+        commits,
+        repoIds,
+      ),
+    ).toEqual([
+      k("r1", LOCAL_CHANGES_SHA),
+      k("r2", LOCAL_CHANGES_SHA),
+      k("r1", "aaa"),
+      k("r2", "bbb"),
+    ]);
+  });
+
+  it("dedupes repeated keys (incl. the local sentinel)", () => {
+    expect(
+      orderShas(
+        [
+          k("r1", "aaa"),
+          k("r1", "aaa"),
+          k("r1", LOCAL_CHANGES_SHA),
+          k("r1", LOCAL_CHANGES_SHA),
+        ],
+        commits,
+        repoIds,
+      ),
+    ).toEqual([k("r1", LOCAL_CHANGES_SHA), k("r1", "aaa")]);
+  });
+
+  // The same sha in two repos is two different changes.
+  it("keeps one sha's two repos apart", () => {
+    const shared = [commit("aaa", "r1"), commit("aaa", "r2")];
+    expect(
+      orderShas([k("r2", "aaa"), k("r1", "aaa")], shared, repoIds),
+    ).toEqual([k("r1", "aaa"), k("r2", "aaa")]);
+  });
+
+  it("sorts unknown keys (rebased-away commits) last", () => {
+    expect(orderShas([k("r1", "zzz"), k("r2", "bbb")], commits, repoIds)).toEqual([
+      k("r2", "bbb"),
+      k("r1", "zzz"),
+    ]);
   });
 });

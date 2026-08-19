@@ -13,12 +13,17 @@ import { cn } from "@/lib/utils";
 import { windowDragProps } from "@/lib/windowDrag";
 import { CommandPalette } from "@/modules/command-palette";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
-import { usePreferencesStore } from "@/modules/settings/preferences";
+import {
+  getRepos,
+  usePreferencesStore,
+  usePrimaryRepoRoot,
+} from "@/modules/settings/preferences";
 import { SidebarRail, type SidebarViewId } from "@/modules/sidebar";
 import { useGlobalShortcuts } from "@/modules/shortcuts";
 import {
   emitGenerationBusy,
   onAdoConnectionChanged,
+  primaryRepoRoot,
   setSourceRoot,
   setTheme,
   type GenerationBusyReason,
@@ -41,6 +46,7 @@ import { GeneratorCallbacksProvider } from "@/modules/generator/callbacksContext
 import { PaneTreeRenderer } from "@/modules/tabs/PaneTreeRenderer";
 import { DndProvider as TabsDndProvider } from "@/modules/tabs/dnd/DndProvider";
 import { resolveSourcePathDeep } from "@/modules/code-viewer/resolveSourcePath";
+import { checkReadable } from "@/modules/ai/lib/security";
 import { ThemeProvider } from "@/modules/theme";
 import { UpdaterStatusPill, UpdaterToast, useUpdater } from "@/modules/updater";
 import {
@@ -64,10 +70,15 @@ import {
   BranchSwitchToast,
   BranchSwitchDialog,
   CloneProgressCapsule,
-  CloneSourceDialog,
 } from "@/modules/git";
-import { getConnection, type WorkItemRef } from "@/modules/ado";
+import {
+  getConnection,
+  invalidateTeamMembers,
+  type WorkItemRef,
+} from "@/modules/ado";
+import { autoBindRepos } from "@/modules/ado/repoBinding";
 import { ActionToast } from "@/components/ActionToast";
+import { useActionToast } from "@/components/actionToastStore";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { AzureDevOpsBrand } from "@/components/AzureDevOpsBrand";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
@@ -81,6 +92,8 @@ import {
   useTabsStore,
 } from "@/modules/tabs/store/useTabsStore";
 import { findLeaf, findLeafByTab } from "@/modules/tabs/store/paneTreeOps";
+import type { CodeViewerTab } from "@/modules/tabs/store/types";
+import { planViewerTitle } from "@/modules/tabs/codeViewerTitles";
 import type { GenerationSessionStore } from "@/modules/generator/store/useGenerationSession";
 
 /** Read the active tab id of the currently-focused leaf without subscribing.
@@ -437,20 +450,37 @@ function AppShell() {
        *  instead of the focused leaf. */
       besideLeafId?: string;
     }) => {
-      // Bug code refs and analyst Read entries arrive as relative paths
-      // (e.g. "src/auth/sms.ts") — and sometimes as a bare filename the model
-      // abbreviated to. Resolving against the user's sourceRoot here is the
-      // single point that fixes every dispatcher; the deep resolver also asks
-      // the backend to locate the real file when a naive join would 404.
-      const liveSourceRoot = usePreferencesStore.getState().sourceRoot;
-      const absPath =
-        (await resolveSourcePathDeep(liveSourceRoot, input.path)) ?? input.path;
-      const titleFor = (p: string) => {
-        const base = p.replace(/\\/g, "/").split("/").pop() || p;
-        return input.startLine
-          ? `${base}:${input.startLine}${input.endLine && input.endLine !== input.startLine ? `–${input.endLine}` : ""}`
-          : base;
-      };
+      // Bug code refs and analyst Read entries arrive as `<repo>/src/auth/sms.ts`
+      // — and sometimes as a bare filename the model abbreviated to. Resolving
+      // here is the single point that fixes every dispatcher; the deep resolver
+      // binds the path to its repo and asks the backend to locate the real file
+      // when a naive join would 404.
+      const resolved = await resolveSourcePathDeep(getRepos(), input.path);
+      // A null resolution means either "couldn't find it" or "the read gate
+      // REFUSED it", and the viewer still wants a path to name in its
+      // not-found hint. Re-run the gate on the raw input so only the first
+      // case reaches the fallback: a bug's code links are third-party data
+      // (anyone on the ADO project can edit them), and `fs_read_file` takes
+      // whatever it is handed — `resolve_path` is identity.
+      if (!resolved) {
+        const gate = checkReadable(input.path);
+        if (!gate.ok) {
+          // No tab, so no pane to render the reason in — say it in the toast
+          // capsule instead. A click that does nothing at all is
+          // indistinguishable from a broken button, and this is the one path
+          // where that happens.
+          console.warn(
+            `[code-viewer] refused to open ${input.path}: ${gate.reason}`,
+          );
+          useActionToast.getState().show({
+            tone: "error",
+            message: `Can't open ${input.path} — ${gate.reason.replace(/^Refused: /, "")}`,
+          });
+          return;
+        }
+      }
+      const absPath = resolved?.path ?? input.path;
+      const repoName = resolved?.repo?.name ?? null;
       const existingTabs = useTabsStore.getState().tabs;
       const reused = Object.values(existingTabs).some(
         (t) =>
@@ -459,18 +489,38 @@ function AppShell() {
           t.startLine === input.startLine &&
           t.endLine === input.endLine,
       );
+      const plan = planViewerTitle(
+        {
+          path: absPath,
+          repoName,
+          startLine: input.startLine,
+          endLine: input.endLine,
+        },
+        Object.values(existingTabs).filter(
+          (t): t is CodeViewerTab => t.kind === "code-viewer",
+        ),
+      );
       const viewerInput = {
         kind: "code-viewer" as const,
         path: absPath,
+        repoName,
         startLine: input.startLine,
         endLine: input.endLine,
-        title: input.title ?? titleFor(absPath),
+        title: input.title ?? plan.title,
       };
       const store = useTabsStore.getState();
       const id =
         input.besideLeafId && !reused
           ? store.openTabBeside(input.besideLeafId, viewerInput)
           : store.openTab(viewerInput);
+      // Only when a tab was actually ADDED. On reuse `openTab` reactivates the
+      // existing tab and discards `plan.title`, so prefixing its siblings for a
+      // collision with a tab that was never created leaves the focused one bare
+      // beside newly-prefixed neighbours — the odd-one-out this planner exists
+      // to avoid.
+      if (!reused) {
+        for (const r of plan.retitle) store.renameTab(r.id, r.title);
+      }
       // When the tab is reused, props don't change so React's effect won't
       // re-run the scroll + pulse. Nudge the pane via a window event so
       // re-clicking the same chip still lands the user on the right line.
@@ -491,20 +541,16 @@ function AppShell() {
   );
 
   const openCommitReviewTab = useCallback(
-    (input?: {
-      cwd?: string;
-      rehydrateRunId?: string;
-      title?: string;
-    }) => {
-      const liveSourceRoot = usePreferencesStore.getState().sourceRoot;
-      const cwd = input?.cwd ?? liveSourceRoot;
-      if (!cwd) {
+    (input?: { rehydrateRunId?: string; title?: string }) => {
+      // A review spans the workspace, so the only precondition is that the
+      // workspace isn't empty. A saved run still opens either way — it restores
+      // its own repos and its findings are already on disk.
+      if (!input?.rehydrateRunId && getRepos().length === 0) {
         void openSettingsWindow("general");
         return null;
       }
       return useTabsStore.getState().openTab({
         kind: "commit-review",
-        cwd,
         rehydrateRunId: input?.rehydrateRunId ?? null,
         title: input?.title,
       });
@@ -543,11 +589,12 @@ function AppShell() {
   const openTerminalTab = useCallback(
     (input?: { cwd?: string | null; shellId?: string | null }) => {
       // Resolve cwd at call time. If the caller didn't pass one, fall back
-      // to the user's source root — terminals you open from the palette
+      // to the first configured repo — terminals you open from the palette
       // almost always want to land in your project, not the app's process
-      // cwd. Passing null explicitly lets a caller opt out and use whatever
-      // Rust's default cwd resolution gives back.
-      const liveSourceRoot = usePreferencesStore.getState().sourceRoot;
+      // cwd. No repo is special; some default is simply needed. Passing null
+      // explicitly lets a caller opt out and use whatever Rust's default cwd
+      // resolution gives back.
+      const liveSourceRoot = primaryRepoRoot(getRepos());
       const cwd =
         input?.cwd === undefined ? liveSourceRoot ?? null : input.cwd;
       return useTabsStore.getState().openTab({
@@ -892,9 +939,10 @@ function AppShell() {
       window.removeEventListener("devops-studio:duplicate-generator", onDup);
   }, [genStoresApi, performGeneratorDuplicate]);
 
-  // Source-directory picker. Persists to preferences so the BugPane's code-link
-  // rows can resolve relative paths the next time the user opens the app.
-  const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
+  // Source-directory picker. Collapses the workspace to the folder chosen, so
+  // it's only offered where there's at most one repo (see StatusBarGit).
+  const sourceRoot = usePrimaryRepoRoot();
+  const repos = usePreferencesStore((s) => s.repos);
   const pickSourceDir = useCallback(async () => {
     try {
       const picked = await openDialog({
@@ -904,7 +952,8 @@ function AppShell() {
         defaultPath: sourceRoot ?? undefined,
       });
       if (typeof picked === "string" && picked.length > 0) {
-        await setSourceRoot(picked);
+        const repo = await setSourceRoot(picked);
+        if (repo) void autoBindRepos([repo]);
       }
     } catch {
       // User cancelled or no permission — nothing to do.
@@ -1103,12 +1152,32 @@ function AppShell() {
       : null;
 
   const [adoConfigured, setAdoConfigured] = useState(false);
+  // Whether this session has already offered the registry to the ADO binder.
+  const sweptBindings = useRef(false);
   useEffect(() => {
     let cancelled = false;
+    // `autoBindRepos` runs at the four ADD sites, so a repo that entered the
+    // registry another way was never offered to it: the one migrated from the
+    // pre-registry `sourceRoot`, and a folder opened via the shell verb. An
+    // upgrading user's existing repo therefore stayed unlinked forever — no ADO
+    // repo on its Settings row, no project on its published code links — while
+    // every repo they cloned afterwards bound normally. Sweep once per session,
+    // and again after a connection change, since a different org can bind repos
+    // the previous one couldn't.
+    const bindUnbound = () => {
+      const repos = usePreferencesStore.getState().repos;
+      // Preferences may not have hydrated on the first tick. Leave the sweep
+      // armed rather than burning it on an empty list.
+      if (repos.length === 0) return;
+      sweptBindings.current = true;
+      void autoBindRepos(repos);
+    };
     const refresh = async () => {
       try {
         const c = await getConnection();
-        if (!cancelled) setAdoConfigured(c.configured);
+        if (cancelled) return;
+        setAdoConfigured(c.configured);
+        if (c.configured && !sweptBindings.current) bindUnbound();
       } catch {
         if (!cancelled) setAdoConfigured(false);
       }
@@ -1126,6 +1195,12 @@ function AppShell() {
     // connected" until an app restart (its store only hydrates once on mount).
     let unlistenConn: (() => void) | undefined;
     void onAdoConnectionChanged(() => {
+      // A new org/project can bind repos the old one couldn't — re-arm.
+      sweptBindings.current = false;
+      // The developer roster is per PROJECT and cached for the session, so
+      // without this a project switch left the assign pickers offering the
+      // previous project's people.
+      invalidateTeamMembers();
       void refresh();
       const tp = useTestPlans.getState();
       tp.reset();
@@ -1257,7 +1332,7 @@ function AppShell() {
             onGenerator: launchGenerator,
             onTerminal: launchTerminal,
             onCommitReview: launchCommitReview,
-            sourceRoot,
+            repos,
           }}
           align="center"
           side="bottom"
@@ -1273,7 +1348,7 @@ function AppShell() {
         </LaunchMenu>
       </div>
     ),
-    [sourceRoot],
+    [repos],
   );
 
   const paneTree = useTabsStore((s) => s.paneTree);
@@ -1527,12 +1602,10 @@ function AppShell() {
                   </div>
                   <ConfidenceConfirmDialog />
                   <BranchSwitchDialog />
-                  <CloneSourceDialog />
                   <GeneratorCallbacksProvider value={generatorCallbacks}>
                     <TabsDndProvider>
                       <PaneTreeRenderer
                         node={paneTree}
-                        sourceRoot={sourceRoot}
                         emptyState={workspaceEmptyState}
                       />
                     </TabsDndProvider>
@@ -1545,7 +1618,7 @@ function AppShell() {
           {/* Status bar — git branch & source dir on the left, ADO + stale
               indicators pinned to the right. */}
           <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-border/60 bg-card/60 px-3 text-[11px] text-muted-foreground">
-            <StatusBarGit sourceRoot={sourceRoot} onPickDir={() => void pickSourceDir()} />
+            <StatusBarGit onPickDir={() => void pickSourceDir()} />
             <div className="ml-auto flex items-center gap-2">
               <StatusBarModelPicker activeSession={activeGenSessionInfo} />
               <UpdaterStatusPill
@@ -1601,7 +1674,7 @@ function AppShell() {
               openCommitReviewTab();
             }}
             onOpenWorkItem={openWorkItem}
-            sourceRoot={sourceRoot}
+            repos={repos}
           />
 
           <AlertDialog

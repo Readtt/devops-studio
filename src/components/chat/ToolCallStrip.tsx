@@ -241,6 +241,11 @@ function ToolGlyph({ name, error }: { name?: string; error?: boolean }) {
   );
 }
 
+/** `glob`, `read` and `list_directory` have no live producer — they are tool
+ *  names from the deleted ai/tools stack. Unlike the result FORMATTER (which
+ *  only ever runs mid-flight, so it needs no legacy branches), this renders
+ *  saved runs: a persisted entry keeps its `toolName` verbatim, so an old
+ *  transcript still asks for these icons. */
 function iconForTool(name?: string) {
   switch ((name ?? "").toLowerCase()) {
     case "grep":

@@ -59,11 +59,58 @@ const SECRET_BASENAME_PATTERNS: RegExp[] = [
 ];
 
 /**
- * Protected directories. Matched as **exact path** OR **prefix where the next
- * char is a separator** — never raw substring. Listed without trailing slash;
- * the comparator handles separators.
+ * Extensions that make a basename SOURCE CODE whatever it happens to be named.
+ *
+ * The patterns above are about secret STORES, and two of them also match
+ * ordinary code: `Credentials.cs` is a class (the `credentials` pattern matches
+ * on the dot that follows) and `messages.key.ts` is a lookup table. Refusing
+ * those costs an AI surface a file it had every reason to read, and costs the
+ * code viewer — which runs the same gate on a user's own click — a click that
+ * does nothing at all.
+ *
+ * SHELL extensions are deliberately absent (`.sh`, `.bash`, `.zsh`, `.ps1`,
+ * `.bat`, `.cmd`): `credentials.sh` really is where an
+ * `export AWS_SECRET_ACCESS_KEY=…` lives. Scripting LANGUAGES are here, because
+ * `credentials.py` / `credentials.rb` are overwhelmingly modules (google-auth
+ * and aws-sdk both ship one) — the residual risk is a project that puts real
+ * keys in one, which the same project would just as happily put in
+ * `settings.py`, a name nothing gates.
+ *
+ * A basename with no extension, a leading dot, a trailing dot, or an NTFS
+ * stream suffix (`Credentials.cs::$DATA`) doesn't match here, so every
+ * ambiguous spelling stays gated.
  */
-const PROTECTED_DIRS = [
+const SOURCE_CODE_EXTENSIONS = new Set([
+  "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs",
+  "cs", "vb", "fs", "java", "kt", "kts", "scala", "go", "rs",
+  "py", "rb", "php", "swift", "dart", "lua", "ex", "exs", "hs",
+  "c", "h", "cc", "cpp", "cxx", "hpp", "hxx", "hh", "m", "mm",
+  "sql", "vue", "svelte", "cshtml", "razor",
+]);
+
+function isSourceCode(base: string): boolean {
+  // A DOTFILE is never source code, whatever extension follows. Every secret
+  // pattern that begins with a dot names a store rather than a file type
+  // (`.env`, `.netrc`, `.npmrc`, `.pgpass`), so `.env.js` and `.env.ts` are
+  // `.env` with a suffix, not a module — and without this they take the
+  // bypass and hand their contents back. Nothing legitimate is lost: a
+  // dot-leading name that ISN'T a secret pattern (`.eslintrc.js`) never
+  // reaches here.
+  if (base.startsWith(".")) return false;
+  const dot = base.lastIndexOf(".");
+  return dot > 0 && SOURCE_CODE_EXTENSIONS.has(base.slice(dot + 1).toLowerCase());
+}
+
+/**
+ * Protected directories that legitimately appear at ANY depth — a tool dir
+ * under the user's home, a `.git` inside a repo. Matched as a whole path
+ * segment run: exact path, or prefix where the next char is a separator.
+ *
+ * Every entry here is named distinctively enough that a directory carrying the
+ * name IS the thing (`.ssh`, `.aws`, `library/keychains`). Nothing generic
+ * belongs in this list — see {@link PROTECTED_AT_ROOT}.
+ */
+const PROTECTED_ANYWHERE = [
   "/.ssh",
   "/.gnupg",
   "/.aws",
@@ -78,11 +125,26 @@ const PROTECTED_DIRS = [
   "/.terraform.d",
   "/library/keychains",
   "/library/cookies",
-  // System dirs holding host secrets/PII/process state. Per-PID files under
-  // /proc leak env vars and command lines from other processes; /sys exposes
-  // kernel state and hardware identifiers. /etc and /private/etc hold global
-  // config that frequently contains credentials in basenames the regex won't
-  // match (passwd, shadow, master.passwd, *.cnf, *.conf with creds).
+  // Windows user profile equivalents (post drive-strip + lowercase).
+  "/appdata/roaming/microsoft/credentials",
+  "/appdata/local/microsoft/credentials",
+  "/appdata/roaming/gcloud",
+];
+
+/**
+ * System dirs holding host secrets/PII/process state, matched ONLY at the
+ * filesystem root. Per-PID files under /proc leak env vars and command lines
+ * from other processes; /sys exposes kernel state and hardware identifiers.
+ * /etc and /private/etc hold global config that frequently contains credentials
+ * in basenames the regex won't match (passwd, shadow, master.passwd, *.cnf).
+ *
+ * Root-anchored because these names are ordinary words that a user's own tree
+ * is entitled to use. Matched as a segment substring — the rule the rest of the
+ * list follows — a repo at `D:\dev\sys\backend` is `/dev/sys/backend` after the
+ * drive strip, contains `/sys/`, and every read in it is refused with a message
+ * naming a directory the user has never heard of.
+ */
+const PROTECTED_AT_ROOT = [
   "/etc",
   "/private/etc",
   "/proc",
@@ -91,10 +153,6 @@ const PROTECTED_DIRS = [
   "/var/root",
   "/private/var/db",
   "/private/var/root",
-  // Windows user profile equivalents (post drive-strip + lowercase).
-  "/appdata/roaming/microsoft/credentials",
-  "/appdata/local/microsoft/credentials",
-  "/appdata/roaming/gcloud",
 ];
 
 /**
@@ -190,6 +248,22 @@ function isUnderProtected(cmp: string, dir: string): boolean {
   return (cmp + "/").includes(dir + "/");
 }
 
+/** Exact path or descendant, anchored at the root. See {@link PROTECTED_AT_ROOT}. */
+function isAtProtectedRoot(cmp: string, dir: string): boolean {
+  return cmp === dir || cmp.startsWith(dir + "/");
+}
+
+/** The protected dir `cmp` sits in, or null. */
+function protectedDirFor(cmp: string): string | null {
+  for (const dir of PROTECTED_ANYWHERE) {
+    if (isUnderProtected(cmp, dir)) return dir;
+  }
+  for (const dir of PROTECTED_AT_ROOT) {
+    if (isAtProtectedRoot(cmp, dir)) return dir;
+  }
+  return null;
+}
+
 function describeProtected(dir: string): string {
   // "/.ssh" -> ".ssh", "/.config/gh" -> ".config/gh"
   return dir.replace(/^\//, "");
@@ -206,23 +280,24 @@ export function checkReadable(path: string): SafetyResult {
   }
 
   const base = basename(path);
-  for (const re of SECRET_BASENAME_PATTERNS) {
-    if (re.test(base)) {
-      return {
-        ok: false,
-        reason: `Refused: "${base}" matches a sensitive-file pattern.`,
-      };
+  if (!isSourceCode(base)) {
+    for (const re of SECRET_BASENAME_PATTERNS) {
+      if (re.test(base)) {
+        return {
+          ok: false,
+          reason: `Refused: "${base}" matches a sensitive-file pattern.`,
+        };
+      }
     }
   }
 
   const cmp = comparisonForm(path);
-  for (const dir of PROTECTED_DIRS) {
-    if (isUnderProtected(cmp, dir)) {
-      return {
-        ok: false,
-        reason: `Refused: path is inside a protected directory (${describeProtected(dir)}).`,
-      };
-    }
+  const dir = protectedDirFor(cmp);
+  if (dir) {
+    return {
+      ok: false,
+      reason: `Refused: path is inside a protected directory (${describeProtected(dir)}).`,
+    };
   }
 
   return { ok: true };

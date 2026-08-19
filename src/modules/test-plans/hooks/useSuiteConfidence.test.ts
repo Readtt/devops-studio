@@ -32,6 +32,7 @@ vi.mock("../lib/runSuiteConfidence", () => ({
 
 import { useSuiteConfidence, LARGE_SUITE_THRESHOLD } from "./useSuiteConfidence";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { createRepo } from "@/modules/settings/store";
 
 const ref = (id: number) => ({ id, title: `case ${id}`, state: "Design" });
 
@@ -47,7 +48,7 @@ beforeEach(() => {
   invoke.mockResolvedValue({ branch: "main", commit: "curr123", isRepo: true });
   // Default: no source dir, so staleness can't be determined and the discovery
   // skip behaves exactly as before (already-scored cases are skipped).
-  usePreferencesStore.setState({ sourceRoot: null, codeSearchEnabled: true });
+  usePreferencesStore.setState({ repos: [], codeSearchEnabled: true });
 });
 
 afterEach(() => {
@@ -81,7 +82,10 @@ describe("useSuiteConfidence.start discovery", () => {
   it("re-scores cases whose verdict was graded against a different source state", async () => {
     // Source dir set + current HEAD = curr123; verdicts stamped with a
     // different sha are stale and must be re-scored, fresh ones skipped.
-    usePreferencesStore.setState({ sourceRoot: "C:/repo", codeSearchEnabled: true });
+    usePreferencesStore.setState({
+      repos: [createRepo("C:/repo")],
+      codeSearchEnabled: true,
+    });
     invoke.mockResolvedValue({ branch: "main", commit: "curr123", isRepo: true });
     listSuiteCases.mockResolvedValue([ref(1), ref(2), ref(3)]);
     getConfidenceMany.mockResolvedValue(
@@ -93,6 +97,35 @@ describe("useSuiteConfidence.start discovery", () => {
     );
     await useSuiteConfidence.getState().start(1, 2, "Suite");
     expect(scoreCases).toHaveBeenCalledTimes(1);
+    const passed = scoreCases.mock.calls[0][0] as Array<{ id: number }>;
+    expect(passed.map((t) => t.id)).toEqual([2, 3]);
+  });
+
+  it("re-scores against each verdict's OWN repos, not the first repo's head", async () => {
+    // Two repos; the FIRST one has moved. A verdict graded only against the
+    // second is still fresh — going stale because an unrelated repo moved is
+    // the whole failure this per-repo comparison exists to prevent.
+    const one = createRepo("C:/repo-one");
+    const two = createRepo("C:/repo-two");
+    usePreferencesStore.setState({ repos: [one, two], codeSearchEnabled: true });
+    invoke.mockImplementation((_cmd: string, args: { path: string }) =>
+      Promise.resolve({
+        branch: "main",
+        commit: args.path === one.root ? "moved11" : "bbb2222",
+        isRepo: true,
+      }),
+    );
+    listSuiteCases.mockResolvedValue([ref(1), ref(2), ref(3)]);
+    getConfidenceMany.mockResolvedValue(
+      new Map<number, unknown>([
+        // read repo-two only, still where it was → skip
+        [1, { sources: [{ repoId: two.id, repoName: two.name, branch: "main", sha: "bbb2222" }] }],
+        // read repo-one, which moved → re-score
+        [2, { sources: [{ repoId: one.id, repoName: one.name, branch: "main", sha: "old1111" }] }],
+        // case 3 has no verdict → score
+      ]) as never,
+    );
+    await useSuiteConfidence.getState().start(1, 2, "Suite");
     const passed = scoreCases.mock.calls[0][0] as Array<{ id: number }>;
     expect(passed.map((t) => t.id)).toEqual([2, 3]);
   });

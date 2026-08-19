@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   focusPathsFromCandidates,
+  focusPathsInRepo,
   focusPatchOnFiles,
   VERIFY_FOCUS_MIN_BYTES,
 } from "./verifyFocus";
@@ -181,5 +182,48 @@ describe("focusPatchOnFiles", () => {
     const raw = `commit abc123\nAuthor: someone\n\n${big()}`;
     const focused = focusPatchOnFiles(raw, ["src/a.ts"]);
     expect(focused!.text.startsWith("commit abc123")).toBe(true);
+  });
+});
+
+// Findings cite `<repo>/<path>`; a git patch's headers are repo-relative.
+// Matching the prefixed form against `diff --git a/src/x.ts b/src/x.ts` never
+// hits, so without this every narrowing silently degraded to the full patch.
+describe("focusPathsInRepo", () => {
+  const KNOWN = ["repo-one", "repo-two"];
+
+  it("strips this repo's prefix so the path matches a patch header", () => {
+    expect(focusPathsInRepo(["repo-one/src/a.ts"], "repo-one", KNOWN)).toEqual([
+      "src/a.ts",
+    ]);
+  });
+
+  it("drops paths that name a DIFFERENT known repo", () => {
+    expect(focusPathsInRepo(["repo-two/src/a.ts"], "repo-one", KNOWN)).toEqual([]);
+  });
+
+  it("passes an unprefixed path through — it's already repo-relative", () => {
+    expect(focusPathsInRepo(["src/a.ts"], "repo-one", KNOWN)).toEqual([
+      "src/a.ts",
+    ]);
+  });
+
+  // Safe direction: an unrecognised leading segment is part of the path, so at
+  // worst it fails to match. Guessing it's a repo would DROP a real citation.
+  it("treats an unrecognised leading segment as part of the path", () => {
+    expect(focusPathsInRepo(["vendor/src/a.ts"], "repo-one", KNOWN)).toEqual([
+      "vendor/src/a.ts",
+    ]);
+  });
+
+  it("matches the repo name case-insensitively and normalises separators", () => {
+    expect(
+      focusPathsInRepo(["Repo-One\\src\\a.ts"], "repo-one", KNOWN),
+    ).toEqual(["src/a.ts"]);
+  });
+
+  // A bare repo name cites the repo, not a file in it — keeping "" would match
+  // every section (`header.includes("")` is always true) and narrow nothing.
+  it("drops a citation that is only the repo name", () => {
+    expect(focusPathsInRepo(["repo-one"], "repo-one", KNOWN)).toEqual([]);
   });
 });

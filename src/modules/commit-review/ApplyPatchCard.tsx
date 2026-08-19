@@ -6,7 +6,8 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { TextDiff } from "@/components/diff/textDiff";
-import { usePreferencesStore } from "@/modules/settings/preferences";
+import { resolveRepoPath } from "@/modules/ai/lib/repoPaths";
+import type { WorkspaceRepo } from "@/modules/settings/store";
 import {
   Cancel01Icon,
   CheckmarkCircle02Icon,
@@ -51,10 +52,16 @@ type ApplyState =
 
 export function ApplyPatchCard({
   body,
+  repos,
   applied,
   onApplied,
 }: {
   body: string;
+  /** The review's repos. A patch path is `<repo>/<path within repo>`, so this
+   *  is what decides WHICH repo gets written — reading the global source-root
+   *  preference here is what once wrote every patch into whichever repo the
+   *  status bar happened to point at. */
+  repos: WorkspaceRepo[];
   /** Persisted applied-state for this block. When set, the card shows the
    *  "Applied" state + a diff against the snapshotted original even after a
    *  reload. */
@@ -62,7 +69,6 @@ export function ApplyPatchCard({
   /** Called after a successful apply so the parent persists the record. */
   onApplied?: (record: AppliedPatchRecord) => void;
 }) {
-  const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
   const [state, setState] = useState<ApplyState>({ kind: "idle" });
   // Local copy so the card reflects the apply instantly even if the parent
   // hasn't re-supplied `applied` yet (it does, on persist — this just avoids a
@@ -85,13 +91,23 @@ export function ApplyPatchCard({
   const okPath = parsed.ok ? parsed.value.path : null;
   const okStart = parsed.ok ? parsed.value.startLine : 0;
   const okEnd = parsed.ok ? parsed.value.endLine : 0;
+  // Re-resolve when the repo SET changes, not on every array identity — the
+  // parent rebuilds `repos` each render.
+  const repoSig = repos.map((r) => `${r.id}:${r.root}`).join("|");
   useEffect(() => {
-    if (!okPath || !sourceRoot || effectiveApplied) return;
+    if (!okPath || repos.length === 0 || effectiveApplied) return;
     let cancelled = false;
     void (async () => {
+      const target = await resolveRepoPath(okPath, repos);
+      if (cancelled) return;
+      if (!target.ok) {
+        setBeforeError(target.reason);
+        return;
+      }
       try {
-        const absPath = resolveAgainstRoot(okPath, sourceRoot);
-        const raw = await invoke<ReadResult>("fs_read_file", { path: absPath });
+        const raw = await invoke<ReadResult>("fs_read_file", {
+          path: target.absPath,
+        });
         if (cancelled) return;
         if (raw.kind !== "text") {
           setBeforeError(
@@ -110,7 +126,8 @@ export function ApplyPatchCard({
     return () => {
       cancelled = true;
     };
-  }, [okPath, okStart, okEnd, sourceRoot, effectiveApplied]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [okPath, okStart, okEnd, repoSig, effectiveApplied]);
 
   if (!parsed.ok) {
     return (
@@ -134,16 +151,21 @@ export function ApplyPatchCard({
   const hasDiff = beforeText !== null;
 
   const onApply = async () => {
-    if (!sourceRoot) {
+    if (repos.length === 0) {
       setState({
         kind: "error",
-        message: "Set a source directory in Settings first.",
+        message: "Add a source repo in Settings first.",
       });
       return;
     }
     setState({ kind: "applying" });
     try {
-      const absPath = resolveAgainstRoot(patch.path, sourceRoot);
+      // The one place this write picks a repo. `resolveRepoPath` also refuses
+      // anything that escapes a repo root or trips the secret/protected-path
+      // gates — which the old join-against-the-global-root never did.
+      const target = await resolveRepoPath(patch.path, repos);
+      if (!target.ok) throw new Error(target.reason);
+      const absPath = target.absPath;
       const raw = await invoke<ReadResult>("fs_read_file", { path: absPath });
       if (raw.kind !== "text") {
         throw new Error(
@@ -358,12 +380,3 @@ function ReplacementPreview({
   );
 }
 
-/** Same resolution rule the suite-chat fs tools use: absolute paths
- *  pass through; relative paths join against the source root using the
- *  platform's native separator. */
-function resolveAgainstRoot(path: string, root: string): string {
-  const trimmed = path.trim();
-  if (/^([a-zA-Z]:[\\/]|[\\/])/.test(trimmed)) return trimmed;
-  const sep = root.includes("\\") ? "\\" : "/";
-  return `${root.replace(/[\\/]+$/, "")}${sep}${trimmed.replace(/^[\\/]+/, "")}`;
-}

@@ -27,7 +27,9 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useWorkItemTitles } from "@/modules/ado/hooks/useWorkItemTitles";
-import type { LinkedWorkItem } from "@/modules/ado";
+import type { LinkedWorkItem, SourceLink } from "@/modules/ado";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+import type { WorkspaceRepo } from "@/modules/settings/store";
 import { EditableText } from "@/modules/generator/components/EditableText";
 import { OutcomeControl } from "./OutcomeControl";
 import { ConfidenceChip } from "./components/ConfidenceChip";
@@ -50,6 +52,10 @@ type Props = {
 };
 
 export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
+  // Only used to recognise a source link's `<repo>/` prefix — see
+  // `pathWithinRepo`. A machine that doesn't have the repo configured still
+  // falls back to the link's own recorded repo name.
+  const repos = usePreferencesStore((s) => s.repos);
   const [tc, setTc] = useState<TestCase | null>(null);
   const [conn, setConn] = useState<ConnectionStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -422,14 +428,26 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
           ) : (
             <ul className="flex flex-col gap-1">
               {links.map((l, i) => {
+                // The link's own project, because a workspace repo can live in
+                // a different ADO project than the connection. Falling back to
+                // the connection's is what every pre-binding link meant.
+                const project = l.project || conn?.project;
+                // `filePath` is recorded in the app's `<repo>/…` addressing
+                // form. ADO's `?path=` is relative to the repo ROOT, so the
+                // prefix has to come off — left on, every deep link resolves a
+                // directory that doesn't exist and the page 404s.
+                const filePath = pathWithinRepo(l, repos);
                 const webUrl =
-                  conn && conn.orgUrl && conn.project
+                  conn?.orgUrl && project
                     ? buildAdoReposWebUrl({
                         orgUrl: conn.orgUrl,
-                        project: conn.project,
+                        project,
+                        // No branch means none was ever stamped. Publish
+                        // deliberately records nothing rather than a guessed
+                        // default, so the reader must not re-invent one.
                         repoName: l.repoName,
-                        branch: l.trackingBranch || "main",
-                        filePath: l.filePath,
+                        branch: l.trackingBranch || undefined,
+                        filePath,
                         lineRange: l.lineRange ?? undefined,
                       })
                     : null;
@@ -445,7 +463,7 @@ export function TestCasePane({ caseId, planId = null, suiteId = null }: Props) {
                       className="text-muted-foreground"
                     />
                     <span className="min-w-0 flex-1 truncate font-mono text-foreground/85">
-                      {l.repoName} / {l.filePath}
+                      {l.repoName} / {filePath}
                       {l.symbol ? (
                         <span className="text-muted-foreground"> · {l.symbol}</span>
                       ) : null}
@@ -711,6 +729,44 @@ function htmlToPlain(html: string): string {
     .replace(/<\/(p|div|li|h[1-6])>/gi, "\n");
   const tagless = withBreaks.replace(/<[^>]+>/g, "");
   return decodeHtmlEntities(tagless).replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/**
+ * A source link's path relative to its REPO ROOT, which is the only form ADO's
+ * `?path=` (and a human reading the row) accepts.
+ *
+ * The generator records `filePath` in the app's `<repo>/<path within repo>`
+ * addressing form, so the leading segment has to come off. It is recognised two
+ * ways, because a published case is read on machines that don't share the
+ * publisher's workspace: against the configured repo names (what the AI tools
+ * emit), and against the link's own `repo:` — which is that same segment
+ * whenever the repo has no ADO binding. An unrecognised leading segment is left
+ * alone: it's a real directory, and links published before repo prefixes
+ * existed carry no prefix at all.
+ */
+function pathWithinRepo(link: SourceLink, repos: WorkspaceRepo[]): string {
+  const path = link.filePath
+    .replace(/\\/g, "/")
+    .replace(/^(?:\.\/)+/, "")
+    .replace(/^\/+/, "");
+  const cut = path.indexOf("/");
+  if (cut <= 0) return path;
+  const head = path.slice(0, cut).toLowerCase();
+  const named = link.repoName.trim().toLowerCase();
+  const isRepoPrefix =
+    named === head ||
+    // A configured repo named `head` whose ADO binding is the repo this link
+    // NAMES. Both halves matter: the published `repo:` carries the ADO
+    // repository name while the prefix carries the workspace folder name, and
+    // only the registry connects the two — but matching any configured name
+    // would eat a real first directory that merely shares one, silently
+    // breaking every legacy link with no prefix at all.
+    repos.some(
+      (r) =>
+        r.name.trim().toLowerCase() === head &&
+        r.ado?.repoName.trim().toLowerCase() === named,
+    );
+  return isRepoPrefix ? path.slice(cut + 1) : path;
 }
 
 function decodeHtmlEntities(s: string): string {

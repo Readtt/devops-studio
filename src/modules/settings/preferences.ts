@@ -4,7 +4,9 @@ import {
   DEFAULT_PREFERENCES,
   loadPreferences,
   onPreferencesChange,
+  primaryRepoRoot,
   type Preferences,
+  type WorkspaceRepo,
 } from "./store";
 
 /** Project the local-provider settings into the shape the AI runner needs to
@@ -45,3 +47,14 @@ export const usePreferencesStore = create<State>((set) => ({
     });
   },
 }));
+
+/** The registry, outside React — event handlers and module-level helpers. */
+export function getRepos(): WorkspaceRepo[] {
+  return usePreferencesStore.getState().repos;
+}
+
+/** The single root the pre-registry surfaces read. See `primaryRepoRoot`:
+ *  `repos[0]` is a default, not a designation. */
+export function usePrimaryRepoRoot(): string | null {
+  return usePreferencesStore((s) => primaryRepoRoot(s.repos));
+}

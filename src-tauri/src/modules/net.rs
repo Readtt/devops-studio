@@ -191,8 +191,45 @@ fn sanitize_headers(headers: Option<HashMap<String, String>>) -> Result<HeaderMa
     Ok(map)
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LmModelsResult {
+    pub status: u16,
+    pub models: Vec<String>,
+    /// Set when the request completed but yielded no usable list — a 401, or a
+    /// 200 in a shape we don't recognise. Not a transport failure; those are Err.
+    pub error: Option<String>,
+}
+
+/// Model-list shapes differ per server: OpenAI nests under `data`, Ollama under
+/// `models`, and some endpoints return a bare array of ids or objects.
+fn extract_model_ids(v: &serde_json::Value) -> Vec<String> {
+    let Some(arr) = v
+        .get("data")
+        .and_then(|d| d.as_array())
+        .or_else(|| v.get("models").and_then(|m| m.as_array()))
+        .or_else(|| v.as_array())
+    else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|item| match item {
+            serde_json::Value::String(s) => Some(s.clone()),
+            _ => item
+                .get("id")
+                .or_else(|| item.get("name"))
+                .and_then(|x| x.as_str())
+                .map(str::to_string),
+        })
+        .filter(|s| !s.trim().is_empty())
+        .collect()
+}
+
 #[tauri::command]
-pub async fn lm_ping(base_url: String) -> Result<u16, String> {
+pub async fn lm_list_models(
+    base_url: String,
+    api_key: Option<String>,
+) -> Result<LmModelsResult, String> {
     let trimmed = base_url.trim().trim_end_matches('/');
     if trimmed.is_empty() {
         return Err("empty base url".into());
@@ -211,12 +248,36 @@ pub async fn lm_ping(base_url: String) -> Result<u16, String> {
     let addrs: Vec<SocketAddr> = safe_ips.iter().map(|ip| SocketAddr::new(*ip, 0)).collect();
     builder = builder.resolve_to_addrs(&host, &addrs);
     let client = builder.build().map_err(|e| e.to_string())?;
-    client
-        .get(parsed)
-        .send()
-        .await
-        .map(|r| r.status().as_u16())
-        .map_err(|e| e.to_string())
+
+    let mut req = client.get(parsed);
+    if let Some(key) = api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        let mut value = HeaderValue::from_str(&format!("Bearer {key}"))
+            .map_err(|_| "api key contains invalid characters".to_string())?;
+        value.set_sensitive(true);
+        req = req.header(reqwest::header::AUTHORIZATION, value);
+    }
+
+    let res = req.send().await.map_err(|e| e.to_string())?;
+    let status = res.status().as_u16();
+    let body = res.text().await.unwrap_or_default();
+    let models = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .map(|v| extract_model_ids(&v))
+        .unwrap_or_default();
+
+    let error = if !models.is_empty() {
+        None
+    } else if status >= 400 {
+        Some(format!("Server returned HTTP {status}."))
+    } else {
+        Some("This endpoint didn't return a model list.".to_string())
+    };
+
+    Ok(LmModelsResult {
+        status,
+        models,
+        error,
+    })
 }
 // AI HTTP proxy — bypasses webview CORS / Mixed-Content / PNA so local-network
 // model servers (LM Studio, Ollama, vLLM) work in the production bundle.
@@ -530,6 +591,49 @@ pub async fn ai_http_stream(
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+
+    fn ids(json: &str) -> Vec<String> {
+        extract_model_ids(&serde_json::from_str(json).unwrap())
+    }
+
+    #[test]
+    fn reads_openai_data_shape() {
+        assert_eq!(
+            ids(r#"{"object":"list","data":[{"id":"gpt-4o"},{"id":"o3"}]}"#),
+            vec!["gpt-4o", "o3"]
+        );
+    }
+
+    #[test]
+    fn reads_ollama_models_shape() {
+        // Ollama names the field `name`; some builds emit `model` + `name`.
+        assert_eq!(
+            ids(r#"{"models":[{"name":"qwen2.5-coder:7b"},{"id":"llama3:8b"}]}"#),
+            vec!["qwen2.5-coder:7b", "llama3:8b"]
+        );
+    }
+
+    #[test]
+    fn reads_bare_arrays_of_strings_and_objects() {
+        assert_eq!(ids(r#"["a","b"]"#), vec!["a", "b"]);
+        assert_eq!(ids(r#"[{"id":"a"},{"name":"b"}]"#), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn data_wins_over_models_when_both_present() {
+        assert_eq!(
+            ids(r#"{"data":[{"id":"from-data"}],"models":[{"id":"from-models"}]}"#),
+            vec!["from-data"]
+        );
+    }
+
+    #[test]
+    fn unrecognised_shapes_yield_nothing_rather_than_erroring() {
+        assert!(ids(r#"{"error":{"message":"unauthorized"}}"#).is_empty());
+        assert!(ids(r#"{"data":[{"nope":1}]}"#).is_empty());
+        assert!(ids(r#"{"data":[{"id":"  "}]}"#).is_empty());
+        assert!(ids("42").is_empty());
+    }
 
     #[test]
     fn metadata_ips_classified_as_blocked() {

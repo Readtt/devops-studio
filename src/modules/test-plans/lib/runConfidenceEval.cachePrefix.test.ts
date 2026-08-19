@@ -10,7 +10,8 @@ vi.mock("@/modules/ai/lib/taskRunner", () => ({
   runTask: (...a: unknown[]) => runTask(...a),
 }));
 vi.mock("./suiteChatTools", () => ({
-  buildSuiteChatTools: () => undefined,
+  buildSuiteChatTools: (repos: unknown[]) =>
+    repos.length > 0 ? ({ read_file: {} } as never) : undefined,
 }));
 
 import {
@@ -40,7 +41,7 @@ function input(
 ): ConfidenceEvalInput {
   return {
     testCase,
-    sourceRoot: "C:/src/app",
+    repos: [{ id: "r1", name: "repo-one", root: "C:/src/app", ado: null }],
     modelId: "claude-opus-5" as ConfidenceEvalInput["modelId"],
     keys: {} as ConfidenceEvalInput["keys"],
     requirement,
@@ -83,7 +84,11 @@ describe("confidence request — the cacheable prefix", () => {
     const system = buildEvalSystem(input(caseA));
     expect(system).toContain(HOUSE_RULES);
     expect(system).toContain("REQUIREMENT — this suite is requirement-based");
-    expect(system).toContain("Source directory: C:/src/app");
+    expect(system).toContain("- repo-one: C:/src/app");
+    // Evidence refs are rendered as code-viewer chips, so the ref form has to
+    // be the prefixed one the tools report and the viewer resolves.
+    expect(system).toContain("PATHS ARE REPO-PREFIXED");
+    expect(system).toContain("<repo>/path/to/file.ext:LINE");
   });
 
   it("puts the case, and only the case, after it", () => {

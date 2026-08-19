@@ -6,12 +6,13 @@ const streamTask = vi.fn();
 vi.mock("@/modules/ai/lib/taskRunner", () => ({
   streamTask: (...a: unknown[]) => streamTask(...a),
 }));
-// Mirrors the real contract: a tool set when there's a source dir to read,
-// nothing when there isn't. Which one it is now decides whether a banked
-// transcript can be replayed at all, so a flat `undefined` would hide that.
+// Mirrors the real contract: a tool set when there's a repo to read, nothing
+// when there isn't. Which one it is now decides whether a banked transcript can
+// be replayed at all, so a flat `undefined` would hide that.
+const REPOS = [{ id: "r1", name: "repo-one", root: "/src", ado: null }];
 vi.mock("@/modules/test-plans/lib/suiteChatTools", () => ({
-  buildSuiteChatTools: (root: string | null) =>
-    root ? ({ read_file: {} } as never) : undefined,
+  buildSuiteChatTools: (repos: unknown[]) =>
+    repos.length > 0 ? ({ read_file: {} } as never) : undefined,
 }));
 
 import {
@@ -36,7 +37,7 @@ const base: ChatTaskInput & { onText: (d: string) => void } = {
   newQuestion: "does the draft cover the undo path?",
   modelId: "gpt-5.4-mini" as never,
   keys: {} as never,
-  sourceRoot: "/src",
+  repos: REPOS,
   onText: () => undefined,
 };
 
@@ -208,7 +209,7 @@ describe("draft-chat memory — a turn remembers what it read", () => {
   it("replays prose, not tool blocks, when this turn has no tools", async () => {
     await streamChatTask({
       ...base,
-      sourceRoot: null,
+      repos: [],
       history: [
         turn("user", "q1"),
         {
@@ -579,5 +580,26 @@ describe("draft-chat draft block — the draft ships its own evidence", () => {
     // renderer that emits no bug line at all, which is what this replaced.
     expect(ctx).toMatch(/ {2}bug 1 \[KEEP\] .*\(severity: 2 - High\)$/m);
     expect(ctx).not.toContain("→ case");
+  });
+});
+
+// The Ask cites files the same way the analyst emits them — `<repo>/path:line`
+// — which needs the repo names on the request.
+describe("draft-chat system prompt — the repo roster", () => {
+  it("names the repos this turn may read", async () => {
+    await streamChatTask({ ...base });
+    const system = streamTask.mock.calls[0][0].systemPrompt as string;
+    expect(system).toContain("SOURCE REPOS you can read:");
+    expect(system).toContain("- repo-one: /src");
+  });
+
+  it("adds no roster when the turn has no tools", async () => {
+    await streamChatTask({ ...base, repos: [] });
+    const system = streamTask.mock.calls[0][0].systemPrompt as string;
+    expect(system).not.toContain("SOURCE REPOS");
+    // The addressing rule is static prompt text and stays either way — it is
+    // what makes a one-repo run emit the same prefixed paths as a three-repo
+    // one, so there is one form to parse downstream.
+    expect(system).toContain("<repo>/<path within repo>");
   });
 });

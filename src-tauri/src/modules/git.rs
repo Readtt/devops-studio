@@ -102,6 +102,39 @@ pub(crate) fn current_commit(path: &Path) -> Option<String> {
     if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
 }
 
+/// `origin`'s configured URL. `git config --get` exits non-zero when the key is
+/// absent, so a repo with no `origin` comes back as `None` rather than an error.
+pub(crate) fn remote_origin_url(path: &Path) -> Option<String> {
+    let out = run_git(path, &["config", "--get", "remote.origin.url"]).ok()?;
+    let trimmed = out.trim();
+    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+}
+
+/// `origin`'s URL, which is what binds a workspace repo to its Azure DevOps
+/// repository. `None` when there is no `origin` (local-only clone, or a remote
+/// under another name).
+///
+/// Deliberately NOT part of `git_repo_info`: that one is the status bar's 30 s
+/// poll, run for every configured repo, and only the ADO binder ever wants this
+/// field. Folding it in put a fourth `git` spawn per repo on the poll path for
+/// a value that changes about once in a repo's lifetime.
+#[tauri::command]
+pub async fn git_remote_url(path: String) -> Result<Option<String>, String> {
+    let path = PathBuf::from(&path);
+    if !path.exists() {
+        return Ok(None);
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        if is_repo(&path) {
+            remote_origin_url(&path)
+        } else {
+            None
+        }
+    })
+    .await
+    .map_err(|e| format!("git_remote_url join: {e}"))
+}
+
 pub(crate) fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
     let mut cmd = Command::new(super::git_bin::git_program());
     cmd.args(args)
@@ -1098,6 +1131,29 @@ mod tests {
         git(p, &["add", "a.txt", "b.txt"]);
         git(p, &["commit", "-q", "-m", "tweak a, add b"]);
         dir
+    }
+
+    #[test]
+    fn reports_origin_url_when_one_is_configured() {
+        let repo = two_commit_repo();
+        // A fresh `git init` has no remote, and `git config --get` exits 1 on a
+        // missing key — that must read as "no origin", not as a failed call.
+        assert!(read_info(repo.path()).unwrap().is_repo);
+        assert_eq!(remote_origin_url(repo.path()), None);
+
+        git(
+            repo.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://dev.azure.com/org/project/_git/repo-one",
+            ],
+        );
+        assert_eq!(
+            remote_origin_url(repo.path()).as_deref(),
+            Some("https://dev.azure.com/org/project/_git/repo-one"),
+        );
     }
 
     #[test]

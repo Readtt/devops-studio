@@ -26,8 +26,14 @@ export type GeneratorTab = TabBase & {
 
 export type CodeViewerTab = TabBase & {
   kind: "code-viewer";
-  /** Absolute path inside the user's source root. */
+  /** Absolute path on disk. */
   path: string;
+  /** Repo the path was resolved to, for the header's `<repo>/…` form and the
+   *  basename-collision title prefix. Absent when the path couldn't be
+   *  attributed (outside every configured repo) or on tabs persisted before
+   *  multi-repo — dedup is on the absolute path, which is unambiguous either
+   *  way, so nothing depends on it being set. */
+  repoName?: string | null;
   startLine?: number;
   endLine?: number;
 };
@@ -53,11 +59,15 @@ export type SuiteChatTab = TabBase & {
 
 export type CommitReviewTab = TabBase & {
   kind: "commit-review";
-  /** Source directory whose git history is reviewed. */
-  cwd: string;
-  /** Full SHAs of the commits currently selected in the picker (multi-select).
-   *  Autosaved so Duplicate carries the selection. Empty/absent ⇒ defaults to
-   *  HEAD on mount. */
+  /** @deprecated Nothing reads this. A review spans every configured repo now,
+   *  so there is no single directory to pin to — but tabs persisted before that
+   *  still carry the field, and the persist store has no `migrate`, so it stays
+   *  declared to document the shape on disk. Never write it. */
+  cwd?: string | null;
+  /** The changes selected in the picker, as `${repoId}:${sha}` keys (bare SHAs
+   *  on tabs persisted before multi-repo — normalised on read). Autosaved so
+   *  Duplicate carries the selection. Empty/absent ⇒ a default is picked on
+   *  mount. */
   selectedShas?: string[] | null;
   /** Freeform "Add context" draft (the ticket / requirements). Autosaved so a
    *  reload during input doesn't lose it. */

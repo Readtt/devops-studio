@@ -46,7 +46,8 @@ export type FocusedPatch = {
 
 /** Every file path the candidate findings point at: where the bug is claimed to
  *  be, plus wherever a suggested fix would land (they can differ — a finding
- *  about a caller often patches the callee). */
+ *  about a caller often patches the callee). Paths arrive `<repo>/<path>` — see
+ *  {@link focusPathsInRepo} for why they can't be matched in that form. */
 export function focusPathsFromCandidates(
   candidates: readonly CandidateFinding[],
 ): string[] {
@@ -57,6 +58,41 @@ export function focusPathsFromCandidates(
     if (fix?.path) paths.add(fix.path);
   }
   return [...paths];
+}
+
+/** The cited paths that could live in `repoName`, with the prefix stripped so
+ *  they match a git patch's own repo-RELATIVE headers.
+ *
+ *  Findings cite `<repo>/<path>` (the form the tools report), while `git`
+ *  writes `diff --git a/src/x.ts b/src/x.ts`. Matching the prefixed form
+ *  against that header never hits, so every narrowing silently degraded to
+ *  "send the whole patch" — correct, but the token win was gone. A path
+ *  prefixed with a DIFFERENT known repo is dropped rather than stripped: it
+ *  belongs to another section of the review.
+ *
+ *  `knownRepos` is what makes "no prefix" distinguishable from "prefixed with a
+ *  repo I don't know about"; an unrecognised leading segment is treated as part
+ *  of the path, which is the safe direction (it just fails to match). */
+export function focusPathsInRepo(
+  paths: readonly string[],
+  repoName: string,
+  knownRepos: readonly string[],
+): string[] {
+  const mine = repoName.toLowerCase();
+  const known = new Set(knownRepos.map((n) => n.toLowerCase()));
+  const out: string[] = [];
+  for (const p of paths) {
+    const normalized = p.replace(/\\/g, "/").replace(/^\.\//, "");
+    const cut = normalized.indexOf("/");
+    const head = (cut === -1 ? normalized : normalized.slice(0, cut)).toLowerCase();
+    if (head === mine) {
+      const within = cut === -1 ? "" : normalized.slice(cut + 1);
+      if (within) out.push(within);
+      continue;
+    }
+    if (!known.has(head)) out.push(normalized);
+  }
+  return out;
 }
 
 /** Split a git patch into its per-file sections, preserving any preamble. */

@@ -201,7 +201,7 @@ const REFINE_BATCH_SHAPE = {
       severity: "1 - Critical | 2 - High | 3 - Medium | 4 - Low",
       linkedDraftCaseIndex: 0,
       codeRefs: [
-        { file: "src/…", startLine: 1, endLine: 1, symbol: "…" },
+        { file: "<repo>/src/…", startLine: 1, endLine: 1, symbol: "…" },
       ],
     },
   ],

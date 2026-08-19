@@ -12,8 +12,10 @@
 //! 2. Hard allowlist. Only inherently read-only programs are permitted; `git`
 //!    is limited to read-only subcommands and `find` rejects the flags that
 //!    write or execute.
-//! 3. No absolute paths. Args can't start at `/`, a UNC root, or a Windows
-//!    drive, so reads stay near the project rather than ranging over the disk.
+//! 3. No paths out of the repo. Args can't start at `/`, a UNC root, or a
+//!    Windows drive, and no arg may carry a `..` segment — so reads stay in the
+//!    repo the call names rather than ranging over the disk or over a sibling
+//!    repo the user excluded from the run's scope.
 //!
 //! Runs in the user's authorized source directory with a timeout + output cap.
 
@@ -48,19 +50,51 @@ pub struct CommandResult {
 }
 
 /// Inherently read-only programs. `git` and `find` get extra checks below.
+///
+/// Allowed is not the same as PRESENT: only `git` is guaranteed on every
+/// machine this app runs on. Everything after it here is absent from a stock
+/// Windows PATH, and `find` / `tree` are worse than absent — see
+/// `shadowed_program_hint` and `unavailable_program_hint`, which turn both
+/// cases into an error that names a working alternative.
 const ALLOWED_PROGRAMS: &[&str] = &[
     "git", "ls", "cat", "head", "tail", "wc", "find", "grep", "rg", "tree", "pwd",
 ];
 
-/// git subcommands that only READ. Deliberately excludes branch / tag / remote
-/// / config / stash / worktree — those have write forms (e.g. `git branch -d`),
-/// and we avoid brittle per-flag analysis by simply not allowing them. The read
-/// needs are covered: history, diffs, blame, object inspection.
+/// git subcommands that only READ. The test for membership is "has no write
+/// form at all" — branch / tag / remote / config / stash / worktree are out
+/// because one flag turns each into a mutation (`git branch -d`), and we avoid
+/// brittle per-flag analysis by simply not allowing them. `for-each-ref` and
+/// `show-branch` are the read-only way to ask what branch / tag those would
+/// have answered. `ls-remote` is also read-only but stays out: it goes to the
+/// NETWORK, which can hang the call on a credential prompt.
+///
+/// git is the one program here that is present on every machine this app runs
+/// on (the app itself shells out to it), so it carries the weight that `ls` /
+/// `cat` / `grep` can't on Windows — see `unavailable_program_hint`.
 const GIT_READONLY_SUBCOMMANDS: &[&str] = &[
-    "log", "show", "diff", "status", "blame", "rev-parse", "shortlog",
-    "describe", "ls-files", "ls-tree", "cat-file", "show-ref", "rev-list",
-    "name-rev", "reflog", "grep", "whatchanged", "merge-base", "cherry",
+    // history + object inspection
+    "log", "show", "diff", "status", "blame", "annotate", "rev-parse",
+    "shortlog", "describe", "ls-files", "ls-tree", "cat-file", "show-ref",
+    "rev-list", "name-rev", "reflog", "grep", "whatchanged", "merge-base",
+    "cherry",
+    // refs, without the write forms of branch / tag
+    "for-each-ref", "show-branch",
+    // diff plumbing: files-in-a-commit, tree-vs-index, series-vs-series
+    "diff-tree", "diff-index", "diff-files", "range-diff",
+    // path attribute queries: is this ignored, what filters apply
+    "check-ignore", "check-attr",
+    // signature checks — commit review asks about provenance
+    "verify-commit", "verify-tag",
+    // so a run can check the build before reaching for a newer flag
+    "version",
 ];
+
+/// git flags that WRITE or EXECUTE from inside an otherwise read-only
+/// subcommand, so the subcommand allowlist alone doesn't see them:
+/// `git diff --output=<file>` writes a file, and `git grep -O<cmd>` /
+/// `--open-files-in-pager` runs a program. Matched glued (`--output=x`) and
+/// separated (`--output x`) alike.
+const GIT_DANGEROUS_FLAGS: &[&str] = &["--output", "-O", "--open-files-in-pager"];
 
 /// Shell syntax models write out of habit. There is no shell here (see the
 /// module docs), so these reach the program as literal arguments and it fails
@@ -83,6 +117,51 @@ const FIND_DANGEROUS: &[&str] = &[
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/// On Windows these two names resolve to unrelated Microsoft binaries that
+/// only share a name: `find.exe` searches files for a STRING (`find "x" f.txt`)
+/// and `tree.com` takes `/F`. So `find . -name "*.ts"` doesn't fail as
+/// "wrong program", it fails as `FIND: Parameter format not correct` — which
+/// reads like a bad argument and invites three more attempts in different
+/// syntaxes. No PATH fixes this, so refuse before spawning and name the tool
+/// that does the job.
+#[cfg(windows)]
+fn shadowed_program_hint(program: &str) -> Option<String> {
+    let alt = match program {
+        "find" => "the list_files tool, or `git ls-files`",
+        "tree" => "the list_files tool",
+        _ => return None,
+    };
+    Some(format!(
+        "On Windows `{program}` is Microsoft's `{program}`, not the POSIX one — same name, \
+         different flags, so it can't answer this. Use {alt} instead."
+    ))
+}
+
+#[cfg(not(windows))]
+fn shadowed_program_hint(_program: &str) -> Option<String> {
+    None
+}
+
+/// What to reach for when an allowed program isn't installed. Six of these
+/// are absent from a stock Windows PATH: Git for Windows ships `ls`, `cat`,
+/// `head`, `tail`, `wc` and `grep` in `usr\bin`, which its default install
+/// leaves off the PATH. Launching the app from Git Bash puts them back, which
+/// is precisely why this went unnoticed in development — it works in
+/// `pnpm tauri dev` and not in the shipped app. A bare "program not found"
+/// invites a retry in another dialect that fails the same way, so every
+/// answer here names something guaranteed to exist: a tool, or git.
+fn unavailable_program_hint(program: &str) -> &'static str {
+    match program {
+        "ls" | "find" | "tree" => "Use the list_files tool, or `git ls-files`.",
+        "cat" | "head" | "tail" | "wc" => {
+            "Use the read_file tool (it takes offset/limit to window a big file), \
+             or `git show HEAD:<path>`."
+        }
+        "grep" | "rg" => "Use the grep tool, or `git grep <pattern>`.",
+        _ => "Prefer git — it's the one program guaranteed to be here.",
+    }
+}
+
 /// Run one read-only command in `root`. Returns Err for a disallowed command
 /// (the message explains why so the model can correct itself) or an execution
 /// failure; a non-zero exit from an allowed command is a normal Ok result with
@@ -99,6 +178,9 @@ pub async fn run_readonly_command(root: &str, command: &str) -> Result<CommandRe
     validate(&tokens)?;
 
     let program = tokens[0].clone();
+    if let Some(hint) = shadowed_program_hint(&program) {
+        return Err(hint);
+    }
     let args = &tokens[1..];
 
     let mut cmd = Command::new(&program);
@@ -111,9 +193,16 @@ pub async fn run_readonly_command(root: &str, command: &str) -> Result<CommandRe
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
 
-    let child = cmd
-        .spawn()
-        .map_err(|e| format!("Couldn't run `{program}`: {e}"))?;
+    let child = cmd.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            format!(
+                "`{program}` isn't installed on this machine. {}",
+                unavailable_program_hint(&program)
+            )
+        } else {
+            format!("Couldn't run `{program}`: {e}")
+        }
+    })?;
 
     let out = match timeout(RUN_TIMEOUT, child.wait_with_output()).await {
         Ok(Ok(o)) => o,
@@ -248,6 +337,14 @@ fn validate(tokens: &[String]) -> Result<(), String> {
             ));
         }
     }
+    for a in args {
+        if climbs_out(a) {
+            return Err(format!(
+                "`{a}` climbs out of the repo with `..` — paths are relative to the repo the \
+                 command runs in. To read another repo, call again with that `repo`."
+            ));
+        }
+    }
 
     if program == "git" {
         // The subcommand is the first non-flag token.
@@ -262,6 +359,14 @@ fn validate(tokens: &[String]) -> Result<(), String> {
                 if sub.is_empty() { "(no subcommand)" } else { sub },
                 GIT_READONLY_SUBCOMMANDS.join(", ")
             ));
+        }
+        for a in args {
+            if is_git_dangerous_flag(a) {
+                return Err(format!(
+                    "git `{a}` isn't allowed — it writes a file or runs a program, which this \
+                     read-only shell never does. Let the output come back as text instead."
+                ));
+            }
         }
     }
 
@@ -297,14 +402,52 @@ fn is_shell_operator(s: &str) -> bool {
     digits > 0 && s[digits..].starts_with('>')
 }
 
+/// Split on `=` for the same reason `climbs_out` is: git takes paths as glued
+/// flag values, and `--git-dir=C:\other-repo\.git` starts with `-`, so testing
+/// the whole token answers "relative" about a token naming another repository
+/// on disk. That form redirects the WHOLE command, which is worse than a stray
+/// path argument: the `current_dir` we run in stops being what scopes the read.
+fn is_absolute_path(s: &str) -> bool {
+    s.split('=').any(is_absolute_path_part)
+}
+
 /// True for paths that escape the project root: Unix `/…`, a UNC `\\…`, or a
 /// Windows drive `X:\…` / `X:/…`.
-fn is_absolute_path(s: &str) -> bool {
+fn is_absolute_path_part(s: &str) -> bool {
     if s.starts_with('/') || s.starts_with("\\\\") {
         return true;
     }
     let b = s.as_bytes();
     b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')
+}
+
+/// True when a token IS one of the write/exec git flags, glued (`--output=x`)
+/// or bare (`--output x`). `-O` is matched as a prefix because git grep takes
+/// its pager glued to it (`-O"code -"`).
+fn is_git_dangerous_flag(s: &str) -> bool {
+    GIT_DANGEROUS_FLAGS.iter().any(|f| {
+        s == *f
+            || (f.starts_with("--") && s.starts_with(&format!("{f}=")))
+            || (!f.starts_with("--") && s.starts_with(f))
+    })
+}
+
+/// True when an arg carries a `..` PATH SEGMENT, which walks out of the repo
+/// the command was told to run in — and so out of the run's repo scope, since
+/// scope is enforced by which repo we `current_dir` into.
+///
+/// Tested per segment rather than as a substring because `..` is also git's
+/// range syntax: `git diff a..b`, `git log origin/main..HEAD` are ordinary
+/// read-only commands and must keep working. Those have no segment that IS
+/// `..`; `../other-repo/appsettings.json` does.
+///
+/// Split on `=` first, because git takes paths as glued flag values: the
+/// segments of `--git-dir=../other/.git` are `--git-dir=..`, `other`, `.git`
+/// — not one of them IS `..`, so a plain segment test waves through the one
+/// form that redirects the WHOLE command at another repo.
+fn climbs_out(s: &str) -> bool {
+    s.split('=')
+        .any(|part| part.split(['/', '\\']).any(|seg| seg == ".."))
 }
 
 /// Minimal shell-style tokenizer: splits on whitespace but keeps `"..."` and
@@ -392,6 +535,136 @@ mod tests {
         assert!(validate(&toks("git reset --hard")).is_err());
     }
 
+    /// Every subcommand added to the read-only list has to have NO write form
+    /// at all — that's the membership test, not "we couldn't think of a way to
+    /// misuse it".
+    #[test]
+    fn allows_the_added_readonly_git_subcommands() {
+        for cmd in [
+            "git check-ignore -v dist/bundle.js",
+            "git check-attr diff -- src/a.cs",
+            "git for-each-ref --sort=-committerdate refs/heads",
+            "git show-branch --list",
+            "git diff-tree --no-commit-id --name-only -r abc123",
+            "git diff-index HEAD",
+            "git diff-files",
+            "git range-diff main~3..main topic",
+            "git annotate src/a.cs",
+            "git verify-commit HEAD",
+            "git verify-tag v0.1.2",
+            "git version",
+        ] {
+            assert!(validate(&toks(cmd)).is_ok(), "should allow: {cmd}");
+        }
+    }
+
+    /// The subcommands whose write form is one flag away stay out even though
+    /// their READ form would be handy — `for-each-ref` covers what `branch`
+    /// and `tag` would have answered. `ls-remote` is read-only but goes to the
+    /// network, where a credential prompt can hang the call to the timeout.
+    #[test]
+    fn still_blocks_write_capable_and_network_subcommands() {
+        for cmd in [
+            "git branch -d feature",
+            "git tag -d v0.1.2",
+            "git config user.email hi@example.com",
+            "git stash list",
+            "git worktree list",
+            "git symbolic-ref HEAD refs/heads/main",
+            "git bisect start",
+            "git ls-remote origin",
+        ] {
+            assert!(validate(&toks(cmd)).is_err(), "should refuse: {cmd}");
+        }
+    }
+
+    /// A write hidden INSIDE an allowed subcommand: `--output=` makes `git
+    /// diff` write a file and `-O` makes `git grep` run a program, neither of
+    /// which the subcommand allowlist can see.
+    #[test]
+    fn blocks_git_flags_that_write_or_execute() {
+        for cmd in [
+            "git diff --output=leak.txt",
+            "git diff --output leak.txt",
+            "git log --output=leak.txt",
+            "git grep -Ocode pattern",
+            "git grep --open-files-in-pager=code pattern",
+        ] {
+            assert!(validate(&toks(cmd)).is_err(), "should refuse: {cmd}");
+        }
+        // Flags that merely start the same way are ordinary reads.
+        assert!(validate(&toks("git log --oneline")).is_ok());
+        assert!(validate(&toks("git diff --output-indicator-new=+")).is_ok());
+    }
+
+    /// `--git-dir=../other/.git` points the WHOLE command at another repo
+    /// while looking like a flag, and its path segments are `--git-dir=..`,
+    /// `other`, `.git` — not one of them IS `..`, so the segment test alone
+    /// waved it through. Splitting on `=` first is what closes it.
+    #[test]
+    fn blocks_repo_escape_through_a_glued_flag_value() {
+        for cmd in [
+            "git --git-dir=../other-repo/.git log --oneline",
+            "git --git-dir=.. log",
+            "git --work-tree=../other-repo status",
+        ] {
+            let err = validate(&toks(cmd)).expect_err(cmd);
+            assert!(err.contains("climbs out"), "{cmd} → {err}");
+        }
+    }
+
+    #[test]
+    fn blocks_an_absolute_path_glued_to_a_flag() {
+        // Same escape as the `..` form above: a glued flag value points git at
+        // another repository, and the token starts with `-` so a whole-token
+        // absolute-path test never looks at the path it carries.
+        for cmd in [
+            r"git --git-dir=C:\Users\me\other-repo\.git log --oneline",
+            "git --work-tree=/etc status",
+            "git --git-dir=//server/share/.git log",
+        ] {
+            let err = validate(&toks(cmd)).expect_err(cmd);
+            assert!(err.contains("Absolute path"), "{cmd} → {err}");
+        }
+    }
+
+    /// Windows `find` / `tree` are different programs wearing the same name,
+    /// so they're refused up front with the alternative instead of being left
+    /// to fail as `FIND: Parameter format not correct`.
+    #[cfg(windows)]
+    #[test]
+    fn windows_refuses_the_shadowed_programs_with_an_alternative() {
+        for p in ["find", "tree"] {
+            let err = shadowed_program_hint(p).unwrap_or_else(|| panic!("{p} is shadowed"));
+            assert!(err.contains("list_files"), "{p} → {err}");
+        }
+        assert!(shadowed_program_hint("git").is_none());
+        assert!(shadowed_program_hint("cat").is_none());
+    }
+
+    /// Everywhere else those names ARE the POSIX programs, so nothing is
+    /// refused — validation stays platform-independent either way.
+    #[cfg(not(windows))]
+    #[test]
+    fn non_windows_leaves_find_and_tree_alone() {
+        assert!(shadowed_program_hint("find").is_none());
+        assert!(shadowed_program_hint("tree").is_none());
+    }
+
+    /// A missing program has to hand back something that EXISTS, or the model
+    /// retries the same idea in a different dialect and burns another step
+    /// against the surface's cap.
+    #[test]
+    fn missing_program_hint_names_a_working_alternative() {
+        for p in ["ls", "cat", "head", "tail", "wc", "grep", "rg", "find", "tree", "pwd"] {
+            let hint = unavailable_program_hint(p);
+            assert!(
+                hint.contains("tool") || hint.contains("git"),
+                "`{p}` hint names no alternative: {hint}"
+            );
+        }
+    }
+
     #[test]
     fn blocks_non_allowlisted_programs() {
         assert!(validate(&toks("rm -rf .")).is_err());
@@ -405,6 +678,29 @@ mod tests {
         assert!(validate(&toks("cat /etc/passwd")).is_err());
         assert!(validate(&toks("ls C:\\Windows")).is_err());
         assert!(validate(&toks("grep secret /var/log/auth.log")).is_err());
+    }
+
+    /// The repo the command runs in IS the scope enforcement, so a `..` walks
+    /// straight out of it — into a sibling repo the user deselected in the
+    /// Repos chips, or anywhere else beside the root.
+    #[test]
+    fn blocks_paths_that_climb_out_of_the_repo() {
+        assert!(validate(&toks("cat ../other-repo/appsettings.json")).is_err());
+        assert!(validate(&toks("cat ..\\other-repo\\secrets.json")).is_err());
+        assert!(validate(&toks("ls ..")).is_err());
+        assert!(validate(&toks("grep -r token src/../../..")).is_err());
+        assert!(validate(&toks(r#"cat "../a/b.txt""#)).is_err());
+    }
+
+    /// `..` is also git's range syntax, and those are ordinary read-only
+    /// commands — the guard is per path SEGMENT for exactly this reason.
+    #[test]
+    fn still_allows_git_commit_ranges() {
+        assert!(validate(&toks("git diff a..b")).is_ok());
+        assert!(validate(&toks("git log origin/main..HEAD")).is_ok());
+        assert!(validate(&toks("git diff a..b -- src/a.cs")).is_ok());
+        assert!(validate(&toks("git log HEAD~3..HEAD --oneline")).is_ok());
+        assert!(validate(&toks("cat src/..config/app.json")).is_ok());
     }
 
     #[test]

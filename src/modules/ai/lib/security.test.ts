@@ -4,6 +4,7 @@ import {
   checkReadableCanonical,
   checkShellCommand,
   checkWritable,
+  checkWritableCanonical,
 } from "./security";
 
 describe("checkReadable — secret basenames", () => {
@@ -78,6 +79,59 @@ describe("checkReadable — secret basenames", () => {
   });
 });
 
+// The name heuristics are about secret STORES, and two of them also match
+// ordinary code. Refusing those cost the AI a file it had every reason to read
+// and cost the code viewer — same gate, on a user's own click — a click that
+// did nothing at all.
+describe("checkReadable — source files that trip a secret name", () => {
+  it("allows Credentials.cs and its siblings in other languages", () => {
+    expect(checkReadable("C:/src/app/Auth/Credentials.cs")).toMatchObject({
+      ok: true,
+    });
+    expect(checkReadable("/src/auth/credentials.ts")).toMatchObject({ ok: true });
+    expect(checkReadable("/src/auth/Credentials.java")).toMatchObject({
+      ok: true,
+    });
+  });
+
+  it("allows a source file whose name merely contains .key", () => {
+    expect(checkReadable("/src/i18n/messages.key.ts")).toMatchObject({ ok: true });
+  });
+
+  it("still blocks the real secret stores those patterns are for", () => {
+    expect(checkReadable("/home/me/.aws/credentials")).toMatchObject({
+      ok: false,
+    });
+    expect(checkReadable("/home/me/certs/private.key")).toMatchObject({
+      ok: false,
+    });
+    expect(checkReadable("/home/me/.env")).toMatchObject({ ok: false });
+  });
+
+  it("does not exempt scripts, where an exported secret really does live", () => {
+    expect(checkReadable("/src/credentials.sh")).toMatchObject({ ok: false });
+    expect(checkReadable("/src/credentials.ps1")).toMatchObject({ ok: false });
+  });
+
+  it("does not exempt a dotfile that ends in a code extension", () => {
+    // `.env.ts` is `.env` with a suffix, not a module — the source-code bypass
+    // keys on the LAST extension, so without a dotfile guard every `.env.<code
+    // ext>` spelling reads back in full.
+    expect(checkReadable("/src/.env.ts")).toMatchObject({ ok: false });
+    expect(checkReadable("/src/.env.js")).toMatchObject({ ok: false });
+    expect(checkReadable("/home/me/.npmrc.js")).toMatchObject({ ok: false });
+  });
+
+  it("does not exempt a stream or trailing-dot spelling of a source name", () => {
+    // Windows opens `Credentials.cs.` as `Credentials.cs`, so an extension the
+    // set doesn't recognise has to fall back to gated, not to allowed.
+    expect(checkReadable("C:/src/credentials.cs::$DATA")).toMatchObject({
+      ok: false,
+    });
+    expect(checkReadable("C:/src/credentials.")).toMatchObject({ ok: false });
+  });
+});
+
 describe("checkReadable — protected directories", () => {
   it("blocks reads under ~/.ssh, .aws, .kube, .git", () => {
     expect(checkReadable("/home/me/.ssh/config")).toMatchObject({ ok: false });
@@ -101,6 +155,29 @@ describe("checkReadable — protected directories", () => {
     expect(checkReadable("/private/etc/master.passwd")).toMatchObject({
       ok: false,
     });
+  });
+
+  it("does not treat a user directory named etc/sys/proc as the system one", () => {
+    // The system dirs are ordinary words, so they are matched at the ROOT only.
+    // Segment-substring matching refuses a whole repo living under any of them:
+    // `D:\dev\sys\backend` is `/dev/sys/backend` after the drive strip, and the
+    // repo reads as configured while the AI can never open a file in it.
+    expect(checkReadable("C:/dev/sys/backend/src/Program.cs")).toMatchObject({
+      ok: true,
+    });
+    expect(checkReadable("/home/me/work/etc/config.json")).toMatchObject({
+      ok: true,
+    });
+    expect(checkReadable("/home/me/proc/handler.ts")).toMatchObject({
+      ok: true,
+    });
+    // The repo ROOT itself, which `settle` now gates on every single call.
+    expect(checkReadable("D:/dev/sys/backend")).toMatchObject({ ok: true });
+    // Still blocked at the root, where they really are the system dirs.
+    expect(checkReadable("/sys/class/dmi/id/product_uuid")).toMatchObject({
+      ok: false,
+    });
+    expect(checkReadable("/etc")).toMatchObject({ ok: false });
   });
 
   it("rejects path-segment look-alikes (.sshx is not .ssh)", () => {
@@ -173,6 +250,62 @@ describe("checkReadableCanonical — symlink defense + always-recheck", () => {
     );
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.canonical).toBe("/home/me/Documents/notes.txt");
+  });
+});
+
+describe("checkWritableCanonical — new-file creates resolve the parent", () => {
+  const identity = async (p: string) => p;
+  /** A path that doesn't exist yet: `fs_canonicalize` rejects, exactly as the
+   *  Rust command does, which is what sends the check down the parent path. */
+  const onlyParentExists =
+    (existing: Record<string, string>) => async (p: string) => {
+      const hit = existing[p];
+      if (hit === undefined) throw new Error(`no such file: ${p}`);
+      return hit;
+    };
+
+  it("catches a symlinked PARENT when the target itself doesn't exist", async () => {
+    // The whole reason writes canonicalize the parent: `./project` is a
+    // symlink into ~/.ssh, so `./project/config` would land there even though
+    // the literal path looks harmless and the file isn't there to resolve.
+    const r = await checkWritableCanonical(
+      "/home/me/project/config",
+      onlyParentExists({ "/home/me/project": "/home/me/.ssh" }),
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  it("returns the canonical parent joined to the tail on a clean create", async () => {
+    const r = await checkWritableCanonical(
+      "/home/me/work/repo/new.ts",
+      onlyParentExists({ "/home/me/work/repo": "/home/me/work/repo" }),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.canonical).toBe("/home/me/work/repo/new.ts");
+  });
+
+  it("falls back to the literal path when neither target nor parent exists", async () => {
+    const nothingExists = async (p: string) => {
+      throw new Error(`no such file: ${p}`);
+    };
+    const r = await checkWritableCanonical("/home/me/gone/new.ts", nothingExists);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.canonical).toBe("/home/me/gone/new.ts");
+  });
+
+  it("refuses a system directory that only the initial check can see", async () => {
+    // Rejected before canonicalize is ever called — a write deny-prefix is not
+    // a read restriction, so this is the gate checkWritable adds.
+    expect(
+      await checkWritableCanonical("C:\\Windows\\System32\\evil.dll", identity),
+    ).toMatchObject({ ok: false });
+  });
+
+  it("rechecks the canonical form of an existing target", async () => {
+    const symlinkResolves = async (p: string) =>
+      p === "/home/me/notes.txt" ? "/home/me/.ssh/authorized_keys" : p;
+    const r = await checkWritableCanonical("/home/me/notes.txt", symlinkResolves);
+    expect(r.ok).toBe(false);
   });
 });
 

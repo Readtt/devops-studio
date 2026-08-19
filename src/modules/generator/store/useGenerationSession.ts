@@ -53,8 +53,8 @@ import {
   sanitizeTranscriptMessages,
   type CheckpointOutcome,
   type CheckpointWriter,
-  type GeneratorCheckpointV1,
-  type GeneratorRefineCheckpointV1,
+  type GeneratorCheckpointV2,
+  type GeneratorRefineCheckpointV2,
   type TranscriptCheckpoint,
 } from "@/modules/ai/lib/checkpointApi";
 import {
@@ -64,12 +64,15 @@ import {
   emptyAnswerCause,
 } from "@/modules/ai/lib/errorClass";
 import type { TaskCheckpoint } from "@/modules/ai/lib/taskRunner";
-import { CURRENT_BRANCH_SENTINEL, resolveTrackingBranch } from "@/modules/git";
 import {
+  getRepos,
   localProviderConfig,
   usePreferencesStore,
 } from "@/modules/settings/preferences";
-import { invoke } from "@tauri-apps/api/core";
+import type { WorkspaceRepo } from "@/modules/settings/store";
+import { splitRepoPath } from "@/modules/ai/lib/repoPaths";
+import { scopedRepos, toggleRepoScope } from "@/modules/ai/lib/repoScope";
+import { gitRepoInfo } from "@/modules/git/gitOps";
 import type {
   DraftSourceLink,
   ReviewedBug,
@@ -209,6 +212,11 @@ export type SessionState = {
    *  case's source links, and the source-dir HEAD SHA on bug code refs.
    *  Defaults to true; the user can turn it off in the input form. */
   tagSourceBranch: boolean;
+  /** Repo ids this run may read; null = every configured repo. Session-scoped
+   *  and reset per run, like {@link tagSourceBranch} — the app can't know which
+   *  repos a spec touches, so narrowing is always the user's explicit act.
+   *  Empty = read nothing, which is the per-run equivalent of code search off. */
+  repoScope: string[] | null;
   /** Per-generation model override. When null, the run uses
    *  useChatStore.selectedModelId (the global default). Reset to null on
    *  startNew so each session starts from the latest default. */
@@ -335,6 +343,8 @@ export type SessionState = {
    *  the resolved labels without another ADO lookup. */
   setPlanSuiteNames: (planName: string | null, suiteName: string | null) => void;
   setTagSourceBranch: (v: boolean) => void;
+  /** Include/exclude one repo from this run's read scope. */
+  toggleRepoScope: (repoId: string) => void;
   /** Set or clear (null) the per-generation model override. */
   setOverrideModelId: (id: ModelId | null) => void;
   /** Add a text attachment. Convenience wrapper around `addRichAttachment`
@@ -354,7 +364,7 @@ export type SessionState = {
   resumeAnalyze: () => Promise<void>;
   /** Restore the form + resume affordance from a persisted checkpoint. Pure
    *  state, no IPC — the caller already read the row. */
-  loadCheckpoint: (payload: GeneratorCheckpointV1, updatedAt: string) => void;
+  loadCheckpoint: (payload: GeneratorCheckpointV2, updatedAt: string) => void;
   /** Throw away the resume point (and its persisted row) for this run. */
   discardCheckpoint: () => void;
   /** Cancel an in-flight analyze and return to the input phase. Aborts the
@@ -601,7 +611,7 @@ function withPartialText(
 /** The resume affordance derived from the payload we just flushed, so what the
  *  UI offers and what's actually on disk can't drift. */
 function resumableFrom(
-  payload: GeneratorCheckpointV1,
+  payload: GeneratorCheckpointV2,
   outcome: CheckpointOutcome,
 ): NonNullable<SessionState["resumable"]> {
   return {
@@ -616,7 +626,7 @@ function resumableFrom(
 
 /** Same idea for a follow-up round, keyed by the row it was flushed to. */
 function refineResumableFrom(
-  payload: GeneratorRefineCheckpointV1,
+  payload: GeneratorRefineCheckpointV2,
   outcome: CheckpointOutcome,
 ): NonNullable<SessionState["refineResumable"]> {
   return {
@@ -637,14 +647,14 @@ type RefineCheckpointCtx = {
   writer: CheckpointWriter;
   buildPayload: (
     outcome: CheckpointOutcome | null,
-  ) => GeneratorRefineCheckpointV1;
+  ) => GeneratorRefineCheckpointV2;
 };
 
 /** The bookkeeping one follow-up round is recorded under. Lives in the round's
  *  checkpoint so a round finished by a resume still lands in history as the
  *  round the user started — same timestamp, same before-counts — rather than a
  *  second round dated at resume time. */
-type RefineRoundMeta = GeneratorRefineCheckpointV1["round"];
+type RefineRoundMeta = GeneratorRefineCheckpointV2["round"];
 
 /** Add this round's outcome to the thinking history.
  *
@@ -750,6 +760,7 @@ const initialState: Omit<
   | "setTarget"
   | "setPlanSuiteNames"
   | "setTagSourceBranch"
+  | "toggleRepoScope"
   | "setOverrideModelId"
   | "addAttachment"
   | "addRichAttachment"
@@ -818,6 +829,7 @@ const initialState: Omit<
   coverage: "full",
   suggestBugs: true,
   tagSourceBranch: true,
+  repoScope: null,
   overrideModelId: null,
   stepLabel: "",
   activityLog: [],
@@ -1046,7 +1058,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     // "cancelled" outcome from outside the run's own scope.
     let analyzeWriter: CheckpointWriter | null = null;
     let analyzeCheckpointPayload:
-      | ((outcome: CheckpointOutcome | null) => GeneratorCheckpointV1)
+      | ((outcome: CheckpointOutcome | null) => GeneratorCheckpointV2)
       | null = null;
     /** Final answer streamed so far, kept so a run that dies mid-answer can
      *  persist what it had written. */
@@ -1089,7 +1101,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
        *  be the live one rather than the table's. */
       budget: RunBudget;
       writer: CheckpointWriter;
-      buildPayload: (outcome: CheckpointOutcome | null) => GeneratorCheckpointV1;
+      buildPayload: (outcome: CheckpointOutcome | null) => GeneratorCheckpointV2;
     }): Promise<void> => {
       const { result, writer, buildPayload } = args;
       const cases: ReviewedCase[] = result.batch.cases.map((c) => ({
@@ -1600,6 +1612,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     schedulePersistDraft();
   },
   setTagSourceBranch: (v) => set({ tagSourceBranch: v }),
+  toggleRepoScope: (repoId) =>
+    set((s) => ({ repoScope: toggleRepoScope(s.repoScope, getRepos(), repoId) })),
   setOverrideModelId: (id) => set({ overrideModelId: id }),
   addAttachment: (path, content) =>
     set((s) => {
@@ -1653,7 +1667,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     // to stop existing. Its terminal handler then finds a session it doesn't
     // belong to and drops its row instead of writing into the new run.
     get().cancelRefine();
-    const { requirements, changesets, attachments, attachedWorkItems, planId, suiteId, coverage, suggestBugs, overrideModelId } = get();
+    const { requirements, changesets, attachments, attachedWorkItems, planId, suiteId, coverage, suggestBugs, repoScope, overrideModelId } = get();
     if (!requirements.trim()) {
       set({
         phase: "error",
@@ -1859,7 +1873,11 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         : [];
     const contextBlocks = [...bpBlocks, ...bugBlocks];
 
-    const sourceRoot = prefs.codeSearchEnabled ? prefs.sourceRoot : null;
+    // Every configured repo unless the user narrowed this run — the app can't
+    // know which repos a spec touches, so narrowing is their explicit act.
+    const repos = prefs.codeSearchEnabled
+      ? scopedRepos(prefs.repos, repoScope)
+      : [];
     const customInstructions = prefs.customInstructions || undefined;
     const prepared = prepareQaAnalystRun({
       requirements,
@@ -1873,7 +1891,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       suggestBugs,
       keys,
       modelId,
-      sourceRoot,
+      repos,
       contextBlocks,
       customInstructions,
     });
@@ -1898,13 +1916,13 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       createdAt,
     });
     analyzeWriter = writer;
-    const basePayload: GeneratorCheckpointV1 = {
-      v: 1,
+    const basePayload: GeneratorCheckpointV2 = {
+      v: 2,
       surface: "generator",
       runId,
       createdAt,
       modelId,
-      sourceRoot,
+      repos,
       customInstructions,
       form: {
         requirements,
@@ -1924,6 +1942,10 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         coverage,
         suggestBugs,
         tagSourceBranch: get().tagSourceBranch,
+        // The scope as the user set it, NOT the resolved `repos` above: a
+        // checkpoint loaded back into the form has to re-render the chips, and
+        // an all-repos run must stay all-repos even if the registry grew.
+        repoScope,
         overrideModelId,
       },
       prepared: {
@@ -1937,7 +1959,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     let transcript: TranscriptCheckpoint | null = null;
     const buildPayload = (
       outcome: CheckpointOutcome | null,
-    ): GeneratorCheckpointV1 => ({
+    ): GeneratorCheckpointV2 => ({
       ...basePayload,
       activity: get().activityLog,
       transcript: withPartialText(transcript, analyzePartialText),
@@ -2134,7 +2156,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     let transcript: TranscriptCheckpoint | null = base;
     const buildPayload = (
       outcome: CheckpointOutcome | null,
-    ): GeneratorCheckpointV1 => ({
+    ): GeneratorCheckpointV2 => ({
       ...payload,
       activity: get().activityLog,
       transcript: withPartialText(transcript, analyzePartialText),
@@ -2146,7 +2168,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       modelId: payload.modelId,
       userPrompt: payload.prepared.userPrompt,
       attachments: payload.prepared.attachments,
-      sourceRoot: payload.sourceRoot,
+      repos: payload.repos,
       customInstructions: payload.customInstructions,
     };
 
@@ -2246,6 +2268,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       coverage: form.coverage,
       suggestBugs: form.suggestBugs,
       tagSourceBranch: form.tagSourceBranch,
+      repoScope: form.repoScope ?? null,
       overrideModelId: form.overrideModelId,
       runId: payload.runId,
       activityLog: payload.activity,
@@ -2642,46 +2665,47 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       const prior = okByUid.get(c.uid);
       if (prior?.result?.id) caseIdByDraftUid.set(c.uid, prior.result.id);
     }
-    // Resolve the tracking branch once so published cases' code-link chips
-    // point at the right branch. Code links always track the live source-dir
-    // branch (resolved here, at publish time) — falling back to "main" only
-    // when there's no resolvable branch (detached HEAD / not a git repo). We
-    // also capture the source-dir HEAD SHA here so bug code refs can be stamped
-    // with the same commit.
-    let trackingBranch = "main";
-    let sourceDirSha: string | null = null;
-    // Whether we actually resolved a branch from the working dir. trackingBranch
-    // falls back to "main" when this stays null (non-git source dir / detached
-    // HEAD) — but we must NOT stamp that fabricated "main" onto code links for a
-    // source the user has no branch for, so the stamp below gates on this.
-    let sourceDirBranch: string | null = null;
     let orgUrl = "";
     let project = "";
+    // The repos a link's `<repo>/…` prefix is resolved against. One list for
+    // the whole publish, read once — a repo added mid-publish would otherwise
+    // rename links written after it.
+    const publishRepos = getRepos();
     try {
       const conn = await getConnection();
       orgUrl = conn.orgUrl ?? "";
       project = conn.project ?? "";
-      const sourceRoot = usePreferencesStore.getState().sourceRoot;
-      if (sourceRoot) {
-        try {
-          const info = await invoke<{
-            branch: string | null;
-            commit: string | null;
-          }>("git_repo_info", { path: sourceRoot });
-          sourceDirBranch = info?.branch ?? null;
-          sourceDirSha = info?.commit ?? null;
-        } catch {
-          // If git_repo_info fails we'll fall through to the "main" fallback.
-        }
-      }
-      // Always resolve live: pass the sentinel so any legacy fixed branch saved
-      // in settings is ignored in favor of the branch the user is on right now.
-      trackingBranch = resolveTrackingBranch(
-        CURRENT_BRANCH_SENTINEL,
-        sourceDirBranch,
-      );
     } catch {
-      // Non-fatal — falls back to "main".
+      // Non-fatal — the published rows just lose their "open in ADO" links.
+    }
+
+    // Branch and HEAD sha PER REPO, captured once at publish time, so a batch
+    // that cites two repos stamps each link with the branch it was actually
+    // read from rather than whichever repo happens to sit first in the
+    // registry. Code links always track the live working-dir branch — there is
+    // no fixed-branch option. Either value can come back null (a folder that
+    // isn't a git repo, or a detached HEAD, which has a commit but no branch);
+    // null stamps nothing rather than a "main" the user never generated from.
+    //
+    // ONE gate for the whole map: a case's source links and the bugs hanging
+    // off it must never disagree about where the code came from — and with
+    // tagging off nothing is stamped, so the probes would be pure cost.
+    const provenance = new Map<string, RepoProvenance>();
+    if (tagSourceBranch) {
+      await Promise.all(
+        namedRepos(keptCases, keptBugs, publishRepos).map(async (repo) => {
+          try {
+            const info = await gitRepoInfo(repo.root);
+            provenance.set(repo.id, {
+              branch: info?.branch ?? null,
+              sha: info?.commit ?? null,
+            });
+          } catch {
+            // Non-fatal, and per repo — one unreadable root must not cost the
+            // repos that do answer their provenance stamp.
+          }
+        }),
+      );
     }
 
     for (const c of keptCases) {
@@ -2690,14 +2714,8 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       // visible in the log with its original "ok" status + result link.
       if (okByUid.has(c.uid)) continue;
       try {
-        // Tag the case's code links with the branch only when the user opted
-        // in (default). Passing "" omits the branch from the source-links block.
-        const sourceLinksBlock = renderSourceLinksBlock(
-          c.sourceLinks,
-          // Only stamp a branch we actually resolved from the working dir —
-          // never the "main" fallback on a non-git / detached-HEAD source.
-          tagSourceBranch && sourceDirBranch ? trackingBranch : "",
-        );
+        const { block: sourceLinksBlock, dropped: droppedLinks } =
+          renderSourceLinksBlock(c.sourceLinks, publishRepos, provenance);
         const steps = c.steps.map((s, i) => ({
           index: i + 1,
           action: s.action,
@@ -2766,15 +2784,32 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         // When the backend already told us there's no test point at all, report
         // that instead — it's the reason any outcome write would fail, and a
         // retry loop against a point that will never exist just wastes time.
+        // Every non-fatal problem below lands in the SAME `error` field, so
+        // they are collected and written once. Written as they happened, the
+        // last one silently erased the others — a case could lose its links and
+        // say only that its outcome didn't stick.
+        const warnings: string[] = [];
+
+        // A link whose path names no configured repo can't be published (the
+        // parser requires a repo, so a blank one is a dead line). The case is
+        // fine and stays "ok" — but say it lost links, because a case that
+        // published with no Linked source section is indistinguishable from one
+        // the model never found anything to link.
+        if (droppedLinks > 0) {
+          warnings.push(
+            `${droppedLinks} source ${droppedLinks === 1 ? "link" : "links"} couldn't be published — the ${droppedLinks === 1 ? "path names" : "paths name"} no configured repo.`,
+          );
+        }
+
         if (pointWarning) {
-          updateLog(set, c.uid, {
-            // Say the outcome was dropped. Without a point there's nothing to
-            // record it against, and silently ignoring a choice the reviewer
-            // made is how "it published fine" turns into a wrong test report.
-            error: c.desiredOutcome
+          // Say the outcome was dropped. Without a point there's nothing to
+          // record it against, and silently ignoring a choice the reviewer
+          // made is how "it published fine" turns into a wrong test report.
+          warnings.push(
+            c.desiredOutcome
               ? `${pointWarning} Its "${c.desiredOutcome}" outcome wasn't recorded.`
               : pointWarning,
-          });
+          );
         } else if (c.desiredOutcome) {
           try {
             let points = await listTestPoints(planId, suiteId, caseId);
@@ -2792,10 +2827,14 @@ export function createGenerationSessionStore(): GenerationSessionStore {
               outcome: c.desiredOutcome,
             });
           } catch (e) {
-            updateLog(set, c.uid, {
-              error: `Published, but couldn't set the run outcome: ${errToString(e)}`,
-            });
+            warnings.push(
+              `Published, but couldn't set the run outcome: ${errToString(e)}`,
+            );
           }
+        }
+
+        if (warnings.length > 0) {
+          updateLog(set, c.uid, { error: warnings.join(" ") });
         }
       } catch (e) {
         updateLog(set, c.uid, {
@@ -2827,17 +2866,19 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           reproSteps: b.reproSteps,
           severity: b.severity,
           assignedTo: b.assignedTo ?? null,
-          codeLinks: (b.codeRefs ?? []).map((r) => ({
-            file: r.file,
-            startLine: r.startLine,
-            endLine: r.endLine ?? undefined,
-            // Stamp the source-dir HEAD SHA (the commit the bug was found
-            // against, on the generation branch) so the bug's code refs survive
-            // future drift the same way case source-links do — unless the user
-            // turned off source-branch tagging. Null renders without the commit
-            // chip in BugPane; the user can still navigate by file/line.
-            commitSha: tagSourceBranch ? sourceDirSha : null,
-          })),
+          codeLinks: (b.codeRefs ?? []).map((r) => {
+            const repo = splitRepoPath(r.file, publishRepos)?.repo;
+            return {
+              file: r.file,
+              startLine: r.startLine,
+              endLine: r.endLine ?? undefined,
+              // The commit the bug was found against, read from the ref's OWN
+              // repo, so its code refs survive future drift the same way case
+              // source-links do. Null renders without the commit chip in
+              // BugPane; the user can still navigate by file/line.
+              commitSha: repo ? provenance.get(repo.id)?.sha ?? null : null,
+            };
+          }),
         });
         updateLog(set, b.uid, { status: "ok", result: created });
       } catch (e) {
@@ -3058,7 +3099,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           ? await bugsToContextBlocks(workItemIds)
           : [];
       const contextBlocks = [...bpBlocks, ...bugBlocks];
-      const sourceRoot = prefs.codeSearchEnabled ? prefs.sourceRoot : null;
+      const repos = prefs.codeSearchEnabled
+        ? scopedRepos(prefs.repos, s.repoScope)
+        : [];
 
       // Assemble the prompt separately from running it, exactly as analyze
       // does — that split is what lets the round be checkpointed BEFORE the
@@ -3074,7 +3117,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         suggestBugs: s.suggestBugs,
         keys,
         modelId,
-        sourceRoot,
+        repos,
         contextBlocks,
         userPromptOverride: userPrompt,
       });
@@ -3103,14 +3146,14 @@ export function createGenerationSessionStore(): GenerationSessionStore {
           cwd: sessionRunId,
           createdAt,
         });
-        const basePayload: GeneratorRefineCheckpointV1 = {
-          v: 1,
+        const basePayload: GeneratorRefineCheckpointV2 = {
+          v: 2,
           surface: "generator-refine",
           runId: refineRunId,
           sessionRunId,
           createdAt,
           modelId,
-          sourceRoot,
+          repos,
           customInstructions: prepared.customInstructions,
           round,
           prepared: {
@@ -3123,7 +3166,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         };
         const buildPayload = (
           outcome: CheckpointOutcome | null,
-        ): GeneratorRefineCheckpointV1 => ({
+        ): GeneratorRefineCheckpointV2 => ({
           ...basePayload,
           activity: get().activityLog,
           transcript,
@@ -3304,7 +3347,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
     let transcript: TranscriptCheckpoint | null = base;
     const buildPayload = (
       outcome: CheckpointOutcome | null,
-    ): GeneratorRefineCheckpointV1 => ({
+    ): GeneratorRefineCheckpointV2 => ({
       ...payload,
       activity: get().activityLog,
       transcript,
@@ -3318,7 +3361,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       modelId: payload.modelId,
       userPrompt: payload.prepared.userPrompt,
       attachments: payload.prepared.attachments,
-      sourceRoot: payload.sourceRoot,
+      repos: payload.repos,
       customInstructions: payload.customInstructions,
     };
 
@@ -3582,7 +3625,9 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         modelId,
         local: localProviderConfig(prefs),
         contextBlocks: chatContextBlocks,
-        sourceRoot: prefs.codeSearchEnabled ? (prefs.sourceRoot ?? null) : null,
+        repos: prefs.codeSearchEnabled
+          ? scopedRepos(prefs.repos, s.repoScope)
+          : [],
         customInstructions: prefs.customInstructions || undefined,
         onText: appendDelta,
         onToolEvent: mergeToolEvent,
@@ -3869,22 +3914,139 @@ function updateLog(
   }));
 }
 
+/** One repo's HEAD at publish time. Either half can be null — a folder that
+ *  isn't a git repo has neither; a detached HEAD has the commit but no branch. */
+type RepoProvenance = { branch: string | null; sha: string | null };
+
+/** The repo a draft source link belongs to: the path's `<repo>/…` prefix first,
+ *  which is what the prompts now ask for, then the deprecated `repoName` an
+ *  older draft still carries. One precedence for both the name that gets
+ *  published and the HEAD that gets stamped, so a link can never claim one repo
+ *  while carrying another's branch. Null ⇒ no configured repo claims it. */
+function linkRepo(
+  link: DraftSourceLink,
+  repos: WorkspaceRepo[],
+): WorkspaceRepo | null {
+  // An EXACT prefix match first, ahead of `splitRepoPath`, so the one-repo
+  // tolerance can't run before `repoName` gets a say.
+  const head = link.filePath
+    .replace(/\\/g, "/")
+    .replace(/^\.?\/+/, "")
+    .split("/")[0]
+    ?.toLowerCase();
+  const byPrefix = head
+    ? (repos.find((r) => r.name.toLowerCase() === head) ?? null)
+    : null;
+  if (byPrefix) return byPrefix;
+
+  // A link that RECORDS a repo must be resolved by that name or not at all.
+  // Falling through to the tolerance would, at a workspace narrowed back to one
+  // repo, hand every REMOVED repo's link to the survivor — stamped with the
+  // wrong branch and deep-linked into the wrong ADO repository, which is a page
+  // that resolves and shows an unrelated file rather than a visible 404.
+  const legacy = link.repoName?.trim().toLowerCase();
+  if (legacy) return repos.find((r) => r.name.toLowerCase() === legacy) ?? null;
+
+  // Nothing claims it by name: a genuinely unprefixed path, which the resolver
+  // tolerates at one repo and the publisher matches.
+  return splitRepoPath(link.filePath, repos)?.repo ?? null;
+}
+
+/** A link's path as ADO addresses it: relative to the repo ROOT, with the
+ *  `<repo>/` prefix that the app addresses files by taken off.
+ *
+ *  Publishing the prefixed form is what `repoPaths.ts` says never happens, and
+ *  it breaks the deep link for everyone but the author: the published `repo:`
+ *  is the ADO repository name while the prefix is the WORKSPACE FOLDER name,
+ *  and only the local registry connects the two — so a reader without that
+ *  folder configured can't tell the prefix from a real first directory, and
+ *  every `?path=` it builds 404s.
+ *
+ *  Only stripped when the prefix names the repo the link was attributed to; a
+ *  legacy draft with no prefix at all is already in this form. */
+function linkPathForAdo(
+  link: DraftSourceLink,
+  repo: WorkspaceRepo | null,
+  repos: WorkspaceRepo[],
+): string {
+  if (!repo) return link.filePath;
+  const split = splitRepoPath(link.filePath, repos);
+  if (!split || split.repo.id !== repo.id) return link.filePath;
+  return split.within || link.filePath;
+}
+
+/** The repos a batch's links and code refs actually name — the only ones worth
+ *  a git probe at publish time. Deduped, so N cases citing one repo cost one
+ *  subprocess, and a repo nobody linked to costs none. */
+function namedRepos(
+  cases: ReviewedCase[],
+  bugs: ReviewedBug[],
+  repos: WorkspaceRepo[],
+): WorkspaceRepo[] {
+  const byId = new Map<string, WorkspaceRepo>();
+  for (const c of cases) {
+    for (const l of c.sourceLinks ?? []) {
+      const repo = linkRepo(l, repos);
+      if (repo) byId.set(repo.id, repo);
+    }
+  }
+  for (const b of bugs) {
+    for (const r of b.codeRefs ?? []) {
+      const repo = splitRepoPath(r.file, repos)?.repo;
+      if (repo) byId.set(repo.id, repo);
+    }
+  }
+  return [...byId.values()];
+}
+
+/** `trackingBranch` and `generationSha` are the provenance stamp, taken from
+ *  the link's OWN repo — a case citing two repos records each link against the
+ *  branch it was read from. Both empty when the user published without
+ *  source-branch tagging (the map is then empty by design), in which case the
+ *  link still records repo + path, just nothing about where it came from.
+ *
+ *  The ADO identity (`repoName` / `project` / `repoId`) comes from the repo's
+ *  BINDING when it has one, because that is what a deep link resolves against:
+ *  the workspace name is the user's label for a folder, and the project isn't
+ *  necessarily the connection's. An unbound repo publishes under its workspace
+ *  name with no project, exactly as it did before binding existed.
+ *
+ *  A link that names no repo — no usable prefix, no legacy `repoName` — is
+ *  DROPPED rather than written blank: `parseSourceLinks` requires a repo, so a
+ *  blank one publishes a line that can never be read back, a dead link sitting
+ *  in the user's ADO description forever. The count comes back with the block
+ *  so the caller can SAY so: a case that quietly published with no Linked
+ *  source section reads as "the model found nothing worth linking". */
 function renderSourceLinksBlock(
   links: DraftSourceLink[] | undefined,
-  trackingBranch: string,
-): string | null {
-  if (!links || links.length === 0) return null;
-  const sl: SourceLink[] = links.map((l) => ({
-    repoId: l.repoId ?? l.repoName,
-    repoName: l.repoName,
-    filePath: l.filePath,
-    symbol: l.symbol ?? undefined,
-    lineRange: l.lineRange ?? undefined,
-    generationBranch: trackingBranch,
-    generationSha: "",
-    trackingBranch,
-  }));
-  return renderBlock(sl);
+  repos: WorkspaceRepo[],
+  provenance: Map<string, RepoProvenance>,
+): { block: string | null; dropped: number } {
+  if (!links || links.length === 0) return { block: null, dropped: 0 };
+  const sl: SourceLink[] = [];
+  let dropped = 0;
+  for (const l of links) {
+    const repo = linkRepo(l, repos);
+    const repoName = repo?.ado?.repoName ?? repo?.name ?? l.repoName;
+    if (!repoName) {
+      dropped++;
+      continue;
+    }
+    const stamp = repo ? provenance.get(repo.id) : undefined;
+    const branch = stamp?.branch ?? "";
+    sl.push({
+      repoId: repo?.ado?.repoId ?? l.repoId ?? repoName,
+      repoName,
+      project: repo?.ado?.project ?? undefined,
+      filePath: linkPathForAdo(l, repo, repos),
+      symbol: l.symbol ?? undefined,
+      lineRange: l.lineRange ?? undefined,
+      generationBranch: branch,
+      generationSha: stamp?.sha ?? "",
+      trackingBranch: branch,
+    });
+  }
+  return { block: sl.length > 0 ? renderBlock(sl) : null, dropped };
 }
 
 /** Resolve plan + suite metadata into the structured TargetContext that the

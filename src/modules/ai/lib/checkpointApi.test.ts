@@ -17,21 +17,21 @@ import {
   parseCheckpointRow,
   saveCheckpoint,
   sanitizeTranscriptMessages,
-  type CommitReviewCheckpointV1,
-  type GeneratorCheckpointV1,
-  type GeneratorRefineCheckpointV1,
+  type CommitReviewCheckpointV2,
+  type GeneratorCheckpointV2,
+  type GeneratorRefineCheckpointV2,
 } from "./checkpointApi";
 
 function makeGeneratorPayload(
-  overrides: Partial<GeneratorCheckpointV1> = {},
-): GeneratorCheckpointV1 {
+  overrides: Partial<GeneratorCheckpointV2> = {},
+): GeneratorCheckpointV2 {
   return {
-    v: 1,
+    v: 2,
     surface: "generator",
     runId: "run-1",
     createdAt: "2026-01-01T00:00:00.000Z",
     modelId: "claude-opus-5",
-    sourceRoot: "/repo",
+    repos: [],
     form: {
       requirements: "req",
       changesets: "",
@@ -55,16 +55,16 @@ function makeGeneratorPayload(
 }
 
 function makeCommitReviewPayload(
-  overrides: Partial<CommitReviewCheckpointV1> = {},
-): CommitReviewCheckpointV1 {
+  overrides: Partial<CommitReviewCheckpointV2> = {},
+): CommitReviewCheckpointV2 {
   return {
-    v: 1,
+    v: 2,
     surface: "commit-review",
     runId: "cr-run-1",
     createdAt: "2026-01-01T00:00:00.000Z",
     modelId: "claude-opus-5",
     cwd: "/repo",
-    sourceRoot: "/repo",
+    repos: [],
     inputs: {
       selectedShas: ["abc123"],
       diffs: [],
@@ -174,14 +174,14 @@ describe("parseCheckpointRow", () => {
   });
 
   it("round-trips a valid generator-refine payload", () => {
-    const payload: GeneratorRefineCheckpointV1 = {
-      v: 1,
+    const payload: GeneratorRefineCheckpointV2 = {
+      v: 2,
       surface: "generator-refine",
       runId: "rfn-1",
       sessionRunId: "run-1",
       createdAt: "2026-01-01T00:00:00.000Z",
       modelId: "claude-opus-5",
-      sourceRoot: "/repo",
+      repos: [],
       round: {
         instruction: "tighten step 2",
         startedAt: "2026-01-01T00:00:00.000Z",
@@ -196,8 +196,11 @@ describe("parseCheckpointRow", () => {
     expect(parseCheckpointRow(JSON.stringify(payload))).toEqual(payload);
   });
 
-  it("returns null when v is not 1", () => {
-    const payload = { ...makeGeneratorPayload(), v: 2 };
+  // A v1 row is a payload carrying a single `sourceRoot` where the live shape
+  // holds the repo registry. Dropping it is the whole migration: every consumer
+  // already skips a null, and keep-10-per-surface ages the row out.
+  it("returns null for a superseded payload version", () => {
+    const payload = { ...makeGeneratorPayload(), v: 1 };
     expect(parseCheckpointRow(JSON.stringify(payload))).toBeNull();
   });
 
@@ -210,12 +213,11 @@ describe("parseCheckpointRow", () => {
     expect(parseCheckpointRow("{not json")).toBeNull();
   });
 
-  // Every checkpoint on disk was written before the run budget was denominated
-  // in tokens, so its step_cap outcome carries no `limit`. CHECKPOINT_PAYLOAD_
-  // VERSION stayed at 1 precisely because that field is additive — these pin
-  // that a v1 row without it still loads, resumes, and keeps its outcome intact
-  // rather than being dropped as unparseable (which would strand the resume
-  // point the whole feature exists to protect).
+  // A step_cap outcome written before the run budget was denominated in tokens
+  // carries no `limit`. That field is additive and did NOT cost a version bump —
+  // these pin that a current-version row without it still loads, resumes, and
+  // keeps its outcome intact rather than being dropped as unparseable (which
+  // would strand the resume point the whole feature exists to protect).
   it("loads a pre-token-budget step_cap outcome with no `limit` field", () => {
     const payload = makeGeneratorPayload({
       lastOutcome: { at: "2026-06-11T00:00:00.000Z", kind: "step_cap" },

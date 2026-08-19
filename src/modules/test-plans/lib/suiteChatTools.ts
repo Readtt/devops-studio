@@ -10,6 +10,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { tool } from "ai";
 import { z } from "zod";
+import { cleanPathArg, joinPath, resolveRepoPath } from "@/modules/ai/lib/repoPaths";
+import { checkReadable } from "@/modules/ai/lib/security";
+import type { WorkspaceRepo } from "@/modules/settings/store";
 
 /** Mirror of the Rust ReadResult enum's TS shape. Internal — callers don't
  *  see this; we collapse it to a sensible value below. */
@@ -53,22 +56,26 @@ const GREP_LINE_CAP = 160;
  *  budget buys coverage without growing the answer. */
 const FILES_ONLY_SCAN_CAP = 2000;
 
-/** Build the set of read-only fs tools the BYOK suite-chat runner can
- *  hand to the model. Returns `undefined` when no source dir is set — the
- *  caller should fall back to a tools-less run in that case. */
-export function buildSuiteChatTools(sourceRoot: string | null) {
-  if (!sourceRoot) return undefined;
-  const root = sourceRoot;
+/** Build the set of read-only fs tools the BYOK suite-chat runner can hand to
+ *  the model, spanning every repo it is given. Returns `undefined` for an empty
+ *  list — the caller should fall back to a tools-less run in that case.
+ *
+ *  Paths in and out are `<repoName>/<path within repo>` at every repo count,
+ *  including one: a single addressing form means one prompt and one code path,
+ *  and every path the model emits round-trips back to the repo it came from. */
+export function buildSuiteChatTools(repos: WorkspaceRepo[]) {
+  if (repos.length === 0) return undefined;
+  const names = repos.map((r) => r.name).join(", ");
 
   return withResultCaps({
     read_file: tool({
       description:
-        "Read a UTF-8 text file from the user's source directory. Returns up to 1500 lines / 24 KB by default; use `offset` and `limit` to window large files. Refuses binary files. Use this to verify whether a test case's steps match how the code actually behaves — quote the exact lines back to the user with file:line refs.",
+        "Read a UTF-8 text file from one of the user's source repos. Returns up to 1500 lines / 24 KB by default; use `offset` and `limit` to window large files. Refuses binary files. Use this to verify whether a test case's steps match how the code actually behaves — quote the exact lines back to the user with file:line refs.",
       inputSchema: z.object({
         path: z
           .string()
           .describe(
-            "Path inside the source directory. Can be absolute or relative — relative is resolved against the user's source root.",
+            `Path as \`<repo>/<path within repo>\`, e.g. \`${repos[0].name}/src/auth/login.ts\`. Configured repos: ${names}.`,
           ),
         offset: z
           .number()
@@ -85,9 +92,13 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
           .describe("Max lines to return. Default 1500."),
       }),
       execute: async ({ path, offset, limit }) => {
+        // A refusal is handed BACK to the model as the result rather than
+        // thrown: it names what was wrong, so the next call self-corrects.
+        const target = await resolveRepoPath(path, repos);
+        if (!target.ok) return { error: target.reason, path };
         try {
           const raw = await invoke<RawReadResult>("fs_read_file", {
-            path: resolvePathHint(path, root),
+            path: target.absPath,
             // workspace defaults to Local on the Rust side; we don't pass
             // one because the WorkspaceEnv shape is internal.
           });
@@ -107,11 +118,12 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
           let content = lines.slice(start, end).join("\n");
           let truncated = end < lines.length;
           if (content.length > READ_BYTE_CAP) {
-            content = content.slice(0, READ_BYTE_CAP);
+            content = sliceWholeChars(content, READ_BYTE_CAP);
             truncated = true;
           }
           return {
             path,
+            ...(target.corrected ? { corrected: target.corrected } : {}),
             content,
             size: raw.size,
             total_lines: lines.length,
@@ -129,7 +141,7 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
 
     list_files: tool({
       description:
-        "List file paths inside the user's source directory. Returns up to `limit` paths. Use this when you need to discover what files exist before reading them — much cheaper than guessing paths.",
+        "List file paths inside the user's source repos. Omit `subpath` to see every repo at once; pass one to drill into a single directory. Returns up to `limit` paths. Use this when you need to discover what files exist before reading them — much cheaper than guessing paths.",
       inputSchema: z.object({
         subpath: z
           .string()
@@ -139,7 +151,7 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
           // `""`. cleanPathArg now absorbs that either way; this just stops
           // asking for it.
           .describe(
-            "Optional sub-directory of the source root to list, e.g. `src/auth`. Omit it entirely to list from the root.",
+            `Optional directory to list, as \`<repo>/<path within repo>\` — e.g. \`${repos[0].name}/src/auth\`, or \`${repos[0].name}\` for one whole repo. Omit it entirely to list across all of: ${names}.`,
           ),
         limit: z
           .number()
@@ -151,27 +163,31 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
       }),
       execute: async ({ subpath, limit }) => {
         const sub = cleanPathArg(subpath);
-        try {
-          const base = sub ? joinPath(root, sub) : root;
-          const out = await invoke<{ files: string[]; truncated: boolean }>(
-            "fs_list_files",
-            {
-              root: base,
-              limit: limit ?? 120,
-              // workspace defaults to Local on the Rust side; we don't pass
-            // one because the WorkspaceEnv shape is internal.
-            },
-          );
-          return out;
-        } catch (e) {
-          return { error: String(e), subpath: sub };
+        const cap = limit ?? 120;
+        if (sub) {
+          const target = await resolveRepoPath(sub, repos);
+          if (!target.ok) return { error: target.reason, subpath: sub };
+          const one = await listOne(target.virtualPath, target.absPath, cap);
+          return one.error
+            ? { error: one.error, subpath: sub }
+            : { files: one.files, truncated: one.truncated };
         }
+        // No subpath: every repo, an equal share of the cap each, so a repo
+        // with 10k files can't crowd the others out of the listing.
+        const share = Math.ceil(cap / repos.length);
+        const parts = await Promise.all(
+          repos.map(async (r) => ({ repo: r, ...(await listOne(r.name, r.root, share)) })),
+        );
+        return {
+          files: parts.flatMap((p) => p.files),
+          truncated: parts.some((p) => p.truncated),
+          ...repoErrors(parts),
+        };
       },
     }),
 
     grep: tool({
-      description:
-        "Regex search across files in the user's source directory. Use this to find references to a function, a constant, an endpoint, an HTTP status code — anything you'd reach for grep to find. Returns matching lines with file:line refs. Long lines are clipped around the match — read_file that file:line to see the rest.",
+      description: `Regex search across every one of the user's source repos (${names}) at once. Use this to find references to a function, a constant, an endpoint, an HTTP status code — anything you'd reach for grep to find. Returns matching lines as \`<repo>/<path>\` with line numbers, drawn evenly from each repo. Long lines are clipped around the match — read_file that file:line to see the rest.`,
       inputSchema: z.object({
         pattern: z
           .string()
@@ -181,7 +197,7 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
           .array(z.string())
           .optional()
           .describe(
-            'Optional file globs to scope the search (e.g. ["**/*.ts","**/*.tsx"]).',
+            'Optional file globs to scope the search (e.g. ["**/*.ts","**/*.tsx"]). Matched inside each repo, against paths relative to that repo\'s root — do NOT put a repo name in a glob.',
           ),
         caseInsensitive: z
           .boolean()
@@ -202,77 +218,132 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
           ),
       }),
       execute: async ({ pattern, glob, caseInsensitive, maxResults, filesOnly }) => {
-        try {
-          const out = await invoke<GrepResponse>("fs_grep", {
-            pattern,
-            root,
-            glob: glob ?? null,
-            caseInsensitive: caseInsensitive ?? false,
-            // `maxResults` counts matching LINES on the Rust side, and
-            // `filesOnly` then collapses those lines to one row per file — so
-            // the file list a broad scan returns was bounded by line hits, not
-            // by files. A symbol with 80 references inside one hot file filled
-            // the default cap inside that file and came back as "1 file
-            // matched" for something used in twenty. Scanning wide is the whole
-            // point of this mode and its result is small however many lines it
-            // walked, so it runs at the Rust hard ceiling instead. The
-            // line-returning mode keeps the caller's cap: there the number
-            // really is the size of what comes back.
-            maxResults: filesOnly
-              ? FILES_ONLY_SCAN_CAP
-              : (maxResults ?? 80),
-            // workspace defaults to Local on the Rust side; we don't pass
-            // one because the WorkspaceEnv shape is internal.
-          });
-          const base = {
-            truncated: out.truncated,
-            files_scanned: out.files_scanned,
-            // `files_scanned` counts files AFTER the glob filter, so 0 means
-            // nothing was ever read — which is NOT evidence the pattern is
-            // absent. Left unsaid, a model reads "0 matches" as "this code
-            // doesn't exist" and moves on with a wrong conclusion.
-            ...(out.files_scanned === 0 ? { hint: emptyScanHint(glob) } : {}),
-          };
-          if (filesOnly) {
-            return { ...base, files: summariseByFile(out.hits) };
-          }
-          const re = displayMatcher(pattern, caseInsensitive ?? false);
+        const lineCap = maxResults ?? 80;
+        const parts = await Promise.all(
+          repos.map((repo) =>
+            grepOne(repo, {
+              pattern,
+              root: repo.root,
+              glob: glob ?? null,
+              caseInsensitive: caseInsensitive ?? false,
+              // `maxResults` counts matching LINES on the Rust side, and
+              // `filesOnly` then collapses those lines to one row per file — so
+              // the file list a broad scan returns was bounded by line hits,
+              // not by files. A symbol with 80 references inside one hot file
+              // filled the default cap inside that file and came back as "1
+              // file matched" for something used in twenty. Scanning wide is
+              // the whole point of this mode and its result is small however
+              // many lines it walked, so it runs at the Rust hard ceiling
+              // instead. The line-returning mode keeps the caller's cap: there
+              // the number really is the size of what comes back. Each repo is
+              // asked for the full cap — the merge below holds the ANSWER to it.
+              maxResults: filesOnly ? FILES_ONLY_SCAN_CAP : lineCap,
+              // workspace defaults to Local on the Rust side; we don't pass
+              // one because the WorkspaceEnv shape is internal.
+            }),
+          ),
+        );
+        const scanned = parts.reduce((n, p) => n + (p.out?.files_scanned ?? 0), 0);
+        // Per-repo truncation only. The MERGE has a cap of its own, and each
+        // branch below folds its own overflow in: three repos that each fit
+        // comfortably under the Rust ceiling still overflow once interleaved,
+        // and answering `truncated: false` there tells the model it has seen
+        // every reference to the symbol when it has seen a third of them.
+        const repoTruncated = parts.some((p) => p.out?.truncated);
+        const base = {
+          files_scanned: scanned,
+          // `files_scanned` counts files AFTER the glob filter, so 0 means
+          // nothing was ever read — which is NOT evidence the pattern is
+          // absent. Left unsaid, a model reads "0 matches" as "this code
+          // doesn't exist" and moves on with a wrong conclusion.
+          ...(scanned === 0 ? { hint: emptyScanHint(glob, repos) } : {}),
+          ...repoErrors(parts),
+        };
+        if (filesOnly) {
+          // The SCAN ignores the caller's cap (see above); the ANSWER can't —
+          // every repo contributing hundreds of file rows serializes past
+          // TOOL_RESULT_CAP, and an over-cap result is replaced wholesale by a
+          // mid-structure preview, so the model loses the scan instead of
+          // getting its first N files.
+          const files = interleave(
+            parts.map((p) =>
+              summariseByFile(readableHits(p.repo, p.out?.hits ?? [])).map((f) => ({
+                ...f,
+                rel: `${p.repo.name}/${f.rel}`,
+              })),
+            ),
+          );
           return {
             ...base,
-            // `path` is dropped: it duplicates `rel` on every hit, and
-            // read_file resolves a relative path against the source root
-            // (see resolvePathHint), so `rel` is enough to act on.
-            hits: out.hits.map((h) => ({
-              rel: h.rel,
+            truncated: repoTruncated || files.length > lineCap,
+            files: files.slice(0, lineCap),
+          };
+        }
+        const re = displayMatcher(pattern, caseInsensitive ?? false);
+        // Round-robin, then truncate. Concatenating instead lets one repo's
+        // 80 hits fill the cap and hide another repo entirely — which is the
+        // silent coverage loss this whole feature exists to end.
+        // `path` is dropped: it duplicates `rel` on every hit, and `rel` is
+        // now the repo-prefixed form read_file takes.
+        const hits = interleave(
+          parts.map((p) =>
+            readableHits(p.repo, p.out?.hits ?? []).map((h) => ({
+              rel: `${p.repo.name}/${h.rel}`,
               line: h.line,
               text: clipAroundMatch(h.text, re, GREP_LINE_CAP),
             })),
-          };
-        } catch (e) {
-          return { error: String(e), pattern };
-        }
+          ),
+        );
+        return {
+          ...base,
+          truncated: repoTruncated || hits.length > lineCap,
+          hits: hits.slice(0, lineCap),
+        };
       },
     }),
 
     run_command: tool({
-      description:
-        "Run ONE read-only command in the user's source directory and get its output back — a real terminal, but read-only. Best for inspecting git history and the working tree: `git log --oneline -20`, `git show <sha>`, `git diff`, `git blame <file>`, `git status`, plus `ls`, `cat`, `head`, `tail`, `grep`/`rg`, `find`, `tree`, `wc`. Rules: one command per call (no pipes, redirection, or chaining), no absolute paths, read-only programs only — anything that writes, deletes, or executes is refused. Use this to answer 'what recently changed here / is this code stable or risky' instead of guessing.",
+      description: `Run ONE read-only command inside ONE of the user's source repos (${names}) and get its output back — a real terminal, but read-only. Reach for git, the one program guaranteed to be installed: \`git log --oneline -20\`, \`git show <sha>\`, \`git show <sha>:<path>\` (a file as of that commit), \`git diff\`, \`git blame <file>\`, \`git status\`, \`git ls-files\`, \`git grep <pattern>\`, \`git for-each-ref --sort=-committerdate refs/heads\` (branches), \`git check-ignore -v <path>\`. \`ls\`/\`cat\`/\`head\`/\`tail\`/\`grep\`/\`rg\` are allowed but are usually ABSENT on Windows, and \`find\`/\`tree\` there are unrelated Microsoft programs of the same name — read, list and search with the read_file / list_files / grep tools instead, and keep this one for git. Rules: one command per call (no pipes, redirection, or chaining), no absolute paths — anything that writes, deletes, or executes is refused. Use this to answer 'what recently changed here / is this code stable or risky' instead of guessing.`,
       inputSchema: z.object({
         command: z
           .string()
           .min(1)
           .describe(
-            'A single read-only command, e.g. `git log --oneline -10 src/auth` or `rg "TODO" src`. No pipes/redirection; no absolute paths.',
+            'A single read-only command, e.g. `git log --oneline -10 src/auth` or `rg "TODO" src`. Paths in the command are relative to the chosen repo and carry no repo prefix. No pipes/redirection; no absolute paths.',
+          ),
+        // Optional, not required: the schema is shared with a one-repo
+        // workspace, where there is nothing to disambiguate.
+        repo: z
+          .string()
+          .optional()
+          .describe(
+            `Which repo to run in — one of: ${names}. Required when more than one is configured; a command sees only the repo it runs in (git history included).`,
           ),
       }),
-      execute: async ({ command }) => {
+      execute: async ({ command, repo }) => {
+        const target = pickRepo(repo, repos);
+        if (!target.ok) return { error: target.reason, command };
+        if (CLIMBS_OUT.test(command)) {
+          return {
+            error:
+              "Refused: `..` climbs out of the repo. Paths in a command are relative to the repo it runs in — to read another repo, call again with that `repo`.",
+            command,
+          };
+        }
+        const secret = secretOperand(command, target.repo);
+        if (secret) {
+          return {
+            error: `Refused: \`${secret}\` matches a sensitive-file pattern. read_file and grep refuse it too — this shell is not a way around them.`,
+            command,
+          };
+        }
         try {
           const out = await invoke<{
             returncode: number;
             output: string;
             truncated: boolean;
-          }>("run_readonly_command_cmd", { root, command });
-          return out;
+          }>("run_readonly_command_cmd", { root: target.repo.root, command });
+          return { ...out, repo: target.repo.name };
         } catch (e) {
           // A disallowed command surfaces here as the Rust error string — the
           // model reads it and corrects (e.g. "use a read-only git subcommand").
@@ -283,12 +354,218 @@ export function buildSuiteChatTools(sourceRoot: string | null) {
   } as const);
 }
 
+/** A `..` path segment anywhere in a command line.
+ *
+ *  `run_command` is the one tool that doesn't route its paths through
+ *  `resolveRepoPath`, and the Rust validator only rejects ABSOLUTE paths — so
+ *  `cat ../other-repo/appsettings.json` runs, reading a repo the user may have
+ *  deselected in the Repos chips, or anything else beside the repo root. Every
+ *  legitimate use of this tool is repo-relative; another repo is reachable by
+ *  passing `repo`, which is what the scope is enforced on. */
+const CLIMBS_OUT = /(^|[^\w.])\.\.($|[\\/])/;
+
+/** The first operand of a command that names a file the read gate refuses, or
+ *  null when none does.
+ *
+ *  `run_command` is the last read path with no gate on it. `readableHits` closed
+ *  the same hole for `grep` — `.env` was unreadable by name and readable by
+ *  pattern — but a shell reaches the file directly: `cat .env` where cat
+ *  exists, and `git show HEAD:.env` / `git log -p .env` on any platform, for
+ *  anything tracked.
+ *
+ *  Operands only. The PATTERN argument of a search is skipped, because it is not
+ *  a path and refusing `git grep "\.pem"` would be a refusal about a string. What
+ *  that search can still surface from a tracked secret file is out of reach of a
+ *  path check — the residual this doesn't close. */
+function secretOperand(command: string, repo: WorkspaceRepo): string | null {
+  for (const cand of pathOperands(command)) {
+    if (!checkReadable(joinPath(repo.root, cand)).ok) return cand;
+  }
+  return null;
+}
+
+/** Search programs take a PATTERN before their paths, so the first operand is
+ *  skipped for these. `git` is handled through its subcommand. */
+const PATTERN_FIRST = new Set(["grep", "rg"]);
+
+function pathOperands(command: string): string[] {
+  const tokens = tokenize(command);
+  if (tokens.length < 2) return [];
+  const program = tokens[0].toLowerCase();
+  let args = tokens.slice(1);
+
+  let patternFirst = PATTERN_FIRST.has(program);
+  if (program === "git") {
+    // Drop everything up to and including the subcommand, so a glued
+    // `--git-dir=` (already refused by Rust) and the subcommand itself aren't
+    // read as paths.
+    const sub = args.findIndex((a) => !a.startsWith("-"));
+    if (sub === -1) return [];
+    patternFirst = args[sub].toLowerCase() === "grep";
+    args = args.slice(sub + 1);
+  }
+
+  const out: string[] = [];
+  let skipped = !patternFirst;
+  for (const raw of args) {
+    if (raw === "--") continue;
+    let a = raw;
+    if (a.startsWith("-")) {
+      // A glued flag value can still be a path (`--exclude-from=.env`); a bare
+      // flag never is.
+      const eq = a.indexOf("=");
+      if (eq === -1) continue;
+      a = a.slice(eq + 1);
+    } else if (!skipped) {
+      skipped = true;
+      continue;
+    }
+    if (!a) continue;
+    out.push(a);
+    // `git show <rev>:<path>` addresses a file through a revision, and the
+    // basename of the whole token is `<rev>:<path>`, which matches nothing.
+    const colon = a.lastIndexOf(":");
+    if (colon > 0 && colon < a.length - 1) out.push(a.slice(colon + 1));
+  }
+  return out;
+}
+
+/** Whitespace split that keeps `"..."` / `'...'` runs together — the same rule
+ *  the Rust tokenizer follows, so this sees the operands Rust will. */
+function tokenize(command: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let quote: string | null = null;
+  let started = false;
+  for (const ch of command) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      else cur += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      started = true;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (started || cur) out.push(cur);
+      cur = "";
+      started = false;
+      continue;
+    }
+    cur += ch;
+  }
+  if (started || cur) out.push(cur);
+  return out;
+}
+
 /** Mirror of the Rust `GrepResponse`. */
 type GrepResponse = {
   hits: Array<{ path: string; rel: string; line: number; text: string }>;
   truncated: boolean;
   files_scanned: number;
 };
+
+/** One repo's share of a fan-out. A repo that fails — a root the user moved or
+ *  unmounted — must not take the other repos' results down with it, so the
+ *  failure travels as data and is reported alongside what did come back. */
+type RepoPart<T> = { repo: WorkspaceRepo; out?: T; error?: string };
+
+async function listOne(
+  prefix: string,
+  root: string,
+  limit: number,
+): Promise<{ files: string[]; truncated: boolean; error?: string }> {
+  try {
+    const out = await invoke<{ files: string[]; truncated: boolean }>(
+      "fs_list_files",
+      {
+        root,
+        limit,
+        // workspace defaults to Local on the Rust side; we don't pass one
+        // because the WorkspaceEnv shape is internal.
+      },
+    );
+    return {
+      files: out.files.map((f) => `${prefix}/${f}`),
+      truncated: out.truncated,
+    };
+  } catch (e) {
+    return { files: [], truncated: false, error: String(e) };
+  }
+}
+
+/** Drop hits in files `read_file` would refuse.
+ *
+ *  `read_file` clears every path through `resolveRepoPath`, which runs the read
+ *  gate; grep is handed the repo ROOT and `fs_grep` walks the tree itself, so
+ *  nothing upstream ever sees the files it opened. Without this, `.env` is
+ *  unreadable by name and readable by pattern — a grep for `SECRET|_KEY=`
+ *  returned its matching lines verbatim. Gated on the joined path, not the
+ *  relative one, so the protected-directory rules match the same way they do
+ *  for a read. */
+function readableHits<T extends { rel: string }>(
+  repo: WorkspaceRepo,
+  hits: T[],
+): T[] {
+  return hits.filter((h) => checkReadable(joinPath(repo.root, h.rel)).ok);
+}
+
+async function grepOne(
+  repo: WorkspaceRepo,
+  args: Record<string, unknown>,
+): Promise<RepoPart<GrepResponse>> {
+  try {
+    return { repo, out: await invoke<GrepResponse>("fs_grep", args) };
+  } catch (e) {
+    return { repo, error: String(e) };
+  }
+}
+
+/** Surface per-repo failures without hiding the repos that answered. */
+function repoErrors(
+  parts: Array<{ repo: WorkspaceRepo; error?: string }>,
+): { errors?: Array<{ repo: string; error: string }> } | Record<string, never> {
+  const errors = parts
+    .filter((p) => p.error)
+    .map((p) => ({ repo: p.repo.name, error: p.error as string }));
+  return errors.length > 0 ? { errors } : {};
+}
+
+/** Round-robin merge. Straight concatenation lets the first repo's hits fill
+ *  the cap and hide every repo behind it — the exact silent coverage loss
+ *  multi-repo support exists to end. */
+function interleave<T>(lists: T[][]): T[] {
+  const out: T[] = [];
+  const deepest = Math.max(0, ...lists.map((l) => l.length));
+  for (let i = 0; i < deepest; i++) {
+    for (const list of lists) {
+      if (i < list.length) out.push(list[i]);
+    }
+  }
+  return out;
+}
+
+/** Resolve `run_command`'s optional repo argument to exactly one root — a cwd
+ *  can only ever be one place. */
+function pickRepo(
+  wanted: string | undefined,
+  repos: WorkspaceRepo[],
+): { ok: true; repo: WorkspaceRepo } | { ok: false; reason: string } {
+  const names = repos.map((r) => r.name).join(", ");
+  const asked = cleanPathArg(wanted);
+  if (!asked) {
+    if (repos.length === 1) return { ok: true, repo: repos[0] };
+    return {
+      ok: false,
+      reason: `\`repo\` is required with more than one repo configured — a command runs inside a single repo, and \`git log\` in one cannot see another. Pass one of: ${names}.`,
+    };
+  }
+  const hit = repos.find((r) => r.name.toLowerCase() === asked.toLowerCase());
+  if (hit) return { ok: true, repo: hit };
+  return { ok: false, reason: `No repo named "${asked}". Configured repos: ${names}.` };
+}
 
 /** Recovery hint attached when a result blows TOOL_RESULT_CAP — it names the
  *  argument that would narrow THIS call. A stub the model can't act on is lost
@@ -323,7 +600,9 @@ export function capToolResult(
   const previewLen = Math.min(TOOL_RESULT_PREVIEW, cap);
   return {
     error: `result too large: ${serialized.length} characters (cap ${cap})`,
-    ...(previewLen > 0 ? { preview: serialized.slice(0, previewLen) } : {}),
+    ...(previewLen > 0
+      ? { preview: sliceWholeChars(serialized, previewLen) }
+      : {}),
     hint:
       (previewLen > 0
         ? `Only the first ${previewLen} characters of the raw result are above, cut mid-structure. `
@@ -439,6 +718,15 @@ function isLowSurrogate(text: string, i: number): boolean {
   return c >= 0xdc00 && c <= 0xdfff;
 }
 
+/** `text.slice(0, end)` that never cuts a surrogate pair in half. Same hazard
+ *  {@link clipAroundMatch} guards: a lone surrogate survives JSON.stringify and
+ *  reaches the provider as a malformed string, which is a 400 for the whole
+ *  request — not just a mangled character. */
+function sliceWholeChars(text: string, end: number): string {
+  if (end >= text.length) return text;
+  return text.slice(0, end > 0 && isLowSurrogate(text, end) ? end - 1 : end);
+}
+
 /** Collapse hits into one row per file for `filesOnly` scans. */
 function summariseByFile(
   hits: GrepResponse["hits"],
@@ -456,61 +744,28 @@ function summariseByFile(
   return [...byFile.values()];
 }
 
-/** Why a grep read zero files. Globs are matched with globset against paths
- *  relative to the source root, so the ways they silently match nothing are
- *  narrow and worth spelling out: a leading `./` or `/` never matches, matching
- *  is case-sensitive, and a directory prefix has to exist at the root (`src/**`
- *  finds nothing in a repo whose top level is `iSyncKit2/`). */
-function emptyScanHint(glob: string[] | undefined): string {
+/** Why a grep read zero files. Globs are matched with globset inside EACH repo,
+ *  against paths relative to that repo's own root, so the ways they silently
+ *  match nothing are narrow and worth spelling out: a leading `./` or `/` never
+ *  matches, matching is case-sensitive, a directory prefix has to exist at a
+ *  repo's top level — and, the multi-repo trap, the `<repo>/` prefix that every
+ *  path in a result carries is NOT part of a glob. */
+function emptyScanHint(glob: string[] | undefined, repos: WorkspaceRepo[]): string {
+  const scope =
+    repos.length === 1 ? "the repo" : `any of the ${repos.length} repos`;
   if (glob && glob.length > 0) {
     return (
       "Your `glob` matched no files, so nothing was searched — this is NOT evidence " +
-      "the pattern is absent. Globs are matched against paths relative to the source " +
-      "root: they are case-sensitive, must not start with `./` or `/`, and any " +
-      "directory prefix must exist at the top level of the repo. Retry without " +
-      "`glob`, or widen it (e.g. `**/*.cs`), before concluding anything."
+      "the pattern is absent. Globs are matched inside each repo, against paths " +
+      "relative to that repo's own root: a repo-name prefix never matches (drop it), " +
+      "nor does a leading `./` or `/`, matching is case-sensitive, and any directory " +
+      "prefix must exist at a repo's top level. Retry without `glob`, or widen it " +
+      "(e.g. `**/*.cs`), before concluding anything."
     );
   }
   return (
-    "No files were searched — the source directory is empty, or everything in it is " +
-    "gitignored/hidden. This is NOT evidence the pattern is absent. Check the source " +
-    "directory with list_files before concluding anything."
+    `No files were searched in ${scope} — they are empty, or everything in them is ` +
+    "gitignored/hidden. This is NOT evidence the pattern is absent. Check with " +
+    "list_files before concluding anything."
   );
-}
-
-/** Strip whitespace and surrounding quotes off a model-supplied path argument.
- *  Models routinely write `""` to mean "no value" (our own schema says "Empty /
- *  omitted lists from the root") and wrap real paths in quotes. Both used to be
- *  joined verbatim, so `subpath: '""'` became `<root>\""` and the Rust side
- *  answered `not a directory` — a listing the model could never get to work.
- *  Quotes are illegal in Windows filenames and vanishingly rare elsewhere, and
- *  we only touch the ends, so stripping them is safe.
- *
- *  Mirrored (deliberately, to keep that module dependency-free) by the
- *  `list_files` label in generator/lib/activityLog.ts. */
-function cleanPathArg(raw: string | undefined): string {
-  return (raw ?? "")
-    .trim()
-    .replace(/^["'`]+|["'`]+$/g, "")
-    .trim();
-}
-
-/** Coerce a model-supplied path into something the Rust fs commands like:
- *  if it starts with the source root, pass through; otherwise treat it as
- *  relative and join against the root. We avoid full canonicalize here so
- *  the model gets predictable echoed paths in tool results. */
-function resolvePathHint(path: string, root: string): string {
-  const trimmed = cleanPathArg(path);
-  if (!trimmed) return root;
-  // Absolute-looking? Hand off — the Rust side will still enforce the
-  // workspace boundary so it can't escape.
-  if (/^([a-zA-Z]:[\\/]|[\\/])/.test(trimmed)) return trimmed;
-  return joinPath(root, trimmed);
-}
-
-function joinPath(a: string, b: string): string {
-  const sep = a.includes("\\") ? "\\" : "/";
-  const aTrim = a.replace(/[\\/]+$/, "");
-  const bTrim = b.replace(/^[\\/]+/, "");
-  return `${aTrim}${sep}${bTrim}`;
 }

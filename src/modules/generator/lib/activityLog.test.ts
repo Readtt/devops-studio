@@ -50,28 +50,6 @@ describe("formatToolResult · list_files", () => {
   });
 });
 
-// The sibling tool in ai/tools/fs.ts returns `{ entries: [{name, kind}] }`.
-// Two similar names, two different shapes — both must keep working.
-describe("formatToolResult · list_directory", () => {
-  it("still formats the entries shape with a trailing slash on dirs", () => {
-    const r = formatToolResult("list_directory", {
-      entries: [
-        { name: "src", kind: "dir" },
-        { name: "a.ts", kind: "file" },
-      ],
-    });
-    expect(r.summary).toBe("2 entries");
-    expect(r.text).toBe("src/\na.ts");
-  });
-
-  it("uses the singular for one entry", () => {
-    const r = formatToolResult("list_directory", {
-      entries: [{ name: "a.ts", kind: "file" }],
-    });
-    expect(r.summary).toBe("1 entry");
-  });
-});
-
 // `glob` is a string[] in the suite-chat schema, but summarizeToolInput's
 // `get()` only returns strings — so the filter was silently dropped and every
 // grep row showed a bare pattern. That made "0 files scanned" (which means the
@@ -178,18 +156,29 @@ describe("summarizeToolInput · list_files", () => {
   });
 
   // Used to fall through to the tool name, rendering "list_files list_files".
-  it("says root rather than repeating the tool name", () => {
-    expect(summarizeToolInput("list_files", {})).toBe("(root)");
+  it("names the scope rather than repeating the tool name", () => {
+    expect(summarizeToolInput("list_files", {})).toBe("(all repos)");
   });
 
-  it("says root for an empty subpath", () => {
-    expect(summarizeToolInput("list_files", { subpath: "" })).toBe("(root)");
+  it("names the scope for an empty subpath", () => {
+    expect(summarizeToolInput("list_files", { subpath: "" })).toBe("(all repos)");
   });
 
-  // The tool now lists the root for a quoted-empty subpath, so the label has to
-  // agree — showing `""` next to a full listing reads as a mismatch.
-  it("says root for a quoted-empty subpath, matching what the tool lists", () => {
-    expect(summarizeToolInput("list_files", { subpath: '""' })).toBe("(root)");
+  // A subpath-less call fans out across every configured repo, so the label has
+  // to agree — showing `""` next to a full listing reads as a mismatch.
+  it("names the scope for a quoted-empty subpath, matching what the tool lists", () => {
+    expect(summarizeToolInput("list_files", { subpath: '""' })).toBe("(all repos)");
+  });
+
+  // A command runs inside ONE repo, and which one is half of what the row means.
+  it("names the repo a command ran in", () => {
+    expect(
+      summarizeToolInput("run_command", { command: "git log", repo: "repo-two" }),
+    ).toBe("repo-two: git log");
+  });
+
+  it("shows a command bare when no repo was named", () => {
+    expect(summarizeToolInput("run_command", { command: "git log" })).toBe("git log");
   });
 
   it("strips surrounding quotes off a real subpath", () => {

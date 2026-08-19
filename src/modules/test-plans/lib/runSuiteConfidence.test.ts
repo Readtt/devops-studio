@@ -7,6 +7,9 @@ const saveConfidence = vi.fn();
 vi.mock("@/modules/ado", () => ({ getCase: (...a: unknown[]) => getCase(...a) }));
 vi.mock("./evaluateCaseConfidence", () => ({
   evaluateCaseConfidence: (...a: unknown[]) => evaluateCaseConfidence(...a),
+  // Resolved once per batch by the orchestrator; the git probe behind it is
+  // exercised in its own module's tests.
+  readRepoSources: () => Promise.resolve([]),
 }));
 // fromTestCase is a pure adapter; identity is fine for the orchestrator.
 vi.mock("./runConfidenceEval", () => ({ fromTestCase: (tc: unknown) => tc }));

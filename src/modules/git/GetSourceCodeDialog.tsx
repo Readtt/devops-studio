@@ -93,8 +93,8 @@ function joinPath(parent: string, folder: string): string {
  * testers who can't manage git themselves. Primary path uses the stored Azure
  * DevOps PAT (multi-select — clone several repos into one parent folder);
  * secondary path clones any HTTPS URL with typed credentials. Shows install
- * guidance when git is missing. After cloning, the source-picker popup
- * (`CloneSourceDialog`) asks which cloned repo becomes the app's source dir.
+ * guidance when git is missing. Every repo that clones successfully joins the
+ * workspace — nothing has to be picked afterwards.
  */
 export function GetSourceCodeDialog({ open, onOpenChange, sourceRoot }: Props) {
   const [git, setGit] = useState<GitInstalled | null>(null);

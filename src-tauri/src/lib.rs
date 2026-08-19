@@ -546,7 +546,7 @@ pub fn run() {
             secrets::secrets_set,
             secrets::secrets_delete,
             secrets::secrets_get_all,
-            net::lm_ping,
+            net::lm_list_models,
             net::ai_http_stream,
             net::ai_http_stream_cancel,
             // --- Azure DevOps ---
@@ -624,6 +624,7 @@ pub fn run() {
             history::history_delete_run,
             // --- Source-dir git introspection ---
             git::git_repo_info,
+            git::git_remote_url,
             git::git_diff,
             git::git_branch_list,
             git::git_list_commits,

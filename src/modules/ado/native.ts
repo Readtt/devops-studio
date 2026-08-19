@@ -616,14 +616,16 @@ export function buildAdoReposWebUrl(args: {
   orgUrl: string;
   project: string;
   repoName: string;
-  branch: string;
+  /** Omitted when the link carries no branch — a case published with source
+   *  tagging off, or from a detached HEAD. `?version=` is then left off too, so
+   *  ADO resolves the repo's own default branch instead of a `main` we made up
+   *  (a 404 on every repo whose default is `master` or `develop`). */
+  branch?: string;
   filePath: string;
   lineRange?: { start: number; end: number };
 }): string {
-  const params = new URLSearchParams({
-    path: args.filePath,
-    version: `GB${args.branch}`,
-  });
+  const params = new URLSearchParams({ path: args.filePath });
+  if (args.branch) params.set("version", `GB${args.branch}`);
   if (args.lineRange) {
     params.set("line", String(args.lineRange.start));
     params.set("lineEnd", String(args.lineRange.end));

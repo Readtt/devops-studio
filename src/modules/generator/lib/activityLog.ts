@@ -79,11 +79,6 @@ export function summarizeToolInput(
   if (name === "read" || name === "read_file") {
     return get("file_path") ?? get("path") ?? toolName;
   }
-  if (name === "glob") {
-    const pattern = get("pattern") ?? "";
-    const path = get("path");
-    return path ? `${pattern} (in ${path})` : pattern || toolName;
-  }
   if (name === "grep") {
     const pattern = get("pattern") ?? "";
     // `glob` is a string[] in the suite-chat schema (a string in the Claude CLI
@@ -107,7 +102,14 @@ export function summarizeToolInput(
       .trim()
       .replace(/^["'`]+|["'`]+$/g, "")
       .trim();
-    return sub || "(root)";
+    return sub || "(all repos)";
+  }
+  // A command runs inside ONE repo, so which one is half of what the row means
+  // once more than one is configured.
+  if (name === "run_command") {
+    const command = get("command") ?? toolName;
+    const repo = get("repo");
+    return repo ? `${repo}: ${command}` : command;
   }
   // Generic fallback — pick the first string-valued key that looks like a path
   // or query, otherwise just say the tool name.
@@ -266,21 +268,9 @@ export function formatToolResult(
     };
   }
 
-  if (name === "glob") {
-    const hits = Array.isArray(o.hits)
-      ? (o.hits as unknown[]).filter((x): x is string => typeof x === "string")
-      : [];
-    const truncated = o.truncated === true;
-    return {
-      summary: `${hits.length}${truncated ? "+" : ""} file${hits.length === 1 ? "" : "s"}`,
-      text: hits.join("\n") || "(no files matched)",
-    };
-  }
-
-  // Two listing tools, two result shapes. `list_files` (suite-chat tools →
-  // Rust fs_list_files) returns a flat `files: string[]`; `list_directory`
-  // (ai/tools/fs) returns `entries: {name, kind}[]`. Reading `entries` for both
-  // is why every list_files call used to render "0 entries" no matter how many
+  // `list_files` (suite-chat tools → Rust fs_list_files) returns a flat
+  // `files: string[]`. Reading the OTHER listing shape's `entries` key here is
+  // why every list_files call used to render "0 entries" no matter how many
   // paths came back — which read as "the AI found nothing".
   if (name === "list_files") {
     const files = Array.isArray(o.files)
@@ -290,21 +280,6 @@ export function formatToolResult(
     return {
       summary: `${files.length}${truncated ? "+" : ""} file${files.length === 1 ? "" : "s"}`,
       text: files.join("\n") || "(no files)",
-    };
-  }
-
-  if (name === "list_directory") {
-    const entries = Array.isArray(o.entries)
-      ? (o.entries as Array<Record<string, unknown>>)
-      : [];
-    const lines = entries.map((e) => {
-      const n = typeof e.name === "string" ? e.name : "";
-      const kind = typeof e.kind === "string" ? e.kind : "";
-      return kind === "dir" || kind === "directory" ? `${n}/` : n;
-    });
-    return {
-      summary: `${entries.length} entr${entries.length === 1 ? "y" : "ies"}`,
-      text: lines.join("\n") || "(empty)",
     };
   }
 

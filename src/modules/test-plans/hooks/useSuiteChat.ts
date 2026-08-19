@@ -23,6 +23,7 @@ import {
 } from "@/modules/ado";
 import { isKnownModelId, supportsVision, type ModelId } from "@/modules/ai/config";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
+import { scopedRepos, toggleRepoScope } from "@/modules/ai/lib/repoScope";
 import { bugsToContextBlocks } from "@/modules/ado/lib/bugContextBlock";
 import type { Attachment } from "@/components/chat/attachments";
 import {
@@ -86,6 +87,12 @@ export type SuiteCaseState = {
   /** Free-text filter applied client-side to the prompt's CASES IN SCOPE
    *  block. Empty = include every loaded case. */
   filter: string;
+  /** Repo ids this suite's next message may read; null = every configured repo.
+   *  Per SUITE, not per thread: the scope belongs to the composer the user is
+   *  typing in, and it applies to the message being sent — a sent message keeps
+   *  whatever it was sent with. Not persisted; a reopened chat reads everything
+   *  again, which is the default anywhere else too. */
+  repoScope: string[] | null;
 };
 
 /** State for ONE thread. */
@@ -114,6 +121,7 @@ const initialCaseState = (): SuiteCaseState => ({
   requirement: null,
   requirementId: null,
   filter: "",
+  repoScope: null,
 });
 
 const initialThreadState = (threadId: string): ThreadState => ({
@@ -170,6 +178,8 @@ type Store = {
    *  that no longer exist after an external delete + explorer refresh. */
   reconcileCases: (planId: number, suiteId: number) => Promise<void>;
   setFilter: (planId: number, suiteId: number, filter: string) => void;
+  /** Flip one repo in/out of what this suite's next message may read. */
+  toggleRepo: (planId: number, suiteId: number, repoId: string) => void;
 
   sendMessage: (
     planId: number,
@@ -697,6 +707,17 @@ export const useSuiteChat = create<Store>((set, get) => ({
     patchSuite(set, planId, suiteId, { filter });
   },
 
+  toggleRepo: (planId, suiteId, repoId) => {
+    const curr = get().bySuite.get(suiteKey(planId, suiteId));
+    patchSuite(set, planId, suiteId, {
+      repoScope: toggleRepoScope(
+        curr?.repoScope ?? null,
+        usePreferencesStore.getState().repos,
+        repoId,
+      ),
+    });
+  },
+
   sendMessage: async (planId, suiteId, q, attachments, workItems) => {
     const text = q.trim();
     const bugIds =
@@ -827,8 +848,12 @@ export const useSuiteChat = create<Store>((set, get) => ({
     const keys = await chat.ensureApiKeys();
     const modelId = curr.modelId ?? chat.selectedModelId;
     const prefs = usePreferencesStore.getState();
-    // Global code-search toggle gates source access for every surface.
-    const sourceRoot = prefs.codeSearchEnabled ? (prefs.sourceRoot ?? null) : null;
+    // Global code-search toggle gates source access for every surface; when
+    // it's on, this message reads the repos the composer's chips leave in
+    // scope (null = all of them).
+    const repos = prefs.codeSearchEnabled
+      ? scopedRepos(prefs.repos, suite?.repoScope ?? null)
+      : [];
     const priorMessages = curr.messages;
     // Best-practices standards injected as context; vision support depends on
     // the chosen model.
@@ -883,7 +908,7 @@ export const useSuiteChat = create<Store>((set, get) => ({
         keys,
         modelId,
         local: localProviderConfig(prefs),
-        sourceRoot,
+        repos,
         customInstructions: prefs.customInstructions || undefined,
         onText: appendDelta,
         onToolEvent: mergeToolEvent,

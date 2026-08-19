@@ -22,10 +22,15 @@ import {
   TRUNCATED_ANSWER_NUDGE,
 } from "@/modules/ai/lib/checkpointApi";
 import { compactForResume } from "@/modules/ai/lib/compactTranscript";
-import { focusPathsFromCandidates, focusPatchOnFiles } from "./verifyFocus";
+import {
+  focusPathsFromCandidates,
+  focusPathsInRepo,
+  focusPatchOnFiles,
+} from "./verifyFocus";
 import type { ModelMessage } from "ai";
 import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
+import type { WorkspaceRepo } from "@/modules/settings/store";
 import {
   collectContextImages,
   formatContextBlocks,
@@ -33,7 +38,7 @@ import {
 } from "@/modules/ai/lib/contextBlocks";
 import { type Attachment } from "@/components/chat/attachments";
 import type { ActivityEntry } from "@/modules/generator/lib/activityLog";
-import type { CommitDiff } from "./gitCommitApi";
+import type { RepoCommitDiff } from "./gitCommitApi";
 import {
   Stage1Schema,
   Stage2Schema,
@@ -78,12 +83,12 @@ export type RunCommitReviewInput = {
   modelId: ModelId;
   keys: ProviderKeys;
   local?: LocalProviderConfig;
-  /** Local checkout the Read/Glob/Grep tools read. null ⇒ code search is off;
+  /** Source repos the Read/Glob/Grep tools read. Empty ⇒ code search is off;
    *  the review then works from the diff alone (degraded — see the pane warning). */
-  sourceRoot: string | null;
+  repos: WorkspaceRepo[];
   /** The selected commits' diffs + metadata, from `git_commit_diff`. One entry
    *  is the common case; multiple are reviewed together as one combined change. */
-  diffs: CommitDiff[];
+  diffs: RepoCommitDiff[];
   /** Best-practices + ticket/work-item context, already assembled by the store. */
   contextBlocks: ContextBlock[];
   /** Image attachments (screenshots of a ticket, etc.) for vision input. */
@@ -137,7 +142,7 @@ export const COMBINED_DIFF_WARN_BYTES = 96 * 1024;
 
 /** Combined size of the raw patch text across the given diffs — a proxy for the
  *  diff portion of the review prompt, used to warn on oversized multi-selects. */
-export function combinedPatchBytes(diffs: CommitDiff[]): number {
+export function combinedPatchBytes(diffs: RepoCommitDiff[]): number {
   return diffs.reduce(
     (sum, d) => sum + new TextEncoder().encode(d.rawPatch).length,
     0,
@@ -156,7 +161,7 @@ export function unverifiedFindings(candidates: CandidateFinding[]): Finding[] {
 export async function runCommitReview(
   input: RunCommitReviewInput,
 ): Promise<RunCommitReviewResult> {
-  const tools = buildSuiteChatTools(input.sourceRoot);
+  const tools = buildSuiteChatTools(input.repos);
   const contextImages = collectContextImages(input.contextBlocks);
   const attachments = [...input.attachments, ...contextImages];
 
@@ -231,7 +236,7 @@ export async function runCommitReview(
       modelId: input.modelId,
       keys: input.keys,
       local: input.local ?? {},
-      systemPrompt: investigateSystemPrompt(input.diffs.length),
+      systemPrompt: investigateSystemPrompt(input.diffs.length, input.repos),
       customInstructions: input.customInstructions,
       prompt: buildInvestigatePrompt(input),
       attachments,
@@ -315,7 +320,7 @@ export async function runCommitReview(
       modelId: input.modelId,
       keys: input.keys,
       local: input.local ?? {},
-      systemPrompt: verifySystemPrompt(input.diffs.length),
+      systemPrompt: verifySystemPrompt(input.diffs.length, input.repos),
       customInstructions: input.customInstructions,
       prompt: buildVerifyPrompt(input, candidates),
       attachments,
@@ -368,17 +373,23 @@ export async function runCommitReview(
   return { ok: true, findings: merged, durationMs: totalMs };
 }
 
-function diffHeader(diff: CommitDiff): string {
+function diffHeader(diff: RepoCommitDiff): string {
   const totalAdds = diff.files.reduce((s, f) => s + f.additions, 0);
   const totalDels = diff.files.reduce((s, f) => s + f.deletions, 0);
+  // The file LIST is prefixed — it's the model's map of the change, and every
+  // path it emits has to be addressable. The raw patch below is left exactly as
+  // git wrote it (rewriting `diff --git` headers would corrupt a patch the
+  // model may hand to `git apply`), which is why the repo is named here.
   const fileList = diff.files
     .map(
       (f) =>
-        `- ${f.status.toUpperCase()}: ${f.path}  (+${f.additions} / -${f.deletions})`,
+        `- ${f.status.toUpperCase()}: ${diff.repoName}/${f.path}  (+${f.additions} / -${f.deletions})`,
     )
     .join("\n");
+  const repoLine = `**Repo:** ${diff.repoName} — paths inside the raw patch below are relative to it; prefix them with \`${diff.repoName}/\` to address them.`;
   if (diff.isLocal) {
-    return `**Working tree:** uncommitted local changes (staged + unstaged + new files, vs HEAD)
+    return `${repoLine}
+**Working tree:** uncommitted local changes (staged + unstaged + new files, vs HEAD)
 **Files changed:** ${diff.files.length}  (+${totalAdds} / -${totalDels})
 
 ${fileList || "_(no changes)_"}`;
@@ -388,7 +399,8 @@ ${fileList || "_(no changes)_"}`;
     : diff.isRoot
       ? " (root commit — full initial content)"
       : "";
-  return `**Commit:** \`${diff.shortSha}\` — ${diff.subject}${merge}
+  return `${repoLine}
+**Commit:** \`${diff.shortSha}\` — ${diff.subject}${merge}
 **Author:** ${diff.author}  ·  **Date:** ${diff.date}
 **Files changed:** ${diff.files.length}  (+${totalAdds} / -${totalDels})
 
@@ -398,7 +410,7 @@ ${fileList || "_(no per-file stats — empty commit?)_"}`;
 /** True when a commit predates the working tree (its tools read a newer HEAD).
  *  Compares on a fixed 7-char prefix so it's robust to differing abbreviation
  *  lengths or Rust returning a full headSha. */
-export function isOldCommit(diff: CommitDiff): boolean {
+export function isOldCommit(diff: RepoCommitDiff): boolean {
   return (
     // The local-changes diff is always against the live HEAD — never "old".
     !diff.isLocal &&
@@ -414,18 +426,27 @@ export function isOldCommit(diff: CommitDiff): boolean {
  *  call, and for the guards that make it a no-op whenever narrowing wouldn't
  *  help or would leave the verifier blind. */
 function patchBlock(
-  d: CommitDiff,
+  d: RepoCommitDiff,
   focusPaths: readonly string[] | undefined,
+  knownRepos: readonly string[],
 ): { label: string; body: string } {
   const scope = d.isLocal ? "all uncommitted changes" : "this commit's own change";
-  const focused = focusPaths ? focusPatchOnFiles(d.rawPatch, focusPaths) : null;
+  // Cited paths are repo-prefixed; the patch's own headers are not. Map them
+  // into this repo (and drop the ones that name a different one) before
+  // matching, or nothing ever matches and the narrowing quietly never fires.
+  const focused = focusPaths
+    ? focusPatchOnFiles(
+        d.rawPatch,
+        focusPathsInRepo(focusPaths, d.repoName, knownRepos),
+      )
+    : null;
   if (!focused) {
     return { label: `RAW PATCH (${scope}):`, body: d.rawPatch || "(empty)" };
   }
   const n = focused.omitted.length;
   const where = d.isLocal
     ? "read_file (they're uncommitted, so the working tree is their content)"
-    : `\`git show ${d.shortSha} -- <path>\` via run_command`;
+    : `\`git show ${d.shortSha} -- <path>\` via run_command (repo: ${d.repoName})`;
   return {
     label:
       `RAW PATCH (${scope}) — only the hunks for files the candidate findings cite. ` +
@@ -435,14 +456,24 @@ function patchBlock(
   };
 }
 
-/** Each commit's metadata + raw patch, as one labelled section per commit. */
+/** Each commit's metadata + raw patch, as one labelled section per commit.
+ *
+ *  `readableRepos` is the whole workspace the tools can reach, not just the
+ *  repos with a diff in the selection: a finding routinely cites a repo it only
+ *  READ (that's the point of reviewing across repos), and `focusPathsInRepo`
+ *  needs to recognise that prefix as a prefix rather than treat it as the first
+ *  directory of a path in the repo it's currently narrowing. */
 function commitSections(
-  diffs: CommitDiff[],
+  diffs: RepoCommitDiff[],
+  readableRepos: readonly string[],
   focusPaths?: readonly string[],
 ): string {
+  const knownRepos = [
+    ...new Set([...diffs.map((d) => d.repoName), ...readableRepos]),
+  ];
   if (diffs.length === 1) {
     const d = diffs[0];
-    const { label, body } = patchBlock(d, focusPaths);
+    const { label, body } = patchBlock(d, focusPaths, knownRepos);
     return `${diffHeader(d)}
 
 ---
@@ -454,7 +485,7 @@ ${body}
   }
   return diffs
     .map((d, i) => {
-      const { label, body } = patchBlock(d, focusPaths);
+      const { label, body } = patchBlock(d, focusPaths, knownRepos);
       return `### COMMIT ${i + 1} of ${diffs.length}
 ${diffHeader(d)}
 
@@ -473,20 +504,34 @@ export function buildInvestigatePrompt(input: RunCommitReviewInput): string {
     ? "\n\nNote: one or more patches were truncated to fit. Use the file lists + your read/grep tools to see anything not shown."
     : "";
 
-  const headWarning = diffs.some(isOldCommit)
-    ? `\n\n> Some reviewed commit(s) predate the working tree (at \`${diffs[0]?.headSha}\`). Your tools read the CURRENT tree, which may differ from those commits' state — see the working-tree caveat in your instructions.`
-    : "";
+  // Named per commit, with its repo: at more than one repo there is no single
+  // "the working tree", so one shared head sha would be wrong for every commit
+  // that didn't come from that repo.
+  const old = diffs.filter(isOldCommit);
+  const headWarning =
+    old.length > 0
+      ? `\n\n> ${old
+          .map((d) => `\`${d.shortSha}\` (${d.repoName}, tree at \`${d.headSha}\`)`)
+          .join(", ")} predate${old.length === 1 ? "s" : ""} the working tree. Your tools read the CURRENT tree, which may differ from those commits' state — see the working-tree caveat in your instructions.`
+      : "";
 
-  const noTools = input.sourceRoot
-    ? ""
-    : "\n\n> No code-search tools are available this run (code search is off in Settings). Review the diff in isolation; you cannot grep callers or verify blast radius, so keep confidence modest and don't claim cross-file effects you can't see.";
+  const spannedRepos = [...new Set(diffs.map((d) => d.repoName))];
+  const spanNote =
+    spannedRepos.length > 1
+      ? `\n\n> These changes span ${spannedRepos.length} repos (${spannedRepos.join(", ")}) and are reviewed as ONE change. A bug can live in the seam between them — a caller in one repo against a contract changed in another — so trace across the boundary, not just within each repo.`
+      : "";
+
+  const noTools =
+    input.repos.length > 0
+      ? ""
+      : "\n\n> No code-search tools are available this run (code search is off in Settings). Review the diff in isolation; you cannot grep callers or verify blast radius, so keep confidence modest and don't claim cross-file effects you can't see.";
 
   const contextText = formatContextBlocks(input.contextBlocks);
   const contextSection = contextText
     ? `\n\n---\nCONTEXT PROVIDED BY THE DEVELOPER (the ticket / requirements / standards):\n${contextText}`
     : "";
 
-  return `${commitSections(diffs)}${truncationNote}${headWarning}${noTools}${contextSection}
+  return `${commitSections(diffs, input.repos.map((r) => r.name))}${truncationNote}${headWarning}${spanNote}${noTools}${contextSection}
 
 Investigate ${diffs.length > 1 ? "these commits'" : "this commit's"} change and its blast radius, then return the findings JSON.`;
 }
@@ -504,7 +549,11 @@ export function buildVerifyPrompt(
   const contextSection = contextText
     ? `\n\n---\nDEVELOPER CONTEXT (ticket / requirements):\n${contextText}`
     : "";
-  return `${commitSections(diffs, focusPathsFromCandidates(candidates))}${contextSection}
+  return `${commitSections(
+    diffs,
+    input.repos.map((r) => r.name),
+    focusPathsFromCandidates(candidates),
+  )}${contextSection}
 
 ---
 CANDIDATE FINDINGS from the first pass — verify each by trying to refute it, then return verdicts keyed by id:

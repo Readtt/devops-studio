@@ -28,7 +28,7 @@ import {
   getCheckpoint,
   hasReplayableTranscript,
   listCheckpoints,
-  type GeneratorCheckpointV1,
+  type GeneratorCheckpointV2,
 } from "@/modules/ai/lib/checkpointApi";
 import { canOfferResume, canRaiseOutputCap } from "@/modules/ai/lib/errorClass";
 import { useTabsStore } from "@/modules/tabs/store/useTabsStore";
@@ -54,7 +54,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 export type InterruptedGenRun = {
   runId: string;
   updatedAt: string;
-  payload: GeneratorCheckpointV1;
+  payload: GeneratorCheckpointV2;
 };
 
 type Props = {

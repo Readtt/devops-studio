@@ -27,8 +27,10 @@ import {
 } from "@/modules/ado";
 import {
   CURRENT_BRANCH_SENTINEL,
-  useSourceDirGitInfo,
+  useReposGitInfo,
+  type GitRepoInfo,
 } from "@/modules/git";
+import type { WorkspaceRepo } from "@/modules/settings/store";
 import {
   CheckmarkCircle02Icon,
   GitBranchIcon,
@@ -55,8 +57,8 @@ export function AzureDevOpsSection() {
   const [pat, setPat] = useState("");
   const [patVisible, setPatVisible] = useState(false);
   const [hasStoredPat, setHasStoredPat] = useState(false);
-  const gitInfo = useSourceDirGitInfo();
-  const sourceRoot = usePreferencesStore((s) => s.sourceRoot);
+  const repos = usePreferencesStore((s) => s.repos);
+  const gitByRepo = useReposGitInfo();
   const codeSearchEnabled = usePreferencesStore((s) => s.codeSearchEnabled);
   const [status, setStatus] = useState<StatusBadge>({ kind: "unverified" });
   const [saving, setSaving] = useState(false);
@@ -318,44 +320,16 @@ export function AzureDevOpsSection() {
             </div>
             <p className="text-[10.5px] text-muted-foreground/80">
               Code links on published cases point at the branch you generated
-              from. It's read from your source directory at publish time, so
-              links always follow the branch you're working on — switch branches
-              in the status bar and the next publish tracks the new one.
+              from. Each link is read from ITS OWN repo at publish time, so a
+              case citing two repos records each link against the branch it was
+              actually read from — switch branches in the status bar and the
+              next publish tracks the new one.
             </p>
-            <div className="mt-0.5 flex items-center gap-1.5 rounded-md border border-border/55 bg-muted/30 px-2 py-1.5 text-[10.5px]">
-              <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
+            <div className="mt-0.5 flex items-start gap-1.5 rounded-md border border-border/55 bg-muted/30 px-2 py-1.5 text-[10.5px]">
+              <span className="mt-px font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground/70">
                 now
               </span>
-              {gitInfo.isRepo && gitInfo.branch ? (
-                <span className="text-foreground/85">
-                  Links use{" "}
-                  <span className="font-mono text-foreground">
-                    {gitInfo.branch}
-                  </span>
-                  {gitInfo.commit ? (
-                    <span className="text-muted-foreground/70">
-                      {" · "}
-                      {gitInfo.commit}
-                    </span>
-                  ) : null}
-                  .
-                </span>
-              ) : gitInfo.isRepo ? (
-                <span className="text-muted-foreground">
-                  Detached HEAD — links fall back to{" "}
-                  <span className="font-mono text-foreground/80">main</span>{" "}
-                  until you check out a branch.
-                </span>
-              ) : sourceRoot ? (
-                <span className="text-muted-foreground">
-                  Not a git repository — links fall back to{" "}
-                  <span className="font-mono text-foreground/80">main</span>.
-                </span>
-              ) : (
-                <span className="text-muted-foreground">
-                  Set a source directory to enable code links.
-                </span>
-              )}
+              <CodeLinkBranchNow repos={repos} gitByRepo={gitByRepo} />
             </div>
           </div>
         </div>
@@ -370,6 +344,68 @@ export function AzureDevOpsSection() {
         </Button>
       </div>
     </div>
+  );
+}
+
+/** What the NEXT publish will stamp, per repo. Every repo is read, not just the
+ *  first: publish probes each repo the batch names and stamps that repo’s own
+ *  branch, so describing one of them is describing the wrong one as soon as
+ *  there are two.
+ *
+ *  A repo with no branch — detached HEAD, or a folder that isn’t a repo — has
+ *  its links published with NO branch key at all. There is no fallback to
+ *  `main`: an unpinned link resolves against the ADO repo’s own default, which
+ *  is right far more often than a branch name we invented. */
+function CodeLinkBranchNow({
+  repos,
+  gitByRepo,
+}: {
+  repos: WorkspaceRepo[];
+  gitByRepo: Map<string, GitRepoInfo>;
+}) {
+  if (repos.length === 0) {
+    return (
+      <span className="text-muted-foreground">
+        Set a source directory to enable code links.
+      </span>
+    );
+  }
+
+  const branched = repos.filter((r) => gitByRepo.get(r.id)?.branch);
+  const unbranched = repos.filter((r) => !gitByRepo.get(r.id)?.branch);
+  const names = [...new Set(branched.map((r) => gitByRepo.get(r.id)!.branch!))];
+  const only = repos.length === 1 ? gitByRepo.get(repos[0].id) : null;
+
+  return (
+    <span className="text-foreground/85">
+      {names.length === 0 ? null : names.length === 1 ? (
+        <>
+          Links use{" "}
+          <span className="font-mono text-foreground">{names[0]}</span>
+          {only?.commit ? (
+            <span className="text-muted-foreground/70">
+              {" · "}
+              {only.commit}
+            </span>
+          ) : null}
+          {branched.length > 1 ? ` in all ${branched.length} repos` : ""}.
+        </>
+      ) : (
+        <>
+          Each repo uses its own branch:{" "}
+          <span className="font-mono text-foreground">{names.join(", ")}</span>.
+        </>
+      )}
+      {unbranched.length > 0 ? (
+        <span className="text-muted-foreground">
+          {names.length > 0 ? " " : ""}
+          {unbranched.map((r) => r.name).join(", ")}{" "}
+          {unbranched.length === 1 ? "has" : "have"} no branch to record
+          (detached HEAD, or not a git repository), so links there publish
+          without one.
+        </span>
+      ) : null}
+    </span>
   );
 }
 

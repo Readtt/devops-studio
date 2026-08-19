@@ -14,7 +14,7 @@ import {
   type FileDiff,
   type FileStatus,
 } from "./unifiedDiff";
-import type { CommitDiff } from "./gitCommitApi";
+import type { RepoCommitDiff } from "./gitCommitApi";
 
 /**
  * Read-only viewer for a single commit's unified diff. Renders the `rawPatch`
@@ -23,7 +23,7 @@ import type { CommitDiff } from "./gitCommitApi";
  * fix-preview diff (components/diff/textDiff). Each file is collapsible and its
  * path opens in the code viewer, matching ApplyPatchCard.
  */
-export function CommitDiffView({ diff }: { diff: CommitDiff }) {
+export function CommitDiffView({ diff }: { diff: RepoCommitDiff }) {
   const files = useMemo(() => parseUnifiedDiff(diff.rawPatch), [diff.rawPatch]);
 
   if (files.length === 0) {
@@ -39,7 +39,11 @@ export function CommitDiffView({ diff }: { diff: CommitDiff }) {
     <div className="flex flex-col gap-2">
       <div className="divide-y divide-border/40 overflow-hidden rounded-md border border-border/55 bg-card/40">
         {files.map((file, i) => (
-          <FileBlock key={`${file.path}-${i}`} file={file} />
+          <FileBlock
+            key={`${file.path}-${i}`}
+            file={file}
+            repoName={diff.repoName}
+          />
         ))}
       </div>
       {diff.truncated ? (
@@ -57,14 +61,22 @@ export function CommitDiffView({ diff }: { diff: CommitDiff }) {
  * multi-commit selection gets a labelled section header per commit so the
  * reviewer can tell which change belongs to which commit.
  */
-export function CommitDiffPanel({ diffs }: { diffs: CommitDiff[] }) {
+export function CommitDiffPanel({ diffs }: { diffs: RepoCommitDiff[] }) {
   if (diffs.length === 0) return null;
   if (diffs.length === 1) return <CommitDiffView diff={diffs[0]} />;
+  // Repos interleave, so the section key has to be repo-qualified — two repos
+  // each contributing their "local" diff would otherwise collide on one key.
+  const multiRepo = new Set(diffs.map((d) => d.repoId)).size > 1;
   return (
     <div className="flex flex-col gap-3">
       {diffs.map((diff, i) => (
-        <section key={diff.sha} className="flex flex-col gap-1.5">
-          <CommitSectionHeader diff={diff} index={i} total={diffs.length} />
+        <section key={`${diff.repoId}:${diff.sha}`} className="flex flex-col gap-1.5">
+          <CommitSectionHeader
+            diff={diff}
+            index={i}
+            total={diffs.length}
+            showRepo={multiRepo}
+          />
           <CommitDiffView diff={diff} />
         </section>
       ))}
@@ -76,10 +88,12 @@ function CommitSectionHeader({
   diff,
   index,
   total,
+  showRepo,
 }: {
-  diff: CommitDiff;
+  diff: RepoCommitDiff;
   index: number;
   total: number;
+  showRepo: boolean;
 }) {
   const adds = diff.files.reduce((s, f) => s + f.additions, 0);
   const dels = diff.files.reduce((s, f) => s + f.deletions, 0);
@@ -88,6 +102,11 @@ function CommitSectionHeader({
       <span className="shrink-0 rounded-sm bg-primary/12 px-1 py-px font-mono text-[9px] font-medium uppercase tracking-wide text-primary">
         {index + 1}/{total}
       </span>
+      {showRepo ? (
+        <span className="max-w-[110px] shrink-0 truncate rounded-sm bg-foreground/[0.06] px-1 py-px text-[9.5px] uppercase tracking-wide text-muted-foreground">
+          {diff.repoName}
+        </span>
+      ) : null}
       <span className="shrink-0 font-mono text-[11px] text-foreground/85">
         {diff.shortSha}
       </span>
@@ -109,7 +128,7 @@ function CommitSectionHeader({
   );
 }
 
-function FileBlock({ file }: { file: FileDiff }) {
+function FileBlock({ file, repoName }: { file: FileDiff; repoName: string }) {
   const [open, setOpen] = useState(true);
   // No point opening a deletion (it's gone from the working tree) or a binary
   // blob (the code viewer can't render it).
@@ -119,7 +138,13 @@ function FileBlock({ file }: { file: FileDiff }) {
     const startLine = file.hunks[0]?.newStart ?? 1;
     window.dispatchEvent(
       new CustomEvent("devops-studio:open-code-viewer", {
-        detail: { path: file.path, startLine, endLine: startLine },
+        detail: {
+          // A patch header's path is repo-relative; the viewer resolves
+          // `<repo>/<path>`, like every other path in the app.
+          path: repoName ? `${repoName}/${file.path}` : file.path,
+          startLine,
+          endLine: startLine,
+        },
       }),
     );
   };

@@ -15,15 +15,13 @@ import type { AppTab, GeneratorTab } from "./store/types";
 
 type Props = {
   tab: AppTab;
-  sourceRoot: string | null;
 };
 
 /**
- * Kind dispatcher. Memoized on (tab, sourceRoot) — switching between two
- * tabs in the same leaf doesn't re-render any tab content other than the
- * two involved.
+ * Kind dispatcher. Memoized on the tab — switching between two tabs in the
+ * same leaf doesn't re-render any tab content other than the two involved.
  */
-export const TabContent = memo(function TabContent({ tab, sourceRoot }: Props) {
+export const TabContent = memo(function TabContent({ tab }: Props) {
   switch (tab.kind) {
     case "test-case":
       return (
@@ -34,7 +32,7 @@ export const TabContent = memo(function TabContent({ tab, sourceRoot }: Props) {
         />
       );
     case "bug":
-      return <BugPane bugId={tab.bugId} sourceRoot={sourceRoot} />;
+      return <BugPane bugId={tab.bugId} />;
     case "code-viewer":
       return (
         <CodeViewerPane
@@ -66,7 +64,6 @@ export const TabContent = memo(function TabContent({ tab, sourceRoot }: Props) {
       return (
         <CommitReviewPane
           tabId={tab.id}
-          cwd={tab.cwd}
           modelId={tab.modelId ?? null}
           rehydrateRunId={tab.rehydrateRunId ?? null}
         />

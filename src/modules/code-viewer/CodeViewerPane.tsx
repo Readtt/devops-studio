@@ -11,7 +11,7 @@ import { csharp } from "@codemirror/legacy-modes/mode/clike";
 import { EditorView, Decoration, type DecorationSet } from "@codemirror/view";
 import { StateField, StateEffect } from "@codemirror/state";
 import { resolveTheme } from "./codeTheme";
-import { displaySourcePath } from "./resolveSourcePath";
+import { virtualSourcePath } from "./resolveSourcePath";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -42,12 +42,20 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 
 type Props = {
-  /** Absolute path to the file inside the user's chosen source dir. */
+  /** Absolute path to the file on disk — what we actually read. */
   path: string;
   /** 1-based line to scroll to and (with `endLine`) highlight. */
   startLine?: number;
   endLine?: number;
 };
+
+/** Header/error path: the `<repo>/…` form the rest of the app addresses files
+ *  by, rather than a long absolute path whose repo segment is buried in the
+ *  middle of it. Falls back to the absolute path when no repo claims it. */
+function useDisplayPath(path: string): string {
+  const repos = usePreferencesStore((s) => s.repos);
+  return useMemo(() => virtualSourcePath(repos, path), [repos, path]);
+}
 
 type ReadResult =
   | { kind: "text"; content: string; size: number }
@@ -67,6 +75,7 @@ export function CodeViewerPane({ path, startLine, endLine }: Props) {
   // SAME range (e.g. the user clicked the same code-ref chip again — the
   // tab is reused so props are identical, but the effect still needs to fire).
   const [pulseTick, setPulseTick] = useState(0);
+  const shownPath = useDisplayPath(path);
   const themePref = usePreferencesStore((s) => s.theme);
   const editorThemeId = usePreferencesStore((s) => s.editorTheme);
   const editorFontSize = usePreferencesStore((s) => s.editorFontSize);
@@ -195,9 +204,19 @@ export function CodeViewerPane({ path, startLine, endLine }: Props) {
   return (
     <div className="cv-pane flex h-full flex-col overflow-hidden">
       <header className="flex h-9 shrink-0 items-center gap-2 border-b border-border/60 bg-card/40 px-3">
-        <span className="min-w-0 truncate font-mono text-[11.5px]">
-          {displaySourcePath(path)}
-        </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="min-w-0 truncate font-mono text-[11.5px]">
+              {shownPath}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent
+            side="bottom"
+            className="max-w-[420px] break-all font-mono text-[11px]"
+          >
+            {path}
+          </TooltipContent>
+        </Tooltip>
         {startLine ? (
           <span className="shrink-0 whitespace-nowrap rounded bg-foreground/[0.06] px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
             {endLine && endLine !== startLine
@@ -254,15 +273,15 @@ export function CodeViewerPane({ path, startLine, endLine }: Props) {
           <div className="flex h-full flex-col items-center justify-center gap-1.5 px-6 text-center text-[12px]">
             <p className="font-medium text-destructive">Couldn't open this file.</p>
             <p className="max-w-md break-all font-mono text-[10.5px] text-muted-foreground">
-              {displaySourcePath(path)}
+              {shownPath}
             </p>
             {/(not found|no such file|cannot find|os error 2|enoent)/i.test(
               state.message,
             ) ? (
               <p className="max-w-md text-[11px] text-muted-foreground">
                 The path couldn't be found on disk. If this came from an AI
-                citation, your Source directory may point at a different repo —
-                set it in Settings → General.
+                citation, the repo it lives in may not be in your workspace —
+                add it under Settings → General → Source repos.
               </p>
             ) : (
               <p className="max-w-md text-muted-foreground">{state.message}</p>

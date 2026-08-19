@@ -4,11 +4,14 @@
 // false positives (BitsAI-CR's ReviewFilter), and treat requirement-conformance
 // conservatively because LLMs systematically over-flag it.
 
+import { REPO_PATH_RULE, renderRepoRoster } from "@/modules/ai/lib/repoPaths";
+import type { WorkspaceRepo } from "@/modules/settings/store";
+
 export const INVESTIGATE_SYSTEM_PROMPT = `You are a senior software engineer reviewing a SINGLE git commit for a developer (the commit's author). Your job is a high-signal, evidence-grounded bug review of THIS commit's change — not a stamp, and not a restatement of the diff.
 
 WHAT YOU ARE REVIEWING
 - The diff is ONE commit's own change (\`<sha>^..<sha>\`), not a whole branch. It is small on purpose. Review what THIS commit did and what it could break.
-- You have read-only tools scoped to the user's source directory: read_file, list_files, grep, and a read-only shell run_command (\`git log\`, \`git show\`, \`git blame\`, \`git diff\`, \`ls\`, \`cat\`, \`rg\`, …; one command per call, no pipes/redirection, read-only — writes are refused).
+- You have read-only tools scoped to the user's source repos: read_file, list_files, grep, and a read-only shell run_command (git only, in practice: \`git log\`, \`git show\`, \`git blame\`, \`git diff\`, \`git ls-files\`, \`git grep\`; one command per call, no pipes/redirection, read-only — writes are refused). Read files with read_file, not \`cat\` — the POSIX tools are usually absent on Windows. read_file / list_files / grep span every repo; run_command runs inside the one you name.
 - IMPORTANT — working tree vs. commit: your tools read the CURRENT working tree, which may be newer than the commit under review. When a tool result contradicts the diff, the tree has likely moved on since the commit — treat that as "may already be addressed", not a live bug. To read a file exactly as of the commit, use \`git show <sha>:<path>\` via run_command.
 
 HOW TO WORK — SEMI-FORMAL REASONING (this is what makes the review good)
@@ -45,7 +48,9 @@ CONFIDENCE
 - low: avoid — only use when an issue is worth surfacing but you couldn't fully confirm it.
 
 CITATIONS
-Every finding's "file" is the FULL path relative to the source dir (every directory segment, no leading slash, no bare filename) and startLine/endLine point at the relevant lines. The UI links these to the code viewer, so a wrong path breaks navigation.
+Every finding's "file" is the full repo-prefixed path (every directory segment, no leading slash, no bare filename) and startLine/endLine point at the relevant lines. The UI links these to the code viewer, so a wrong path breaks navigation. Each section's changed-file list is already prefixed; the raw patch's own \`diff --git\` headers are repo-relative and carry NO prefix, so prefix those with the repo named at the top of that section before you cite them.
+
+${REPO_PATH_RULE}
 
 SUGGESTED FIXES
 When a finding has a confident one-spot fix, include "suggestedFix": { path, startLine, endLine, replacement } (1-indexed inclusive lines; to insert, set endLine = startLine - 1). Match the file's indentation exactly — read the file first if unsure of the lines. Omit suggestedFix when the fix needs design-level changes or you can't write an obviously-correct replacement.
@@ -88,6 +93,8 @@ You have the same read-only tools (read_file, grep, run_command, …). For each 
 
 Be fair, not destructive: do not refute a clearly real bug just to cut the list. But do not let a plausible-sounding finding survive without evidence.
 
+${REPO_PATH_RULE}
+
 OUTPUT
 Return ONLY a JSON object, no prose, no fences:
 {
@@ -117,16 +124,36 @@ function multiCommitPreamble(commitCount: number): string {
 You are reviewing ${commitCount} git commits TOGETHER as ONE combined change (e.g. a feature split across several commits). Wherever the instructions say "a single commit", "this commit", "ONE commit's change", or frame a lens "for a single commit", read it as "these ${commitCount} commits" and "their combined change". A bug may live in one commit or emerge from how the commits interact, and the blast radius spans all of them. Each commit's own diff is a separately-labelled section in the message that follows; attribute every finding to the code it concerns, whichever commit introduced it.`;
 }
 
+/** Which repos the stage's tools reach, as the tail of its system prompt — the
+ *  one part of the request a resume re-sends intact, where the user turn it
+ *  replays gets compacted. Empty ⇒ no tools ran at all, and the user turn
+ *  already explains that. */
+function repoTail(repos: WorkspaceRepo[]): string {
+  return repos.length === 0
+    ? ""
+    : `\n\nSOURCE REPOS you can read:\n${renderRepoRoster(repos)}`;
+}
+
 /** The investigate-stage system prompt for a review of `commitCount` commits. */
-export function investigateSystemPrompt(commitCount: number): string {
-  return commitCount > 1
-    ? `${multiCommitPreamble(commitCount)}\n\n${INVESTIGATE_SYSTEM_PROMPT}`
-    : INVESTIGATE_SYSTEM_PROMPT;
+export function investigateSystemPrompt(
+  commitCount: number,
+  repos: WorkspaceRepo[],
+): string {
+  const base =
+    commitCount > 1
+      ? `${multiCommitPreamble(commitCount)}\n\n${INVESTIGATE_SYSTEM_PROMPT}`
+      : INVESTIGATE_SYSTEM_PROMPT;
+  return `${base}${repoTail(repos)}`;
 }
 
 /** The verify-stage system prompt for a review of `commitCount` commits. */
-export function verifySystemPrompt(commitCount: number): string {
-  return commitCount > 1
-    ? `${multiCommitPreamble(commitCount)}\n\n${VERIFY_SYSTEM_PROMPT}`
-    : VERIFY_SYSTEM_PROMPT;
+export function verifySystemPrompt(
+  commitCount: number,
+  repos: WorkspaceRepo[],
+): string {
+  const base =
+    commitCount > 1
+      ? `${multiCommitPreamble(commitCount)}\n\n${VERIFY_SYSTEM_PROMPT}`
+      : VERIFY_SYSTEM_PROMPT;
+  return `${base}${repoTail(repos)}`;
 }

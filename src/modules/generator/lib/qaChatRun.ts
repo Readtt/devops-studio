@@ -18,6 +18,8 @@ import type { ModelMessage } from "ai";
 import { type LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { streamTask } from "@/modules/ai/lib/taskRunner";
 import { buildSuiteChatTools } from "@/modules/test-plans/lib/suiteChatTools";
+import { REPO_PATH_RULE, renderRepoRoster } from "@/modules/ai/lib/repoPaths";
+import type { WorkspaceRepo } from "@/modules/settings/store";
 import type { ProviderKeys } from "@/modules/ai/lib/keyring";
 import type { ReviewedBug, ReviewedCase } from "./draftBatchSchema";
 import {
@@ -75,18 +77,21 @@ ROLE
 - It's fine to point out gaps in coverage, missing edge cases, weak
   assertions, or vague step language. That's the whole point.
 
+${REPO_PATH_RULE}
+
 OUTPUT
 - Plain markdown. Bullet lists, short paragraphs, fenced code when quoting
   source. No JSON. No HTML.
 - When source access is available you have read-only Read / Glob / Grep tools
   plus a read-only shell (run_command: \`git log\` / \`git show\` / \`git blame\` /
-  \`cat\` / \`rg\`, one command per call, writes refused) — use them to ground
-  answers in the actual code and its recent history rather than guessing.
+  \`git grep\`, one command per call, writes refused; read files with the Read
+  tool rather than \`cat\`, which is usually absent on Windows) — use them to
+  ground answers in the actual code and its recent history rather than guessing.
 - When you point at a source file, write the citation as bare text in the form
-  path/to/file.ext:LINE (or :START-END) — the FULL path relative to the source
-  directory (every directory segment, exactly as the tools reported it), forward
-  slashes, no leading slash, no parentheses, never a bare filename. The UI
-  auto-links it to the in-app code viewer, so the user can click straight to it.
+  <repo>/path/to/file.ext:LINE (or :START-END) — the full repo-prefixed path
+  (every directory segment, exactly as the tools reported it), forward slashes,
+  no leading slash, no parentheses, never a bare filename. The UI auto-links it
+  to the in-app code viewer, so the user can click straight to it.
 - Keep responses under ~12 lines unless the user asks for depth.`;
 
 export type ChatRunInput = {
@@ -126,9 +131,9 @@ export type ChatRunInput = {
    *  per-step rather than once at the end so a turn that is cancelled — or
    *  fails — still banks the reads it already paid for. */
   onTranscript?: (messages: ModelMessage[]) => void;
-  /** Source directory for the read-only tools. null ⇒ run tool-less (code
-   *  search disabled or no source set). */
-  sourceRoot?: string | null;
+  /** Source repos the read-only tools read. Empty ⇒ run tool-less (code search
+   *  disabled or no repos configured). */
+  repos?: WorkspaceRepo[];
 };
 
 export type ChatRunResult = {
@@ -150,6 +155,17 @@ export type ChatTaskInput = ChatRunInput & {
   signal?: AbortSignal;
 };
 
+/** The chat prompt plus the repos this turn may read. Same placement as the
+ *  analyst's roster — the system prompt, which the finish pass below re-sends
+ *  unchanged while the transcript it replays gets compacted. */
+function chatSystemPrompt(repos: WorkspaceRepo[]): string {
+  if (repos.length === 0) return CHAT_SYSTEM_PROMPT;
+  return `${CHAT_SYSTEM_PROMPT}
+
+SOURCE REPOS you can read:
+${renderRepoRoster(repos)}`;
+}
+
 /** Streaming draft-chat run. Calls `onText` with each delta as the model
  *  produces it; resolves with the full accumulated text. Mirrors
  *  streamSuiteChatTask so the review-pane "Ask" reads tokens live like every
@@ -162,17 +178,17 @@ export async function streamChatTask(
   // live tool-call strip, and citation grounding — previously it called
   // streamText directly with no tools, which is why tool calls never showed
   // and source citations couldn't be grounded in real code.
-  const tools = buildSuiteChatTools(input.sourceRoot ?? null);
+  const tools = buildSuiteChatTools(input.repos ?? []);
   const shared = {
     modelId: input.modelId,
     keys: input.keys,
     local: input.local,
-    systemPrompt: CHAT_SYSTEM_PROMPT,
+    systemPrompt: chatSystemPrompt(input.repos ?? []),
     customInstructions: input.customInstructions,
     contextPrompt: buildChatContext(input),
     // A banked transcript is only replayable while the tools that produced it
-    // are still on the request. `sourceRoot` is re-read from preferences every
-    // turn, so turning code search off — or clearing the source directory —
+    // are still on the request. `repos` is re-read from preferences every turn,
+    // so turning code search off — or removing every repo —
     // between two questions in the same draft chat left the history carrying
     // tool-call/tool-result blocks with no tool definitions behind them, and
     // every follow-up failed with a provider 400 until the user turned it back
