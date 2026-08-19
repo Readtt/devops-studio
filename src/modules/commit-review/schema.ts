@@ -54,9 +54,11 @@ export const CandidateFindingSchema = z.object({
   file: z.string().min(1),
   startLine: z.number().int().nonnegative(),
   endLine: z.number().int().nonnegative(),
-  /** Why it's a bug + the blast radius. */
+  /** 1–2 short paragraphs: the change and its failure, then the blast radius
+   *  (shape mandated by FINDING_WRITING_RULES in commitReviewPrompts). */
   explanation: z.string().min(1),
-  /** What the model read/grepped to ground this (semi-formal reasoning). */
+  /** The checks that ground this finding, as "<repo>/<path>:<line> — what it
+   *  showed" lines (semi-formal reasoning; same contract). */
   evidence: z.string().default(""),
   confidence: ConfidenceSchema,
   /** A one-spot fix, when the model is confident in it.

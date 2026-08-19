@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  FINDING_WRITING_RULES,
   INVESTIGATE_SYSTEM_PROMPT,
   VERIFY_SYSTEM_PROMPT,
   investigateSystemPrompt,
@@ -80,6 +81,77 @@ describe("commit-review prompts · repo addressing", () => {
     );
     expect(INVESTIGATE_SYSTEM_PROMPT).toContain(
       "prefix those with the repo named at the top of that section",
+    );
+  });
+});
+
+// The writing contract exists because developers reported spending more time
+// deciphering findings than fixing them. Every phrase pinned below is
+// load-bearing — each survived (or came out of) two adversarial review rounds.
+describe("commit-review prompts · finding writing contract", () => {
+  it("embeds the whole contract in the investigate stage only", () => {
+    expect(INVESTIGATE_SYSTEM_PROMPT.includes(FINDING_WRITING_RULES)).toBe(true);
+    // Verify contributes no user-visible prose — the contract there would be
+    // dead weight re-sent on every verify step.
+    expect(VERIFY_SYSTEM_PROMPT.includes(FINDING_WRITING_RULES)).toBe(false);
+    expect(VERIFY_SYSTEM_PROMPT).not.toContain("HOW TO WRITE FINDINGS");
+  });
+
+  it("sits between SUGGESTED FIXES and OUTPUT", () => {
+    // Anchored on a block-unique sentence: the heading itself is
+    // cross-referenced from HOW-TO-WORK step 4 (before the block) and the
+    // OUTPUT hints (after), so its indexOf proves nothing.
+    const at = INVESTIGATE_SYSTEM_PROMPT.indexOf(
+      "The reader is a developer in a hurry",
+    );
+    expect(at).toBeGreaterThan(
+      INVESTIGATE_SYSTEM_PROMPT.indexOf("SUGGESTED FIXES"),
+    );
+    expect(at).toBeLessThan(INVESTIGATE_SYSTEM_PROMPT.indexOf("\nOUTPUT"));
+  });
+
+  it("pins the rules the adversarial rounds proved load-bearing", () => {
+    for (const phrase of [
+      // flexed so a maintainability finding needn't invent a failure
+      "WHAT goes wrong or what it costs",
+      // anti-slop: kills sentences that merely sound helpful
+      "could move to a different finding unchanged",
+      // FindingCard renders prose raw — backticks would display literally
+      "no markdown, no backticks",
+      // rewrite pressure must never become drop pressure
+      "complexity in the prose is a reason to rewrite it",
+      "at most 3 sentences",
+      "at most 6 lines",
+      // titles hedge to "can …" only when a precondition went unconfirmed
+      "phrase it as a capability",
+      "never a hypothetical attack story",
+      "Never invent a failure scenario or a number you did not trace",
+      // multi-commit attribution rides inside the first sentence
+      "never as a separate sentence",
+      // diff-only runs (code search off) must not fabricate a tool trace
+      "never imply a check you could not run",
+      "Shorten prose within these shapes before you ever drop a real finding",
+    ]) {
+      expect(FINDING_WRITING_RULES).toContain(phrase);
+    }
+  });
+
+  it("teaches the literal \\n\\n JSON escape in the worked example", () => {
+    // The example must show the two-character escape the model emits inside a
+    // JSON string — a real newline here would teach invalid JSON.
+    expect(FINDING_WRITING_RULES).toContain(
+      "orders to the other.\\n\\nBoth call sites",
+    );
+  });
+
+  it("replaces the old field hints instead of stacking a second contract", () => {
+    expect(INVESTIGATE_SYSTEM_PROMPT).not.toContain("short, specific");
+    expect(INVESTIGATE_SYSTEM_PROMPT).not.toContain(
+      "why it's a bug + the blast radius",
+    );
+    expect(INVESTIGATE_SYSTEM_PROMPT).not.toContain("what you read/grepped");
+    expect(INVESTIGATE_SYSTEM_PROMPT).not.toContain(
+      "file:line refs + a one-line trace",
     );
   });
 });
