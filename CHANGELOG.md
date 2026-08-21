@@ -7,6 +7,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.22.2] - 2026-08-21
+
+### Fixed
+
+- Resuming an interrupted AI run no longer fails on Claude 5 with "this model does not support assistant message prefill". A resume replays what the run had already read, and that replay could end on the model's own turn — which Claude 5 refuses. Every request now ends with a user turn, on every provider. This affected the Generator, review-pane follow-ups and Commit Review equally, and it hit hardest on exactly the runs worth resuming: the ones stopped just after the model wrote its answer.
+- The native OpenAI GPT-5 models and their OpenRouter equivalents now agree on which settings they accept. They disagreed — the app had decided GPT-5.4 mini rejects a temperature setting on one route while sending it one on the other, and only a rule inside the OpenAI SDK was keeping that off the wire.
+- Mistral Large's context window now reads the same whichever route you reach it through.
+
+### Changed
+
+- When a model refuses a request outright — a setting it dropped, a feature it doesn't have — the error now quotes the provider's own sentence and points you at switching models, instead of offering a Resume that would send the same refused request again and fail the same way.
+- The model list is now checked as part of the build. A new model can't ship without saying whether it takes a temperature setting, the same model reached natively and through OpenRouter can't disagree about that, and every Claude route has to carry its own output limit rather than inheriting whatever the provider SDK happens to assume that month.
+
 ## [0.22.1] - 2026-08-19
 
 ### Changed
