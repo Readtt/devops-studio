@@ -43,6 +43,7 @@ export type ResumeErrorKind =
   | "stall"
   | "auth"
   | "context-overflow"
+  | "capability"
   | "abort"
   | "unknown";
 
@@ -80,6 +81,21 @@ const PATTERNS: ReadonlyArray<readonly [ResumeErrorKind, RegExp]> = [
     "auth",
     /\b401\b|unauthorized|invalid.*api.?key|invalid x-api-key|bad.?pat|forbidden|permission|authentication|configure an api key|no api key configured|missing.*api.?key|api key.*not.*set|sso/,
   ],
+  // The provider understood the request and refused its SHAPE: a parameter this
+  // model dropped, a message layout it won't take, a feature it doesn't have.
+  // Sits after the load/billing/auth buckets (a 429 body can quote anything) and
+  // before overflow, which never phrases itself this way — every overflow
+  // message in the pattern below talks about length, not support.
+  //
+  // Deliberately narrow: the phrase has to name a refusal, not merely contain
+  // the word "support". This is the bucket for the failures that keep arriving
+  // one model launch behind us — "`temperature` is deprecated for this model",
+  // "this model does not support assistant message prefill" — and getting it
+  // wrong in the loose direction would silently make a rate limit unresumable.
+  [
+    "capability",
+    /does not support|(?:is|are) not supported|unsupported (?:value|parameter|setting|feature|model)|deprecated for this model/,
+  ],
   [
     "context-overflow",
     /context length|context window|context_length_exceeded|maximum context|exceed.*context|prompt is too long|input.*too long|too long.*tokens|too many tokens|tokens.*(maximum|exceed)|reduce the length/,
@@ -100,13 +116,18 @@ export function matchErrorKind(message: string): ResumeErrorKind {
 
 /** Whether a resume attempt can plausibly succeed for this error kind.
  *
- *  Every kind qualifies. The parameter stays because this is the seam the whole
- *  app asks the question through, and a future kind that genuinely cannot be
- *  continued (a provider retiring a model mid-run, say) belongs here rather than
- *  re-litigated at five render sites. See the file header for why
- *  `context-overflow` stopped being the exception. */
-export function isResumableKind(_kind: ResumeErrorKind): boolean {
-  return true;
+ *  Every kind qualifies except `capability` — the future kind this seam was left
+ *  open for. The others are all conditions that pass: the limit clears, the
+ *  provider recovers, the socket reconnects, the transcript is compacted. A
+ *  capability refusal is none of those. The model has told us it will not accept
+ *  this request, the checkpoint pins the run to that same model, and a resume
+ *  rebuilds the same shape — so the button can only bill the identical 400 a
+ *  second time. What the user needs there is a different model, which is what
+ *  `resumeUnavailableReason` says instead of offering the button.
+ *
+ *  See the file header for why `context-overflow` stopped being the exception. */
+export function isResumableKind(kind: ResumeErrorKind): boolean {
+  return kind !== "capability";
 }
 
 export function classifyForResume(e: unknown): ResumeClass {
@@ -244,9 +265,27 @@ export function emptyAnswerCause(
  *  it did real work whose transcript was too big to keep. Only ever called when
  *  {@link canOfferResume} already said no. */
 export function resumeUnavailableReason(
-  outcome: { kind: string; finishReason?: string } | null | undefined,
+  outcome:
+    | {
+        kind: string;
+        finishReason?: string;
+        errorKind?: ResumeErrorKind;
+        message?: string;
+      }
+    | null
+    | undefined,
   progress?: ResumeProgress | null,
 ): string {
+  // Named before the storage/answer branches below: a capability refusal is
+  // about the MODEL, not about how much work survived, so "the model returned
+  // nothing to continue from" would send the user to re-run the exact request
+  // that was just refused.
+  if (
+    outcome?.kind === "error" &&
+    (outcome.errorKind ?? matchErrorKind(outcome.message ?? "")) === "capability"
+  ) {
+    return "The model refused this request outright, and a resume would send it the same one — switch to a different model and re-run.";
+  }
   // Steps were taken but no transcript survived — the payload was too big for a
   // checkpoint row and degraded to inputs-only. Saying "the model returned
   // nothing" there blames the model for our own storage limit.

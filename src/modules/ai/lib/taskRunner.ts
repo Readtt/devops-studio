@@ -531,7 +531,11 @@ function buildRequestPrompt(
   | { system: string; prompt: string }
   | { system: string; messages: ModelMessage[] }
   | { messages: ModelMessage[] } {
-  if (!isAnthropicCacheable(modelId)) return { system, ...userTurn };
+  if (!isAnthropicCacheable(modelId)) {
+    return "messages" in userTurn
+      ? { system, messages: endOnUserTurn(userTurn.messages) }
+      : { system, ...userTurn };
+  }
   const systemMessage: ModelMessage = {
     role: "system",
     content: system,
@@ -539,9 +543,47 @@ function buildRequestPrompt(
   };
   const userMessages: ModelMessage[] =
     "messages" in userTurn
-      ? userTurn.messages
+      ? endOnUserTurn(userTurn.messages)
       : [{ role: "user", content: userTurn.prompt }];
   return { messages: [systemMessage, ...userMessages] };
+}
+
+/** Appended when a replayed transcript would otherwise leave the request ending
+ *  on the model's own turn. It has to work for both shapes that reach it: a run
+ *  cut off with its final answer already written (repeat it — the answer is what
+ *  was lost) and one cut off mid-thought (carry on). */
+export const RESUME_CONTINUE_NUDGE =
+  "The run was interrupted after your last message. Pick up from there: if that message was already your complete final answer, write it out again in full, in exactly the output format the instructions require. Otherwise carry on from where you stopped.";
+
+/** Guarantee the conversation ends on a user turn.
+ *
+ *  Anthropic's Claude 5 tier removed assistant prefill, so a request whose last
+ *  message is an assistant turn is refused outright — "this model does not
+ *  support assistant message prefill. The conversation must end with a user
+ *  message." Nothing here ever means to prefill: a trailing assistant turn is
+ *  always an artefact of REPLAY. A banked transcript ends on one whenever the
+ *  last step a run completed wrote text without calling a tool — every run
+ *  killed, crashed or cancelled just after the model's final answer — and the
+ *  resume paths that append no nudge (`error` / `cancelled` / an unflushed
+ *  crash's null outcome) replay it verbatim.
+ *
+ *  It lives at the one function every request is built by rather than at the
+ *  four resume call sites, because the call sites are where it was missed. The
+ *  two shapes that are already correct are returned UNTOUCHED, and both are the
+ *  common ones: a `tool` message is a user turn as far as Anthropic is concerned
+ *  (the provider folds tool results into a user message), and the finish-pass
+ *  branches already end on a real nudge. The only array this rewrites is one
+ *  that would have 400'd.
+ *
+ *  Enforced for every provider, not only Anthropic. Ending on a user turn is
+ *  what all of them expect — OpenAI and the openai-compatible gateways merely
+ *  tolerate the alternative — and a rule that holds everywhere cannot be missed
+ *  the next time a provider is added. The turn is added at REQUEST time only, so
+ *  it never enters the banked transcript; growing a synthetic instruction into
+ *  stored history each resume is the bug `withoutFinishNudge` exists to undo. */
+function endOnUserTurn(messages: ModelMessage[]): ModelMessage[] {
+  if (messages[messages.length - 1]?.role !== "assistant") return messages;
+  return [...messages, { role: "user", content: RESUME_CONTINUE_NUDGE }];
 }
 
 /** The user side of the request: an optional stable context turn, the prior

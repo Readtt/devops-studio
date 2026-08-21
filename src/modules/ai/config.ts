@@ -157,6 +157,15 @@ export type ModelInfo = {
 
 export const MODELS = [
   // ── OpenAI ────────────────────────────────────────────────────────────────
+  //
+  // The whole GPT-5 tier accepts only the default temperature, so every entry
+  // here carries the flag — including the three that aren't `reasoning`-tagged.
+  // Today @ai-sdk/openai happens to strip the param for us (it classes any id
+  // starting `gpt-5` as a reasoning model), so the wire request is unchanged
+  // either way; the flag is what stops that being load-bearing. Leaving it off
+  // meant the same upstream model was flagged on its OpenRouter route and not
+  // on its native one — one prefix rule in someone else's release away from the
+  // 400 that flag exists to prevent.
   {
     id: "gpt-5.5",
     provider: "openai",
@@ -165,6 +174,7 @@ export const MODELS = [
     description: "Frontier reasoning and code.",
     capabilities: { intelligence: 5, speed: 3, cost: 1 },
     tags: ["vision", "reasoning", "tools", "coding"],
+    rejectsSamplingParams: true,
   },
   {
     id: "gpt-5.4-mini",
@@ -174,6 +184,7 @@ export const MODELS = [
     description: "Snappy default at low cost.",
     capabilities: { intelligence: 4, speed: 4, cost: 4 },
     tags: ["vision", "tools"],
+    rejectsSamplingParams: true,
   },
   {
     id: "gpt-5.4-nano",
@@ -183,6 +194,7 @@ export const MODELS = [
     description: "Tiny and instant — great for autocomplete.",
     capabilities: { intelligence: 3, speed: 5, cost: 5 },
     tags: ["tools"],
+    rejectsSamplingParams: true,
   },
   {
     id: "gpt-5.3-codex",
@@ -192,6 +204,7 @@ export const MODELS = [
     description: "Tuned for code and tool use.",
     capabilities: { intelligence: 4, speed: 4, cost: 3 },
     tags: ["tools", "coding"],
+    rejectsSamplingParams: true,
   },
 
   // ── Anthropic ─────────────────────────────────────────────────────────────
@@ -696,7 +709,7 @@ export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "lmstudio-local": 32_000,
   "mlx-local": 32_000,
   "ollama-local": 32_000,
-  "mistral-large-latest": 131_072,
+  "mistral-large-latest": 128_000,
   "mistral-medium-latest": 32_768,
   "codestral-latest": 256_000,
 };

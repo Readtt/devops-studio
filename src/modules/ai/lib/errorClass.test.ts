@@ -44,6 +44,16 @@ describe("matchErrorKind", () => {
         "prompt is too long",
       ],
     ],
+    [
+      "capability",
+      [
+        "this model does not support assistant message prefill. The conversation must end with a user message",
+        "`temperature` is deprecated for this model",
+        "Unsupported value: 'temperature' does not support 0 with this model",
+        "Streaming is not supported for this model",
+        "unsupported parameter: 'max_tokens'",
+      ],
+    ],
   ];
 
   for (const [kind, messages] of cases) {
@@ -97,6 +107,56 @@ describe("matchErrorKind", () => {
     );
     expect(matchErrorKind(`${STALL_MESSAGE} — network timeout`)).toBe("stall");
   });
+
+  // capability sits between auth and overflow. A 429 body quoting a model's
+  // limits must stay a rate limit (resumable), and an overflow must keep the
+  // bucket that compacts before replaying — mislabelling either as capability
+  // would take Resume away from a run that only needed to wait or shrink.
+  it("does not steal the buckets it sits between", () => {
+    expect(
+      matchErrorKind("429: your plan does not support this rate; too many requests"),
+    ).toBe("rate-limit");
+    expect(
+      matchErrorKind("prompt is too long: 250000 tokens > 200000 maximum"),
+    ).toBe("context-overflow");
+    expect(matchErrorKind("401 unauthorized")).toBe("auth");
+  });
+
+  // The word alone is not a refusal. "support" shows up in provider prose that
+  // has nothing to do with the request shape, and a false capability match
+  // silently makes a resumable failure unresumable.
+  it("needs an actual refusal phrase, not just the word support", () => {
+    expect(matchErrorKind("contact support if this persists")).toBe("unknown");
+    expect(matchErrorKind("our support team is looking into it")).toBe("unknown");
+  });
+});
+
+describe("capability failures are surfaced, not re-offered", () => {
+  const outcome = {
+    kind: "error" as const,
+    errorKind: "capability" as ResumeErrorKind,
+    message: "this model does not support assistant message prefill",
+  };
+  const progress = { stepsUsed: 12, hasTranscript: true };
+
+  it("Resume is not offered, however much work was banked", () => {
+    expect(canOfferResume(outcome, null, progress)).toBe(false);
+  });
+
+  it("the reason names the model, not the missing transcript", () => {
+    const reason = resumeUnavailableReason(outcome, progress);
+    expect(reason).toMatch(/refused/i);
+    expect(reason).toMatch(/different model/i);
+    // The generic copy would blame the model for returning nothing, which is
+    // the opposite of what happened.
+    expect(reason).not.toMatch(/returned nothing/i);
+  });
+
+  it("classifies from the raw message when no errorKind was recorded", () => {
+    const raw = { kind: "error" as const, message: "Unsupported value: 'temperature'" };
+    expect(canOfferResume(raw, null, progress)).toBe(false);
+    expect(resumeUnavailableReason(raw, progress)).toMatch(/different model/i);
+  });
 });
 
 describe("isResumableKind", () => {
@@ -120,6 +180,15 @@ describe("isResumableKind", () => {
     ] as ResumeErrorKind[]) {
       expect(isResumableKind(kind)).toBe(true);
     }
+  });
+
+  // The one exception, and the reason this seam kept its parameter: every other
+  // kind is a condition that passes. A capability refusal is the model saying no
+  // to the request shape, the checkpoint pins the run to that same model, and a
+  // resume rebuilds the same shape — so the button could only bill the identical
+  // 400 twice.
+  it("is false for capability — the same request would be refused again", () => {
+    expect(isResumableKind("capability")).toBe(false);
   });
 
   it("agrees with classifyForResume's resumable flag — one shared table, not two", () => {

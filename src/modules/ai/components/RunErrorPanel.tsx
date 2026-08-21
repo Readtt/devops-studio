@@ -136,6 +136,27 @@ export function classifyProviderError(message: string): ErrorClass | null {
   }
 
   switch (matchErrorKind(message)) {
+    case "capability":
+      return {
+        code: "MODEL/01 · UNSUPPORTED",
+        title: "This model refused the request",
+        icon: AiBrain01Icon,
+        tone: "config",
+        // The provider's own sentence is the useful part here — it names the
+        // exact parameter or feature — so it is quoted rather than paraphrased.
+        why: `The provider understood the request but won't accept it on this model: "${message.trim()}". Your key, your credits and your connection are all fine — this is the model saying no to something the request contained.`,
+        steps: [
+          "Switch to a different model and run again — a nearby tier from the same provider is usually the quickest test.",
+          "If it happens on every model you try, the request itself is the problem: turn off code search for this run, or drop attachments, then retry.",
+          "Worth reporting — this line names the exact thing that was refused.",
+        ],
+        primary: {
+          label: "Open AI / Models",
+          icon: AiBrain01Icon,
+          onClick: () => void openSettingsWindow("models"),
+        },
+      };
+
     case "context-overflow":
       return {
         code: "INPUT/02 · CONTEXT-OVERFLOW",

@@ -20,7 +20,12 @@ vi.mock("./agent", () => ({
   buildStableSystem: (base: string) => base,
 }));
 
-import { runTask, streamTask, type TaskCheckpoint } from "./taskRunner";
+import {
+  runTask,
+  streamTask,
+  RESUME_CONTINUE_NUDGE,
+  type TaskCheckpoint,
+} from "./taskRunner";
 
 const baseInput = {
   modelId: "gpt-5.4-mini" as never,
@@ -1813,6 +1818,14 @@ describe("sampling params (models that reject temperature)", () => {
   /** The real Anthropic 400 that took down every surface. */
   const REJECTION = "`temperature` is deprecated for this model.";
 
+  /** A model id the catalogue deliberately does NOT know — a user's custom
+   *  endpoint, or a model released after this build. It has to stay
+   *  uncatalogued: the retry below is the net for exactly the models
+   *  `supportsTemperature` can't answer for, so pointing these at a real
+   *  catalogue entry would silently stop testing the retry the moment that
+   *  entry gained a `rejectsSamplingParams` flag. */
+  const uncatalogued = { ...baseInput, modelId: "some-model-shipped-after-us" as never };
+
   const hasTemperature = (call: number) =>
     "temperature" in (generateText.mock.calls[call][0] as Record<string, unknown>);
   const streamHasTemperature = (call: number) =>
@@ -1849,6 +1862,23 @@ describe("sampling params (models that reject temperature)", () => {
     expect(hasTemperature(0)).toBe(false);
   });
 
+  // The GPT-5 tier takes only the default temperature too. @ai-sdk/openai
+  // happens to strip it (any id starting `gpt-5` is a reasoning model to it),
+  // so this passed before the catalogue said so — on the SDK's prefix rule
+  // rather than on our decision, and only on the NATIVE route. The gateway twin
+  // was already flagged; these two must not disagree about one model.
+  it("gpt-5.4-mini: temperature 0 is never sent, on either route", async () => {
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({ ...baseInput, modelId: "gpt-5.4-mini" as never, temperature: 0 });
+    await runTask({
+      ...baseInput,
+      modelId: "openai/gpt-5.4-mini" as never,
+      temperature: 0,
+    });
+    expect(hasTemperature(0)).toBe(false);
+    expect(hasTemperature(1)).toBe(false);
+  });
+
   it("does NOT blanket-drop it for Anthropic — Haiku 4.5 still gets temperature 0", async () => {
     generateText.mockResolvedValue({ text: "ok" });
     await runTask({
@@ -1865,7 +1895,7 @@ describe("sampling params (models that reject temperature)", () => {
     generateText
       .mockRejectedValueOnce(new Error(REJECTION))
       .mockResolvedValueOnce({ text: "recovered" });
-    const r = await runTask({ ...baseInput, temperature: 0 });
+    const r = await runTask({ ...uncatalogued, temperature: 0 });
     expect(generateText).toHaveBeenCalledTimes(2);
     expect(hasTemperature(0)).toBe(true);
     expect(hasTemperature(1)).toBe(false);
@@ -1889,7 +1919,7 @@ describe("sampling params (models that reject temperature)", () => {
         })(),
       }));
     const r = await streamTask({
-      ...baseInput,
+      ...uncatalogued,
       temperature: 0,
       onText: (d) => emitted.push(d),
     });
@@ -1906,7 +1936,7 @@ describe("sampling params (models that reject temperature)", () => {
       .mockRejectedValueOnce(new Error(REJECTION))
       .mockResolvedValueOnce({ object: { a: 1 } });
     const r = await runTask({
-      ...baseInput,
+      ...uncatalogued,
       schema,
       temperature: 0,
       repairAttempts: 0,
@@ -1921,7 +1951,7 @@ describe("sampling params (models that reject temperature)", () => {
     generateText.mockRejectedValue(
       new Error("rate_limit_error: your temperature-controlled workload is throttled"),
     );
-    await expect(runTask({ ...baseInput, temperature: 0 })).rejects.toThrow(
+    await expect(runTask({ ...uncatalogued, temperature: 0 })).rejects.toThrow(
       /rate_limit_error/,
     );
     expect(generateText).toHaveBeenCalledTimes(1);
@@ -1929,7 +1959,7 @@ describe("sampling params (models that reject temperature)", () => {
 
   it("does not retry when the caller never sent a temperature", async () => {
     generateText.mockRejectedValue(new Error(REJECTION));
-    await expect(runTask({ ...baseInput })).rejects.toThrow(/deprecated/);
+    await expect(runTask({ ...uncatalogued })).rejects.toThrow(/deprecated/);
     expect(generateText).toHaveBeenCalledTimes(1);
   });
 });
@@ -1985,5 +2015,122 @@ describe("provider failures on the structured tool-less path", () => {
     expect(generateObject).toHaveBeenCalledTimes(2);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("schema_violation");
+  });
+});
+
+// Anthropic's Claude 5 tier removed assistant prefill: a request whose LAST
+// message is an assistant turn comes back 400 "this model does not support
+// assistant message prefill — the conversation must end with a user message".
+// A banked transcript ends on an assistant turn whenever the last step the run
+// completed wrote text without calling a tool, which is every run that was
+// killed, crashed or cancelled just after the model's final answer. Replaying
+// that verbatim is the 400.
+describe("resume: the request always ends on a user turn", () => {
+  const lastRole = (arg: Record<string, unknown>): string => {
+    const messages = arg.messages as Array<{ role: string }>;
+    return messages[messages.length - 1].role;
+  };
+
+  it("Anthropic: an assistant-terminated transcript gets a continuation turn", async () => {
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({
+      ...baseInput,
+      modelId: "claude-sonnet-5" as never,
+      resumeMessages: [
+        { role: "assistant", content: "read auth.ts" },
+        { role: "tool", content: "…file…" },
+        { role: "assistant", content: "the answer the run lost" },
+      ] as never,
+    });
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    const messages = arg.messages as Array<{ role: string; content: unknown }>;
+    expect(messages[messages.length - 1]).toEqual({
+      role: "user",
+      content: RESUME_CONTINUE_NUDGE,
+    });
+    // The model's own last message is KEPT — it is the work the resume exists
+    // to recover, not something to trim away.
+    expect(messages[messages.length - 2]).toEqual({
+      role: "assistant",
+      content: "the answer the run lost",
+    });
+  });
+
+  it("streamTask does the same", async () => {
+    streamText.mockReturnValue({
+      textStream: (async function* () {
+        yield "x";
+      })(),
+    });
+    await streamTask({
+      ...baseInput,
+      modelId: "claude-sonnet-5" as never,
+      resumeMessages: [{ role: "assistant", content: "trailing" }] as never,
+      onText: () => {},
+    });
+    expect(lastRole(streamText.mock.calls[0][0])).toBe("user");
+  });
+
+  it("holds for every provider, not just Anthropic", async () => {
+    generateText.mockResolvedValue({ text: "ok" });
+    await runTask({
+      ...baseInput,
+      resumeMessages: [{ role: "assistant", content: "trailing" }] as never,
+    });
+    expect(lastRole(generateText.mock.calls[0][0])).toBe("user");
+  });
+
+  // The normal case — a run cut off mid-tool-loop — must stay byte-identical:
+  // a `tool` message IS a user turn to Anthropic, and injecting anything after
+  // it would change a request prefix that prompt caching depends on.
+  it("a tool-terminated transcript is replayed untouched", async () => {
+    generateText.mockResolvedValue({ text: "ok" });
+    const resumeMessages = [
+      { role: "assistant", content: "calling read_file" },
+      { role: "tool", content: "…file…" },
+    ] as never;
+    await runTask({ ...baseInput, resumeMessages });
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    expect(promptShape(arg)).toEqual({
+      system: "SYS",
+      messages: [{ role: "user", content: "hello" }, ...(resumeMessages as [])],
+    });
+  });
+
+  // The finish-pass branches already end on FINISH_NOW_NUDGE. Nothing may be
+  // appended after them — a second instruction would compete with the first.
+  it("a user-terminated transcript is replayed untouched", async () => {
+    generateText.mockResolvedValue({ text: "ok" });
+    const resumeMessages = [
+      { role: "assistant", content: "investigating" },
+      { role: "user", content: "Answer now." },
+    ] as never;
+    await runTask({ ...baseInput, resumeMessages });
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    expect(promptShape(arg)).toEqual({
+      system: "SYS",
+      messages: [{ role: "user", content: "hello" }, ...(resumeMessages as [])],
+    });
+  });
+
+  // Request-time only. The banked transcript is the model's real work; growing
+  // a synthetic turn into it every resume is the bug `withoutFinishNudge` had
+  // to be written to undo.
+  it("the injected turn is never banked into the checkpoint", async () => {
+    generateTextOverSteps([step("s1", "stop")], "done");
+    const resumeMessages = [
+      { role: "assistant", content: "trailing" },
+    ] as never;
+    const seen: TaskCheckpoint[] = [];
+    await runTask({
+      ...baseInput,
+      tools: { read_file: {} } as never,
+      resumeMessages,
+      onCheckpoint: (cp) => seen.push(cp),
+    });
+    expect(seen[0].messages).toEqual([
+      { role: "assistant", content: "trailing" },
+      { role: "assistant", content: "s1" },
+    ]);
   });
 });
