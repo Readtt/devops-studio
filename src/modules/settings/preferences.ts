@@ -23,6 +23,7 @@ export function localProviderConfig(p: Preferences): LocalProviderConfig {
     ollamaModelId: p.ollamaModelId,
     openaiCompatibleBaseURL: p.openaiCompatibleBaseURL,
     openaiCompatibleModelId: p.openaiCompatibleModelId,
+    openaiCompatibleMaxOutputTokens: p.openaiCompatibleMaxOutputTokens,
   };
 }
 

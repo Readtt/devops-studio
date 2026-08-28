@@ -223,6 +223,89 @@ describe("per-model output caps (maxOutputTokens)", () => {
   });
 });
 
+// The custom OpenAI-compatible route can never have a config-table entry — one
+// model id stands for every endpoint a user might point it at — so "send
+// nothing, let the endpoint decide" was its permanent answer. That is not
+// neutral: a proxy fronting Anthropic MUST invent a `max_tokens` (the upstream
+// API requires one) and picks something small, which cut a DraftBatch off
+// before its trailing `bugs` array. The per-endpoint setting is the fix.
+describe("custom-endpoint output cap", () => {
+  const custom = {
+    ...baseInput,
+    modelId: "openai-compatible-custom" as never,
+  };
+
+  it("sends the user's configured cap for the custom route", async () => {
+    generateText.mockResolvedValue({ text: "prose" });
+    const r = await runTask({
+      ...custom,
+      local: { openaiCompatibleMaxOutputTokens: 32_000 },
+    });
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.maxOutputTokens).toBe(32_000);
+    expect(r.outputCap).toBe(32_000);
+  });
+
+  it("sends nothing when the setting is unset (0), as before", async () => {
+    generateText.mockResolvedValue({ text: "prose" });
+    const r = await runTask({
+      ...custom,
+      local: { openaiCompatibleMaxOutputTokens: 0 },
+    });
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    expect("maxOutputTokens" in arg).toBe(false);
+    expect(r.outputCap).toBeUndefined();
+  });
+
+  it("sends nothing when there is no local config at all", async () => {
+    generateText.mockResolvedValue({ text: "prose" });
+    const r = await runTask({ ...custom });
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    expect("maxOutputTokens" in arg).toBe(false);
+    expect(r.outputCap).toBeUndefined();
+  });
+
+  it("does NOT leak the setting onto a catalogued model's request", async () => {
+    generateText.mockResolvedValue({ text: "prose" });
+    const r = await runTask({
+      ...baseInput,
+      modelId: "claude-sonnet-5" as never,
+      local: { openaiCompatibleMaxOutputTokens: 32_000 },
+    });
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.maxOutputTokens).toBe(64_000);
+    expect(r.outputCap).toBe(64_000);
+  });
+
+  it("an explicit maxOutputTokens (truncation resume) still outranks it", async () => {
+    generateText.mockResolvedValue({ text: "prose" });
+    const r = await runTask({
+      ...custom,
+      local: { openaiCompatibleMaxOutputTokens: 8_192 },
+      maxOutputTokens: 32_000,
+    });
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.maxOutputTokens).toBe(32_000);
+    expect(r.outputCap).toBe(32_000);
+  });
+
+  it("carries onto the streaming path, which is what the generator runs", async () => {
+    streamText.mockReturnValue({
+      textStream: (async function* () {
+        yield "x";
+      })(),
+    });
+    const r = await streamTask({
+      ...custom,
+      local: { openaiCompatibleMaxOutputTokens: 32_000 },
+      onText: () => {},
+    });
+    const arg = streamText.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.maxOutputTokens).toBe(32_000);
+    expect(r.outputCap).toBe(32_000);
+  });
+});
+
 describe("streamTask", () => {
   it("streams prose deltas and resolves accumulated text", async () => {
     streamText.mockReturnValue({
@@ -2132,5 +2215,47 @@ describe("resume: the request always ends on a user turn", () => {
       { role: "assistant", content: "trailing" },
       { role: "assistant", content: "s1" },
     ]);
+  });
+});
+
+// A truncated object never validates, so the tool-less path only ever sees it
+// as a THROWN NoObjectGeneratedError. Without carrying the provider's
+// finishReason out of that error, `finish: length` is invisible on this path —
+// which is the Generator's whenever code search is off, i.e. the same silent
+// "the model just didn't find any bugs" the streaming path already reports.
+describe("tool-less path reports why the object never landed", () => {
+  const schema = z.object({ a: z.number() });
+
+  it("surfaces finishReason: length from the SDK error", async () => {
+    generateObject.mockRejectedValue(
+      Object.assign(new Error("no object generated"), {
+        text: '{"cases":[{"title":"cut off mid-',
+        finishReason: "length",
+      }),
+    );
+    const r = await runTask({ ...baseInput, schema, repairAttempts: 0 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.finishReason).toBe("length");
+  });
+
+  it("omits it when the error carries none", async () => {
+    generateObject.mockRejectedValue(
+      Object.assign(new Error("no object"), { text: "garbage" }),
+    );
+    const r = await runTask({ ...baseInput, schema, repairAttempts: 0 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.finishReason).toBeUndefined();
+  });
+
+  it("ignores a finishReason that isn't one the SDK defines", async () => {
+    generateObject.mockRejectedValue(
+      Object.assign(new Error("no object"), {
+        text: "garbage",
+        finishReason: "wat",
+      }),
+    );
+    const r = await runTask({ ...baseInput, schema, repairAttempts: 0 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.finishReason).toBeUndefined();
   });
 });

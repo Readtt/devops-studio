@@ -108,7 +108,19 @@ export type RunCommitReviewInput = {
 };
 
 export type RunCommitReviewResult =
-  | { ok: true; findings: Finding[]; durationMs: number }
+  | {
+      ok: true;
+      findings: Finding[];
+      durationMs: number;
+      /** Set when stage 1's answer was CUT OFF (`finish: length`) and these
+       *  findings are what the salvager recovered from the part that arrived.
+       *  A partial list is indistinguishable from a complete one at this
+       *  boundary, and the pane renders it as a finished review — so the fact
+       *  that findings are MISSING has to travel with the result. `outputCap`
+       *  is what the cut-off request asked for; undefined ⇒ it asked for
+       *  nothing and the endpoint chose the limit. */
+      truncated?: { outputCap?: number };
+    }
   | {
       /** Stage 1 didn't return usable findings — surface the raw text.
        *  `step_cap` means the loop ran into a run budget before it got to write
@@ -221,6 +233,9 @@ export async function runCommitReview(
   let candidates: CandidateFinding[];
   // 0 on a resume that skips investigate — this call didn't pay for it.
   let stage1Ms = 0;
+  // Carried from stage 1 to every ok:true exit below — a partial candidate list
+  // stays partial through verify, so the flag has to survive that pass.
+  let cutOff: { outputCap?: number } | undefined;
 
   if (resume?.stage === "verify" && resume.stage1Candidates) {
     candidates = resume.stage1Candidates;
@@ -287,6 +302,13 @@ export async function runCommitReview(
         };
       }
       candidates = salvaged;
+      if (stage1.finishReason === "length") {
+        cutOff = {
+          ...(stage1.outputCap !== undefined
+            ? { outputCap: stage1.outputCap }
+            : {}),
+        };
+      }
     } else {
       candidates = stage1.object.findings;
     }
@@ -340,7 +362,12 @@ export async function runCommitReview(
   } catch (e) {
     if ((e as { name?: string } | null)?.name === "AbortError") throw e;
     console.warn("[commit-review] verify pass failed, returning unverified:", e);
-    return { ok: true, findings: unverifiedFindings(candidates), durationMs: stage1Ms };
+    return {
+      ok: true,
+      findings: unverifiedFindings(candidates),
+      durationMs: stage1Ms,
+      ...(cutOff ? { truncated: cutOff } : {}),
+    };
   }
 
   const totalMs = stage1Ms + stage2.durationMs;
@@ -348,7 +375,12 @@ export async function runCommitReview(
   // Verify failed to parse → fall back to the unfiltered candidates rather
   // than dropping everything; the confidence filter in the UI still applies.
   if (!stage2.ok) {
-    return { ok: true, findings: unverifiedFindings(candidates), durationMs: totalMs };
+    return {
+      ok: true,
+      findings: unverifiedFindings(candidates),
+      durationMs: totalMs,
+      ...(cutOff ? { truncated: cutOff } : {}),
+    };
   }
 
   const verdicts = new Map(stage2.object.verdicts.map((v) => [v.id, v]));
@@ -370,7 +402,12 @@ export async function runCommitReview(
     });
   }
   merged.sort(compareFindings);
-  return { ok: true, findings: merged, durationMs: totalMs };
+  return {
+    ok: true,
+    findings: merged,
+    durationMs: totalMs,
+    ...(cutOff ? { truncated: cutOff } : {}),
+  };
 }
 
 function diffHeader(diff: RepoCommitDiff): string {

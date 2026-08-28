@@ -116,6 +116,13 @@ export type Preferences = {
   openaiCompatibleBaseURL: string;
   openaiCompatibleModelId: string;
   openaiCompatibleContextLimit: number;
+  /** Output-token cap sent with every request to the custom endpoint. 0 ⇒
+   *  unset: send nothing and let the endpoint decide, which is what every
+   *  uncatalogued route has always done. Exists because "let the endpoint
+   *  decide" is not free — an OpenAI-compatible proxy fronting Anthropic MUST
+   *  invent a `max_tokens` (the upstream API requires one) and the invented
+   *  number is small, so a long answer is silently cut off at its tail. */
+  openaiCompatibleMaxOutputTokens: number;
   favoriteModelIds: string[];
   recentModelIds: string[];
   terminalWebglEnabled: boolean;
@@ -185,6 +192,7 @@ const KEY_OLLAMA_MODEL_ID = "ollamaModelId";
 const KEY_OPENAI_COMPAT_BASE_URL = "openaiCompatibleBaseURL";
 const KEY_OPENAI_COMPAT_MODEL_ID = "openaiCompatibleModelId";
 const KEY_OPENAI_COMPAT_CONTEXT_LIMIT = "openaiCompatibleContextLimit";
+const KEY_OPENAI_COMPAT_MAX_OUTPUT = "openaiCompatibleMaxOutputTokens";
 const KEY_FAVORITE_MODELS = "favoriteModelIds";
 const KEY_RECENT_MODELS = "recentModelIds";
 const KEY_TERMINAL_WEBGL_ENABLED = "terminalWebglEnabled";
@@ -252,6 +260,10 @@ export const DEFAULT_PREFERENCES: Preferences = {
   openaiCompatibleBaseURL: OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
   openaiCompatibleModelId: "",
   openaiCompatibleContextLimit: 128_000,
+  // Deliberately 0 (unset). A default here would be inventing an output cap for
+  // a model we don't know — the one thing MODEL_OUTPUT_LIMITS refuses to do —
+  // and guessing HIGH is a hard 400 on every request rather than a truncation.
+  openaiCompatibleMaxOutputTokens: 0,
   favoriteModelIds: [],
   recentModelIds: [],
   terminalWebglEnabled: true,
@@ -574,6 +586,9 @@ export async function loadPreferences(): Promise<Preferences> {
     openaiCompatibleContextLimit:
       get<number>(KEY_OPENAI_COMPAT_CONTEXT_LIMIT) ??
       DEFAULT_PREFERENCES.openaiCompatibleContextLimit,
+    openaiCompatibleMaxOutputTokens:
+      get<number>(KEY_OPENAI_COMPAT_MAX_OUTPUT) ??
+      DEFAULT_PREFERENCES.openaiCompatibleMaxOutputTokens,
     // Drop any retired ids so they don't linger in the picker's Recent/Favorites.
     favoriteModelIds: (
       get<string[]>(KEY_FAVORITE_MODELS) ??
@@ -785,6 +800,17 @@ export async function setOpenaiCompatibleContextLimit(
   await writePref(KEY_OPENAI_COMPAT_CONTEXT_LIMIT, clamped);
 }
 
+/** Persist the custom endpoint's output cap. A non-positive / unparseable
+ *  value clears it back to "send nothing" rather than clamping to a floor —
+ *  emptying the field is how the user says "let the endpoint decide" again. */
+export async function setOpenaiCompatibleMaxOutputTokens(
+  value: number,
+): Promise<void> {
+  const clamped =
+    Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
+  await writePref(KEY_OPENAI_COMPAT_MAX_OUTPUT, clamped);
+}
+
 export async function setFavoriteModelIds(value: string[]): Promise<void> {
   await writePref(KEY_FAVORITE_MODELS, value);
 }
@@ -928,6 +954,7 @@ export async function onPreferencesChange(
     [KEY_OPENAI_COMPAT_BASE_URL]: "openaiCompatibleBaseURL",
     [KEY_OPENAI_COMPAT_MODEL_ID]: "openaiCompatibleModelId",
     [KEY_OPENAI_COMPAT_CONTEXT_LIMIT]: "openaiCompatibleContextLimit",
+    [KEY_OPENAI_COMPAT_MAX_OUTPUT]: "openaiCompatibleMaxOutputTokens",
     [KEY_FAVORITE_MODELS]: "favoriteModelIds",
     [KEY_RECENT_MODELS]: "recentModelIds",
     [KEY_TERMINAL_WEBGL_ENABLED]: "terminalWebglEnabled",

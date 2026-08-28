@@ -118,6 +118,7 @@ import {
 import { relativeTime, ResumeCard } from "@/modules/ai/components/ResumeCard";
 import { StallHint } from "@/modules/ai/components/StallHint";
 import { BestPracticeNotice } from "@/modules/ai/components/BestPracticeNotice";
+import { TruncatedAnswerNotice } from "@/modules/ai/components/TruncatedAnswerNotice";
 import {
   ContextGuardNotice,
   ContextMeter,
@@ -1849,6 +1850,7 @@ function ReviewPhase({
   const defaultModelId = useChatStore((s) => s.selectedModelId);
   const isRefining = useGenerationSession((s) => s.isRefining);
   const publishLog = useGenerationSession((s) => s.publishLog);
+  const truncation = useGenerationSession((s) => s.truncation);
 
   const [evaluatingUids, setEvaluatingUids] = useState<Set<string>>(
     () => new Set(),
@@ -2192,6 +2194,15 @@ function ReviewPhase({
 
   return (
     <div className="flex flex-col gap-3">
+      {truncation ? (
+        <TruncatedAnswerNotice
+          outputCap={truncation.outputCap}
+          isCustomEndpoint={
+            (overrideModelId ?? defaultModelId) === "openai-compatible-custom"
+          }
+          tailLabel="bug suggestions"
+        />
+      ) : null}
       {hasAnyPublished ? (
         <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/[0.06] px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
           <HugeiconsIcon

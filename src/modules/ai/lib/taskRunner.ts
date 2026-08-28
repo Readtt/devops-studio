@@ -913,14 +913,38 @@ function effectiveTemperature(input: {
 }
 
 /** The output cap this call's requests ask for: the caller's explicit value,
- *  else the per-model cap from config. Undefined ⇒ nothing is sent — the
- *  request is byte-identical to before caps existed, and the endpoint's own
- *  default governs (the only safe answer for models we haven't catalogued). */
+ *  else the user's per-endpoint setting for a custom route, else the per-model
+ *  cap from config. Undefined ⇒ nothing is sent — the request is
+ *  byte-identical to before caps existed, and the endpoint's own default
+ *  governs (the only safe answer for models we haven't catalogued).
+ *
+ *  The custom-endpoint setting sits BELOW an explicit `maxOutputTokens` (a
+ *  truncation resume raising the cap must still win) and ABOVE the config
+ *  table, which has no entry for `openai-compatible-custom` and never will —
+ *  one id stands for every endpoint a user might point it at. Letting the
+ *  endpoint decide is not neutral there: an OpenAI-compatible proxy in front
+ *  of Anthropic has to invent a `max_tokens` because the upstream API demands
+ *  one, and the invented number is small enough to cut a DraftBatch off before
+ *  its trailing `bugs` array. */
 function effectiveOutputCap(input: {
   modelId: ModelId;
   maxOutputTokens?: number;
+  local?: LocalProviderConfig;
 }): number | undefined {
-  return input.maxOutputTokens ?? getModelOutputCap(input.modelId);
+  if (input.maxOutputTokens !== undefined) return input.maxOutputTokens;
+  const custom = customEndpointOutputCap(input.modelId, input.local);
+  return custom ?? getModelOutputCap(input.modelId);
+}
+
+/** The user's configured output cap for the custom OpenAI-compatible endpoint,
+ *  or undefined when unset (0) or when the active model isn't that route. */
+export function customEndpointOutputCap(
+  modelId: string,
+  local: LocalProviderConfig | undefined,
+): number | undefined {
+  if (modelId !== "openai-compatible-custom") return undefined;
+  const v = local?.openaiCompatibleMaxOutputTokens;
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
 }
 
 /** Provider errors arrive wrapped (RetryError → APICallError), and the useful
@@ -1021,6 +1045,12 @@ export async function runTask<
   if (input.schema && !tools) {
     let attempt = 0;
     let lastText = "";
+    // A truncated object never validates, so it arrives here as a THROWN
+    // NoObjectGeneratedError rather than a return — and without carrying its
+    // finishReason out, `finish: length` is invisible on the tool-less path
+    // (the Generator's, whenever code search is off). That is the same silent
+    // truncation the streaming path already reports.
+    let lastFinishReason: FinishReason | undefined;
     // Dropped (once) if the provider turns out to reject sampling params.
     let temp = temperature;
     // generateObject already self-repairs once via experimental_repairText;
@@ -1082,6 +1112,7 @@ export async function runTask<
         // path below has always thrown these; this keeps the two consistent.)
         if (isProviderFailure(e)) throw e;
         lastText = extractTextFromError(e) || lastText;
+        lastFinishReason = extractFinishReasonFromError(e) ?? lastFinishReason;
         attempt++;
       }
     }
@@ -1095,6 +1126,7 @@ export async function runTask<
       durationMs: Date.now() - start,
       stepsUsed: 0,
       tokensUsed: 0,
+      ...(lastFinishReason ? { finishReason: lastFinishReason } : {}),
       ...(outputCap !== undefined ? { outputCap } : {}),
     };
   }
@@ -1402,6 +1434,28 @@ function extractTextFromError(e: unknown): string {
   }
   return "";
 }
+
+/** `NoObjectGeneratedError` carries the provider's finishReason alongside the
+ *  unparseable text. Read defensively: an older SDK, or a different error
+ *  entirely, simply has no such field. */
+function extractFinishReasonFromError(e: unknown): FinishReason | undefined {
+  if (e && typeof e === "object") {
+    const r = (e as { finishReason?: unknown }).finishReason;
+    if (typeof r === "string" && (FINISH_REASONS as readonly string[]).includes(r)) {
+      return r as FinishReason;
+    }
+  }
+  return undefined;
+}
+
+const FINISH_REASONS = [
+  "stop",
+  "length",
+  "content-filter",
+  "tool-calls",
+  "error",
+  "other",
+] as const satisfies readonly FinishReason[];
 
 /** Validate a model's final text against a schema — slice the JSON out of any
  *  fenced/prose wrapping, parse, then safeParse. Used by the tool-bearing paths

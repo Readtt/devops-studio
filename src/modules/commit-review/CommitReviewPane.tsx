@@ -102,6 +102,7 @@ import {
 } from "./runCommitReview";
 import { CommitDiffPanel } from "./CommitDiffView";
 import { FindingCard } from "./FindingCard";
+import { TruncatedAnswerNotice } from "@/modules/ai/components/TruncatedAnswerNotice";
 import {
   commitKey,
   isLocalKey,
@@ -932,6 +933,11 @@ function BodyContent({
   onResume: () => void;
   onDiscard: () => void;
 }) {
+  // `slice.modelId` is only set by a per-tab OVERRIDE; a tab running on the
+  // app default stores null. Reading it raw would hide the settings action
+  // from the exact user this notice is for — the one whose DEFAULT model is
+  // the custom endpoint. Same fallback the run itself uses.
+  const defaultModelId = usePreferencesStore((s) => s.defaultModelId);
   if (slice.busy) {
     return (
       <div className="flex flex-col gap-2">
@@ -1048,15 +1054,46 @@ function BodyContent({
     );
   }
 
+  // A cut-off stage 1 is salvaged into a findings list that looks complete, and
+  // — when the cut landed before ANY finding closed — into the clean-commit
+  // panel below, which is the same run reported as "no issues found". Both
+  // branches carry the notice.
+  const cutOffNotice = slice.truncated ? (
+    <TruncatedAnswerNotice
+      outputCap={slice.truncated.outputCap}
+      isCustomEndpoint={
+        (slice.modelId ?? defaultModelId) === "openai-compatible-custom"
+      }
+      tailLabel="the findings it hadn't written yet"
+    />
+  ) : null;
+
   if (slice.findings.length > 0) {
     return (
-      <FindingsList
-        findings={slice.findings}
-        repos={repos}
-        appliedPatches={slice.appliedPatches}
-        durationMs={slice.durationMs}
-        onApply={(findingId, record) => applyFix(tabId, findingId, record)}
-      />
+      <div className="flex flex-col gap-3">
+        {cutOffNotice}
+        <FindingsList
+          findings={slice.findings}
+          repos={repos}
+          appliedPatches={slice.appliedPatches}
+          durationMs={slice.durationMs}
+          onApply={(findingId, record) => applyFix(tabId, findingId, record)}
+        />
+      </div>
+    );
+  }
+
+  if (slice.status === "done" && cutOffNotice) {
+    // Never show the green "no issues" panel for a run that was cut off before
+    // it could write any — that is a failure wearing a success's clothes.
+    return (
+      <div className="flex flex-col gap-3">
+        {cutOffNotice}
+        <p className="rounded-md border border-border/50 bg-card/30 px-3 py-2 text-[11.5px] text-muted-foreground">
+          No findings survived the cut-off, so this review says nothing about
+          the commit either way. Re-run it once the output limit has room.
+        </p>
+      </div>
     );
   }
 

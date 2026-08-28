@@ -228,6 +228,18 @@ export type SessionState = {
    *  can see what the agent is doing (which files it read, what it grepped). */
   activityLog: ActivityEntry[];
   durationMs: number | null;
+  /** Set when the analyst's answer was CUT OFF mid-write (`finish: length`) yet
+   *  enough of it parsed to be worth reviewing. The empty-batch path already
+   *  turns a truncation into a classified error with a resume; a PARTIAL one
+   *  used to land in review silently, and silently is the problem — DraftBatch
+   *  writes `bugs` after `cases`, so the tail a cut takes is the bug
+   *  suggestions. "It didn't find any bugs" and "its answer was cut off before
+   *  it got to them" look identical in the review pane otherwise.
+   *
+   *  `outputCap` is what the failed attempt's requests asked for; undefined
+   *  means we asked for nothing and the endpoint chose — which is the case the
+   *  banner can actually tell the user how to fix. */
+  truncation: { outputCap?: number } | null;
   /** History run id, minted when analyze STARTS (not when it reaches review) so
    *  a run that dies mid-flight still has an identity its checkpoint and its
    *  tab can be keyed by. The draft snapshot is saved under this id; the later
@@ -834,6 +846,7 @@ const initialState: Omit<
   stepLabel: "",
   activityLog: [],
   durationMs: null,
+  truncation: null,
   runId: null,
   stepsUsed: null,
   stepCap: null,
@@ -1221,6 +1234,16 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         bugs,
         rawText: result.rawText,
         durationMs: result.durationMs,
+        // Partial answers reach review; the banner is how they stop being
+        // indistinguishable from a model that simply found nothing.
+        truncation:
+          result.finishReason === "length"
+            ? {
+                ...(result.outputCap !== undefined
+                  ? { outputCap: result.outputCap }
+                  : {}),
+              }
+            : null,
         stepLabel: "",
         // Seed display names from the resolved target context so the tab
         // title can render "<Plan> · <Suite>" without an extra ADO fetch.
@@ -1487,6 +1510,18 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         cases: reconcileAutoOutcomes(nextCases, nextBugs),
         bugs: nextBugs,
         rawText: result.rawText,
+        // A follow-up REPLACES the draft, so it owns the banner outright: set
+        // it when this round was cut off, clear it when it wasn't. Leaving the
+        // analyze round's flag standing would keep warning about a batch that
+        // is no longer on screen.
+        truncation:
+          result.finishReason === "length"
+            ? {
+                ...(result.outputCap !== undefined
+                  ? { outputCap: result.outputCap }
+                  : {}),
+              }
+            : null,
         stepLabel: "",
         refineUndoSnapshot: snapshot,
         refineResumable: null,
@@ -1731,6 +1766,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       rawText: "",
       publishLog: [],
       durationMs: null,
+      truncation: null,
       refineRounds: [],
       refineHistory: [],
       // A fresh analyze invalidates any prior refine snapshot — there's no
@@ -2139,6 +2175,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       rawText: "",
       publishLog: [],
       durationMs: null,
+      truncation: null,
       refineRounds: [],
       refineHistory: [],
       refineUndoSnapshot: null,
@@ -2339,6 +2376,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       rawText: "",
       publishLog: [],
       durationMs: null,
+      truncation: null,
     });
   },
 

@@ -224,6 +224,11 @@ export type LocalProviderConfig = {
   ollamaModelId?: string;
   openaiCompatibleBaseURL?: string;
   openaiCompatibleModelId?: string;
+  /** Output-token cap for the custom endpoint, or 0/undefined to send none.
+   *  Not a transport concern (it never reaches `buildLanguageModel`) — it rides
+   *  here because this is the one bag of per-endpoint settings every surface
+   *  already threads through to the runner. */
+  openaiCompatibleMaxOutputTokens?: number;
 };
 
 export function buildConfiguredLanguageModel(

@@ -208,6 +208,11 @@ export type CommitReviewSlice = {
   runId: string | null;
   createdAt: string | null;
   durationMs: number | null;
+  /** Set when the findings below are what a CUT-OFF stage-1 answer left behind.
+   *  The pane renders a salvaged list exactly like a complete one, so "the
+   *  reviewer found four things" and "the reviewer was cut off after four" read
+   *  identically without this. Null on every complete run. */
+  truncated: { outputCap?: number } | null;
   modelId: ModelId | null;
   /** Set when a failed / cancelled run left a checkpoint. Null when there's
    *  nothing on disk at all (never ran, or ran to completion). Whether a resume
@@ -559,6 +564,7 @@ async function settleResult(
     // render the same issues twice, once as a partial-result warning.
     stage1Candidates: null,
     durationMs: result.durationMs,
+    truncated: result.truncated ?? null,
     resumable: null,
   });
   await persistRow(tabId, { status: "done" }).catch(() => {});
@@ -793,6 +799,7 @@ function emptySlice(modelId: ModelId | null): CommitReviewSlice {
     runId: null,
     createdAt: null,
     durationMs: null,
+    truncated: null,
     modelId,
     resumable: null,
   };
@@ -862,6 +869,9 @@ export const useCommitReview = create<State>((set, get) => ({
             runId: row.runId,
             createdAt: row.createdAt,
             durationMs: row.durationMs,
+            // A saved row has no truncation record, and inheriting the flag from
+            // whatever this tab was showing before would mislabel history.
+            truncated: null,
             errorReason: row.status === "error" ? rowReason : null,
             errorLimit: row.status === "error" ? rowLimit : null,
             error:
@@ -1173,6 +1183,7 @@ export const useCommitReview = create<State>((set, get) => ({
       schemaViolationRaw: null,
       runId: null,
       durationMs: null,
+      truncated: null,
       // Walking away from the reviewed set also walks away from any adopted
       // resume point — the affordance is gated on status anyway, but a stale
       // resumable must not linger behind a null runId.
@@ -1212,6 +1223,7 @@ export const useCommitReview = create<State>((set, get) => ({
       schemaViolationRaw: null,
       runId: null,
       durationMs: null,
+      truncated: null,
       // Walking away from the reviewed set also walks away from any adopted
       // resume point — the affordance is gated on status anyway, but a stale
       // resumable must not linger behind a null runId.
@@ -1240,6 +1252,7 @@ export const useCommitReview = create<State>((set, get) => ({
       schemaViolationRaw: null,
       runId: null,
       durationMs: null,
+      truncated: null,
       // Walking away from the reviewed set also walks away from any adopted
       // resume point — the affordance is gated on status anyway, but a stale
       // resumable must not linger behind a null runId.
@@ -1488,6 +1501,7 @@ export const useCommitReview = create<State>((set, get) => ({
         runId,
         createdAt,
         durationMs: null,
+        truncated: null,
         resumable: null,
       });
       return { byTab: next };
@@ -1702,6 +1716,7 @@ export const useCommitReview = create<State>((set, get) => ({
         runId,
         createdAt: curr.createdAt ?? payload.createdAt,
         durationMs: null,
+        truncated: null,
         resumable: null,
         selectedShas: normalizeKeys(
           payload.inputs.selectedShas,

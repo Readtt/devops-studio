@@ -45,6 +45,7 @@ import {
   setOllamaModelId,
   setOpenaiCompatibleBaseURL,
   setOpenaiCompatibleContextLimit,
+  setOpenaiCompatibleMaxOutputTokens,
   setOpenaiCompatibleModelId,
   type GenerationBusyState,
 } from "@/modules/settings/store";
@@ -158,6 +159,9 @@ export function ModelsSection() {
   const compatContextLimit = usePreferencesStore(
     (s) => s.openaiCompatibleContextLimit,
   );
+  const compatMaxOutput = usePreferencesStore(
+    (s) => s.openaiCompatibleMaxOutputTokens,
+  );
 
   useEffect(() => {
     void getAllKeys().then(setKeys);
@@ -206,6 +210,8 @@ export function ModelsSection() {
           setModelId: setOpenaiCompatibleModelId,
           contextLimit: compatContextLimit,
           setContextLimit: setOpenaiCompatibleContextLimit,
+          maxOutputTokens: compatMaxOutput,
+          setMaxOutputTokens: setOpenaiCompatibleMaxOutputTokens,
         };
       default:
         return null;
@@ -244,6 +250,7 @@ export function ModelsSection() {
           // re-added connector silently inherits the old limit (128_000 is the
           // DEFAULT_PREFERENCES.openaiCompatibleContextLimit default).
           void cfg.setContextLimit?.(128_000);
+          void cfg.setMaxOutputTokens?.(0);
         }
       }
       if (id === "openai-compatible") void onClearKey(id);
@@ -335,6 +342,9 @@ type LocalConfig = {
   setModelId: (v: string) => Promise<void>;
   contextLimit?: number;
   setContextLimit?: (v: number) => Promise<void>;
+  /** 0 ⇒ unset: send no output cap and let the endpoint decide. */
+  maxOutputTokens?: number;
+  setMaxOutputTokens?: (v: number) => Promise<void>;
 };
 
 function AddProviderMenu({
@@ -577,11 +587,23 @@ function LocalProviderCard({
   onClearKey: () => Promise<void>;
   onRemove: () => void;
 }) {
-  const { baseURL, modelId, setBaseURL, setModelId, contextLimit, setContextLimit } =
-    config;
+  const {
+    baseURL,
+    modelId,
+    setBaseURL,
+    setModelId,
+    contextLimit,
+    setContextLimit,
+    maxOutputTokens,
+    setMaxOutputTokens,
+  } = config;
   const [urlDraft, setUrlDraft] = useState(baseURL);
   const [modelDraft, setModelDraft] = useState(modelId);
   const [contextDraft, setContextDraft] = useState(String(contextLimit ?? ""));
+  // 0 means "unset", which the field shows as empty — not as a literal 0.
+  const [maxOutDraft, setMaxOutDraft] = useState(
+    maxOutputTokens ? String(maxOutputTokens) : "",
+  );
   const [keyDraft, setKeyDraft] = useState("");
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<KeyTestResult | null>(null);
@@ -595,6 +617,10 @@ function LocalProviderCard({
   useEffect(() => setUrlDraft(baseURL), [baseURL]);
   useEffect(() => setModelDraft(modelId), [modelId]);
   useEffect(() => setContextDraft(String(contextLimit ?? "")), [contextLimit]);
+  useEffect(
+    () => setMaxOutDraft(maxOutputTokens ? String(maxOutputTokens) : ""),
+    [maxOutputTokens],
+  );
 
   const supportsKey = provider.id === "openai-compatible";
   // An unsaved draft key is what the user is trying out, so it wins over the
@@ -771,6 +797,61 @@ function LocalProviderCard({
           </FieldRow>
         ) : null}
 
+        {setMaxOutputTokens ? (
+          <FieldRow label="Max output" alignTop>
+            <div className="flex flex-1 flex-col gap-1">
+              <div className="flex items-center gap-1.5">
+                <Input
+                  value={maxOutDraft}
+                  onChange={(e) => setMaxOutDraft(e.target.value)}
+                  onBlur={() => {
+                    const raw = maxOutDraft.trim();
+                    if (raw === "") {
+                      void setMaxOutputTokens(0);
+                      return;
+                    }
+                    // Digits only, and a floor. `parseInt` alone reads "32,000"
+                    // as 32 and "8k" as 8 — a max_tokens of 32 goes out on
+                    // every request to this endpoint and breaks all four AI
+                    // surfaces, which is far worse than the truncation the
+                    // field exists to stop.
+                    const v = /^\d+$/.test(raw) ? Number(raw) : NaN;
+                    // Bounded above by this endpoint's own context window: an
+                    // output limit larger than the whole window is definitionally
+                    // wrong, and a fat-fingered 320000 would otherwise go out on
+                    // every request and 400 all four AI surfaces.
+                    const ceiling = contextLimit ?? 128_000;
+                    if (Number.isFinite(v) && v >= 256 && v <= ceiling)
+                      void setMaxOutputTokens(v);
+                    else
+                      setMaxOutDraft(
+                        maxOutputTokens ? String(maxOutputTokens) : "",
+                      );
+                  }}
+                  placeholder="auto"
+                  spellCheck={false}
+                  aria-label="Max output tokens"
+                  className="h-8 w-28 font-mono text-[11.5px]"
+                />
+                <span className="text-[10.5px] text-muted-foreground">
+                  tokens
+                </span>
+              </div>
+              {/* A persistent line, not a tooltip: Radix opens tooltips on
+                  FOCUS too, so one anchored to a text field covers the field
+                  the moment you click into it. */}
+              <span className="text-[10.5px] leading-relaxed text-muted-foreground">
+                Sent as the output limit on every request. Left empty, your
+                endpoint picks its own — often far smaller than the model
+                allows, which cuts long answers off mid-JSON and loses whatever
+                the model writes last (bug suggestions in the generator). 32000
+                suits most endpoints; going much higher can be refused outright,
+                since the limit counts against the context window.
+              </span>
+            </div>
+          </FieldRow>
+        ) : null}
+
         {supportsKey ? (
           <FieldRow label="API key">
             {compatKey ? (
@@ -842,16 +923,32 @@ function LocalProviderCard({
 function FieldRow({
   label,
   children,
+  /** Align the label to the FIRST line of the field rather than centring it on
+   *  the whole block. Every single-line row wants the default; a row that
+   *  carries a wrapped hint under its control does not — centring there floats
+   *  the label down beside the hint and leaves the input looking unlabelled. */
+  alignTop = false,
 }: {
   label: string;
   children: React.ReactNode;
+  alignTop?: boolean;
 }) {
   return (
-    <div className="flex items-center gap-3">
-      <span className="w-16 shrink-0 text-[11px] tracking-tight text-muted-foreground">
+    <div className={cn("flex gap-3", alignTop ? "items-start" : "items-center")}>
+      <span
+        className={cn(
+          "w-16 shrink-0 text-[11px] tracking-tight text-muted-foreground",
+          // Centres the label against the h-8 control on its first line.
+          alignTop && "pt-[9px]",
+        )}
+      >
         {label}
       </span>
-      <div className="flex flex-1 items-center">{children}</div>
+      <div
+        className={cn("flex flex-1", alignTop ? "flex-col" : "items-center")}
+      >
+        {children}
+      </div>
     </div>
   );
 }

@@ -790,3 +790,99 @@ describe("runCommitReview — stage-1 salvage of a truncated answer", () => {
     expect(mockRunTask).not.toHaveBeenCalled();
   });
 });
+
+// A stage-1 answer cut off by the output cap is SALVAGED — the findings that
+// closed before the cut are kept and the review resolves ok, which is right:
+// they were investigated and paid for. What was missing is any signal that the
+// list is partial. The pane renders a salvaged list exactly like a complete
+// one, so "the reviewer found two things" and "the reviewer was cut off after
+// two" looked identical — and a cut that landed before the FIRST finding closed
+// rendered as the green "no issues found" panel.
+describe("runCommitReview — a cut-off investigate pass", () => {
+  /** Stage 1 that died at the output cap, with N complete findings in its text. */
+  function stage1Cut(findings: CandidateFinding[], outputCap?: number) {
+    return {
+      ok: false,
+      reason: "schema_violation",
+      text: JSON.stringify({ findings }).slice(0, -2),
+      finalText: JSON.stringify({ findings }).slice(0, -2),
+      finishReason: "length",
+      durationMs: 9,
+      stepsUsed: 6,
+      ...(outputCap !== undefined ? { outputCap } : {}),
+    } as never;
+  }
+
+  it("flags the salvaged findings as partial", async () => {
+    mockStreamTask.mockResolvedValue(stage1Cut([cand("f1"), cand("f2")]));
+    mockRunTask.mockResolvedValue(
+      stage2Ok([
+        { id: "f1", verdict: "confirmed" },
+        { id: "f2", verdict: "confirmed" },
+      ]),
+    );
+
+    const res = await runCommitReview(input());
+
+    expect(res.ok).toBe(true);
+    expect(res.ok && res.findings).toHaveLength(2);
+    expect(res.ok && res.truncated).toBeDefined();
+  });
+
+  it("carries the output cap the cut-off request asked for", async () => {
+    mockStreamTask.mockResolvedValue(stage1Cut([cand("f1")], 8_192));
+    mockRunTask.mockResolvedValue(stage2Ok([{ id: "f1", verdict: "confirmed" }]));
+
+    const res = await runCommitReview(input());
+    expect(res.ok && res.truncated?.outputCap).toBe(8_192);
+  });
+
+  it("survives a verify pass that fails and falls back to unverified findings", async () => {
+    mockStreamTask.mockResolvedValue(stage1Cut([cand("f1")]));
+    mockRunTask.mockRejectedValue(new Error("429 rate limited"));
+
+    const res = await runCommitReview(input());
+    expect(res.ok && res.findings).toHaveLength(1);
+    // The fallback path is a different `return`; the flag has to reach it too,
+    // or a rate-limited verify silently launders a partial list into a clean one.
+    expect(res.ok && res.truncated).toBeDefined();
+  });
+
+  it("a cut that salvaged nothing is a classified failure, not a clean commit", async () => {
+    mockStreamTask.mockResolvedValue(stage1Cut([]));
+
+    const res = await runCommitReview(input());
+    // The zero-salvage branch already refuses to report success — pinned here
+    // so nobody "fixes" it into an ok:true empty review later.
+    expect(res.ok).toBe(false);
+    expect(!res.ok && res.finishReason).toBe("length");
+  });
+
+  it("flags a truncated run whose every salvaged finding was then refuted", async () => {
+    // The one way an ok:true review lands with ZERO findings AND a truncation:
+    // verify drops them all. Without the flag this renders as the green "no
+    // issues found" panel — a cut-off review reported as a clean commit.
+    mockStreamTask.mockResolvedValue(stage1Cut([cand("f1")]));
+    mockRunTask.mockResolvedValue(stage2Ok([{ id: "f1", verdict: "refuted" }]));
+
+    const res = await runCommitReview(input());
+    expect(res.ok).toBe(true);
+    expect(res.ok && res.findings).toHaveLength(0);
+    expect(res.ok && res.truncated).toBeDefined();
+  });
+
+  it("leaves a complete run unflagged", async () => {
+    mockStreamTask.mockResolvedValue(stage1Ok([cand("f1")]));
+    mockRunTask.mockResolvedValue(stage2Ok([{ id: "f1", verdict: "confirmed" }]));
+
+    const res = await runCommitReview(input());
+    expect(res.ok && res.truncated).toBeUndefined();
+  });
+
+  it("does not flag a step_cap failure — that loop was cut mid-READ, not mid-answer", async () => {
+    mockStreamTask.mockResolvedValue(stage1Bad("step_cap"));
+
+    const res = await runCommitReview(input());
+    expect(res.ok).toBe(false);
+  });
+});
