@@ -242,8 +242,14 @@ pub async fn lm_list_models(
         .to_string();
     let safe_ips = classify_and_collect_safe_ips(&host, true).await?;
 
+    // 30s, not the 5s a liveness probe would want: `/v1/models` is a
+    // user-initiated one-shot, and a gateway that lazily builds its catalogue on
+    // first hit can take far longer than a warm call suggests (one local proxy
+    // measured 26s cold, ~1s after). At 5s the first open always timed out —
+    // and because the abandoned request still warmed the server, the SECOND
+    // open populated. That is the whole "open the dropdown twice" bug.
     let mut builder = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none());
     let addrs: Vec<SocketAddr> = safe_ips.iter().map(|ip| SocketAddr::new(*ip, 0)).collect();
     builder = builder.resolve_to_addrs(&host, &addrs);
