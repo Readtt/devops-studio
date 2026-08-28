@@ -7,6 +7,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.23.0] - 2026-08-28
+
+### Added
+
+- **Max output setting for custom OpenAI-compatible endpoints** (Settings →
+  Models). Sets the output-token limit sent on every request to that endpoint.
+  Leave it empty and nothing is sent, exactly as before — but "let the endpoint
+  decide" is not free: a proxy in front of Anthropic has to invent a limit, and
+  the invented number is often far smaller than the model allows.
+- **A warning when a model's answer is cut off mid-write.** The generator's
+  review pane and Commit Review now say when the answer ran out of room, and
+  which part of it was never written. On a custom endpoint the warning links
+  straight to the setting that fixes it.
+
+### Fixed
+
+- **Bug suggestions went missing on custom endpoints.** Test cases are written
+  before bugs, so an answer that ran out of room lost the bugs and looked like
+  a complete run that simply found none. Commit Review lost findings the same
+  way, and a review cut off before it wrote any showed the green "no issues
+  found" panel.
+- **The Model ID dropdown needed opening twice to fill in.** The model-list
+  request gave up after 5 seconds. An endpoint that builds its catalogue on the
+  first request can take far longer — and because the abandoned request still
+  warmed it up, the second open worked. It now waits 30 seconds.
+- The generator can now tell a cut-off answer from an empty one when code
+  search is off, instead of reporting both as "the model returned nothing".
+
 ## [0.22.2] - 2026-08-21
 
 ### Fixed
