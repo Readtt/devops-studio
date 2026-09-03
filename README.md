@@ -50,7 +50,7 @@ Pick one or more commits — or your uncommitted **Local changes** (staged,
 unstaged, and new files vs HEAD, reviewable before you commit) — and the
 **Commit Review** runs a two-stage pass — *investigate* (hunt for issues with
 read-only code analysis) then *verify* (skeptically refute false positives) — and
-returns severity-ranked findings with evidence. Suggested fixes render as
+returns severity-ranked findings with evidence and steps to reproduce. Suggested fixes render as
 click-to-apply patch cards. Every run persists and reopens from History exactly
 as you left it — and an interrupted one greets you with a **Resume** card when
 you come back, continuing from its last checkpoint instead of starting over.

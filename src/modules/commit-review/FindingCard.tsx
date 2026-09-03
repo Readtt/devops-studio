@@ -56,7 +56,7 @@ const SEVERITY_DESC: Record<Severity, string> = {
   critical: "Critical — breaks production, loses/corrupts data, or is a real security hole. Fix before merging.",
   high: "High — a genuine bug or regression that will bite under normal use.",
   medium:
-    "Medium — a real but non-urgent quality or perf issue, or a test gap. Missing handling is rated by what it does instead, so it often lands higher.",
+    "Medium — a real but non-urgent issue: a quality or perf concern, a test gap, or damage that needs a precondition the review could not confirm.",
   low: "Low — a nit: style, naming, or a minor refactor. Optional polish.",
 };
 
@@ -191,9 +191,10 @@ export function FindingCard({
         {finding.explanation}
       </p>
 
-      {/* Guarded on trim(), not just presence: saved rows and checkpointed
-          candidates both come back through an unvalidated cast, so this is
-          undefined on either path. */}
+      {/* The presence check covers rows and checkpoints saved before the field
+          existed (both come back through an unvalidated cast) and the null the
+          schema degrades a bad value to; trim() covers a whitespace-only string
+          the model emits. */}
       {finding.reproSteps && finding.reproSteps.trim() ? (
         <details className="group/repro ml-0.5">
           <summary className="flex cursor-pointer list-none items-center gap-1 text-[10.5px] text-muted-foreground hover:text-foreground">

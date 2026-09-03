@@ -17,6 +17,7 @@ import {
   COMBINED_DIFF_WARN_BYTES,
   type RunCommitReviewInput,
 } from "./runCommitReview";
+import { CandidateFindingSchema, Stage1Schema } from "./schema";
 import { runTask, streamTask } from "@/modules/ai/lib/taskRunner";
 import {
   RESUME_TOPUP_TOKENS,
@@ -699,6 +700,27 @@ describe("buildVerifyPrompt — the verify stage's window", () => {
     expect(out).toContain("finding f1");
   });
 
+  // The system prompt promises verify the same tools as investigate. With
+  // code search off there are none, and the absence tie-break would confirm
+  // every "handling is missing" claim on a search that never ran.
+  it("tells a tool-less verify pass to mark absence claims uncertain", () => {
+    const toolLess = buildVerifyPrompt(
+      {
+        diffs: [diff("@@ -1 +1 @@\n+x")],
+        contextBlocks: [],
+        repos: [],
+      } as unknown as RunCommitReviewInput,
+      [cand("f1")],
+    );
+    expect(toolLess).toContain("No code-search tools are available this run");
+    expect(toolLess).toContain(
+      'a claim that handling is MISSING gets "uncertain"',
+    );
+    expect(verify([diff("@@ -1 +1 @@\n+x")], [cand("f1")])).not.toContain(
+      "No code-search tools",
+    );
+  });
+
   it("never narrows away the evidence when candidates cite code outside the diff", () => {
     // A finding about a caller the commit never touched is legitimate — and a
     // verifier handed an empty patch would refute it for the wrong reason.
@@ -903,5 +925,35 @@ describe("runCommitReview — a cut-off investigate pass", () => {
 
     const res = await runCommitReview(input());
     expect(res.ok).toBe(false);
+  });
+});
+
+// The OUTPUT shape teaches `| null` as the spelling of "none" on the two
+// optional fields beside reproSteps, so a model writing null there is a normal
+// answer, not a malformed one. A whole-batch parse failure on it would drop
+// every other finding through salvage, or fail a one-finding run unresumably.
+describe("CandidateFindingSchema — reproSteps degrades, never fails the batch", () => {
+  it("accepts null and degrades a non-string to null; keeps a string", () => {
+    const base = cand("f1");
+    for (const bad of [null, 42, ["1. step"]]) {
+      const r = CandidateFindingSchema.safeParse({ ...base, reproSteps: bad });
+      expect(r.success).toBe(true);
+      if (r.success) expect(r.data.reproSteps).toBeNull();
+    }
+    const ok = CandidateFindingSchema.safeParse({
+      ...base,
+      reproSteps: "1. Post it.",
+    });
+    expect(ok.success && ok.data.reproSteps).toBe("1. Post it.");
+  });
+
+  it("keeps the other findings when one carries a null", () => {
+    const r = Stage1Schema.safeParse({
+      findings: [{ ...cand("f1"), reproSteps: null }, cand("f2")],
+    });
+    expect(r.success && r.data.findings.map((f) => f.id)).toEqual([
+      "f1",
+      "f2",
+    ]);
   });
 });

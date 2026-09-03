@@ -27,6 +27,8 @@ describe("commit-review system prompts", () => {
     expect(p).not.toBe(INVESTIGATE_SYSTEM_PROMPT);
     expect(p).toContain("3 git commits");
     expect(p).toContain("ONE combined change");
+    // The clause that pointed at a since-removed heading went with it.
+    expect(p).not.toContain("frame a lens");
     // The full single-commit instructions still follow the preamble verbatim.
     expect(p.endsWith(INVESTIGATE_SYSTEM_PROMPT)).toBe(true);
     // The preamble comes first so it carries system-level authority.
@@ -38,6 +40,7 @@ describe("commit-review system prompts", () => {
   it("applies the same multi-commit framing to the verify stage", () => {
     const p = verifySystemPrompt(2, []);
     expect(p).toContain("2 git commits");
+    expect(p).not.toContain("frame a lens");
     expect(p.endsWith(VERIFY_SYSTEM_PROMPT)).toBe(true);
   });
 });
@@ -121,6 +124,10 @@ describe("commit-review prompts · finding writing contract", () => {
       "could move to a different finding unchanged",
       // FindingCard renders prose raw — backticks would display literally
       "no markdown, no backticks",
+      // ...and reproSteps renders the same way, so it is under the same rule
+      "evidence, and reproSteps all render as plain text",
+      // the change→failure sentence has no honest form for an absence
+      "an absence is never attributed to the change",
       // rewrite pressure must never become drop pressure
       "complexity in the prose is a reason to rewrite it",
       "at most 3 sentences",
@@ -145,6 +152,8 @@ describe("commit-review prompts · finding writing contract", () => {
     expect(FINDING_WRITING_RULES).toContain(
       "orders to the other.\\n\\nBoth call sites",
     );
+    // The repro example carries the same escape, one per step.
+    expect(FINDING_WRITING_RULES).toContain("kiosk-7.\\n2. Call GET");
   });
 
   it("replaces the old field hints instead of stacking a second contract", () => {
@@ -183,6 +192,8 @@ describe("commit-review prompts · input-scenario lens", () => {
       "work forward from what can ARRIVE",
       // scoping: without it the model reads until the step cap
       "Start where a value crosses a boundary",
+      // ...and the model cannot see its step cap, so "room" is not a signal
+      "Widen from there only once those are covered.",
       // derivation, not a remembered checklist
       "rather than working from a remembered checklist",
       // an absence is reportable at all
@@ -222,7 +233,7 @@ describe("commit-review prompts · input-scenario lens", () => {
   // produces: missing handling lives in code the commit did not change.
   it("widens PRECISION OVER RECALL to the touched code's input surface", () => {
     expect(INVESTIGATE_SYSTEM_PROMPT).toContain(
-      "The input surface of the code this commit touches is in scope too: a missing check there is a finding, not padding.",
+      "The input surface of the code this commit touches is in scope too: a missing check there, with damage behind it, is a finding, not padding.",
     );
     // The counterweights stay, or this becomes a noise machine.
     expect(INVESTIGATE_SYSTEM_PROMPT).toContain(
@@ -238,11 +249,20 @@ describe("commit-review prompts · input-scenario lens", () => {
   // beside it: with two tie-breaks in one prompt, the standing one wins.
   it("carves absence claims out of verify's refute-when-in-doubt tie-break", () => {
     expect(VERIFY_SYSTEM_PROMPT).toContain(
-      "to refute a claim that some handling is MISSING, you have to find and cite the code that handles it",
+      "to refute a claim that some handling is MISSING, cite what makes the claim false",
+    );
+    // Every refutation route step 2 already allows, not only a handler.
+    expect(VERIFY_SYSTEM_PROMPT).toContain(
+      "the guard that keeps that input from reaching it, or the constraint that stops the source producing it",
     );
     expect(VERIFY_SYSTEM_PROMPT).toContain(
-      "Not finding it is confirmation, not refutation.",
+      'A search that finds none of those is confirmation, not refutation; a search you could not run is "uncertain".',
     );
+    // In place: the exception sits on step 4's own line, not as a rule beside it.
+    const step4 = VERIFY_SYSTEM_PROMPT.split("\n").find((l) =>
+      l.startsWith("4. Recalibrate"),
+    );
+    expect(step4).toContain("handling is MISSING");
     // One tie-break, amended in place — not a second rule beside the first.
     expect(
       VERIFY_SYSTEM_PROMPT.match(/prefer "refuted"/g)?.length ?? 0,
@@ -281,6 +301,8 @@ describe("commit-review prompts · reproduction steps", () => {
       // ...and one plain line beats invented steps when nothing external
       // reaches the defect.
       "When the defect cannot be triggered from outside",
+      // "real values" must not fight "never invent a number you did not trace"
+      "The literal values in the steps are yours to choose",
     ]) {
       expect(FINDING_WRITING_RULES).toContain(phrase);
     }
@@ -314,8 +336,13 @@ describe("commit-review prompts · rating and reporting the new findings", () =>
     expect(INVESTIGATE_SYSTEM_PROMPT).toContain(
       "Missing handling has no severity of its own",
     );
+    // An ordered ladder: damage first, then one level off for an unconfirmed
+    // precondition — never two answers for one case.
     expect(INVESTIGATE_SYSTEM_PROMPT).toContain(
-      "A whole batch or request that stops on one bad item is not medium.",
+      "a whole batch or request that stops on one bad item, is high",
+    );
+    expect(INVESTIGATE_SYSTEM_PROMPT).toContain(
+      "then drop one level when reaching it needs a precondition you did not confirm",
     );
   });
 
@@ -345,5 +372,9 @@ describe("commit-review prompts · rating and reporting the new findings", () =>
       "Do this on every review, requirements attached or not.",
     );
     expect(INVESTIGATE_SYSTEM_PROMPT).toContain("search the OLD string");
+    // A recall rule inside a precision prompt needs its own carve-out.
+    expect(INVESTIGATE_SYSTEM_PROMPT).toContain(
+      "A reader kept for old persisted data, or a changelog line, is not a leftover.",
+    );
   });
 });

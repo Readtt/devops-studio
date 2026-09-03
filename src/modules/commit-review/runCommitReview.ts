@@ -591,11 +591,18 @@ export function buildVerifyPrompt(
   const contextSection = contextText
     ? `\n\n---\nDEVELOPER CONTEXT (ticket / requirements):\n${contextText}`
     : "";
+  // The system prompt promises verify the same tools as investigate; with code
+  // search off neither stage has any. Left unsaid, the absence tie-break would
+  // confirm every "handling is missing" claim on a search that never ran.
+  const noTools =
+    input.repos.length > 0
+      ? ""
+      : '\n\n> No code-search tools are available this run (code search is off in Settings). You cannot look for the code that handles a case, so a claim that handling is MISSING gets "uncertain" — never confirmed on the strength of a search you could not run — and every verdict keeps modest confidence.';
   return `${commitSections(
     diffs,
     input.repos.map((r) => r.name),
     focusPathsFromCandidates(candidates),
-  )}${contextSection}
+  )}${noTools}${contextSection}
 
 ---
 CANDIDATE FINDINGS from the first pass — verify each by trying to refute it, then return verdicts keyed by id:
