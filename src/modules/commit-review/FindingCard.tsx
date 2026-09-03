@@ -55,7 +55,8 @@ const CATEGORY_DESC: Record<Category, string> = {
 const SEVERITY_DESC: Record<Severity, string> = {
   critical: "Critical — breaks production, loses/corrupts data, or is a real security hole. Fix before merging.",
   high: "High — a genuine bug or regression that will bite under normal use.",
-  medium: "Medium — a real but non-urgent issue: missing error handling, a perf concern, a test gap.",
+  medium:
+    "Medium — a real but non-urgent quality or perf issue, or a test gap. Missing handling is rated by what it does instead, so it often lands higher.",
   low: "Low — a nit: style, naming, or a minor refactor. Optional polish.",
 };
 
@@ -189,6 +190,26 @@ export function FindingCard({
       <p className="whitespace-pre-wrap text-[11.5px] leading-snug text-foreground/85">
         {finding.explanation}
       </p>
+
+      {/* Guarded on trim(), not just presence: saved rows and checkpointed
+          candidates both come back through an unvalidated cast, so this is
+          undefined on either path. */}
+      {finding.reproSteps && finding.reproSteps.trim() ? (
+        <details className="group/repro ml-0.5">
+          <summary className="flex cursor-pointer list-none items-center gap-1 text-[10.5px] text-muted-foreground hover:text-foreground">
+            <HugeiconsIcon
+              icon={ArrowRight01Icon}
+              size={11}
+              strokeWidth={1.75}
+              className="transition-transform group-open/repro:rotate-90"
+            />
+            Steps to reproduce
+          </summary>
+          <p className="mt-1 whitespace-pre-wrap border-l border-border/40 pl-2.5 text-[10.5px] leading-snug text-muted-foreground">
+            {finding.reproSteps}
+          </p>
+        </details>
+      ) : null}
 
       {finding.evidence && finding.evidence.trim() ? (
         <details className="group/ev ml-0.5">

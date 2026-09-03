@@ -60,6 +60,11 @@ export const CandidateFindingSchema = z.object({
   /** The checks that ground this finding, as "<repo>/<path>:<line> — what it
    *  showed" lines (semi-formal reasoning; same contract). */
   evidence: z.string().default(""),
+  /** Numbered steps that reach the failure, traced from the code (contract in
+   *  FINDING_WRITING_RULES). `.optional()`, never `.default("")`: a default
+   *  makes the field REQUIRED on the inferred output type, which would break
+   *  every `: CandidateFinding` fixture under tsc while vitest stayed green. */
+  reproSteps: z.string().optional(),
   confidence: ConfidenceSchema,
   /** A one-spot fix, when the model is confident in it.
    *  `.catch(null)` so a single malformed embedded patch (e.g. the model emits

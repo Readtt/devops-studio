@@ -680,6 +680,25 @@ describe("buildVerifyPrompt — the verify stage's window", () => {
     expect(out).toContain("+small change");
   });
 
+  // reproSteps illustrates a claim for the developer; verify judges the claim
+  // itself, and this payload is re-sent on every one of verify's steps.
+  it("strips reproSteps out of the candidates it re-sends", () => {
+    const out = verify(
+      [diff("@@ -1 +1 @@\n+small change")],
+      [
+        {
+          ...cand("f1"),
+          file: "src/b.ts",
+          reproSteps: "1. Post a display name of 300 characters to /api/users.",
+        },
+      ],
+    );
+    expect(out).not.toContain("reproSteps");
+    expect(out).not.toContain("300 characters");
+    // ...while the claim it illustrates still travels.
+    expect(out).toContain("finding f1");
+  });
+
   it("never narrows away the evidence when candidates cite code outside the diff", () => {
     // A finding about a caller the commit never touched is legitimate — and a
     // verifier handed an empty patch would refute it for the wrong reason.

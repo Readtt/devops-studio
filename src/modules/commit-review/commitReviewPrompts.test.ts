@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   FINDING_WRITING_RULES,
+  INPUT_SCENARIO_RULES,
   INVESTIGATE_SYSTEM_PROMPT,
   VERIFY_SYSTEM_PROMPT,
   investigateSystemPrompt,
@@ -155,5 +156,194 @@ describe("commit-review prompts · finding writing contract", () => {
     expect(INVESTIGATE_SYSTEM_PROMPT).not.toContain(
       "file:line refs + a one-line trace",
     );
+  });
+});
+
+// The forward lens: every other section reasons backward from the change, so
+// missing handling — an absence with no changed line to cite — was previously
+// unreportable. The section only fires because of the two supporting edits
+// pinned below it; without them it lands and does nothing.
+describe("commit-review prompts · input-scenario lens", () => {
+  it("ships in the investigate stage, with the other lenses", () => {
+    expect(INVESTIGATE_SYSTEM_PROMPT.includes(INPUT_SCENARIO_RULES)).toBe(true);
+    const at = INVESTIGATE_SYSTEM_PROMPT.indexOf("INPUT SCENARIOS");
+    expect(at).toBeGreaterThan(
+      INVESTIGATE_SYSTEM_PROMPT.indexOf("CROSS-MODULE CONSISTENCY"),
+    );
+    expect(at).toBeLessThan(
+      INVESTIGATE_SYSTEM_PROMPT.indexOf("REQUIREMENTS CONFORMANCE"),
+    );
+    // Verify judges claims; it does not author them.
+    expect(VERIFY_SYSTEM_PROMPT).not.toContain("INPUT SCENARIOS");
+  });
+
+  it("pins the four paragraphs that make the section fire", () => {
+    for (const phrase of [
+      // forward, not backward — the whole point of the section
+      "work forward from what can ARRIVE",
+      // scoping: without it the model reads until the step cap
+      "Start where a value crosses a boundary",
+      // derivation, not a remembered checklist
+      "rather than working from a remembered checklist",
+      // an absence is reportable at all
+      "either name the code that handles it or establish that nothing does",
+      // ...but only with damage behind it, or every absent check is a finding
+      "an absent check with no consequence behind it is not a finding",
+      // rated by damage, so it doesn't sort as a nit
+      "data that comes out wrong is correctness, not maintainability",
+      // how to evidence a search that came back empty
+      "the looking is your evidence",
+      // the literal input, which is also the repro
+      "the literal value rather than its category",
+    ]) {
+      expect(INPUT_SCENARIO_RULES).toContain(phrase);
+    }
+  });
+
+  // Nothing tells the model its step cap, so a section billed as "the
+  // highest-value lens" is where a budget it cannot measure gets spent — and
+  // the forward lens carried no billing at all.
+  it("gives neither lens top billing, and says why both get worked", () => {
+    expect(INVESTIGATE_SYSTEM_PROMPT).not.toContain("highest-value lens");
+    expect(INPUT_SCENARIO_RULES).toContain(
+      "They find close to disjoint sets of defects, so work both",
+    );
+  });
+
+  // A checklist of input classes would be worked through as a checklist and
+  // would anchor every future review on whatever shapes happened to be in it.
+  it("names no fixed list of input classes", () => {
+    for (const token of ["null", "empty string", "Unicode", "boundary value"]) {
+      expect(INPUT_SCENARIO_RULES).not.toContain(token);
+    }
+  });
+
+  // Read literally, the old scope sentence suppressed exactly what the lens
+  // produces: missing handling lives in code the commit did not change.
+  it("widens PRECISION OVER RECALL to the touched code's input surface", () => {
+    expect(INVESTIGATE_SYSTEM_PROMPT).toContain(
+      "The input surface of the code this commit touches is in scope too: a missing check there is a finding, not padding.",
+    );
+    // The counterweights stay, or this becomes a noise machine.
+    expect(INVESTIGATE_SYSTEM_PROMPT).toContain(
+      "False positives destroy trust faster than misses",
+    );
+    expect(INVESTIGATE_SYSTEM_PROMPT).toContain(
+      "Zero findings is a valid, good result",
+    );
+  });
+
+  // Absence findings look thin, so the standing tie-break would delete them
+  // all — silently. The carve-out edits that tie-break rather than sitting
+  // beside it: with two tie-breaks in one prompt, the standing one wins.
+  it("carves absence claims out of verify's refute-when-in-doubt tie-break", () => {
+    expect(VERIFY_SYSTEM_PROMPT).toContain(
+      "to refute a claim that some handling is MISSING, you have to find and cite the code that handles it",
+    );
+    expect(VERIFY_SYSTEM_PROMPT).toContain(
+      "Not finding it is confirmation, not refutation.",
+    );
+    // One tie-break, amended in place — not a second rule beside the first.
+    expect(
+      VERIFY_SYSTEM_PROMPT.match(/prefer "refuted"/g)?.length ?? 0,
+    ).toBe(1);
+    // The writing contract still belongs to stage 1 only.
+    expect(VERIFY_SYSTEM_PROMPT).not.toContain("HOW TO WRITE FINDINGS");
+  });
+});
+
+// The developer has to see the bug happen, not just read a claim about it.
+// Naming the triggering input is work the input-scenario lens already does, so
+// the repro rides along with it rather than costing a second pass.
+describe("commit-review prompts · reproduction steps", () => {
+  it("puts the REPRO bullet after EVIDENCE and before the worked example", () => {
+    const at = FINDING_WRITING_RULES.indexOf("- REPRO:");
+    expect(at).toBeGreaterThan(FINDING_WRITING_RULES.indexOf("- EVIDENCE:"));
+    expect(at).toBeLessThan(
+      FINDING_WRITING_RULES.indexOf("EXAMPLE of the shape"),
+    );
+    // Not after the closing line, where it reads as contradicting the block's
+    // own prose caps.
+    expect(at).toBeLessThan(
+      FINDING_WRITING_RULES.indexOf("Shorten prose within these shapes"),
+    );
+  });
+
+  it("asks for literal values, traced from code rather than watched", () => {
+    for (const phrase of [
+      "the exact literal input that triggers it",
+      "Use real values",
+      // The block already forbids inventing a failure. A repro written as a
+      // session someone ran IS that invention, and with the two rules fighting
+      // the model resolves it by writing no repro at all.
+      "You read the code, you did not run the product",
+      "never write a step as something you watched happen on a screen",
+      // ...and one plain line beats invented steps when nothing external
+      // reaches the defect.
+      "When the defect cannot be triggered from outside",
+    ]) {
+      expect(FINDING_WRITING_RULES).toContain(phrase);
+    }
+  });
+
+  // A rule with no example in front of it gets skipped, and a field missing
+  // from the OUTPUT shape never gets emitted at all.
+  it("shows reproSteps in both the worked example and the OUTPUT shape", () => {
+    expect(FINDING_WRITING_RULES).toContain(
+      '"reproSteps": "1. Sign in as user 41',
+    );
+    expect(INVESTIGATE_SYSTEM_PROMPT).toContain(
+      '"reproSteps": "numbered steps per HOW TO WRITE FINDINGS"',
+    );
+  });
+});
+
+// The forward lens only pays off if the new findings are rated and reported
+// honestly: rated by shape they under-rate, and gated behind attached
+// requirements they never fire.
+describe("commit-review prompts · rating and reporting the new findings", () => {
+  it("rates missing handling by its damage, not as a flat medium", () => {
+    // The old line ("medium: missing error handling, ...") rated by the shape
+    // of the defect, which under-rates exactly what the input lens finds.
+    expect(INVESTIGATE_SYSTEM_PROMPT).not.toContain(
+      "medium: missing error handling",
+    );
+    expect(INVESTIGATE_SYSTEM_PROMPT).toContain(
+      "rate a finding by what it DOES, not by the shape it takes",
+    );
+    expect(INVESTIGATE_SYSTEM_PROMPT).toContain(
+      "Missing handling has no severity of its own",
+    );
+    expect(INVESTIGATE_SYSTEM_PROMPT).toContain(
+      "A whole batch or request that stops on one bad item is not medium.",
+    );
+  });
+
+  it("keeps requirements conservative about intent, not about size", () => {
+    // The anti-speculation stance stands — models over-flag intent.
+    expect(INVESTIGATE_SYSTEM_PROMPT).toContain(
+      "never speculate that intent is unmet",
+    );
+    expect(INVESTIGATE_SYSTEM_PROMPT).toContain(
+      "Reporting a non-existent requirement gap is worse than missing one.",
+    );
+    // ...but a mismatch visible in the code is reportable however small.
+    expect(INVESTIGATE_SYSTEM_PROMPT).toContain(
+      "a mismatch you CAN point at in the code is worth reporting at whatever severity its damage deserves, including low, and is never padding",
+    );
+  });
+
+  // The sweep must fire on every run, so it cannot live inside the section
+  // gated on "only when the user provided context/ticket/requirements".
+  it("runs the rename sweep outside the requirements gate", () => {
+    const sweep = INVESTIGATE_SYSTEM_PROMPT.indexOf("RENAMES AND RELABELS");
+    expect(sweep).toBeGreaterThan(-1);
+    expect(sweep).toBeLessThan(
+      INVESTIGATE_SYSTEM_PROMPT.indexOf("REQUIREMENTS CONFORMANCE"),
+    );
+    expect(INVESTIGATE_SYSTEM_PROMPT).toContain(
+      "Do this on every review, requirements attached or not.",
+    );
+    expect(INVESTIGATE_SYSTEM_PROMPT).toContain("search the OLD string");
   });
 });

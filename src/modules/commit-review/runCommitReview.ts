@@ -573,6 +573,11 @@ export function buildInvestigatePrompt(input: RunCommitReviewInput): string {
 Investigate ${diffs.length > 1 ? "these commits'" : "this commit's"} change and its blast radius, then return the findings JSON.`;
 }
 
+/** Strips reproSteps out of the verify payload: it illustrates a claim for the
+ *  developer, and verify judges the claim. */
+const withoutRepro = (key: string, value: unknown) =>
+  key === "reproSteps" ? undefined : value;
+
 /** Verify's user turn. The candidates ARE the task here, so the diff is scoped
  *  to the files they cite instead of re-sent whole: the change was already paid
  *  for once by the investigate pass, and verify re-sends its prompt on every one
@@ -595,5 +600,5 @@ export function buildVerifyPrompt(
 ---
 CANDIDATE FINDINGS from the first pass — verify each by trying to refute it, then return verdicts keyed by id:
 
-${JSON.stringify(candidates, null, 2)}`;
+${JSON.stringify(candidates, withoutRepro, 2)}`;
 }
