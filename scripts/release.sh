@@ -258,8 +258,18 @@ echo "  CHANGELOG.md updated, version bumped, tag pushed."
 echo
 
 if command -v gh >/dev/null 2>&1; then
-  sleep 3
-  RUN_ID="$(gh run list --repo "$REPO_SLUG" --workflow=release.yml --event=push --limit=1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
+  # Match the run to the tag we just pushed, and poll for it. `--limit=1`
+  # alone returns whatever ran LAST, and a fresh run takes a few seconds to
+  # register — so a bare `sleep 3` reliably printed the PREVIOUS release's run
+  # id and URL. Following that link says "success" about the last release and
+  # tells you nothing about this one. A tag push sets head_branch to the tag,
+  # which is what --branch filters on.
+  RUN_ID=""
+  for _ in $(seq 1 10); do
+    RUN_ID="$(gh run list --repo "$REPO_SLUG" --workflow=release.yml --event=push --branch "$TAG" --limit=1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
+    [[ -n "$RUN_ID" ]] && break
+    sleep 3
+  done
   if [[ -n "$RUN_ID" ]]; then
     echo "  Release workflow #$RUN_ID running."
     echo "    Watch live:    gh run watch $RUN_ID --repo $REPO_SLUG"
