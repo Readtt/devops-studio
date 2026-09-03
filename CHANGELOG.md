@@ -7,6 +7,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.24.0] - 2026-09-03
+
+### Added
+
+- Commit Review now works forward from what can arrive at the changed code, the way test design does, so it reports handling that was never written and not only changed lines that break something. Each of those findings names the exact input that triggers it.
+- Findings carry **Steps to reproduce**: numbered steps traced from the code, shown as a disclosure above Evidence on the finding card.
+- A rename sweep runs on every review: when a change renames or re-labels something, the old string is searched across the repos and every leftover (placeholders, tooltips, help text, error messages, tests) is reported.
+
+### Changed
+
+- Severity is rated by what a defect does, not by the shape it takes. Missing handling that loses data or halts a whole batch is no longer a flat "medium", and the severity tooltip on finding cards says the same.
+- Requirements checks stay conservative about intent but now report a concrete, code-visible mismatch at any severity, including low.
+- The verify pass no longer refutes a "handling is missing" finding on thin evidence alone: refuting one requires citing the code that handles the case.
+
 ## [0.23.0] - 2026-08-28
 
 ### Added
