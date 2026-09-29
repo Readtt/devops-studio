@@ -6,7 +6,7 @@ vi.mock("@/modules/settings/preferences", () => ({
   usePreferencesStore: { getState: () => ({ modelCatalog: {} }) },
 }));
 vi.mock("@/modules/settings/store", () => ({ setModelCatalog: async () => {} }));
-vi.mock("../store/chatStore", () => ({ useChatStore: {} }));
+
 
 import type { DiscoverableProvider, ModelCatalog, ModelListing } from "../config";
 import { CATALOG_STALE_AFTER_MS, nextModelCatalog } from "./modelCatalog";

@@ -829,6 +829,12 @@ export function getModel(id: ModelId): ModelInfo {
   return m;
 }
 
+/** `getModel` for an id that may not resolve: undefined instead of a throw. */
+export function findModel(id: ModelId | null | undefined): ModelInfo | undefined {
+  if (!id) return undefined;
+  return CURATED_BY_ID.get(id) ?? uncatalogued(id);
+}
+
 /** The id a model is called by on the wire. */
 export function apiModelId(id: ModelId): string {
   return getModel(id).apiId ?? id;

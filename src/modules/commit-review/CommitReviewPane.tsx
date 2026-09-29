@@ -35,7 +35,7 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import {
-  MODELS,
+  findModel,
   RESUME_TOPUP_TOKENS,
   SURFACE_STEP_CAPS,
   SURFACE_TOKEN_BUDGETS,
@@ -225,7 +225,7 @@ export function CommitReviewPane({ tabId, modelId, rehydrateRunId }: Props) {
   ).length;
   const guardWorkItems = slice?.workItems ?? [];
   const guardModelId = slice?.modelId ?? defaultModelId;
-  const guardModelLabel = MODELS.find((m) => m.id === guardModelId)?.label;
+  const guardModelLabel = findModel(guardModelId)?.label;
   const guard = useContextGuard({
     modelId: guardModelId,
     compatOverride: guardCompatOverride,

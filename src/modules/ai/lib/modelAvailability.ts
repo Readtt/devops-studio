@@ -4,11 +4,27 @@
 // or local base URL + model id set). Settings, the status bar and the
 // generator all share the same predicate so they agree on what's pickable.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { getModel, MODELS, type ModelId } from "../config";
+import {
+  discoveredModelsForCatalog,
+  getModel,
+  MODELS,
+  type ModelId,
+  type ModelInfo,
+} from "../config";
 import { getAllKeys, type ProviderKeys } from "./keyring";
 import { onKeysChanged } from "@/modules/settings/store";
+
+/** Every model a picker can offer: the curated list, then whatever the
+ *  connected providers' own lists add. Re-renders when a list refresh lands. */
+export function useSelectableModels(): readonly ModelInfo[] {
+  const catalog = usePreferencesStore((s) => s.modelCatalog);
+  return useMemo(
+    () => [...(MODELS as readonly ModelInfo[]), ...discoveredModelsForCatalog(catalog)],
+    [catalog],
+  );
+}
 
 export type ModelAvailability = {
   available: boolean;
@@ -93,6 +109,7 @@ export function useModelAvailability(): Availability {
   const openaiCompatibleModelId = usePreferencesStore(
     (s) => s.openaiCompatibleModelId,
   );
+  const models = useSelectableModels();
   const [keys, setKeys] = useState<ProviderKeys | null>(null);
 
   useEffect(() => {
@@ -111,30 +128,52 @@ export function useModelAvailability(): Availability {
     };
   }, []);
 
-  const prefs: PrefsSnapshot = {
-    lmstudioModelId,
-    mlxModelId,
-    ollamaModelId,
-    openaiCompatibleBaseURL,
-    openaiCompatibleModelId,
-  };
-
-  const ctx = { keys: keys ?? ({} as ProviderKeys), prefs };
-  const available = new Set<ModelId>();
-  if (keys) {
-    for (const m of MODELS) {
-      if (isModelAvailable(m.id as ModelId, ctx).available) {
-        available.add(m.id as ModelId);
-      }
+  const ctx = useMemo(
+    () => ({
+      keys: keys ?? ({} as ProviderKeys),
+      prefs: {
+        lmstudioModelId,
+        mlxModelId,
+        ollamaModelId,
+        openaiCompatibleBaseURL,
+        openaiCompatibleModelId,
+      } satisfies PrefsSnapshot,
+    }),
+    [
+      keys,
+      lmstudioModelId,
+      mlxModelId,
+      ollamaModelId,
+      openaiCompatibleBaseURL,
+      openaiCompatibleModelId,
+    ],
+  );
+  // Memoised: OpenRouter alone can add hundreds of models, and this hook runs
+  // in every picker on every render.
+  const available = useMemo(() => {
+    const set = new Set<ModelId>();
+    if (!keys) return set;
+    for (const m of models) {
+      if (isModelAvailable(m.id, ctx).available) set.add(m.id);
     }
-  }
+    return set;
+  }, [keys, models, ctx]);
+
+  // By id rather than set membership, so a saved discovered model whose
+  // provider hasn't answered yet this launch isn't reported as disconnected.
+  const check = (id: ModelId): ModelAvailability | null => {
+    try {
+      return isModelAvailable(id, ctx);
+    } catch {
+      return null;
+    }
+  };
 
   return {
     // Until keys load (very brief), be permissive so we don't flash an empty
     // picker. The run engine still validates at request time.
-    isAvailable: (id) => (keys ? available.has(id) : true),
-    reason: (id) =>
-      keys ? isModelAvailable(id, ctx).reason : null,
+    isAvailable: (id) => (keys ? (check(id)?.available ?? false) : true),
+    reason: (id) => (keys ? (check(id)?.reason ?? null) : null),
     hasAny: keys ? available.size > 0 : true,
     available,
   };

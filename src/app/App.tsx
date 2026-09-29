@@ -77,7 +77,7 @@ import {
   type WorkItemRef,
 } from "@/modules/ado";
 import { autoBindRepos } from "@/modules/ado/repoBinding";
-import { startModelCatalogSync } from "@/modules/ai/lib/modelCatalog";
+import { startModelCatalogSync } from "@/modules/ai/lib/modelCatalogSync";
 import { ActionToast } from "@/components/ActionToast";
 import { useActionToast } from "@/components/actionToastStore";
 import { openUrl } from "@tauri-apps/plugin-opener";

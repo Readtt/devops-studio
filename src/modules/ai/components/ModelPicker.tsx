@@ -14,17 +14,27 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
-import { MODELS, PROVIDERS, getModel, type ModelId } from "@/modules/ai/config";
+import {
+  PROVIDERS,
+  getModel,
+  type ModelId,
+  type ModelInfo,
+} from "@/modules/ai/config";
 import { ProviderIcon } from "./ProviderIcon";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   pushRecentModel,
   toggleFavoriteModel,
 } from "@/modules/ai/lib/modelPrefs";
+import { useSelectableModels } from "@/modules/ai/lib/modelAvailability";
 import { StarIcon, StarHalfIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 export type ModelPickerFilter = (modelId: ModelId) => boolean;
+
+/** Discovered models shown per provider before the user types. OpenRouter
+ *  alone lists hundreds; a search reaches all of them. */
+const DISCOVERED_PREVIEW = 5;
 
 type Props = {
   value: ModelId;
@@ -66,16 +76,20 @@ export function ModelPicker({
   emptyMessage,
 }: Props) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const recents = usePreferencesStore((s) => s.recentModelIds);
   const favorites = usePreferencesStore((s) => s.favoriteModelIds);
+  const models = useSelectableModels();
   const current = getModel(value);
 
   const visibleModels = useMemo(() => {
-    return MODELS.filter((m) => (filter ? filter(m.id as ModelId) : true));
-  }, [filter]);
+    return models.filter((m) => (filter ? filter(m.id) : true));
+  }, [models, filter]);
 
+  // Curated first in catalogue order, then the provider's own list newest
+  // first — the order `useSelectableModels` already hands them over in.
   const grouped = useMemo(() => {
-    const byProvider = new Map<string, (typeof MODELS)[number][]>();
+    const byProvider = new Map<string, ModelInfo[]>();
     for (const m of visibleModels) {
       const arr = byProvider.get(m.provider) ?? [];
       arr.push(m);
@@ -89,11 +103,11 @@ export function ModelPicker({
 
   const recentVisible = recents
     .map((id) => visibleModels.find((m) => m.id === id))
-    .filter((m): m is (typeof MODELS)[number] => Boolean(m));
+    .filter((m): m is ModelInfo => Boolean(m));
 
   const favoriteVisible = favorites
     .map((id) => visibleModels.find((m) => m.id === id))
-    .filter((m): m is (typeof MODELS)[number] => Boolean(m));
+    .filter((m): m is ModelInfo => Boolean(m));
 
   const onPick = (id: string) => {
     setOpen(false);
@@ -102,9 +116,17 @@ export function ModelPicker({
   };
 
   const isEmpty = visibleModels.length === 0;
+  const searching = query.trim().length > 0;
 
   return (
-    <Popover open={open} onOpenChange={(next) => !disabled && setOpen(next)}>
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        if (disabled) return;
+        setOpen(next);
+        if (!next) setQuery("");
+      }}
+    >
       <PopoverTrigger asChild disabled={disabled}>
         <button
           type="button"
@@ -138,7 +160,11 @@ export function ModelPicker({
         }}
       >
         <Command>
-          <CommandInput placeholder="Search models…" />
+          <CommandInput
+            placeholder="Search models…"
+            value={query}
+            onValueChange={setQuery}
+          />
           <CommandList
             className="overscroll-contain"
             style={{
@@ -194,20 +220,37 @@ export function ModelPicker({
                 <CommandSeparator />
               </>
             ) : null}
-            {grouped.map((g) => (
-              <CommandGroup key={g.provider.id} heading={g.provider.label}>
-                {g.models.map((m) => (
-                  <ModelRow
-                    key={m.id}
-                    section={`provider:${g.provider.id}`}
-                    model={m}
-                    selected={m.id === value}
-                    favorite={favorites.includes(m.id)}
-                    onPick={() => onPick(m.id)}
-                  />
-                ))}
-              </CommandGroup>
-            ))}
+            {grouped.map((g) => {
+              // Unsearched, a provider shows its curated models, its newest
+              // few discovered ones, and the selected model wherever it sits.
+              let discoveredShown = 0;
+              const rows = searching
+                ? g.models
+                : g.models.filter((m) => {
+                    if (!m.discovered || m.id === value) return true;
+                    return ++discoveredShown <= DISCOVERED_PREVIEW;
+                  });
+              const hidden = g.models.length - rows.length;
+              return (
+                <CommandGroup key={g.provider.id} heading={g.provider.label}>
+                  {rows.map((m) => (
+                    <ModelRow
+                      key={m.id}
+                      section={`provider:${g.provider.id}`}
+                      model={m}
+                      selected={m.id === value}
+                      favorite={favorites.includes(m.id)}
+                      onPick={() => onPick(m.id)}
+                    />
+                  ))}
+                  {hidden > 0 ? (
+                    <p className="px-2 pt-0.5 pb-1.5 pl-[26px] text-[10.5px] text-muted-foreground/70">
+                      {hidden} more from {g.provider.label} — type to search
+                    </p>
+                  ) : null}
+                </CommandGroup>
+              );
+            })}
           </CommandList>
           {footer ? (
             <div className="border-t border-border/50 bg-card/40 px-2 py-1.5">
@@ -231,7 +274,7 @@ function ModelRow({
    *  the same model in different groups (Recent vs Anthropic) get distinct
    *  values so hover state never leaks between them. */
   section: string;
-  model: (typeof MODELS)[number];
+  model: ModelInfo;
   selected: boolean;
   favorite: boolean;
   onPick: () => void;

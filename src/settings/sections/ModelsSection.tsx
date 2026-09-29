@@ -14,11 +14,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import {
-  MODELS,
+  DISCOVERABLE_PROVIDERS,
   PROVIDERS,
   getModel,
+  getProvider,
   providerNeedsKey,
   type ModelId,
   type ProviderId,
@@ -28,7 +30,12 @@ import { clearKey, getAllKeys, setKey } from "@/modules/ai/lib/keyring";
 import { testProviderKey, type KeyTestResult } from "@/modules/ai/lib/testKey";
 import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
-import { useModelAvailability } from "@/modules/ai/lib/modelAvailability";
+import {
+  useModelAvailability,
+  useSelectableModels,
+} from "@/modules/ai/lib/modelAvailability";
+import { refreshModelCatalog } from "@/modules/ai/lib/modelCatalog";
+import { relativeTime } from "@/modules/ai/components/ResumeCard";
 import {
   localProviderConfig,
   usePreferencesStore,
@@ -434,7 +441,7 @@ function DefaultModelBlock({
 }) {
   const availability = useModelAvailability();
   const current = getModel(defaultModel);
-  const totalModels = MODELS.length;
+  const totalModels = useSelectableModels().length;
   const lockedCount = totalModels - availability.available.size;
   // Subscribe to the main window's generation-busy broadcast so we lock the
   // picker mid-run / mid-draft, same as the status-bar picker does locally.
@@ -550,6 +557,7 @@ function DefaultModelBlock({
         <p className="text-[10.5px] leading-relaxed text-muted-foreground">
           {engineHint}
         </p>
+        <ModelListStatus />
         {defaultUnavailable ? (
           <p className="flex items-center gap-1.5 text-[10.5px] text-amber-700 dark:text-amber-300">
             <HugeiconsIcon
@@ -564,6 +572,100 @@ function DefaultModelBlock({
           </p>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Where the picker's non-curated models come from, and how fresh that is. The
+ * main window re-reads each connected provider's model list every 12 hours and
+ * whenever a key changes; "Check now" is for the day a model launches and the
+ * user doesn't want to wait. A provider that failed keeps its last good list,
+ * so the line says so rather than letting a stale list pass as current.
+ */
+function ModelListStatus() {
+  const catalog = usePreferencesStore((s) => s.modelCatalog);
+  const [checking, setChecking] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+
+  const entries = DISCOVERABLE_PROVIDERS.flatMap((p) => {
+    const entry = catalog[p];
+    return entry ? [{ provider: p, entry }] : [];
+  });
+  const lastChecked = Math.max(0, ...entries.map((e) => e.entry.checkedAt));
+  const failures = entries.filter((e) => e.entry.error);
+
+  const checkNow = async () => {
+    setChecking(true);
+    setFailed(null);
+    try {
+      const keys = await getAllKeys();
+      const connected = DISCOVERABLE_PROVIDERS.some((p) => keys[p]);
+      if (!connected) {
+        setFailed("Connect a cloud provider below first.");
+        return;
+      }
+      await refreshModelCatalog({ keys, force: true });
+    } catch (e) {
+      setFailed(e instanceof Error ? e.message : String(e));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
+        {checking ? (
+          <>
+            <Spinner className="size-3" />
+            <span>Checking your providers for new models…</span>
+          </>
+        ) : (
+          <span>
+            New models from your connected providers show up in this list on
+            their own.
+            {lastChecked > 0
+              ? ` Last checked ${relativeTime(new Date(lastChecked).toISOString())}.`
+              : ""}
+          </span>
+        )}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="xs"
+              variant="ghost"
+              onClick={() => void checkNow()}
+              disabled={checking}
+              className="ml-auto shrink-0 text-[11px] text-muted-foreground hover:text-foreground"
+            >
+              Check now
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="max-w-[280px] text-[11px]">
+            Ask every connected provider for its current model list now, instead
+            of waiting for the next automatic check (every 12 hours). Your default
+            model doesn't change.
+          </TooltipContent>
+        </Tooltip>
+      </div>
+      {failed ? (
+        <p className="text-[10.5px] text-amber-700 dark:text-amber-300">{failed}</p>
+      ) : null}
+      {!checking
+        ? failures.map(({ provider, entry }) => (
+            <p
+              key={provider}
+              className="flex items-start gap-1 text-[10.5px] text-amber-700 dark:text-amber-300"
+            >
+              <ProviderIcon provider={provider} size={11} className="mt-px shrink-0" />
+              <span>
+                Couldn't get {getProvider(provider).label}'s model list (
+                {entry.error}), so its models may be out of date.
+              </span>
+            </p>
+          ))
+        : null}
     </div>
   );
 }
