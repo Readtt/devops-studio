@@ -118,10 +118,14 @@ export async function buildLanguageModel(
         baseURL: "https://api.deepseek.com",
         apiKey: key,
         fetch: cloudProxyFetch,
-        // Without this, generateObject falls back to weak json_object mode (no
-        // schema sent) and these endpoints often return prose/fenced JSON →
-        // empty results. DeepSeek/Mistral/OpenRouter support strict json_schema.
-        supportsStructuredOutputs: true,
+        // DeepSeek accepts `response_format` of `text` or `json_object` ONLY
+        // (api-docs.deepseek.com, create-chat-completion); `json_schema` is a
+        // 400, "This response_format type is unavailable now", so claiming
+        // structured-output support failed every schema run outright. In
+        // json_object mode the schema isn't sent — the prompts already spell
+        // out the JSON shape (the tool-bearing path validates against it with
+        // no SDK help) — and generateObject's repairText strips any fences.
+        supportsStructuredOutputs: false,
       })(resolvedModelId);
       break;
     }
@@ -133,6 +137,9 @@ export async function buildLanguageModel(
         baseURL: "https://api.mistral.ai/v1",
         apiKey: key,
         fetch: cloudProxyFetch,
+        // Mistral and OpenRouter take strict `json_schema`. Without it
+        // generateObject falls back to json_object mode, sends no schema, and
+        // these endpoints often answer with prose or fenced JSON.
         supportsStructuredOutputs: true,
       })(resolvedModelId);
       break;

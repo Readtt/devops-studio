@@ -9,6 +9,7 @@ import {
   SUMMARY_MARKER,
 } from "./summarizeTranscript";
 import { EVICTION_STUB_MARKER } from "./compactTranscript";
+import { isReasoningModel } from "../config";
 
 const user = (text: string): ModelMessage => ({ role: "user", content: text });
 const say = (text: string): ModelMessage => ({
@@ -255,5 +256,13 @@ describe("pickSummarizerModel", () => {
 
   it("keeps the run's own model when nothing configured is cheaper", () => {
     expect(pickSummarizerModel("gpt-5.4-nano", keys, 5_000)).toBe("gpt-5.4-nano");
+  });
+
+  // GPT-6 Luna is the cheapest OpenAI model and a reasoner: its thinking would
+  // spend the 3k-token cap the summary has to fit in.
+  it("never picks a reasoning model, however cheap", () => {
+    const picked = pickSummarizerModel("claude-opus-5", { openai: "k" }, 5_000);
+    expect(picked).toBe("gpt-5.4-nano");
+    expect(isReasoningModel(picked)).toBe(false);
   });
 });

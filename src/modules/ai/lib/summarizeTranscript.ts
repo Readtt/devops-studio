@@ -39,6 +39,7 @@ import { estimateTokens } from "./contextEstimate";
 import {
   getModel,
   getModelContextLimit,
+  isReasoningModel,
   MODEL_PRICING,
   MODELS,
   type ModelId,
@@ -326,6 +327,13 @@ function stableString(v: unknown): string {
  *     which is deliberate rather than a side effect — they're free, but "is LM
  *     Studio running right now" is not a question worth betting the run on.
  *   • Its window must hold the source with room to answer.
+ *   • It must not be a reasoning model. Reasoning spends the same small output
+ *     cap the summary has to fit in, so the cheapest reasoner (GPT-6 Luna, at
+ *     half gpt-5.4-nano's price) would hand back a truncated or empty summary.
+ *
+ *  Curated models only, on purpose: a live-listed model has no vetted price or
+ *  intelligence score, and the cheapest one on OpenRouter is not a summarizer
+ *  anyone chose.
  *
  *  Falls back to the run's own model, which is always usable by construction. */
 export function pickSummarizerModel(
@@ -342,6 +350,7 @@ export function pickSummarizerModel(
     // Summarizing a technical transcript badly is worse than not summarizing:
     // the tier below this reliably drops file paths and line numbers.
     if (m.capabilities.intelligence < 3) continue;
+    if (isReasoningModel(m.id)) continue;
     if (getModelContextLimit(m.id) < needed) continue;
     if (!best || price < best.price) best = { id: m.id as ModelId, price };
   }

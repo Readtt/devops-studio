@@ -17,12 +17,18 @@ export type KeyTestResult = {
   message: string;
 };
 
-/** Pick a cheap, non-reasoning model for this provider so a tiny token cap
- *  doesn't starve a reasoning budget. Falls back to any model. */
-function probeModelId(provider: ProviderId): ModelId | null {
+/** Pick the cheapest non-reasoning model for this provider, so a tiny token
+ *  cap doesn't starve a reasoning budget — or the cheapest model outright when
+ *  every one reasons (Google, DeepSeek). Cheapest rather than first-listed: the
+ *  catalogue leads with each provider's newest flagship, and a key test
+ *  shouldn't depend on a model that shipped yesterday. */
+export function probeModelId(provider: ProviderId): ModelId | null {
   const forProvider = MODELS.filter((m) => m.provider === provider);
-  const pick =
-    forProvider.find((m) => !isReasoningModel(m.id)) ?? forProvider[0];
+  const plain = forProvider.filter((m) => !isReasoningModel(m.id));
+  const pool = plain.length > 0 ? plain : forProvider;
+  const pick = [...pool].sort(
+    (a, b) => b.capabilities.cost - a.capabilities.cost,
+  )[0];
   return (pick?.id as ModelId) ?? null;
 }
 

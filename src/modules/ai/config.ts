@@ -153,6 +153,10 @@ export type ModelInfo = {
    *  SDK already strips the param; see `supportsTemperature` for why we don't
    *  delegate that call. */
   rejectsSamplingParams?: boolean;
+  /** Claude "preserved thinking": the API checks every replayed thinking block
+   *  against the conversation prefix it was produced under, and rejects the
+   *  request when that prefix changed. See `preservesThinking`. */
+  preservesThinking?: boolean;
 };
 
 export const MODELS = [
@@ -166,12 +170,46 @@ export const MODELS = [
   // meant the same upstream model was flagged on its OpenRouter route and not
   // on its native one — one prefix rule in someone else's release away from the
   // 400 that flag exists to prevent.
+  //
+  // GPT-6 is where that stopped being hypothetical: @ai-sdk/openai before
+  // 3.0.109 classed only `gpt-5*` and the o-series as reasoning models, so it
+  // forwarded `temperature` to every gpt-6 id, and Astra and 6.1 Sol refuse it.
+  {
+    id: "gpt-6-astra",
+    provider: "openai",
+    label: "GPT-6 Astra",
+    hint: "Flagship",
+    description: "OpenAI's most capable model.",
+    capabilities: { intelligence: 5, speed: 2, cost: 1 },
+    tags: ["vision", "reasoning", "tools", "coding"],
+    rejectsSamplingParams: true,
+  },
+  {
+    id: "gpt-6.1-sol",
+    provider: "openai",
+    label: "GPT-6.1 Sol",
+    hint: "Balanced",
+    description: "Near-Astra quality at a fifth of the price.",
+    capabilities: { intelligence: 5, speed: 4, cost: 3 },
+    tags: ["vision", "reasoning", "tools", "coding"],
+    rejectsSamplingParams: true,
+  },
+  {
+    id: "gpt-6-luna",
+    provider: "openai",
+    label: "GPT-6 Luna",
+    hint: "Fastest",
+    description: "Cheapest GPT-6, for quick high-volume work.",
+    capabilities: { intelligence: 4, speed: 5, cost: 5 },
+    tags: ["vision", "reasoning", "tools"],
+    rejectsSamplingParams: true,
+  },
   {
     id: "gpt-5.5",
     provider: "openai",
     label: "GPT-5.5",
-    hint: "Flagship",
-    description: "Frontier reasoning and code.",
+    hint: "Previous",
+    description: "Previous flagship for reasoning and code.",
     capabilities: { intelligence: 5, speed: 3, cost: 1 },
     tags: ["vision", "reasoning", "tools", "coding"],
     rejectsSamplingParams: true,
@@ -190,10 +228,10 @@ export const MODELS = [
     id: "gpt-5.4-nano",
     provider: "openai",
     label: "GPT-5.4 nano",
-    hint: "Fastest",
+    hint: "Tiny",
     description: "Tiny and instant — great for autocomplete.",
     capabilities: { intelligence: 3, speed: 5, cost: 5 },
-    tags: ["tools"],
+    tags: ["vision", "tools"],
     rejectsSamplingParams: true,
   },
   {
@@ -208,12 +246,49 @@ export const MODELS = [
   },
 
   // ── Anthropic ─────────────────────────────────────────────────────────────
+  //
+  // The 5.1 / 5.5 generation also checks replayed thinking against the
+  // conversation it came from (`preservesThinking`), which is the one request-
+  // shape change over Claude 5 this app would otherwise trip.
+  {
+    id: "claude-fable-5-1",
+    provider: "anthropic",
+    label: "Claude Fable 5.1",
+    hint: "Frontier",
+    description: "Anthropic's most capable model, for the hardest work.",
+    capabilities: { intelligence: 5, speed: 1, cost: 1 },
+    tags: ["vision", "reasoning", "tools", "coding"],
+    rejectsSamplingParams: true,
+    preservesThinking: true,
+  },
+  {
+    id: "claude-opus-5-5",
+    provider: "anthropic",
+    label: "Claude Opus 5.5",
+    hint: "Best",
+    description: "Anthropic's flagship for deep reasoning and agentic work.",
+    capabilities: { intelligence: 5, speed: 2, cost: 2 },
+    tags: ["vision", "reasoning", "tools", "coding"],
+    rejectsSamplingParams: true,
+    preservesThinking: true,
+  },
+  {
+    id: "claude-sonnet-5-5",
+    provider: "anthropic",
+    label: "Claude Sonnet 5.5",
+    hint: "Newest",
+    description: "Newest Sonnet — near-Opus quality, 1M-token context.",
+    capabilities: { intelligence: 5, speed: 4, cost: 3 },
+    tags: ["vision", "tools", "coding"],
+    rejectsSamplingParams: true,
+    preservesThinking: true,
+  },
   {
     id: "claude-opus-5",
     provider: "anthropic",
     label: "Claude Opus 5",
-    hint: "Best",
-    description: "Anthropic's flagship for deep reasoning and agentic work.",
+    hint: "Previous",
+    description: "Previous Opus for deep reasoning and agentic work.",
     capabilities: { intelligence: 5, speed: 2, cost: 1 },
     tags: ["vision", "reasoning", "tools", "coding"],
     rejectsSamplingParams: true,
@@ -243,6 +318,12 @@ export const MODELS = [
   },
 
   // ── Google ────────────────────────────────────────────────────────────────
+  //
+  // Every Gemini 3.x model takes no temperature from us. Google: "keep
+  // temperature at its default value of 1.0 … setting it below 1.0 may lead to
+  // … looping or degraded performance" — and we were sending 0 to 3 Flash,
+  // which wasn't tagged as the thinking model it is. From 3.6 Flash on the
+  // param is ignored, and Google says a future generation will 400 on it.
   {
     id: "gemini-3.1-pro-preview",
     provider: "google",
@@ -251,47 +332,85 @@ export const MODELS = [
     description: "Strong reasoning, 1M context.",
     capabilities: { intelligence: 5, speed: 3, cost: 2 },
     tags: ["vision", "reasoning", "tools", "coding"],
+    rejectsSamplingParams: true,
+  },
+  {
+    id: "gemini-3.8-flash",
+    provider: "google",
+    label: "Gemini 3.8 Flash",
+    hint: "Fast",
+    description: "Google's newest Flash — fast multimodal, 1M context.",
+    capabilities: { intelligence: 4, speed: 5, cost: 4 },
+    tags: ["vision", "reasoning", "tools", "coding"],
+    rejectsSamplingParams: true,
   },
   {
     id: "gemini-3-flash-preview",
     provider: "google",
     label: "Gemini 3 Flash",
-    hint: "Fast",
-    description: "Fast multimodal, 1M context.",
+    hint: "Previous",
+    description: "Earlier Flash preview, 1M context.",
     capabilities: { intelligence: 4, speed: 5, cost: 4 },
-    tags: ["vision", "tools"],
+    tags: ["vision", "reasoning", "tools"],
+    rejectsSamplingParams: true,
   },
 
   // ── xAI ───────────────────────────────────────────────────────────────────
+  //
+  // `grok-4-fast-reasoning` was retired 2026-05-15; xAI now silently serves
+  // that slug with grok-4.3 at low effort, so it's gone rather than kept as a
+  // label for a model the user wouldn't be getting.
+  {
+    id: "grok-4.7",
+    provider: "xai",
+    label: "Grok 4.7",
+    hint: "Flagship",
+    description: "xAI's most capable model, strong at code.",
+    capabilities: { intelligence: 5, speed: 3, cost: 3 },
+    tags: ["vision", "reasoning", "tools", "coding"],
+  },
+  {
+    id: "grok-4.3",
+    provider: "xai",
+    label: "Grok 4.3",
+    hint: "Fast",
+    description: "Fast and cheap, strong at tool calls.",
+    capabilities: { intelligence: 4, speed: 4, cost: 4 },
+    tags: ["vision", "reasoning", "tools"],
+  },
   {
     id: "grok-4.20-reasoning",
     provider: "xai",
     label: "Grok 4.20 Reasoning",
     hint: "Reasoning",
     description: "Frontier reasoning with extended thinking.",
-    capabilities: { intelligence: 5, speed: 2, cost: 2 },
-    tags: ["reasoning", "tools", "coding"],
+    capabilities: { intelligence: 5, speed: 2, cost: 4 },
+    tags: ["vision", "reasoning", "tools", "coding"],
   },
   {
     id: "grok-4.20-non-reasoning",
     provider: "xai",
     label: "Grok 4.20",
-    hint: "Fast",
-    description: "Fast tier for chat and tools.",
-    capabilities: { intelligence: 4, speed: 4, cost: 3 },
-    tags: ["tools"],
-  },
-  {
-    id: "grok-4-fast-reasoning",
-    provider: "xai",
-    label: "Grok 4 Fast",
-    hint: "Reasoning",
-    description: "Cheaper Grok 4 with vision and reasoning.",
+    hint: "Quick",
+    description: "Grok 4.20 without reasoning, for chat and tools.",
     capabilities: { intelligence: 4, speed: 4, cost: 4 },
-    tags: ["vision", "reasoning", "tools"],
+    tags: ["vision", "tools"],
   },
 
   // ── DeepSeek ──────────────────────────────────────────────────────────────
+  //
+  // DeepSeek retired `deepseek-reasoner` and `deepseek-chat` (2026-07-24) and
+  // renamed V4 Flash to `deepseek-flash` (V4.1). Both current models think by
+  // default, where temperature "has no effect".
+  {
+    id: "deepseek-flash",
+    provider: "deepseek",
+    label: "DeepSeek V4.1 Flash",
+    hint: "Fast",
+    description: "Newest DeepSeek — beats V4 Pro at a fraction of the price.",
+    capabilities: { intelligence: 5, speed: 4, cost: 5 },
+    tags: ["vision", "reasoning", "tools", "coding"],
+  },
   {
     id: "deepseek-v4-pro",
     provider: "deepseek",
@@ -301,43 +420,28 @@ export const MODELS = [
     capabilities: { intelligence: 5, speed: 3, cost: 4 },
     tags: ["reasoning", "tools", "coding"],
   },
-  {
-    id: "deepseek-v4-flash",
-    provider: "deepseek",
-    label: "DeepSeek V4 Flash",
-    hint: "Fast",
-    description: "Cheap and fast everyday tier.",
-    capabilities: { intelligence: 4, speed: 5, cost: 5 },
-    tags: ["tools"],
-  },
-  {
-    id: "deepseek-reasoner",
-    provider: "deepseek",
-    label: "DeepSeek Reasoner",
-    hint: "Thinking",
-    description: "Chain-of-thought at open-weight prices.",
-    capabilities: { intelligence: 5, speed: 2, cost: 4 },
-    tags: ["reasoning", "coding"],
-  },
 
   // ── Mistral ────────────────────────────────────────────────────────────────
-  {
-    id: "mistral-large-latest",
-    provider: "mistral",
-    label: "Mistral Large 3",
-    hint: "Best",
-    description: "Flagship Mistral model with 128K context.",
-    capabilities: { intelligence: 5, speed: 3, cost: 3 },
-    tags: ["vision", "tools", "coding"],
-  },
+  //
+  // Medium 3.5 replaced Medium 3.1, Magistral and Devstral 2 as the flagship;
+  // Large 3 is the cheaper open-weight MoE.
   {
     id: "mistral-medium-latest",
     provider: "mistral",
     label: "Mistral Medium 3.5",
-    hint: "Balanced",
-    description: "Good balance of speed and intelligence.",
+    hint: "Flagship",
+    description: "Mistral's flagship — vision and reasoning, 256K context.",
+    capabilities: { intelligence: 5, speed: 3, cost: 3 },
+    tags: ["vision", "tools", "coding"],
+  },
+  {
+    id: "mistral-large-latest",
+    provider: "mistral",
+    label: "Mistral Large 3",
+    hint: "Open",
+    description: "Open-weight Large 3 — cheap, 256K context.",
     capabilities: { intelligence: 4, speed: 4, cost: 4 },
-    tags: ["vision", "tools"],
+    tags: ["vision", "tools", "coding"],
   },
   {
     id: "codestral-latest",
@@ -345,11 +449,14 @@ export const MODELS = [
     label: "Codestral",
     hint: "Code",
     description: "Purpose-built coding model from Mistral.",
-    capabilities: { intelligence: 4, speed: 4, cost: 4 },
+    capabilities: { intelligence: 4, speed: 4, cost: 5 },
     tags: ["coding"],
   },
 
   // ── Cerebras (autocomplete-tier) ──────────────────────────────────────────
+  //
+  // Cerebras deprecated llama-3.3-70b and qwen-3-32b; its shared inference now
+  // serves just these two.
   {
     id: "gpt-oss-120b",
     provider: "cerebras",
@@ -360,25 +467,28 @@ export const MODELS = [
     tags: ["tools", "coding"],
   },
   {
-    id: "llama3.3-70b",
+    id: "qwen-3.8-27b",
     provider: "cerebras",
-    label: "Llama 3.3 70B",
+    label: "Qwen 3.8 27B",
     hint: "Fast",
-    description: "Meta's open model on wafer-scale silicon.",
-    capabilities: { intelligence: 3, speed: 5, cost: 5 },
-    tags: ["tools"],
-  },
-  {
-    id: "qwen-3-32b",
-    provider: "cerebras",
-    label: "Qwen 3 32B",
-    hint: "Fast",
-    description: "Multilingual model at extreme speed.",
-    capabilities: { intelligence: 3, speed: 5, cost: 5 },
-    tags: ["tools", "coding"],
+    description: "Qwen's latest small model, with vision.",
+    capabilities: { intelligence: 4, speed: 5, cost: 3 },
+    tags: ["vision", "tools", "coding"],
   },
 
   // ── Groq (autocomplete-tier) ──────────────────────────────────────────────
+  //
+  // Groq shut down deepseek-r1-distill-llama-70b (2025-10-02) and took
+  // llama-3.3-70b-versatile off its free and developer tiers (2026-08-16).
+  {
+    id: "openai/gpt-oss-120b",
+    provider: "groq",
+    label: "GPT-OSS 120B",
+    hint: "Fast",
+    description: "OpenAI's open-weight flagship on Groq LPU.",
+    capabilities: { intelligence: 4, speed: 5, cost: 5 },
+    tags: ["tools", "coding"],
+  },
   {
     id: "openai/gpt-oss-20b",
     provider: "groq",
@@ -388,31 +498,40 @@ export const MODELS = [
     capabilities: { intelligence: 3, speed: 5, cost: 5 },
     tags: ["tools", "coding"],
   },
-  {
-    id: "llama-3.3-70b-versatile",
-    provider: "groq",
-    label: "Llama 3.3 70B",
-    hint: "Versatile",
-    description: "Fast and broadly capable.",
-    capabilities: { intelligence: 4, speed: 5, cost: 5 },
-    tags: ["tools"],
-  },
-  {
-    id: "deepseek-r1-distill-llama-70b",
-    provider: "groq",
-    label: "DeepSeek R1 Distill 70B",
-    hint: "Thinking",
-    description: "Reasoning-distilled Llama on Groq.",
-    capabilities: { intelligence: 4, speed: 5, cost: 5 },
-    tags: ["reasoning", "tools"],
-  },
 
   // ── OpenRouter (gateway — curated cross-provider routes) ──────────────────
   //
   // Gateway routes ride @ai-sdk/openai-compatible, which forwards our request
   // body verbatim — none of the per-model sampling-param stripping the native
   // Anthropic/OpenAI SDKs do applies here. So every frontier route that drops
-  // `temperature` upstream must say so itself.
+  // `temperature` upstream must say so itself. (OpenRouter's own
+  // `supported_parameters` can't be trusted for this: it lists `temperature`
+  // for Claude Opus 5.5 because one of its hosts, Azure, accepts it.)
+  //
+  // OpenRouter ids spell versions with dots (`claude-opus-5.5`) where the
+  // native APIs use hyphens (`claude-opus-5-5`).
+  {
+    id: "anthropic/claude-sonnet-5.5",
+    provider: "openrouter",
+    label: "Claude Sonnet 5.5",
+    hint: "OpenRouter",
+    description: "Newest Sonnet via OpenRouter.",
+    capabilities: { intelligence: 5, speed: 4, cost: 3 },
+    tags: ["vision", "tools", "coding"],
+    rejectsSamplingParams: true,
+    preservesThinking: true,
+  },
+  {
+    id: "anthropic/claude-opus-5.5",
+    provider: "openrouter",
+    label: "Claude Opus 5.5",
+    hint: "OpenRouter",
+    description: "Anthropic flagship via OpenRouter.",
+    capabilities: { intelligence: 5, speed: 2, cost: 2 },
+    tags: ["vision", "reasoning", "tools", "coding"],
+    rejectsSamplingParams: true,
+    preservesThinking: true,
+  },
   {
     id: "anthropic/claude-sonnet-5",
     provider: "openrouter",
@@ -428,8 +547,18 @@ export const MODELS = [
     provider: "openrouter",
     label: "Claude Opus 5",
     hint: "OpenRouter",
-    description: "Anthropic flagship via OpenRouter.",
+    description: "Previous Anthropic flagship via OpenRouter.",
     capabilities: { intelligence: 5, speed: 2, cost: 1 },
+    tags: ["vision", "reasoning", "tools", "coding"],
+    rejectsSamplingParams: true,
+  },
+  {
+    id: "openai/gpt-6.1-sol",
+    provider: "openrouter",
+    label: "GPT-6.1 Sol",
+    hint: "OpenRouter",
+    description: "OpenAI's balanced GPT-6 via OpenRouter.",
+    capabilities: { intelligence: 5, speed: 4, cost: 3 },
     tags: ["vision", "reasoning", "tools", "coding"],
     rejectsSamplingParams: true,
   },
@@ -461,15 +590,16 @@ export const MODELS = [
     description: "Google flagship via OpenRouter.",
     capabilities: { intelligence: 5, speed: 3, cost: 2 },
     tags: ["vision", "reasoning", "tools", "coding"],
+    rejectsSamplingParams: true,
   },
   {
-    id: "x-ai/grok-4.20-reasoning",
+    id: "x-ai/grok-4.7",
     provider: "openrouter",
-    label: "Grok 4.20 Reasoning",
+    label: "Grok 4.7",
     hint: "OpenRouter",
-    description: "xAI reasoning via OpenRouter.",
-    capabilities: { intelligence: 5, speed: 2, cost: 2 },
-    tags: ["reasoning", "tools", "coding"],
+    description: "xAI flagship via OpenRouter.",
+    capabilities: { intelligence: 5, speed: 3, cost: 3 },
+    tags: ["vision", "reasoning", "tools", "coding"],
   },
   {
     id: "deepseek/deepseek-v4-pro",
@@ -481,16 +611,7 @@ export const MODELS = [
     tags: ["reasoning", "tools", "coding"],
   },
   {
-    id: "deepseek/deepseek-reasoner",
-    provider: "openrouter",
-    label: "DeepSeek Reasoner",
-    hint: "OpenRouter",
-    description: "Cheap chain-of-thought reasoner.",
-    capabilities: { intelligence: 5, speed: 2, cost: 5 },
-    tags: ["reasoning", "coding"],
-  },
-  {
-    id: "meta-llama/llama-4-scout-17b-16e-instruct",
+    id: "meta-llama/llama-4-scout",
     provider: "openrouter",
     label: "Llama 4 Scout",
     hint: "OpenRouter",
@@ -517,15 +638,6 @@ export const MODELS = [
     tags: ["vision", "tools", "coding"],
   },
   {
-    id: "qwen/qwen3-max",
-    provider: "openrouter",
-    label: "Qwen 3 Max",
-    hint: "OpenRouter",
-    description: "Alibaba's multilingual reasoner.",
-    capabilities: { intelligence: 5, speed: 3, cost: 4 },
-    tags: ["reasoning", "tools", "coding"],
-  },
-  {
     id: "qwen/qwen3-coder",
     provider: "openrouter",
     label: "Qwen 3 Coder",
@@ -535,13 +647,13 @@ export const MODELS = [
     tags: ["tools", "coding"],
   },
   {
-    id: "mistralai/mistral-large-latest",
+    id: "mistralai/mistral-large-2512",
     provider: "openrouter",
-    label: "Mistral Large",
+    label: "Mistral Large 3",
     hint: "OpenRouter",
     description: "EU-hosted general-purpose flagship.",
-    capabilities: { intelligence: 4, speed: 4, cost: 3 },
-    tags: ["tools", "coding"],
+    capabilities: { intelligence: 4, speed: 4, cost: 4 },
+    tags: ["vision", "tools", "coding"],
   },
   {
     id: "z-ai/glm-4.6",
@@ -600,6 +712,30 @@ export function getModel(id: ModelId): ModelInfo {
   const m = MODELS.find((x) => x.id === id);
   if (!m) throw new Error(`Unknown model: ${id}`);
   return m;
+}
+
+/** Curated ids removed because the provider shut the model down, mapped to the
+ *  same provider's successor. A saved default pointing at one moves to its
+ *  successor rather than to DEFAULT_MODEL_ID — which is an Anthropic model, and
+ *  a Groq-only or DeepSeek-only user has no key for it. */
+export const RETIRED_MODEL_REPLACEMENTS: Readonly<Record<string, string>> = {
+  "grok-4-fast-reasoning": "grok-4.3",
+  "deepseek-v4-flash": "deepseek-flash",
+  "deepseek-reasoner": "deepseek-v4-pro",
+  "llama3.3-70b": "gpt-oss-120b",
+  "qwen-3-32b": "qwen-3.8-27b",
+  "llama-3.3-70b-versatile": "openai/gpt-oss-120b",
+  "deepseek-r1-distill-llama-70b": "openai/gpt-oss-120b",
+  "x-ai/grok-4.20-reasoning": "x-ai/grok-4.7",
+  "deepseek/deepseek-reasoner": "deepseek/deepseek-v4-pro",
+  "meta-llama/llama-4-scout-17b-16e-instruct": "meta-llama/llama-4-scout",
+  "qwen/qwen3-max": "qwen/qwen3-coder",
+  "mistralai/mistral-large-latest": "mistralai/mistral-large-2512",
+};
+
+/** A persisted id, carried past a retirement when the model has a successor. */
+export function migrateModelId(id: string): string {
+  return RETIRED_MODEL_REPLACEMENTS[id] ?? id;
 }
 
 /** Whether `id` is a currently-registered model. Used to sanitize persisted
@@ -663,55 +799,91 @@ export function supportsTemperature(id: ModelId | string): boolean {
   }
 }
 
+/** Whether requests to this model must tolerate edited history — Claude's
+ *  "preserved thinking" (Opus 5.5, Sonnet 5.5, Fable 5.1).
+ *
+ *  Those models bind every thinking block to the exact conversation prefix it
+ *  was produced under, and a replayed block whose prefix changed is a 400 —
+ *  enforced by default for Anthropic accounts created on or after 2026-08-31,
+ *  so it is the NEW users who hit it first. This app edits history mid-run on
+ *  purpose: tool-result eviction rewrites old results in place, an installed
+ *  summary replaces older turns, and a resume replays a transcript banked
+ *  without its request-only nudge. Each of those would invalidate every later
+ *  thinking block.
+ *
+ *  So the runner asks the API to DROP an invalidated block instead of failing
+ *  the request (`prefix_mismatch_behavior: "drop_block"`). A dropped block is
+ *  unbilled and the model re-plans without that reasoning — the same thing
+ *  eviction already costs it — where the default is a run that dies on its
+ *  first step after an eviction. Only the native Anthropic transport replays
+ *  signed thinking blocks, so only it acts on this. */
+export function preservesThinking(id: ModelId | string): boolean {
+  try {
+    return getModel(id as ModelId).preservesThinking === true;
+  } catch {
+    return false;
+  }
+}
+
 export const DEFAULT_MODEL_ID: ModelId = "claude-sonnet-5";
 
 /** Approximate context window (in tokens) per model. Used for the
  *  context-usage indicator in the AI mini-window header. Conservative
  *  estimates — actual provider limits may shift. */
 export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
+  "gpt-6-astra": 1_050_000,
+  "gpt-6.1-sol": 1_050_000,
+  "gpt-6-luna": 1_050_000,
   "gpt-5.5": 1_050_000,
   "gpt-5.4-mini": 400_000,
   "gpt-5.4-nano": 400_000,
   "gpt-5.3-codex": 400_000,
+  "claude-fable-5-1": 1_000_000,
+  "claude-opus-5-5": 1_000_000,
+  "claude-sonnet-5-5": 1_000_000,
   "claude-opus-5": 1_000_000,
   "claude-sonnet-5": 1_000_000,
   "claude-haiku-4-5": 200_000,
   "gemini-3.1-pro-preview": 1_000_000,
+  "gemini-3.8-flash": 1_000_000,
   "gemini-3-flash-preview": 1_000_000,
-  "grok-4.20-reasoning": 2_000_000,
-  "grok-4.20-non-reasoning": 2_000_000,
-  "grok-4-fast-reasoning": 2_000_000,
+  "grok-4.7": 500_000,
+  "grok-4.3": 1_000_000,
+  "grok-4.20-reasoning": 1_000_000,
+  "grok-4.20-non-reasoning": 1_000_000,
+  "deepseek-flash": 1_000_000,
   "deepseek-v4-pro": 1_000_000,
-  "deepseek-v4-flash": 1_000_000,
-  "deepseek-reasoner": 128_000,
   "gpt-oss-120b": 128_000,
-  "llama3.3-70b": 128_000,
-  "qwen-3-32b": 32_000,
+  // The free tier's window; paid keys get 128k, but a free-tier run that
+  // trusts 128k overflows at 64k.
+  "qwen-3.8-27b": 65_536,
+  "openai/gpt-oss-120b": 128_000,
   "openai/gpt-oss-20b": 128_000,
-  "llama-3.3-70b-versatile": 128_000,
-  "deepseek-r1-distill-llama-70b": 128_000,
+  "anthropic/claude-sonnet-5.5": 1_000_000,
+  "anthropic/claude-opus-5.5": 1_000_000,
   "anthropic/claude-opus-5": 1_000_000,
   "anthropic/claude-sonnet-5": 1_000_000,
+  "openai/gpt-6.1-sol": 1_050_000,
   "openai/gpt-5.5": 1_050_000,
   "openai/gpt-5.4-mini": 400_000,
   "google/gemini-3.1-pro-preview": 1_000_000,
-  "x-ai/grok-4.20-reasoning": 2_000_000,
+  "x-ai/grok-4.7": 500_000,
   "deepseek/deepseek-v4-pro": 1_000_000,
-  "deepseek/deepseek-reasoner": 128_000,
-  "meta-llama/llama-4-scout-17b-16e-instruct": 1_000_000,
+  "meta-llama/llama-4-scout": 1_000_000,
   "meta-llama/llama-4-maverick": 1_000_000,
   "moonshotai/kimi-k2.5": 256_000,
-  "qwen/qwen3-max": 256_000,
   "qwen/qwen3-coder": 256_000,
-  "mistralai/mistral-large-latest": 128_000,
+  "mistralai/mistral-large-2512": 256_000,
   "z-ai/glm-4.6": 200_000,
   "openai-compatible-custom": 128_000,
   "lmstudio-local": 32_000,
   "mlx-local": 32_000,
   "ollama-local": 32_000,
-  "mistral-large-latest": 128_000,
-  "mistral-medium-latest": 32_768,
-  "codestral-latest": 256_000,
+  "mistral-medium-latest": 256_000,
+  "mistral-large-latest": 256_000,
+  // Mistral's docs page says 128k where its API card said 256k; the smaller
+  // one can't overflow.
+  "codestral-latest": 128_000,
 };
 
 export function getModelContextLimit(
@@ -762,9 +934,14 @@ export const MODEL_OUTPUT_LIMITS: Record<
   string,
   { cap: number; ceiling: number }
 > = {
+  "claude-fable-5-1": { cap: 64_000, ceiling: 128_000 },
+  "claude-opus-5-5": { cap: 64_000, ceiling: 128_000 },
+  "claude-sonnet-5-5": { cap: 64_000, ceiling: 128_000 },
   "claude-opus-5": { cap: 64_000, ceiling: 128_000 },
   "claude-sonnet-5": { cap: 64_000, ceiling: 128_000 },
   "claude-haiku-4-5": { cap: 32_000, ceiling: 64_000 },
+  "anthropic/claude-sonnet-5.5": { cap: 64_000, ceiling: 128_000 },
+  "anthropic/claude-opus-5.5": { cap: 64_000, ceiling: 128_000 },
   "anthropic/claude-opus-5": { cap: 64_000, ceiling: 128_000 },
   "anthropic/claude-sonnet-5": { cap: 64_000, ceiling: 128_000 },
 };
@@ -787,22 +964,38 @@ export type ModelPricing = {
   cacheRead?: number;
 };
 
+/** $ per 1M tokens, from each provider's pricing page (2026-09-29). Where a
+ *  provider charges more past a prompt-length threshold, this is the price
+ *  below it. */
 export const MODEL_PRICING: Record<string, ModelPricing> = {
-  "gpt-5.5": { input: 5, output: 15, cacheRead: 0.5 },
-  "gpt-5.4-mini": { input: 0.4, output: 1.6, cacheRead: 0.04 },
-  "gpt-5.4-nano": { input: 0.1, output: 0.4, cacheRead: 0.01 },
-  "gpt-5.3-codex": { input: 1.5, output: 6, cacheRead: 0.15 },
+  "gpt-6-astra": { input: 10, output: 50, cacheRead: 1 },
+  "gpt-6.1-sol": { input: 2, output: 10, cacheRead: 0.1 },
+  "gpt-6-luna": { input: 0.1, output: 0.5, cacheRead: 0.01 },
+  "gpt-5.5": { input: 5, output: 30, cacheRead: 0.5 },
+  "gpt-5.4-mini": { input: 0.75, output: 4.5, cacheRead: 0.075 },
+  "gpt-5.4-nano": { input: 0.2, output: 1.25, cacheRead: 0.02 },
+  "gpt-5.3-codex": { input: 1.75, output: 14, cacheRead: 0.175 },
+  "claude-fable-5-1": { input: 10, output: 50, cacheRead: 0.25 },
+  "claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.2 },
+  "claude-sonnet-5-5": { input: 2, output: 10, cacheRead: 0.2 },
   "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5 },
-  "claude-sonnet-5": { input: 3, output: 15, cacheRead: 0.3 },
+  "claude-sonnet-5": { input: 2, output: 10, cacheRead: 0.2 },
   "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1 },
-  "gemini-3.1-pro-preview": { input: 1.25, output: 10, cacheRead: 0.31 },
-  "gemini-3-flash-preview": { input: 0.3, output: 2.5, cacheRead: 0.075 },
-  "grok-4.20-reasoning": { input: 3, output: 15 },
-  "grok-4.20-non-reasoning": { input: 1, output: 5 },
-  "grok-4-fast-reasoning": { input: 0.2, output: 0.5 },
-  "deepseek-v4-pro": { input: 0.28, output: 1.1, cacheRead: 0.028 },
-  "deepseek-v4-flash": { input: 0.07, output: 0.27, cacheRead: 0.007 },
-  "deepseek-reasoner": { input: 0.55, output: 2.19, cacheRead: 0.14 },
+  "gemini-3.1-pro-preview": { input: 2, output: 12, cacheRead: 0.2 },
+  // Introductory until 2026-12-31, then double.
+  "gemini-3.8-flash": { input: 0.75, output: 3.75, cacheRead: 0.075 },
+  "gemini-3-flash-preview": { input: 0.5, output: 3, cacheRead: 0.05 },
+  "grok-4.7": { input: 2, output: 6, cacheRead: 0.5 },
+  "grok-4.3": { input: 1.25, output: 2.5, cacheRead: 0.2 },
+  "grok-4.20-reasoning": { input: 1.25, output: 2.5, cacheRead: 0.2 },
+  "grok-4.20-non-reasoning": { input: 1.25, output: 2.5, cacheRead: 0.2 },
+  // Off-peak; DeepSeek doubles these 01:00–04:00 and 06:00–10:00 UTC on
+  // weekdays.
+  "deepseek-flash": { input: 0.15, output: 0.6, cacheRead: 0.003 },
+  "deepseek-v4-pro": { input: 0.66, output: 1.98, cacheRead: 0.022 },
+  "mistral-medium-latest": { input: 1.5, output: 7.5, cacheRead: 0.15 },
+  "mistral-large-latest": { input: 0.5, output: 1.5, cacheRead: 0.05 },
+  "codestral-latest": { input: 0.3, output: 0.9, cacheRead: 0.03 },
 };
 
 export function estimateCost(

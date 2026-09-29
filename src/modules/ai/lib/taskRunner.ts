@@ -32,6 +32,7 @@ import {
   getModel,
   getModelOutputCap,
   MAX_AGENT_STEPS,
+  preservesThinking,
   supportsTemperature,
   supportsVision,
   type ModelId,
@@ -437,11 +438,13 @@ function makeSummarizer(
         input.keys,
         input.local ?? {},
       );
+      const summarizerOptions = requestProviderOptions(summarizerId);
       const { text } = await generateText({
         model,
         system: SUMMARIZER_SYSTEM_PROMPT,
         prompt: plan.source,
         ...(supportsTemperature(summarizerId) ? { temperature: 0 } : {}),
+        ...(summarizerOptions ? { providerOptions: summarizerOptions } : {}),
         maxOutputTokens: SUMMARY_MAX_OUTPUT_TOKENS,
         // One attempt, not TASK_MAX_RETRIES: the run is inside its compaction
         // buffer and waiting out a rate-limit window here just moves the
@@ -936,6 +939,34 @@ function effectiveOutputCap(input: {
   return custom ?? getModelOutputCap(input.modelId);
 }
 
+type ProviderOptions = NonNullable<
+  Parameters<typeof generateText>[0]["providerOptions"]
+>;
+
+/** Call-level provider options every request to this model carries, or
+ *  undefined for the byte-identical request every other model has always sent.
+ *
+ *  Today that is one decision, `preservesThinking`: ask Anthropic to drop a
+ *  replayed thinking block our own history edits invalidated rather than 400
+ *  the run. `adaptive` is these models' default mode, so naming it changes
+ *  nothing but lets the binding ride along; the SDK adds the
+ *  `thinking-binding-controls` beta header itself. Native Anthropic only — it
+ *  is the one transport that replays signed thinking blocks. */
+export function requestProviderOptions(
+  modelId: ModelId,
+): ProviderOptions | undefined {
+  if (!preservesThinking(modelId)) return undefined;
+  if (getModel(modelId).provider !== "anthropic") return undefined;
+  return {
+    anthropic: {
+      thinking: {
+        type: "adaptive",
+        blockBinding: { prefixMismatchBehavior: "drop_block" },
+      },
+    },
+  };
+}
+
 /** The user's configured output cap for the custom OpenAI-compatible endpoint,
  *  or undefined when unset (0) or when the active model isn't that route. */
 export function customEndpointOutputCap(
@@ -1040,6 +1071,7 @@ export async function runTask<
   const repairAttempts = input.repairAttempts ?? DEFAULT_REPAIR_ATTEMPTS;
   const temperature = effectiveTemperature(input);
   const outputCap = effectiveOutputCap(input);
+  const providerOptions = requestProviderOptions(input.modelId);
 
   // --- Structured, tool-less: generateObject -------------------------------
   if (input.schema && !tools) {
@@ -1079,6 +1111,7 @@ export async function runTask<
           ...(temp !== undefined ? { temperature: temp } : {}),
           ...(input.seed !== undefined ? { seed: input.seed } : {}),
           ...(outputCap !== undefined ? { maxOutputTokens: outputCap } : {}),
+          ...(providerOptions ? { providerOptions } : {}),
           abortSignal: input.signal,
         });
         const usage = toTaskUsage(r.usage);
@@ -1151,6 +1184,7 @@ export async function runTask<
     ...(temp !== undefined ? { temperature: temp } : {}),
     ...(input.seed !== undefined ? { seed: input.seed } : {}),
     ...(outputCap !== undefined ? { maxOutputTokens: outputCap } : {}),
+    ...(providerOptions ? { providerOptions } : {}),
     maxRetries: TASK_MAX_RETRIES,
     abortSignal: input.signal,
     onStepFinish: steps.onStepFinish,
@@ -1232,6 +1266,7 @@ export async function streamTask<
   const budget = runBudgetOf(input);
   const temperature = effectiveTemperature(input);
   const outputCap = effectiveOutputCap(input);
+  const providerOptions = requestProviderOptions(input.modelId);
 
   // streamText NEVER rejects: a provider/network failure mid-stream (429 on a
   // follow-up agentic step, overload, dropped connection) is reported via
@@ -1264,6 +1299,7 @@ export async function streamTask<
       ...(temp !== undefined ? { temperature: temp } : {}),
       ...(input.seed !== undefined ? { seed: input.seed } : {}),
       ...(outputCap !== undefined ? { maxOutputTokens: outputCap } : {}),
+      ...(providerOptions ? { providerOptions } : {}),
       maxRetries: TASK_MAX_RETRIES,
       abortSignal: input.signal,
       // Live per-tool events (spinner → done) plus the step-finish sweep as a

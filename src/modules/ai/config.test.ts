@@ -20,9 +20,11 @@ import {
   MODEL_OUTPUT_LIMITS,
   MODEL_PRICING,
   PROVIDERS,
+  RETIRED_MODEL_REPLACEMENTS,
   getModelOutputCap,
   getModelOutputCeiling,
   isKnownModelId,
+  preservesThinking,
   supportsTemperature,
   DEFAULT_MODEL_ID,
   type ModelId,
@@ -32,9 +34,13 @@ const ids = new Set<string>(MODELS.map((m) => m.id));
 
 /** The upstream model a route points at. `anthropic/claude-opus-5` on
  *  OpenRouter and `claude-opus-5` on the native provider are one model reached
- *  two ways, and the request we build for them must not differ. */
+ *  two ways, and the request we build for them must not differ. Versions are
+ *  compared with dots folded to hyphens, because OpenRouter spells
+ *  `claude-opus-5.5` what Anthropic calls `claude-opus-5-5` — without the fold
+ *  every new route would silently opt out of this check. */
 function upstream(id: string): string {
-  return id.includes("/") ? id.split("/").slice(1).join("/") : id;
+  const bare = id.includes("/") ? id.split("/").slice(1).join("/") : id;
+  return bare.replace(/\./g, "-");
 }
 
 describe("model catalogue: structure", () => {
@@ -59,6 +65,20 @@ describe("model catalogue: structure", () => {
     expect(missing.map((m) => m.id)).toEqual([]);
   });
 
+  // A retired id that is still catalogued would never be migrated, and a
+  // successor that isn't catalogued would migrate a saved default into an id
+  // the next check throws away.
+  it("every retired id is gone, and its successor is live", () => {
+    const broken: string[] = [];
+    for (const [retired, successor] of Object.entries(
+      RETIRED_MODEL_REPLACEMENTS,
+    )) {
+      if (ids.has(retired)) broken.push(`${retired} is still catalogued`);
+      if (!ids.has(successor)) broken.push(`${retired} → ${successor} (unknown)`);
+    }
+    expect(broken).toEqual([]);
+  });
+
   // A stale key is a decision that stopped applying to anything: the model was
   // renamed or retired and its cap/price/limit silently stopped being used.
   it("no side table names a model that doesn't exist", () => {
@@ -81,7 +101,8 @@ describe("model catalogue: request-shaping decisions", () => {
   // provider drops sampling params, and exactly where the SDK's table is
   // stalest — so the catalogue has to hold an explicit answer rather than
   // inheriting one.
-  const FRONTIER = /^(anthropic\/)?claude-(opus|sonnet)-5|^(openai\/)?gpt-5/;
+  const FRONTIER =
+    /^(anthropic\/)?claude-(opus|sonnet|fable)-[5-9]|^(openai\/)?gpt-[5-9]/;
 
   it("every frontier-tier model states whether it takes sampling params", () => {
     const undecided = MODELS.filter(
@@ -111,6 +132,7 @@ describe("model catalogue: request-shaping decisions", () => {
           outputCap: getModelOutputCap(id) ?? null,
           outputCeiling: getModelOutputCeiling(id) ?? null,
           context: MODEL_CONTEXT_LIMITS[id] ?? null,
+          preservesThinking: preservesThinking(id),
         }),
       );
       if (new Set(decisions).size > 1) {
@@ -142,6 +164,38 @@ describe("model catalogue: request-shaping decisions", () => {
       (m) => /claude/.test(m.id) && getModelOutputCap(m.id) === undefined,
     );
     expect(uncapped.map((m) => m.id)).toEqual([]);
+  });
+
+  // Google: leave Gemini 3's temperature at its 1.0 default — "setting it below
+  // 1.0 may lead to … looping or degraded performance". We were sending 0 to 3
+  // Flash for as long as it wasn't tagged as the thinking model it is.
+  it("no Gemini 3.x route is sent a temperature", () => {
+    const sent = MODELS.filter(
+      (m) => /gemini-[3-9]/.test(m.id) && supportsTemperature(m.id),
+    );
+    expect(sent.map((m) => m.id)).toEqual([]);
+  });
+
+  // Claude after 5.0 checks every replayed thinking block against the
+  // conversation it was produced in, and this app edits that conversation
+  // mid-run on purpose (eviction, summary install, resume). The runner's
+  // `drop_block` is all that stands between a NEW Anthropic account — the ones
+  // enforced by default — and a run that dies on its first step after an
+  // eviction. So a Claude entry past 5.0 that doesn't say so fails here, the
+  // same way an undecided frontier temperature does above.
+  it("every Claude route past 5.0 states preserved thinking", () => {
+    const PAST_5_0 = /claude-(opus|sonnet|haiku|fable|mythos)-(5[.-][1-9]|[6-9])/;
+    const undecided = MODELS.filter(
+      (m) => PAST_5_0.test(m.id) && !preservesThinking(m.id),
+    );
+    expect(undecided.map((m) => m.id)).toEqual([]);
+  });
+
+  it("only Anthropic-family models claim preserved thinking", () => {
+    const wrong = MODELS.filter(
+      (m) => preservesThinking(m.id) && !/claude/.test(m.id),
+    );
+    expect(wrong.map((m) => m.id)).toEqual([]);
   });
 
   // Unknown ids are the custom-endpoint and local-server case: overwhelmingly
