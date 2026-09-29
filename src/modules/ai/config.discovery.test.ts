@@ -6,6 +6,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   apiModelId,
+  canonicalModelId,
+  migrateModelId,
+  restoreModelId,
   discoveredModelId,
   discoveredModelsForCatalog,
   discoveredModelsFrom,
@@ -229,4 +232,85 @@ describe("prettifyModelId", () => {
     ["deepseek-v5", "Deepseek V5"],
     ["meta-llama/llama-5-scout", "Llama 5 Scout"],
   ])("%s → %s", (id, label) => expect(prettifyModelId(id)).toBe(label));
+});
+
+describe("after review", () => {
+  // xAI lists Grok 4.20 under its dated id, with the curated id as an alias.
+  it("a listing whose alias is curated is the curated model, not a second row", () => {
+    const got = discoveredModelsFrom([
+      { provider: "xai", apiId: "grok-4.20-0309-reasoning", aliases: ["grok-4.20-reasoning"] },
+    ]);
+    expect(got).toEqual([]);
+  });
+
+  it("a route past its expiry isn't offered", () => {
+    const now = Date.parse("2026-10-10T00:00:00Z");
+    const got = discoveredModelsFrom(
+      [
+        { provider: "openrouter", apiId: "qwen/qwen3-max", expiresAt: Date.parse("2026-10-09") },
+        { provider: "openrouter", apiId: "qwen/qwen3.8-max", expiresAt: Date.parse("2026-12-01") },
+      ],
+      now,
+    );
+    expect(got.map((m) => m.apiId)).toEqual(["qwen/qwen3.8-max"]);
+  });
+
+  // A pick saved while a model was only discovered must land on the curated
+  // entry once a release curates it — vetted decisions, real window, a row in
+  // the picker — and still send the provider's own id.
+  it("a discovered id for a since-curated model resolves to the curated entry", () => {
+    expect(canonicalModelId("openai:gpt-5.5")).toBe("gpt-5.5");
+    expect(getModel("openai:gpt-5.5").id).toBe("gpt-5.5");
+    expect(apiModelId("openai:gpt-5.5")).toBe("gpt-5.5");
+    expect(getModelContextLimit("openai:gpt-5.5")).toBe(1_050_000);
+    expect(getModelOutputCap("anthropic:claude-opus-5-5")).toBe(64_000);
+    expect(migrateModelId("anthropic:claude-haiku-4-5-20251001")).toBe("claude-haiku-4-5");
+  });
+
+  it("but only on the same provider", () => {
+    // Curated `openai/gpt-oss-120b` is Groq's route, not OpenRouter's.
+    expect(canonicalModelId("openrouter:openai/gpt-oss-120b")).toBe(
+      "openrouter:openai/gpt-oss-120b",
+    );
+  });
+
+  it("a Claude past 5.0 that says it has no adaptive thinking gets no binding", () => {
+    const m = modelInfoFromListing({
+      provider: "anthropic",
+      apiId: "claude-haiku-5-1",
+      adaptiveThinking: false,
+    });
+    expect(m.preservesThinking).toBe(false);
+  });
+
+  it("restoreModelId migrates what it can and drops what it can't", () => {
+    expect(restoreModelId("deepseek-reasoner")).toBe("deepseek-v4-pro");
+    expect(restoreModelId("openai:gpt-5.5")).toBe("gpt-5.5");
+    expect(restoreModelId("openai:gpt-7")).toBe("openai:gpt-7");
+    expect(restoreModelId("nobody-serves-this")).toBeNull();
+    expect(restoreModelId(null)).toBeNull();
+  });
+
+  it("the persisted catalogue keeps aliases, expiry and the thinking flag", () => {
+    const got = normalizeModelCatalog({
+      xai: {
+        checkedAt: 1,
+        models: [
+          {
+            apiId: "grok-5",
+            aliases: ["grok-5-latest", 7],
+            expiresAt: 99,
+            adaptiveThinking: false,
+          },
+        ],
+      },
+    });
+    expect(got.xai?.models[0]).toEqual({
+      provider: "xai",
+      apiId: "grok-5",
+      aliases: ["grok-5-latest"],
+      expiresAt: 99,
+      adaptiveThinking: false,
+    });
+  });
 });

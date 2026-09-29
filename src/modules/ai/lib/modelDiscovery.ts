@@ -38,19 +38,20 @@ const recordsOf = (v: unknown): Json[] =>
 
 // ── OpenAI ──────────────────────────────────────────────────────────────────
 
-/** `gpt-<major>[.<minor>][-<one word>]` — the shape of every OpenAI chat model
- *  since GPT-5 (gpt-5.4-mini, gpt-6-astra, gpt-6.1-sol). Dated snapshots,
- *  `-chat-latest`, audio/realtime/image variants and fine-tunes all fall
- *  outside it, which is most of what `/v1/models` returns. */
-const OPENAI_CHAT_ID = /^gpt-(\d+)(?:\.\d+)?(?:-([a-z]+))?$/;
-/** Single-word variants that aren't general chat models, or aren't for this
- *  app: `-pro` is Responses-only at many times the price, `-codex` and
+/** `gpt-<major>[.<minor>]` plus up to two words — the shape of every OpenAI
+ *  chat model since GPT-5 (gpt-5.4-mini, gpt-6-astra, gpt-6.1-sol, and room for
+ *  a `gpt-6.1-sol-mini`). Dated snapshots end in digits and fall outside it,
+ *  as do `o`-series and pre-GPT-5 ids. */
+const OPENAI_CHAT_ID = /^gpt-(\d+)(?:\.\d+)?((?:-[a-z]+){0,2})$/;
+/** Words that mark a variant that isn't a general chat model, or isn't for
+ *  this app: `-pro` is Responses-only at many times the price, `-codex` and
  *  `-cyber` are special-purpose, the rest aren't text chat at all. */
-const OPENAI_EXCLUDED_VARIANTS = new Set([
+const OPENAI_EXCLUDED_WORDS = new Set([
   "pro",
   "codex",
   "cyber",
   "chat",
+  "latest",
   "audio",
   "realtime",
   "transcribe",
@@ -67,10 +68,19 @@ export function parseOpenAIModels(json: unknown): ModelListing[] {
     if (!id) return [];
     const match = OPENAI_CHAT_ID.exec(id);
     if (!match || Number(match[1]) < 5) return [];
-    if (match[2] && OPENAI_EXCLUDED_VARIANTS.has(match[2])) return [];
+    const words = match[2].split("-").filter(Boolean);
+    if (words.some((w) => OPENAI_EXCLUDED_WORDS.has(w))) return [];
     // A scheduled shutdown is still listed until the day it happens.
     if (m.shutdown_date != null) return [];
-    return [{ provider: "openai", apiId: id, createdAt: fromSeconds(m.created) }];
+    return [
+      {
+        provider: "openai",
+        apiId: id,
+        createdAt: fromSeconds(m.created),
+        // Every GPT-5+ chat model takes image input.
+        vision: true,
+      },
+    ];
   });
 }
 
@@ -84,6 +94,7 @@ export function parseAnthropicModels(json: unknown): ModelListing[] {
     const createdAt = created ? Date.parse(created) : NaN;
     const caps = asRecord(m.capabilities);
     const image = asRecord(caps?.image_input);
+    const adaptive = asRecord(asRecord(asRecord(caps?.thinking)?.types)?.adaptive);
     return [
       {
         provider: "anthropic",
@@ -93,6 +104,7 @@ export function parseAnthropicModels(json: unknown): ModelListing[] {
         contextWindow: asPositive(m.max_input_tokens),
         maxOutputTokens: asPositive(m.max_tokens),
         vision: image ? image.supported === true : undefined,
+        adaptiveThinking: adaptive ? adaptive.supported === true : undefined,
       },
     ];
   });
@@ -100,18 +112,37 @@ export function parseAnthropicModels(json: unknown): ModelListing[] {
 
 // ── Google ──────────────────────────────────────────────────────────────────
 
-/** Gemini models that answer `generateContent` but aren't text chat: speech,
- *  images, live audio, embeddings, robotics — plus the `-latest` aliases, which
- *  would list one model twice. */
-const GOOGLE_EXCLUDED =
-  /(tts|image|live|audio|transcribe|translate|embedding|robotics|computer-use|omni|customtools|-latest|lyria|veo|imagen|aqa|deep-research|antigravity)/;
+/** Words in a Gemini id that mark a model answering `generateContent` without
+ *  being text chat — speech, images, live audio, embeddings, robotics — plus
+ *  `latest`, whose aliases would list one model twice. Whole words, so a
+ *  future chat model isn't dropped for containing "live" or "omni" inside a
+ *  word. */
+const GOOGLE_EXCLUDED_WORDS = new Set([
+  "tts",
+  "image",
+  "live",
+  "audio",
+  "transcribe",
+  "translate",
+  "embedding",
+  "robotics",
+  "omni",
+  "latest",
+  "lyria",
+  "veo",
+  "imagen",
+  "aqa",
+  "antigravity",
+]);
+const GOOGLE_EXCLUDED_PHRASES = ["computer-use", "deep-research"];
 
 export function parseGoogleModels(json: unknown): ModelListing[] {
   return recordsOf(asRecord(json)?.models).flatMap((m) => {
     const name = asString(m.name);
     if (!name?.startsWith("models/gemini-")) return [];
     const id = name.slice("models/".length);
-    if (GOOGLE_EXCLUDED.test(id)) return [];
+    if (id.split("-").some((w) => GOOGLE_EXCLUDED_WORDS.has(w))) return [];
+    if (GOOGLE_EXCLUDED_PHRASES.some((p) => id.includes(p))) return [];
     const methods = asArray(m.supportedGenerationMethods);
     if (!methods.includes("generateContent")) return [];
     return [
@@ -148,10 +179,12 @@ export function parseXaiModels(json: unknown): ModelListing[] {
     const output = xaiPrice(m.completion_text_token_price);
     if (input === undefined && output === undefined) return [];
     const cacheRead = xaiPrice(m.cached_prompt_text_token_price);
+    const aliases = asArray(m.aliases).flatMap((a) => asString(a) ?? []);
     return [
       {
         provider: "xai",
         apiId: id,
+        ...(aliases.length ? { aliases } : {}),
         createdAt: fromSeconds(m.created),
         contextWindow: asPositive(m.context_length),
         ...(input !== undefined && output !== undefined
@@ -189,7 +222,7 @@ export function parseDeepSeekModels(json: unknown): ModelListing[] {
  *  `name`, keeping the `-latest` alias — which is also what the curated list
  *  uses, so the curated entry wins the de-duplication. */
 export function parseMistralModels(json: unknown): ModelListing[] {
-  const byName = new Map<string, ModelListing>();
+  const byName = new Map<string, { listing: ModelListing; ids: Set<string> }>();
   for (const m of recordsOf(asRecord(json)?.data)) {
     const id = asString(m.id);
     if (!id) continue;
@@ -211,12 +244,23 @@ export function parseMistralModels(json: unknown): ModelListing[] {
       contextWindow: asPositive(m.max_context_length),
       vision: caps.vision === true,
     };
-    const held = byName.get(name);
-    if (!held || (!held.apiId.endsWith("-latest") && id.endsWith("-latest"))) {
-      byName.set(name, listing);
+    const group = byName.get(name) ?? { listing, ids: new Set<string>() };
+    group.ids.add(id);
+    for (const a of asArray(m.aliases)) {
+      const alias = asString(a);
+      if (alias) group.ids.add(alias);
     }
+    if (!group.listing.apiId.endsWith("-latest") && id.endsWith("-latest")) {
+      group.listing = listing;
+    }
+    byName.set(name, group);
   }
-  return [...byName.values()];
+  // Every other id in the group is an alias of the one kept, so a curated
+  // entry under any of them still wins the de-duplication.
+  return [...byName.values()].map(({ listing, ids }) => {
+    const aliases = [...ids].filter((i) => i !== listing.apiId);
+    return aliases.length ? { ...listing, aliases } : listing;
+  });
 }
 
 // ── Groq ────────────────────────────────────────────────────────────────────
@@ -259,14 +303,47 @@ const perMillion = (v: unknown): number | undefined => {
   return Number.isFinite(n) && n >= 0 ? Math.round(n * 1e6 * 1e6) / 1e6 : undefined;
 };
 
+/** Words in a route's model name that mark something other than a chat model
+ *  an agentic run can use — the same exclusions the direct providers' filters
+ *  make, applied to what OpenRouter resells. */
+const OPENROUTER_EXCLUDED_WORDS = new Set([
+  "guard",
+  "safeguard",
+  "voxtral",
+  "audio",
+  "tts",
+  "realtime",
+  "transcribe",
+  "search",
+  "research",
+  "embed",
+  "embedding",
+  "moderation",
+  "ocr",
+  "image",
+]);
+
+/** Below this a spec, some code and the tool definitions don't fit — the run
+ *  fails on its first step, so the route isn't worth offering. */
+const OPENROUTER_MIN_CONTEXT = 64_000;
+
 /** Of ~460 routes, keep the ones an agentic run can use: text in, text out,
- *  tool calling (every surface here reads code through tools), not expired —
- *  and not the `:batch` variants or `~vendor/…-latest` aliases, which repeat
- *  another route. */
+ *  tool calling (every surface here reads code through tools), a window a run
+ *  fits in, not expired. Dropped as well: `:batch` and `:free` variants and
+ *  `~vendor/…-latest` aliases, which repeat another route (and free routes
+ *  throttle long before a 40-step run ends); OpenRouter's own meta-routers,
+ *  which pick a different model per request; and OpenAI's `-pro` tier,
+ *  priced like nothing else in the list. */
 export function parseOpenRouterModels(json: unknown, now = Date.now()): ModelListing[] {
   return recordsOf(asRecord(json)?.data).flatMap((m) => {
     const id = asString(m.id);
-    if (!id || id.startsWith("~") || id.endsWith(":batch")) return [];
+    if (!id || id.startsWith("~") || id.startsWith("openrouter/")) return [];
+    if (id.endsWith(":batch") || id.endsWith(":free")) return [];
+    const model = id.slice(id.indexOf("/") + 1);
+    const words = model.toLowerCase().split(/[^a-z0-9]+/);
+    if (words.some((w) => OPENROUTER_EXCLUDED_WORDS.has(w))) return [];
+    if (model.includes("chat-latest")) return [];
+    if (id.startsWith("openai/") && model.endsWith("-pro")) return [];
     const arch = asRecord(m.architecture) ?? {};
     const inputs = asArray(arch.input_modalities);
     const outputs = asArray(arch.output_modalities);
@@ -274,8 +351,12 @@ export function parseOpenRouterModels(json: unknown, now = Date.now()): ModelLis
     if (outputs.includes("image") || outputs.includes("audio")) return [];
     if (!asArray(m.supported_parameters).includes("tools")) return [];
     const expires = asString(m.expiration_date);
-    if (expires && Date.parse(expires) <= now) return [];
+    const expiresAt = expires ? Date.parse(expires) : NaN;
+    if (Number.isFinite(expiresAt) && expiresAt <= now) return [];
     const top = asRecord(m.top_provider) ?? {};
+    const contextWindow =
+      asPositive(m.context_length) ?? asPositive(top.context_length);
+    if (contextWindow !== undefined && contextWindow < OPENROUTER_MIN_CONTEXT) return [];
     const price = asRecord(m.pricing) ?? {};
     const input = perMillion(price.prompt);
     const output = perMillion(price.completion);
@@ -288,7 +369,10 @@ export function parseOpenRouterModels(json: unknown, now = Date.now()): ModelLis
         // curated routes' labels; the vendor is in the id, which is searchable.
         label: asString(m.name)?.replace(/^[^:]{1,40}:\s+/, ""),
         createdAt: fromSeconds(m.created),
-        contextWindow: asPositive(m.context_length) ?? asPositive(top.context_length),
+        // Kept so a route that expires between refreshes leaves the picker on
+        // the day it goes, not at the next successful check.
+        ...(Number.isFinite(expiresAt) ? { expiresAt } : {}),
+        contextWindow,
         maxOutputTokens: asPositive(top.max_completion_tokens),
         vision: inputs.includes("image"),
         ...(input !== undefined && output !== undefined
@@ -301,7 +385,12 @@ export function parseOpenRouterModels(json: unknown, now = Date.now()): ModelLis
 
 // ── Fetching ────────────────────────────────────────────────────────────────
 
-type Request = { url: string; headers: Record<string, string> };
+type Request = {
+  url: string;
+  headers: Record<string, string>;
+  /** Asked instead when `url` answers 404. */
+  fallbackUrl?: string;
+};
 
 const bearer = (key: string) => ({ Authorization: `Bearer ${key}` });
 
@@ -335,8 +424,31 @@ function listRequest(
     case "cerebras":
       return { url: "https://api.cerebras.ai/v1/models", headers: bearer(key) };
     case "openrouter":
-      return { url: "https://openrouter.ai/api/v1/models", headers: bearer(key) };
+      // The key-scoped list: filtered by the account's provider preferences,
+      // privacy settings and guardrails, so it holds only routes this key can
+      // actually call. Same shape as the public list, which is the fallback.
+      return {
+        url: "https://openrouter.ai/api/v1/models/user",
+        headers: bearer(key),
+        fallbackUrl: "https://openrouter.ai/api/v1/models",
+      };
   }
+}
+
+/** The provider's own words for a refusal, when its error body has any —
+ *  "HTTP 403" alone doesn't say the key lacks a scope. */
+async function httpError(res: Response): Promise<Error> {
+  let detail: string | undefined;
+  try {
+    const body = asRecord(JSON.parse(await res.text()));
+    const err = body?.error;
+    detail =
+      asString(err) ?? asString(asRecord(err)?.message) ?? asString(body?.message);
+  } catch {
+    // Not JSON — the status is all there is.
+  }
+  const text = detail ? `HTTP ${res.status}: ${detail}` : `HTTP ${res.status}`;
+  return new Error(text.length > 160 ? `${text.slice(0, 157)}…` : text);
 }
 
 /** Where the next page starts, for the two providers that paginate. */
@@ -393,13 +505,17 @@ export async function listProviderModels(
     let cursor: string | undefined;
     for (let page = 0; page < MAX_PAGES; page++) {
       const req = listRequest(provider, key, cursor);
-      const res = await doFetch(req.url, {
-        method: "GET",
-        headers: req.headers,
-        signal: abort.signal,
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json: unknown = await res.json();
+      const get = (url: string) =>
+        doFetch(url, { method: "GET", headers: req.headers, signal: abort.signal });
+      let res = await get(req.url);
+      if (res.status === 404 && req.fallbackUrl) res = await get(req.fallbackUrl);
+      if (!res.ok) throw await httpError(res);
+      let json: unknown;
+      try {
+        json = JSON.parse(await res.text());
+      } catch {
+        throw new Error("The provider's answer wasn't a model list.");
+      }
       out.push(...parse(provider, json));
       cursor = nextCursor(provider, json);
       if (!cursor) break;

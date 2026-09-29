@@ -939,7 +939,8 @@ function inferHint(apiId: string): string {
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) {
-    const m = Math.round(n / 100_000) / 10;
+    // Floor, so GPT-6's 1,050,000 reads "1M" rather than "1.1M".
+    const m = Math.floor(n / 100_000) / 10;
     return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
   }
   return `${Math.round(n / 1_000)}K`;
@@ -993,8 +994,13 @@ export function modelInfoFromListing(
     capabilities: { intelligence: 3, speed: 3, cost: 3 },
     tags: l.vision ? ["vision", "tools"] : ["tools"],
     rejectsSamplingParams: true,
+    // The version says which generation checks the prefix; Anthropic's own
+    // list says whether this model takes the adaptive `thinking` config the
+    // binding rides on, and a model that doesn't would 400 every request.
     preservesThinking:
-      version !== null && (version[0] > 5 || (version[0] === 5 && version[1] >= 1)),
+      version !== null &&
+      (version[0] > 5 || (version[0] === 5 && version[1] >= 1)) &&
+      l.adaptiveThinking !== false,
     discovered: true,
     ...(l.createdAt ? { createdAt: l.createdAt } : {}),
     ...(l.contextWindow ? { contextWindow: l.contextWindow } : {}),
@@ -1047,16 +1053,24 @@ function normalizeListing(
   const input = asFinite(p?.input);
   const output = asFinite(p?.output);
   const cacheRead = asFinite(p?.cacheRead);
+  const aliases = Array.isArray(r.aliases)
+    ? r.aliases.filter((a): a is string => typeof a === "string" && !!a.trim())
+    : [];
   return {
     provider,
     apiId: r.apiId,
     ...(typeof r.label === "string" ? { label: r.label } : {}),
+    ...(aliases.length ? { aliases } : {}),
     ...(asFinite(r.createdAt) ? { createdAt: r.createdAt as number } : {}),
+    ...(asFinite(r.expiresAt) ? { expiresAt: r.expiresAt as number } : {}),
     ...(asFinite(r.contextWindow) ? { contextWindow: r.contextWindow as number } : {}),
     ...(asFinite(r.maxOutputTokens)
       ? { maxOutputTokens: r.maxOutputTokens as number }
       : {}),
     ...(typeof r.vision === "boolean" ? { vision: r.vision } : {}),
+    ...(typeof r.adaptiveThinking === "boolean"
+      ? { adaptiveThinking: r.adaptiveThinking }
+      : {}),
     ...(input !== undefined && output !== undefined
       ? { pricing: { input, output, ...(cacheRead !== undefined ? { cacheRead } : {}) } }
       : {}),
@@ -1104,20 +1118,24 @@ export function discoveredModelsForCatalog(catalog: ModelCatalog): ModelInfo[] {
 }
 
 /** The discovered models worth offering: every listing, minus the ones that
- *  are a curated model under the same or a dated id (curated wins — it carries
- *  vetted decisions), minus repeats. */
+ *  are a curated model under the same id, a dated snapshot of it, or an alias
+ *  of it (curated wins — it carries vetted decisions; xAI lists Grok 4.20 as
+ *  `grok-4.20-0309-reasoning` with the curated `grok-4.20-reasoning` as an
+ *  alias), minus routes past their expiry date, minus repeats. */
 export function discoveredModelsFrom(
   listings: readonly ModelListing[],
+  now: number = Date.now(),
 ): ModelInfo[] {
-  const curated = new Set(MODELS.map((m) => `${m.provider}:${m.id}`));
   const seen = new Set<string>();
   const out: ModelInfo[] = [];
   for (const l of listings) {
     const key = `${l.provider}:${l.apiId}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    if (curated.has(key)) continue;
-    if (curated.has(`${l.provider}:${withoutDateStamp(l.apiId)}`)) continue;
+    if (l.expiresAt !== undefined && l.expiresAt <= now) continue;
+    if ([l.apiId, ...(l.aliases ?? [])].some((id) => curatedListedAs(l.provider, id))) {
+      continue;
+    }
     out.push(modelInfoFromListing(l));
   }
   return out;
@@ -1325,7 +1343,7 @@ export function getModelContextLimit(
   if (modelId === "openai-compatible-custom" && compatOverride)
     return compatOverride;
   return (
-    MODEL_CONTEXT_LIMITS[modelId] ??
+    MODEL_CONTEXT_LIMITS[canonicalModelId(modelId)] ??
     uncatalogued(modelId)?.contextWindow ??
     128_000
   );
@@ -1384,14 +1402,18 @@ export const MODEL_OUTPUT_LIMITS: Record<
 /** The output cap every request for this model asks for, or undefined to send
  *  nothing and let the endpoint decide (unknown / local / custom models). */
 export function getModelOutputCap(id: string): number | undefined {
-  return MODEL_OUTPUT_LIMITS[id]?.cap ?? uncatalogued(id)?.outputLimits?.cap;
+  return (
+    MODEL_OUTPUT_LIMITS[canonicalModelId(id)]?.cap ??
+    uncatalogued(id)?.outputLimits?.cap
+  );
 }
 
 /** The model's hard output ceiling, when we know it. Only consulted by the
  *  truncation-resume path — ordinary runs ask for `cap`. */
 export function getModelOutputCeiling(id: string): number | undefined {
   return (
-    MODEL_OUTPUT_LIMITS[id]?.ceiling ?? uncatalogued(id)?.outputLimits?.ceiling
+    MODEL_OUTPUT_LIMITS[canonicalModelId(id)]?.ceiling ??
+    uncatalogued(id)?.outputLimits?.ceiling
   );
 }
 
@@ -1440,7 +1462,8 @@ export function estimateCost(
   usage: { inputTokens: number; outputTokens: number; cachedInputTokens: number },
 ): number | null {
   if (!modelId) return null;
-  const p = MODEL_PRICING[modelId] ?? uncatalogued(modelId)?.pricing;
+  const p =
+    MODEL_PRICING[canonicalModelId(modelId)] ?? uncatalogued(modelId)?.pricing;
   if (!p) return null;
   const fresh = Math.max(0, usage.inputTokens - usage.cachedInputTokens);
   const cached = usage.cachedInputTokens;

@@ -311,7 +311,7 @@ describe("OpenRouter", () => {
 
   it("leaves out a price it can't read (variable-price routes send -1)", () => {
     const [r] = parseOpenRouterModels(
-      { data: [route({ id: "openrouter/auto", pricing: { prompt: "-1", completion: "-1" } })] },
+      { data: [route({ id: "vendor/variable-price", pricing: { prompt: "-1", completion: "-1" } })] },
       now,
     );
     expect(r.pricing).toBeUndefined();
