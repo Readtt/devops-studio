@@ -2,6 +2,8 @@ import {
   DEFAULT_MODEL_ID,
   isKnownModelId,
   migrateModelId,
+  normalizeModelCatalog,
+  type ModelCatalog,
   LMSTUDIO_DEFAULT_BASE_URL,
   MLX_DEFAULT_BASE_URL,
   OLLAMA_DEFAULT_BASE_URL,
@@ -126,6 +128,10 @@ export type Preferences = {
   openaiCompatibleMaxOutputTokens: number;
   favoriteModelIds: string[];
   recentModelIds: string[];
+  /** What each connected provider's own model list last said — the source of
+   *  every model the picker offers beyond the curated ones. Refreshed from the
+   *  network (ai/lib/modelCatalog.ts); a cache, not a choice the user made. */
+  modelCatalog: ModelCatalog;
   terminalWebglEnabled: boolean;
   terminalFontFamily: string;
   terminalLetterSpacing: number;
@@ -196,6 +202,7 @@ const KEY_OPENAI_COMPAT_CONTEXT_LIMIT = "openaiCompatibleContextLimit";
 const KEY_OPENAI_COMPAT_MAX_OUTPUT = "openaiCompatibleMaxOutputTokens";
 const KEY_FAVORITE_MODELS = "favoriteModelIds";
 const KEY_RECENT_MODELS = "recentModelIds";
+const KEY_MODEL_CATALOG = "modelCatalog";
 const KEY_TERMINAL_WEBGL_ENABLED = "terminalWebglEnabled";
 const KEY_TERMINAL_FONT_FAMILY = "terminalFontFamily";
 const KEY_TERMINAL_LETTER_SPACING = "terminalLetterSpacing";
@@ -267,6 +274,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   openaiCompatibleMaxOutputTokens: 0,
   favoriteModelIds: [],
   recentModelIds: [],
+  modelCatalog: {},
   terminalWebglEnabled: true,
   terminalFontFamily: "",
   terminalLetterSpacing: 0,
@@ -612,6 +620,7 @@ export async function loadPreferences(): Promise<Preferences> {
     recentModelIds: sanitizeModelIds(
       get<string[]>(KEY_RECENT_MODELS) ?? DEFAULT_PREFERENCES.recentModelIds,
     ),
+    modelCatalog: normalizeModelCatalog(get<unknown>(KEY_MODEL_CATALOG)),
     terminalWebglEnabled:
       get<boolean>(KEY_TERMINAL_WEBGL_ENABLED) ??
       DEFAULT_PREFERENCES.terminalWebglEnabled,
@@ -834,6 +843,10 @@ export async function setRecentModelIds(value: string[]): Promise<void> {
   await writePref(KEY_RECENT_MODELS, value);
 }
 
+export async function setModelCatalog(value: ModelCatalog): Promise<void> {
+  await writePref(KEY_MODEL_CATALOG, value);
+}
+
 export async function setTerminalWebglEnabled(value: boolean): Promise<void> {
   await writePref(KEY_TERMINAL_WEBGL_ENABLED, value);
 }
@@ -972,6 +985,7 @@ export async function onPreferencesChange(
     [KEY_OPENAI_COMPAT_MAX_OUTPUT]: "openaiCompatibleMaxOutputTokens",
     [KEY_FAVORITE_MODELS]: "favoriteModelIds",
     [KEY_RECENT_MODELS]: "recentModelIds",
+    [KEY_MODEL_CATALOG]: "modelCatalog",
     [KEY_TERMINAL_WEBGL_ENABLED]: "terminalWebglEnabled",
     [KEY_TERMINAL_FONT_FAMILY]: "terminalFontFamily",
     [KEY_TERMINAL_LETTER_SPACING]: "terminalLetterSpacing",

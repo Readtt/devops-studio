@@ -244,7 +244,9 @@ export function buildConfiguredLanguageModel(
   local: LocalProviderConfig = {},
 ): Promise<LanguageModel> {
   const m = getModel(modelId);
-  let resolvedId: string = m.id;
+  // A discovered model's registry id is `<provider>:<apiId>`; the provider is
+  // only ever sent the part after the colon.
+  let resolvedId: string = m.apiId ?? m.id;
   if (m.id === "lmstudio-local") {
     if (!local.lmstudioModelId?.trim()) {
       throw new Error(

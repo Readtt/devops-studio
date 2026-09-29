@@ -1,9 +1,15 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // A saved model id outlives the model: providers shut models down, the
 // catalogue drops them, and the next launch has to do something sensible with
-// the id still sitting in the settings file.
-const h = vi.hoisted(() => ({ data: new Map<string, unknown>() }));
+// the id still sitting in the settings file. And the live model catalogue is a
+// preference like any other — persisted, loaded, and carried to the other
+// window — so it gets the same walk-through repos.test.ts gives `repos`.
+const h = vi.hoisted(() => ({
+  data: new Map<string, unknown>(),
+  emitted: [] as { key: string; value: unknown }[],
+  listeners: [] as { event: string; handler: (e: unknown) => void }[],
+}));
 
 vi.mock("@tauri-apps/plugin-store", () => ({
   LazyStore: class {
@@ -27,16 +33,31 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
-  emit: async () => {},
-  listen: async () => () => {},
+  emit: async (_event: string, payload?: { key: string; value: unknown }) => {
+    if (payload) h.emitted.push(payload);
+  },
+  listen: async (event: string, handler: (e: unknown) => void) => {
+    h.listeners.push({ event, handler });
+    return () => {};
+  },
 }));
 
 vi.mock("@/lib/launchDir", () => ({ consumeLaunchDir: () => undefined }));
 
-import { DEFAULT_MODEL_ID } from "@/modules/ai/config";
-import { loadPreferences } from "./store";
+import {
+  DEFAULT_MODEL_ID,
+  getModel,
+  setDiscoveredModels,
+  type ModelCatalog,
+} from "@/modules/ai/config";
+import { loadPreferences, onPreferencesChange, setModelCatalog } from "./store";
+import { usePreferencesStore } from "./preferences";
 
-beforeEach(() => h.data.clear());
+beforeEach(() => {
+  h.data.clear();
+  h.emitted.length = 0;
+});
+afterEach(() => setDiscoveredModels([]));
 
 describe("saved model ids across a retirement", () => {
   // Groq shut this down. Falling back to DEFAULT_MODEL_ID would hand a
@@ -51,6 +72,14 @@ describe("saved model ids across a retirement", () => {
     h.data.set("defaultModelId", "some-model-that-never-existed");
     const prefs = await loadPreferences();
     expect(prefs.defaultModelId).toBe(DEFAULT_MODEL_ID);
+  });
+
+  // The picker offers these; a saved default pointing at one must not be
+  // reset on a launch where that provider's list hasn't loaded yet.
+  it("a discovered default survives a launch with no catalogue", async () => {
+    h.data.set("defaultModelId", "openai:gpt-7");
+    const prefs = await loadPreferences();
+    expect(prefs.defaultModelId).toBe("openai:gpt-7");
   });
 
   it("favorites and recents carry over to the successor", async () => {
@@ -70,5 +99,44 @@ describe("saved model ids across a retirement", () => {
     ]);
     const prefs = await loadPreferences();
     expect(prefs.favoriteModelIds).toEqual(["deepseek-flash", "claude-opus-5"]);
+  });
+});
+
+describe("modelCatalog preference", () => {
+  const catalog: ModelCatalog = {
+    anthropic: {
+      checkedAt: 5,
+      fetchedAt: 5,
+      models: [
+        { provider: "anthropic", apiId: "claude-opus-5-6", label: "Claude Opus 5.6" },
+      ],
+    },
+  };
+
+  it("persists and tells the other window", async () => {
+    await setModelCatalog(catalog);
+    expect(h.data.get("modelCatalog")).toEqual(catalog);
+    expect(h.emitted).toEqual([{ key: "modelCatalog", value: catalog }]);
+  });
+
+  it("maps the key so the other window's write lands in the store", async () => {
+    const seen: [string, unknown][] = [];
+    await onPreferencesChange((key, value) => seen.push([key, value]));
+    const bus = h.listeners.find((l) => l.event === "devops-studio://prefs-changed");
+    bus?.handler({ payload: { key: "modelCatalog", value: catalog } });
+    expect(seen).toContainEqual(["modelCatalog", catalog]);
+  });
+
+  it("loads normalised, and empty when absent", async () => {
+    expect((await loadPreferences()).modelCatalog).toEqual({});
+    h.data.set("modelCatalog", { ...catalog, bogus: { checkedAt: 1, models: [] } });
+    expect((await loadPreferences()).modelCatalog).toEqual(catalog);
+  });
+
+  // Whichever window fetched the list, `getModel` in this one has to answer
+  // with the listing — its real name, not one guessed from the id.
+  it("feeds the registry the moment it changes", () => {
+    usePreferencesStore.setState({ modelCatalog: catalog });
+    expect(getModel("anthropic:claude-opus-5-6").label).toBe("Claude Opus 5.6");
   });
 });

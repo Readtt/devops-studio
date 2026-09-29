@@ -157,6 +157,20 @@ export type ModelInfo = {
    *  against the conversation prefix it was produced under, and rejects the
    *  request when that prefix changed. See `preservesThinking`. */
   preservesThinking?: boolean;
+
+  // ── Set only on models discovered from a provider's live list ────────────
+  // Curated entries keep these decisions in the side tables below, where the
+  // release guard (config.test.ts) can check them.
+
+  /** The id sent to the provider, when it differs from `id`. */
+  apiId?: string;
+  /** Came from the provider's live model list rather than this file. */
+  discovered?: true;
+  /** Epoch ms the provider says the model was created; orders newest first. */
+  createdAt?: number;
+  contextWindow?: number;
+  outputLimits?: { cap: number; ceiling: number };
+  pricing?: ModelPricing;
 };
 
 export const MODELS = [
@@ -706,12 +720,374 @@ export const MODELS = [
   },
 ] as const satisfies readonly ModelInfo[];
 
-export type ModelId = (typeof MODELS)[number]["id"];
+/** An id from the curated list above. */
+export type CatalogModelId = (typeof MODELS)[number]["id"];
+
+/** Any model the app can run: a curated id, or a discovered one
+ *  (`<provider>:<apiId>`, see {@link discoveredModelId}). */
+export type ModelId = string;
+
+// ── Discovered models ───────────────────────────────────────────────────────
+//
+// New models reach the picker without a release: each connected provider's own
+// `/models` endpoint is read with the user's key (modelDiscovery.ts) and every
+// listing becomes a ModelInfo here. The request-shaping decisions for them
+// live in `modelInfoFromListing`, below, for the same reason the curated ones
+// live in this file: a provider SDK's model table ships a release behind every
+// launch, and a model this app has never seen is by definition past it.
+
+/** Providers whose `/models` endpoint says what the user's key can call. The
+ *  local servers and the custom endpoint have their own model-id settings. */
+export const DISCOVERABLE_PROVIDERS = [
+  "anthropic",
+  "openai",
+  "google",
+  "xai",
+  "deepseek",
+  "mistral",
+  "groq",
+  "cerebras",
+  "openrouter",
+] as const satisfies readonly ProviderId[];
+
+export type DiscoverableProvider = (typeof DISCOVERABLE_PROVIDERS)[number];
+
+export function isDiscoverableProvider(p: string): p is DiscoverableProvider {
+  return (DISCOVERABLE_PROVIDERS as readonly string[]).includes(p);
+}
+
+/** One model as a provider's list describes it. Only the ids are guaranteed:
+ *  OpenAI publishes nothing else, OpenRouter publishes nearly everything. */
+export type ModelListing = {
+  provider: DiscoverableProvider;
+  apiId: string;
+  label?: string;
+  /** Epoch ms. */
+  createdAt?: number;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  vision?: boolean;
+  pricing?: ModelPricing;
+};
+
+/** Registry id of a discovered model. Curated ids never contain `:`, so the
+ *  two can't collide — and a saved discovered id still resolves (from the id
+ *  alone) on a launch where the provider's list hasn't loaded yet. */
+export function discoveredModelId(
+  provider: DiscoverableProvider,
+  apiId: string,
+): ModelId {
+  return `${provider}:${apiId}`;
+}
+
+export function parseDiscoveredModelId(
+  id: string,
+): { provider: DiscoverableProvider; apiId: string } | null {
+  const i = id.indexOf(":");
+  if (i <= 0) return null;
+  const provider = id.slice(0, i);
+  const apiId = id.slice(i + 1);
+  if (!apiId.trim() || !isDiscoverableProvider(provider)) return null;
+  return { provider, apiId };
+}
+
+const CURATED_BY_ID: ReadonlyMap<string, ModelInfo> = new Map(
+  MODELS.map((m) => [m.id, m as ModelInfo]),
+);
+let discovered: ReadonlyMap<string, ModelInfo> = new Map();
+const synthesized = new Map<string, ModelInfo>();
+
+/** Replace this window's discovered models — called whenever the persisted
+ *  model catalogue changes (settings/preferences.ts). */
+export function setDiscoveredModels(models: readonly ModelInfo[]): void {
+  discovered = new Map(models.map((m) => [m.id, m]));
+}
+
+export function listDiscoveredModels(): readonly ModelInfo[] {
+  return [...discovered.values()];
+}
+
+/** A non-curated model: its live listing when this window has one, else what
+ *  the id alone implies. */
+function uncatalogued(id: string): ModelInfo | undefined {
+  if (CURATED_BY_ID.has(id)) return undefined;
+  const live = discovered.get(id);
+  if (live) return live;
+  const parsed = parseDiscoveredModelId(id);
+  if (!parsed) return undefined;
+  let m = synthesized.get(id);
+  if (!m) {
+    m = modelInfoFromListing(parsed);
+    synthesized.set(id, m);
+  }
+  return m;
+}
 
 export function getModel(id: ModelId): ModelInfo {
-  const m = MODELS.find((x) => x.id === id);
+  const m = CURATED_BY_ID.get(id) ?? uncatalogued(id);
   if (!m) throw new Error(`Unknown model: ${id}`);
   return m;
+}
+
+/** The id a model is called by on the wire. */
+export function apiModelId(id: ModelId): string {
+  return getModel(id).apiId ?? id;
+}
+
+/** Anthropic's own API, or an Anthropic model through OpenRouter. */
+function isClaudeRoute(provider: ProviderId, apiId: string): boolean {
+  return (
+    provider === "anthropic" ||
+    (provider === "openrouter" && apiId.startsWith("anthropic/"))
+  );
+}
+
+/** `[major, minor]` of a Claude id — `claude-opus-5-5`, `claude-sonnet-5.5`,
+ *  `claude-fable-5-1-20260901` — or null. The minor is one or two digits so a
+ *  date stamp (`claude-opus-5-20260101`) never reads as a version. */
+function claudeVersion(apiId: string): [number, number] | null {
+  const m = /claude-(?:opus|sonnet|haiku|fable|mythos)-(\d+)(?:[.-](\d{1,2}))?(?=$|\D)/.exec(
+    apiId,
+  );
+  return m ? [Number(m[1]), m[2] ? Number(m[2]) : 0] : null;
+}
+
+/** Output ceiling for a Claude id the listing gave no number for — only ever
+ *  reached for an id synthesized before its provider's list loaded, since
+ *  Anthropic's and OpenRouter's lists both carry one. Every Claude 5 model
+ *  takes 128k; below that the safe floor is 32k (Opus 4.1's limit). */
+function claudeFallbackCeiling(apiId: string): number {
+  const v = claudeVersion(apiId);
+  if (v && v[0] >= 5) return 128_000;
+  return /haiku-4/.test(apiId) ? 64_000 : 32_000;
+}
+
+const ACRONYMS = new Set(["gpt", "oss", "glm", "qwq", "ai", "vl", "moe"]);
+
+/** A readable name for an id nobody labelled (OpenAI, Groq and Cerebras list
+ *  bare ids): `gpt-6.2-sol` → "GPT-6.2 Sol", `gpt-oss-120b` → "GPT-OSS 120B". */
+export function prettifyModelId(apiId: string): string {
+  const bare = apiId.includes("/") ? apiId.slice(apiId.lastIndexOf("/") + 1) : apiId;
+  const words = bare
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((w) => {
+      const lower = w.toLowerCase();
+      if (ACRONYMS.has(lower)) return lower.toUpperCase();
+      if (/^\d+(\.\d+)?[a-z]$/.test(lower)) return lower.toUpperCase();
+      if (/^v\d/.test(lower)) return lower.toUpperCase();
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    });
+  return words
+    .join(" ")
+    .replace(/^GPT OSS\b/, "GPT-OSS")
+    .replace(/^GPT (\d)/, "GPT-$1");
+}
+
+/** One word for the picker, from the id's own vocabulary. Heuristic by nature;
+ *  "New" when the id says nothing, which for a model this build doesn't know
+ *  is usually true. */
+function inferHint(apiId: string): string {
+  const id = apiId.toLowerCase();
+  if (id.includes("non-reasoning")) return "Quick";
+  const words = new Set(id.split(/[^a-z0-9.]+/));
+  const has = (...ws: string[]) => ws.some((w) => words.has(w));
+  if (has("nano", "lite", "luna", "haiku", "mini", "flash", "instant", "small")) {
+    return "Fast";
+  }
+  if (has("codex", "coder", "codestral", "devstral", "code")) return "Coding";
+  if (has("reasoning", "reasoner", "thinking", "r1")) return "Reasoning";
+  if (has("opus", "pro", "max", "large", "ultra", "astra", "fable", "mythos")) {
+    return "Flagship";
+  }
+  if (has("sonnet", "medium", "sol", "terra")) return "Balanced";
+  return "New";
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) {
+    const m = Math.round(n / 100_000) / 10;
+    return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
+  }
+  return `${Math.round(n / 1_000)}K`;
+}
+
+function describeListing(l: Partial<ModelListing>, providerLabel: string): string {
+  const source =
+    l.provider === "openrouter"
+      ? "Via OpenRouter"
+      : `From your ${providerLabel} account`;
+  return l.contextWindow
+    ? `${source} · ${formatTokens(l.contextWindow)} context`
+    : source;
+}
+
+/** Every decision for a model this build has never seen. Deliberately
+ *  conservative — each default below is the one that can't produce a 400:
+ *
+ *  - **No temperature, ever.** Every API accepts its absence; frontier tiers
+ *    (Claude 4.7+, GPT-5+, Gemini 3) refuse or degrade on its presence, and a
+ *    model new enough to be missing from this file is overwhelmingly frontier.
+ *    Provider metadata can't overrule this: OpenRouter lists `temperature` for
+ *    Claude Opus 5.5 because one of its hosts accepts it.
+ *  - **An explicit output cap for Claude routes only**, from the listing's own
+ *    ceiling: @ai-sdk/anthropic invents one for an id it doesn't know, and the
+ *    upstream API demands one. Same shape as the curated caps — half the
+ *    ceiling, at most 64k, so a truncation resume has headroom to raise into.
+ *    Every other provider gets nothing sent, as before.
+ *  - **Preserved thinking** for Claude past 5.0, the generation that checks it.
+ *  - Context, vision and price only when the listing states them; otherwise the
+ *    long-standing defaults (128k window, text-only, no cost shown).
+ *  - Tool calling assumed: OpenRouter's list is filtered to routes that take
+ *    tools, and every other provider's chat models do. */
+export function modelInfoFromListing(
+  l: Pick<ModelListing, "provider" | "apiId"> & Partial<ModelListing>,
+): ModelInfo {
+  const claude = isClaudeRoute(l.provider, l.apiId);
+  const version = claude ? claudeVersion(l.apiId) : null;
+  const ceiling = claude
+    ? l.maxOutputTokens && l.maxOutputTokens > 0
+      ? l.maxOutputTokens
+      : claudeFallbackCeiling(l.apiId)
+    : undefined;
+  return {
+    id: discoveredModelId(l.provider, l.apiId),
+    apiId: l.apiId,
+    provider: l.provider,
+    label: l.label?.trim() || prettifyModelId(l.apiId),
+    hint: inferHint(l.apiId),
+    description: describeListing(l, getProvider(l.provider).label),
+    capabilities: { intelligence: 3, speed: 3, cost: 3 },
+    tags: l.vision ? ["vision", "tools"] : ["tools"],
+    rejectsSamplingParams: true,
+    preservesThinking:
+      version !== null && (version[0] > 5 || (version[0] === 5 && version[1] >= 1)),
+    discovered: true,
+    ...(l.createdAt ? { createdAt: l.createdAt } : {}),
+    ...(l.contextWindow ? { contextWindow: l.contextWindow } : {}),
+    ...(ceiling
+      ? {
+          outputLimits: {
+            cap: Math.min(64_000, Math.floor(ceiling / 2)),
+            ceiling,
+          },
+        }
+      : {}),
+    ...(l.pricing ? { pricing: l.pricing } : {}),
+  };
+}
+
+/** `claude-haiku-4-5-20251001` → `claude-haiku-4-5`; `gpt-5.5-2026-04-23` →
+ *  `gpt-5.5`. Only for matching a listing against the curated list. */
+function withoutDateStamp(apiId: string): string {
+  return apiId.replace(/-(\d{8}|\d{4}-\d{2}-\d{2})$/, "");
+}
+
+/** One provider's slice of the persisted catalogue. */
+export type ProviderCatalog = {
+  /** When a refresh last ran, success or not — the staleness clock. */
+  checkedAt: number;
+  /** When the list last came back. Absent until the first success. */
+  fetchedAt?: number;
+  /** The last good list — kept through a failed refresh. */
+  models: ModelListing[];
+  /** Why the last refresh failed, when it did. */
+  error?: string;
+};
+
+/** What every connected provider last said it serves, persisted (preference
+ *  `modelCatalog`) so both windows share it and a launch doesn't wait on the
+ *  network to show a model the user picked yesterday. */
+export type ModelCatalog = Partial<Record<DiscoverableProvider, ProviderCatalog>>;
+
+const asFinite = (v: unknown): number | undefined =>
+  typeof v === "number" && Number.isFinite(v) ? v : undefined;
+
+function normalizeListing(
+  provider: DiscoverableProvider,
+  raw: unknown,
+): ModelListing | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.apiId !== "string" || !r.apiId.trim()) return null;
+  const p = r.pricing as Record<string, unknown> | undefined;
+  const input = asFinite(p?.input);
+  const output = asFinite(p?.output);
+  const cacheRead = asFinite(p?.cacheRead);
+  return {
+    provider,
+    apiId: r.apiId,
+    ...(typeof r.label === "string" ? { label: r.label } : {}),
+    ...(asFinite(r.createdAt) ? { createdAt: r.createdAt as number } : {}),
+    ...(asFinite(r.contextWindow) ? { contextWindow: r.contextWindow as number } : {}),
+    ...(asFinite(r.maxOutputTokens)
+      ? { maxOutputTokens: r.maxOutputTokens as number }
+      : {}),
+    ...(typeof r.vision === "boolean" ? { vision: r.vision } : {}),
+    ...(input !== undefined && output !== undefined
+      ? { pricing: { input, output, ...(cacheRead !== undefined ? { cacheRead } : {}) } }
+      : {}),
+  };
+}
+
+/** The persisted catalogue, re-validated on load: a hand-edited or
+ *  half-written settings file costs its bad entries, never the launch. */
+export function normalizeModelCatalog(raw: unknown): ModelCatalog {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: ModelCatalog = {};
+  for (const [provider, entry] of Object.entries(raw as Record<string, unknown>)) {
+    if (!isDiscoverableProvider(provider)) continue;
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    const checkedAt = asFinite(e.checkedAt);
+    if (checkedAt === undefined) continue;
+    const models = Array.isArray(e.models)
+      ? e.models.flatMap((m) => normalizeListing(provider, m) ?? [])
+      : [];
+    out[provider] = {
+      checkedAt,
+      models,
+      ...(asFinite(e.fetchedAt) ? { fetchedAt: e.fetchedAt as number } : {}),
+      ...(typeof e.error === "string" ? { error: e.error } : {}),
+    };
+  }
+  return out;
+}
+
+const discoveredByCatalog = new WeakMap<ModelCatalog, ModelInfo[]>();
+
+/** The discovered models a catalogue offers, computed once per catalogue
+ *  object — the picker asks on every render, and OpenRouter alone lists
+ *  hundreds. Providers in `DISCOVERABLE_PROVIDERS` order. */
+export function discoveredModelsForCatalog(catalog: ModelCatalog): ModelInfo[] {
+  let models = discoveredByCatalog.get(catalog);
+  if (!models) {
+    models = discoveredModelsFrom(
+      DISCOVERABLE_PROVIDERS.flatMap((p) => catalog[p]?.models ?? []),
+    );
+    discoveredByCatalog.set(catalog, models);
+  }
+  return models;
+}
+
+/** The discovered models worth offering: every listing, minus the ones that
+ *  are a curated model under the same or a dated id (curated wins — it carries
+ *  vetted decisions), minus repeats. */
+export function discoveredModelsFrom(
+  listings: readonly ModelListing[],
+): ModelInfo[] {
+  const curated = new Set(MODELS.map((m) => `${m.provider}:${m.id}`));
+  const seen = new Set<string>();
+  const out: ModelInfo[] = [];
+  for (const l of listings) {
+    const key = `${l.provider}:${l.apiId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (curated.has(key)) continue;
+    if (curated.has(`${l.provider}:${withoutDateStamp(l.apiId)}`)) continue;
+    out.push(modelInfoFromListing(l));
+  }
+  return out;
 }
 
 /** Curated ids removed because the provider shut the model down, mapped to the
@@ -738,11 +1114,21 @@ export function migrateModelId(id: string): string {
   return RETIRED_MODEL_REPLACEMENTS[id] ?? id;
 }
 
-/** Whether `id` is a currently-registered model. Used to sanitize persisted
- *  selections (default/favorites/recents) after a model is retired — a stale id
- *  would otherwise crash `getModel` at the picker/runner. */
+/** Whether `id` names a model `getModel` can resolve: a curated one, or a
+ *  well-formed discovered one. Used to sanitize persisted selections
+ *  (default/favorites/recents, checkpoints, chat threads) after a model is
+ *  retired — a stale id would otherwise crash `getModel` at the picker/runner.
+ *
+ *  A discovered id is accepted on its shape alone, not on being in this
+ *  window's list: a saved default mustn't reset on a launch where the provider
+ *  hasn't answered yet (or is down). If the model is really gone, the provider
+ *  says so on the first run — the same answer a retired curated model gave. */
 export function isKnownModelId(id: string): id is ModelId {
-  return MODELS.some((x) => x.id === id);
+  return (
+    CURATED_BY_ID.has(id) ||
+    discovered.has(id) ||
+    parseDiscoveredModelId(id) !== null
+  );
 }
 
 /** Whether a model accepts image input. Used to gate sending image
@@ -825,7 +1211,7 @@ export function preservesThinking(id: ModelId | string): boolean {
   }
 }
 
-export const DEFAULT_MODEL_ID: ModelId = "claude-sonnet-5";
+export const DEFAULT_MODEL_ID: CatalogModelId = "claude-sonnet-5";
 
 /** Approximate context window (in tokens) per model. Used for the
  *  context-usage indicator in the AI mini-window header. Conservative
@@ -893,7 +1279,11 @@ export function getModelContextLimit(
   if (!modelId) return 128_000;
   if (modelId === "openai-compatible-custom" && compatOverride)
     return compatOverride;
-  return MODEL_CONTEXT_LIMITS[modelId] ?? 128_000;
+  return (
+    MODEL_CONTEXT_LIMITS[modelId] ??
+    uncatalogued(modelId)?.contextWindow ??
+    128_000
+  );
 }
 
 /** Per-model OUTPUT-token policy, decided here — not delegated to the provider
@@ -949,13 +1339,15 @@ export const MODEL_OUTPUT_LIMITS: Record<
 /** The output cap every request for this model asks for, or undefined to send
  *  nothing and let the endpoint decide (unknown / local / custom models). */
 export function getModelOutputCap(id: string): number | undefined {
-  return MODEL_OUTPUT_LIMITS[id]?.cap;
+  return MODEL_OUTPUT_LIMITS[id]?.cap ?? uncatalogued(id)?.outputLimits?.cap;
 }
 
 /** The model's hard output ceiling, when we know it. Only consulted by the
  *  truncation-resume path — ordinary runs ask for `cap`. */
 export function getModelOutputCeiling(id: string): number | undefined {
-  return MODEL_OUTPUT_LIMITS[id]?.ceiling;
+  return (
+    MODEL_OUTPUT_LIMITS[id]?.ceiling ?? uncatalogued(id)?.outputLimits?.ceiling
+  );
 }
 
 export type ModelPricing = {
@@ -1003,7 +1395,7 @@ export function estimateCost(
   usage: { inputTokens: number; outputTokens: number; cachedInputTokens: number },
 ): number | null {
   if (!modelId) return null;
-  const p = MODEL_PRICING[modelId];
+  const p = MODEL_PRICING[modelId] ?? uncatalogued(modelId)?.pricing;
   if (!p) return null;
   const fresh = Math.max(0, usage.inputTokens - usage.cachedInputTokens);
   const cached = usage.cachedInputTokens;
