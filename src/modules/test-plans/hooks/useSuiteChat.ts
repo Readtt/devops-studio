@@ -21,7 +21,7 @@ import {
   type TargetRequirement,
   type TestCase,
 } from "@/modules/ado";
-import { isKnownModelId, supportsVision, type ModelId } from "@/modules/ai/config";
+import { restoreModelId, supportsVision, type ModelId } from "@/modules/ai/config";
 import { loadBestPracticeBlocks } from "@/modules/ai/lib/bestPractices";
 import { scopedRepos, toggleRepoScope } from "@/modules/ai/lib/repoScope";
 import { bugsToContextBlocks } from "@/modules/ado/lib/bugContextBlock";
@@ -310,12 +310,10 @@ async function hydrateThread(
         title: stored.title,
         messages: stored.messages,
         // A model retired since this thread was saved would crash the picker
-        // and runner (both call the throwing getModel) — fall back to "use the
-        // global default" rather than pinning a ghost.
-        modelId:
-          stored.modelId && isKnownModelId(stored.modelId)
-            ? stored.modelId
-            : null,
+        // and runner (both call the throwing getModel) — carry it to its
+        // successor, else fall back to "use the global default" rather than
+        // pinning a ghost.
+        modelId: restoreModelId(stored.modelId),
       });
     } else {
       patchThread(set, planId, suiteId, threadId, { hydrated: true });

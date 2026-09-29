@@ -7,6 +7,7 @@ import { create } from "zustand";
 import {
   getModelOutputCeiling,
   isKnownModelId,
+  restoreModelId,
   RESUME_TOPUP_TOKENS,
   SURFACE_STEP_CAPS,
   SURFACE_TOKEN_BUDGETS,
@@ -821,11 +822,8 @@ export const useCommitReview = create<State>((set, get) => ({
       const next = new Map(s.byTab);
       // The tab's persisted modelId can name a model retired since it was
       // saved — feeding that into the picker/runner would throw at getModel.
-      // Degrade to "use the global default" instead.
-      next.set(
-        tabId,
-        emptySlice(modelId && isKnownModelId(modelId) ? modelId : null),
-      );
+      // Carry it to its successor, else degrade to "use the global default".
+      next.set(tabId, emptySlice(restoreModelId(modelId)));
       return { byTab: next };
     });
 
@@ -923,7 +921,8 @@ export const useCommitReview = create<State>((set, get) => ({
             // might: `canOfferResume` (via the pane) decides on what the
             // attempt banked, so this only has to hand it the checkpoint —
             // which is also the handle Discard hangs off.
-            resumable: done
+            // …and a retired model can't take the replay at all.
+            resumable: done || !isKnownModelId(p.modelId)
               ? null
               : {
                   stage: p.stage,

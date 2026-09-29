@@ -9,6 +9,7 @@ import {
 import type { LeafNode } from "./store/types";
 import { TabStrip } from "./TabStrip";
 import { TabContent } from "./TabContent";
+import { TabErrorBoundary } from "./TabErrorBoundary";
 import { leafCenterDropId } from "./dnd/dndIds";
 import { DropEdges } from "./dnd/DropEdges";
 import { LaunchMenuItems } from "./LaunchMenu";
@@ -133,7 +134,9 @@ export const LeafPane = memo(function LeafPane({ leaf, emptyState }: Props) {
                   style={{ visibility: visible ? "visible" : "hidden" }}
                   aria-hidden={!visible}
                 >
-                  <TabContent tab={t} />
+                  <TabErrorBoundary onClose={() => onClose(t.id)}>
+                    <TabContent tab={t} />
+                  </TabErrorBoundary>
                 </div>
               );
             })}

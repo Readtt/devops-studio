@@ -762,11 +762,17 @@ export type ModelListing = {
   provider: DiscoverableProvider;
   apiId: string;
   label?: string;
+  /** Other ids the provider answers to for this model (xAI, Mistral). */
+  aliases?: string[];
   /** Epoch ms. */
   createdAt?: number;
+  /** Epoch ms the provider stops serving it (OpenRouter). */
+  expiresAt?: number;
   contextWindow?: number;
   maxOutputTokens?: number;
   vision?: boolean;
+  /** Anthropic: whether the model takes `thinking: {type: "adaptive"}`. */
+  adaptiveThinking?: boolean;
   pricing?: ModelPricing;
 };
 
@@ -807,10 +813,30 @@ export function listDiscoveredModels(): readonly ModelInfo[] {
   return [...discovered.values()];
 }
 
-/** A non-curated model: its live listing when this window has one, else what
- *  the id alone implies. */
+/** The curated model a provider lists as `apiId` — under its own id or a
+ *  dated snapshot of it — or undefined. Same provider only: Groq's and
+ *  OpenRouter's `openai/gpt-oss-120b` are two different routes. */
+function curatedListedAs(provider: ProviderId, apiId: string): ModelInfo | undefined {
+  const m = CURATED_BY_ID.get(apiId) ?? CURATED_BY_ID.get(withoutDateStamp(apiId));
+  return m && m.provider === provider ? m : undefined;
+}
+
+/** The id a model is filed under. A discovered id for a model that has since
+ *  been curated — `openai:gpt-6-sol`, saved while it was only on OpenAI's
+ *  list, once a release adds `gpt-6-sol` to MODELS — is that curated entry,
+ *  with its vetted decisions and its place in the picker. Without this the
+ *  saved pick would degrade to a copy built from the id alone the day its
+ *  model got curated. */
+export function canonicalModelId(id: ModelId): ModelId {
+  if (CURATED_BY_ID.has(id)) return id;
+  const parsed = parseDiscoveredModelId(id);
+  return (parsed && curatedListedAs(parsed.provider, parsed.apiId)?.id) ?? id;
+}
+
+/** A model that isn't curated: its live listing when this window has one,
+ *  else what the id alone implies. Undefined for curated and unknown ids. */
 function uncatalogued(id: string): ModelInfo | undefined {
-  if (CURATED_BY_ID.has(id)) return undefined;
+  if (CURATED_BY_ID.has(canonicalModelId(id))) return undefined;
   const live = discovered.get(id);
   if (live) return live;
   const parsed = parseDiscoveredModelId(id);
@@ -824,7 +850,7 @@ function uncatalogued(id: string): ModelInfo | undefined {
 }
 
 export function getModel(id: ModelId): ModelInfo {
-  const m = CURATED_BY_ID.get(id) ?? uncatalogued(id);
+  const m = findModel(id);
   if (!m) throw new Error(`Unknown model: ${id}`);
   return m;
 }
@@ -832,12 +858,13 @@ export function getModel(id: ModelId): ModelInfo {
 /** `getModel` for an id that may not resolve: undefined instead of a throw. */
 export function findModel(id: ModelId | null | undefined): ModelInfo | undefined {
   if (!id) return undefined;
-  return CURATED_BY_ID.get(id) ?? uncatalogued(id);
+  return CURATED_BY_ID.get(canonicalModelId(id)) ?? uncatalogued(id);
 }
 
 /** The id a model is called by on the wire. */
 export function apiModelId(id: ModelId): string {
-  return getModel(id).apiId ?? id;
+  const m = getModel(id);
+  return m.apiId ?? m.id;
 }
 
 /** Anthropic's own API, or an Anthropic model through OpenRouter. */
@@ -1115,9 +1142,21 @@ export const RETIRED_MODEL_REPLACEMENTS: Readonly<Record<string, string>> = {
   "mistralai/mistral-large-latest": "mistralai/mistral-large-2512",
 };
 
-/** A persisted id, carried past a retirement when the model has a successor. */
+/** A persisted id, carried past a retirement when the model has a successor,
+ *  and onto the curated entry when a discovered model has since been curated. */
 export function migrateModelId(id: string): string {
-  return RETIRED_MODEL_REPLACEMENTS[id] ?? id;
+  return canonicalModelId(RETIRED_MODEL_REPLACEMENTS[id] ?? id);
+}
+
+/** A persisted model id made safe for state that renders: migrated, or null
+ *  when nothing resolves it. Every restore of a saved id goes through here —
+ *  `getModel` throws on an unknown id, the pickers and panes call it during
+ *  render, and a throw there takes the whole window down on every launch that
+ *  rehydrates the tab. */
+export function restoreModelId(id: string | null | undefined): ModelId | null {
+  if (!id) return null;
+  const current = migrateModelId(id);
+  return isKnownModelId(current) ? current : null;
 }
 
 /** Whether `id` names a model `getModel` can resolve: a curated one, or a

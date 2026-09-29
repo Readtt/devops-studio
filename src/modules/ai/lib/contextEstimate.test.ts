@@ -179,7 +179,7 @@ describe("quality budget · window-aware", () => {
 
   it("fires that same payload on a small-window model, where it IS heavy", () => {
     const usage = computeContextUsage({
-      modelId: "deepseek-reasoner", // 128k
+      modelId: "gpt-oss-120b", // 128k
       segments: [{ label: "spec", tokens: 60_000 }],
     });
     expect(showsContextAdvisory(usage, true)).toBe(true);

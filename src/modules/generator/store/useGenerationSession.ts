@@ -136,6 +136,7 @@ export type PublishLogEntry = {
 
 import {
   isKnownModelId,
+  restoreModelId,
   RESUME_TOPUP_TOKENS,
   SURFACE_STEP_CAPS,
   SURFACE_TOKEN_BUDGETS,
@@ -2306,11 +2307,13 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       suggestBugs: form.suggestBugs,
       tagSourceBranch: form.tagSourceBranch,
       repoScope: form.repoScope ?? null,
-      overrideModelId: form.overrideModelId,
+      overrideModelId: restoreModelId(form.overrideModelId),
       runId: payload.runId,
       activityLog: payload.activity,
       stepsUsed: payload.transcript?.stepsUsed ?? null,
-      resumable: {
+      // The transcript is pinned to the model that produced it; a retired one
+      // can't be resumed, so don't offer a button that could only fail.
+      resumable: !isKnownModelId(payload.modelId) ? null : {
         stepsUsed: payload.transcript?.stepsUsed ?? 0,
         hasTranscript: hasReplayableTranscript(payload.transcript),
         outputCapRaisable: canRaiseOutputCap(payload.modelId, payload.lastOutcome),
@@ -3797,7 +3800,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       // single `mode` so pre-split drafts still restore correctly.
       coverage: payload.coverage ?? modeToAxes(payload.mode).coverage,
       suggestBugs: payload.suggestBugs ?? modeToAxes(payload.mode).suggestBugs,
-      overrideModelId: payload.overrideModelId ?? null,
+      overrideModelId: restoreModelId(payload.overrideModelId),
       cases: reconcileAutoOutcomes(payload.cases ?? [], payload.bugs ?? []),
       bugs: payload.bugs ?? [],
       rawText: payload.rawText ?? "",
@@ -3880,7 +3883,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       changesets: payload?.changesets ?? "",
       coverage: payload?.coverage ?? modeToAxes(payload?.mode).coverage,
       suggestBugs: payload?.suggestBugs ?? modeToAxes(payload?.mode).suggestBugs,
-      overrideModelId: payload?.overrideModelId ?? null,
+      overrideModelId: restoreModelId(payload?.overrideModelId),
       cases: payload?.cases ?? [],
       bugs: payload?.bugs ?? [],
       rawText: payload?.rawText ?? "",
