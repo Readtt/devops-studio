@@ -5,13 +5,17 @@
 // and the ADO binding — is rewritten whole on every settings change.
 //
 // One writer: the main window. Settings' "Check now" asks it to run the check
-// (`requestModelCatalogCheck`) instead of writing itself. Two windows each
-// reading the catalogue, checking providers and writing the whole thing back
-// would let the later write erase the earlier one's results.
+// (`requestModelCatalogCheck`) instead of writing itself, and hears back when
+// it's done (`onModelCatalogCheckFinished`). Two windows each reading the
+// catalogue, checking providers and writing the whole thing back would let the
+// later write erase the earlier one's results.
 //
-// Every window re-reads the file when the writer says it changed. The shared
-// store's own change notifications aren't relied on for that — they don't
-// cross windows the way the app needs (see settings/store.ts's writePref).
+// Both windows hold the same store resource (the plugin shares one per path
+// across windows), so a re-read sees the writer's latest `set` even before it
+// reaches disk. What each window needs is to know WHEN to re-read: the writer
+// emits CHANGED_EVENT with a stamp that only ever goes up, and a window ignores
+// any stamp it has already seen or passed — including its own echo, and a slow
+// re-read that would otherwise land after a newer one.
 
 import { create } from "zustand";
 import { LazyStore } from "@tauri-apps/plugin-store";
@@ -27,6 +31,7 @@ const STORE_PATH = "devops-studio-models.json";
 const KEY = "catalog";
 const CHANGED_EVENT = "devops-studio://model-catalog-changed";
 const CHECK_REQUESTED_EVENT = "devops-studio://model-catalog-check-requested";
+const CHECK_FINISHED_EVENT = "devops-studio://model-catalog-check-finished";
 
 const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: false });
 
@@ -38,9 +43,8 @@ type State = {
 };
 
 let initialized = false;
-/** Stamp of the last catalogue this window loaded or wrote. The writer hears
- *  its own change event too; matching stamps skip the redundant re-read. */
-let seenStamp: number | null = null;
+/** Newest stamp this window has loaded or written. */
+let seenStamp = 0;
 
 export const useModelCatalogStore = create<State>(() => ({
   catalog: {},
@@ -48,12 +52,14 @@ export const useModelCatalogStore = create<State>(() => ({
   init: async () => {
     if (initialized) return;
     initialized = true;
-    await reload();
-    void listen<{ stamp?: number } | null>(CHANGED_EVENT, (e) => {
-      const stamp = e.payload?.stamp ?? null;
-      if (stamp !== null && stamp === seenStamp) return;
+    // Listen BEFORE the first read: a save landing between the two would
+    // otherwise go unseen until the next one, up to 12 h later.
+    await listen<{ stamp?: number } | null>(CHANGED_EVENT, (e) => {
+      const stamp = e.payload?.stamp;
+      if (typeof stamp === "number" && stamp <= seenStamp) return;
       void reload();
     });
+    await reload();
   },
 }));
 
@@ -65,7 +71,11 @@ async function reload(): Promise<void> {
     raw = undefined;
   }
   const doc = raw as { stamp?: unknown; catalog?: unknown } | undefined;
-  seenStamp = typeof doc?.stamp === "number" ? doc.stamp : null;
+  const stamp = typeof doc?.stamp === "number" ? doc.stamp : 0;
+  // A re-read that raced a newer save and came back with the older value must
+  // not move this window backwards. (The first load always applies.)
+  if (useModelCatalogStore.getState().hydrated && stamp < seenStamp) return;
+  seenStamp = Math.max(seenStamp, stamp);
   useModelCatalogStore.setState({
     catalog: normalizeModelCatalog(doc?.catalog),
     hydrated: true,
@@ -83,12 +93,19 @@ useModelCatalogStore.subscribe((state, prev) => {
 
 /** Persist a new catalogue and tell every window. Main window only. */
 export async function saveModelCatalog(catalog: ModelCatalog): Promise<void> {
-  const stamp = Date.now();
+  // Strictly increasing, even for two saves inside one millisecond or across a
+  // clock step back — windows use it to tell newer from older.
+  const stamp = Math.max(Date.now(), seenStamp + 1);
   seenStamp = stamp;
   useModelCatalogStore.setState({ catalog });
   await store.set(KEY, { stamp, catalog });
-  await store.save();
-  await emit(CHANGED_EVENT, { stamp });
+  try {
+    await store.save();
+  } finally {
+    // The shared store already holds the new value; tell the other window even
+    // if writing it to disk failed (the app retries the save on exit).
+    await emit(CHANGED_EVENT, { stamp });
+  }
 }
 
 /** Ask the main window to re-read every connected provider's list now. */
@@ -100,4 +117,16 @@ export function onModelCatalogCheckRequested(
   cb: () => void,
 ): Promise<UnlistenFn> {
   return listen(CHECK_REQUESTED_EVENT, () => cb());
+}
+
+/** The main window's answer to a check request — sent when the check is done,
+ *  or at once when there was nothing it could check. */
+export async function announceModelCatalogCheckFinished(): Promise<void> {
+  await emit(CHECK_FINISHED_EVENT);
+}
+
+export function onModelCatalogCheckFinished(
+  cb: () => void,
+): Promise<UnlistenFn> {
+  return listen(CHECK_FINISHED_EVENT, () => cb());
 }

@@ -96,14 +96,32 @@ describe("model catalogue store", () => {
 
   it("re-reads when another window wrote, and normalises what it finds", async () => {
     await useModelCatalogStore.getState().init();
+    const stamp = Date.now() + 60_000;
     file()?.set("catalog", {
-      stamp: 424242,
+      stamp,
       catalog: { ...catalog, bogus: { checkedAt: 1, models: [] } },
     });
-    fire("devops-studio://model-catalog-changed", { stamp: 424242 });
+    fire("devops-studio://model-catalog-changed", { stamp });
     await vi.waitFor(() =>
       expect(useModelCatalogStore.getState().catalog).toEqual(catalog),
     );
+  });
+
+  // Two saves in one millisecond, or a re-read that raced a newer save and
+  // came back with the older value, must never move a window backwards.
+  it("never goes backwards: stamps only rise, and an older re-read is ignored", async () => {
+    await useModelCatalogStore.getState().init();
+    await saveModelCatalog({ ...catalog });
+    const first = (file()?.get("catalog") as { stamp: number }).stamp;
+    await saveModelCatalog({});
+    const second = (file()?.get("catalog") as { stamp: number }).stamp;
+    expect(second).toBeGreaterThan(first);
+
+    // An older catalogue reappears in the file (a stale read) — ignored.
+    file()?.set("catalog", { stamp: first, catalog });
+    fire("devops-studio://model-catalog-changed", { stamp: second + 1 });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(useModelCatalogStore.getState().catalog).toEqual({});
   });
 
   it("carries Settings' Check now to the writer", async () => {

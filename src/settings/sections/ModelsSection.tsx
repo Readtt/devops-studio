@@ -36,6 +36,7 @@ import {
 } from "@/modules/ai/lib/modelAvailability";
 import { describeListError } from "@/modules/ai/lib/modelCatalog";
 import {
+  onModelCatalogCheckFinished,
   requestModelCatalogCheck,
   useModelCatalogStore,
 } from "@/modules/ai/store/modelCatalogStore";
@@ -447,8 +448,11 @@ function DefaultModelBlock({
 }) {
   const availability = useModelAvailability();
   const current = getModel(defaultModel);
-  const totalModels = useSelectableModels().length;
-  const lockedCount = totalModels - availability.available.size;
+  // Curated models only: a discovered list left behind by a removed key would
+  // otherwise read as hundreds of "hidden" models.
+  const lockedCount = useSelectableModels().filter(
+    (m) => !m.discovered && !availability.isAvailable(m.id),
+  ).length;
   // Subscribe to the main window's generation-busy broadcast so we lock the
   // picker mid-run / mid-draft, same as the status-bar picker does locally.
   // Without this the user could swap the default model mid-refine and the
@@ -591,7 +595,7 @@ function DefaultModelBlock({
  */
 function ModelListStatus({ keys }: { keys: KeysMap }) {
   const catalog = useModelCatalogStore((s) => s.catalog);
-  const [requestedAt, setRequestedAt] = useState<number | null>(null);
+  const [checking, setChecking] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   // "2 h ago" has to keep moving while Settings stays open.
   const [, setTick] = useState(0);
@@ -601,17 +605,26 @@ function ModelListStatus({ keys }: { keys: KeysMap }) {
   }, []);
 
   const connected = DISCOVERABLE_PROVIDERS.filter((p) => keys[p]);
-  // The main window runs the check and writes the result; it's done here when
-  // every connected provider has been checked since the request.
-  const checking =
-    requestedAt !== null &&
-    connected.some((p) => (catalog[p]?.checkedAt ?? 0) < requestedAt);
+  // The main window runs the check and says when it's done — a check queued
+  // behind another (a key just added) can take longer than any fixed guess.
   useEffect(() => {
-    if (requestedAt === null) return;
-    // Past the per-provider timeout, stop spinning whatever happened.
-    const t = window.setTimeout(() => setRequestedAt(null), 30_000);
+    let alive = true;
+    let unlisten: (() => void) | undefined;
+    void onModelCatalogCheckFinished(() => setChecking(false)).then((un) => {
+      if (alive) unlisten = un;
+      else un();
+    });
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
+  }, []);
+  useEffect(() => {
+    if (!checking) return;
+    // Only if the answer never comes (the main window closed mid-check).
+    const t = window.setTimeout(() => setChecking(false), 90_000);
     return () => window.clearTimeout(t);
-  }, [requestedAt]);
+  }, [checking]);
 
   // The OLDEST list, not the newest: one key change re-reading one provider
   // mustn't make eleven-hour-old lists read as "just now".
@@ -628,11 +641,11 @@ function ModelListStatus({ keys }: { keys: KeysMap }) {
       setNotice("Connect a cloud provider below first.");
       return;
     }
-    setRequestedAt(Date.now());
+    setChecking(true);
     try {
       await requestModelCatalogCheck();
     } catch (e) {
-      setRequestedAt(null);
+      setChecking(false);
       setNotice(e instanceof Error ? e.message : String(e));
     }
   };

@@ -5,6 +5,7 @@
 import { DISCOVERABLE_PROVIDERS, type DiscoverableProvider } from "../config";
 import { useChatStore } from "../store/chatStore";
 import {
+  announceModelCatalogCheckFinished,
   onModelCatalogCheckRequested,
   useModelCatalogStore,
 } from "../store/modelCatalogStore";
@@ -14,10 +15,23 @@ import { refreshModelCatalog, type Keys } from "./modelCatalog";
  *  list is only fetched once it's due (see modelCatalog.ts). */
 const STALENESS_CHECK_EVERY_MS = 60 * 60 * 1000;
 
+/** Providers whose saved list should go: they have one, and their key is gone.
+ *
+ *  Only on a read that still has SOME key. The keychain can't tell "removed"
+ *  from "couldn't read" — every error comes back as no key — and a failed read
+ *  loses all of them at once, which no single removal does. So a read with no
+ *  keys at all drops nothing. The cost: removing your last key leaves its list
+ *  behind, unused (the pickers only offer providers you have a key for). */
+export function providersToDrop(keys: Keys): DiscoverableProvider[] {
+  const anyKey = DISCOVERABLE_PROVIDERS.some((p) => keys[p]?.trim());
+  if (!anyKey) return [];
+  return DISCOVERABLE_PROVIDERS.filter((p) => !keys[p]?.trim());
+}
+
 /** Keep the catalogue current from this window: once the saved catalogue and
  *  the keys are both loaded, on any key change (fetching just the providers
- *  whose key changed, dropping those whose key was removed), hourly for
- *  anything due, and whenever Settings asks. Returns the stop. */
+ *  whose key changed), hourly for anything due, and whenever Settings asks —
+ *  answering Settings when that check is done. Returns the stop. */
 export function startModelCatalogSync(): () => void {
   let stopped = false;
   let seenKeys: Keys | null = null;
@@ -27,15 +41,17 @@ export function startModelCatalogSync(): () => void {
     useChatStore.getState().keysLoaded &&
     useModelCatalogStore.getState().hydrated;
 
+  /** Resolves when the pass is done, or at once when it couldn't run. */
   const refresh = (
-    opts: {
-      force?: boolean | readonly DiscoverableProvider[];
-      drop?: readonly DiscoverableProvider[];
-    } = {},
-  ) => {
-    if (!ready()) return;
+    force?: boolean | readonly DiscoverableProvider[],
+  ): Promise<unknown> => {
+    if (!ready()) return Promise.resolve();
     const keys = useChatStore.getState().apiKeys;
-    void refreshModelCatalog({ keys, ...opts }).catch(() => undefined);
+    return refreshModelCatalog({
+      keys,
+      force,
+      drop: providersToDrop(keys),
+    }).catch(() => undefined);
   };
 
   const onKeys = () => {
@@ -43,7 +59,7 @@ export function startModelCatalogSync(): () => void {
     if (!keysLoaded) return;
     if (!seenKeys) {
       seenKeys = apiKeys;
-      refresh();
+      void refresh();
       return;
     }
     const before = seenKeys;
@@ -51,33 +67,32 @@ export function startModelCatalogSync(): () => void {
     const changed = DISCOVERABLE_PROVIDERS.filter(
       (p) => (apiKeys[p] ?? null) !== (before[p] ?? null),
     );
-    if (changed.length === 0) return;
-    // A key seen this session and now gone was removed on purpose; one that
-    // was never seen may just not have loaded, and must not cost its list.
-    const drop = changed.filter((p) => before[p] && !apiKeys[p]);
-    const force = changed.filter((p) => !!apiKeys[p]);
-    refresh({ force, drop });
+    if (changed.length > 0) void refresh(changed.filter((p) => !!apiKeys[p]));
   };
 
   const unsubKeys = useChatStore.subscribe((s, prev) => {
     if (s.apiKeys !== prev.apiKeys || s.keysLoaded !== prev.keysLoaded) onKeys();
   });
   const unsubCatalog = useModelCatalogStore.subscribe((s, prev) => {
-    if (s.hydrated && !prev.hydrated) refresh();
+    if (s.hydrated && !prev.hydrated) void refresh();
   });
   let unlistenCheck: (() => void) | undefined;
-  void onModelCatalogCheckRequested(() => refresh({ force: true })).then((un) => {
+  void onModelCatalogCheckRequested(() => {
+    void refresh(true).finally(() => {
+      void announceModelCatalogCheckFinished().catch(() => undefined);
+    });
+  }).then((un) => {
     if (stopped) un();
     else unlistenCheck = un;
   });
   onKeys();
-  const timer = window.setInterval(() => refresh(), STALENESS_CHECK_EVERY_MS);
+  const timer = setInterval(() => void refresh(), STALENESS_CHECK_EVERY_MS);
 
   return () => {
     stopped = true;
     unsubKeys();
     unsubCatalog();
     unlistenCheck?.();
-    window.clearInterval(timer);
+    clearInterval(timer);
   };
 }
