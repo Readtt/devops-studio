@@ -541,6 +541,26 @@ describe("ensure (fresh-mount adoption)", () => {
     expect(mockCommitDiff).not.toHaveBeenCalled();
   });
 
+  // Its transcript is pinned to a model nobody serves any more: adopting it
+  // would open a fresh tab on a Resume that can only fail.
+  it("doesn't adopt a checkpoint pinned to a retired model", async () => {
+    mockListCheckpoints.mockResolvedValue([entry("crun-1")]);
+    mockGetCheckpoint.mockResolvedValue(
+      checkpointRow(
+        checkpoint({
+          lastOutcome: null,
+          modelId: "gone-model" as CommitReviewCheckpointV2["modelId"],
+        }),
+      ),
+    );
+    mockGetRow.mockResolvedValue(savedRow("interrupted"));
+
+    await useCommitReview.getState().ensure(1, null, null);
+
+    expect(slice(1).runId).not.toBe("crun-1");
+    expect(slice(1).resumable).toBeNull();
+  });
+
   it("maps a cancelled run to the cancelled banner state", async () => {
     mockListCheckpoints.mockResolvedValue([entry("crun-1")]);
     mockGetCheckpoint.mockResolvedValue(checkpointRow()); // cancelled outcome
@@ -1077,6 +1097,24 @@ describe("ensure — checkpoint probe", () => {
     });
     // The thin row carries no activity log; the checkpoint does.
     expect(s.activity.map((a) => a.id)).toEqual(["a1"]);
+  });
+
+  // Reopening a saved run whose model has since been retired keeps the card —
+  // Discard is the way out of a checkpoint — but offers no Resume.
+  it("gives a reopened run pinned to a retired model the Discard-only card", async () => {
+    mockGetRow.mockResolvedValue(savedRow());
+    mockGetCheckpoint.mockResolvedValue(
+      checkpointRow(
+        checkpoint({ modelId: "gone-model" as CommitReviewCheckpointV2["modelId"] }),
+      ),
+    );
+
+    await useCommitReview.getState().ensure(7, "crun-1");
+
+    const r = slice(7).resumable;
+    expect(r).not.toBeNull();
+    expect(r?.modelRetired).toBe(true);
+    expect(canOfferResume(r?.outcome, null, r)).toBe(false);
   });
 
   it("offers no resume for a run that answered with garbage having banked nothing", async () => {
