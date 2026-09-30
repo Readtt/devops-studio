@@ -7,6 +7,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The release workflow extracts the section matching the pushed tag and uses it
 as the GitHub release body, so keep the heading format exact: `## [x.y.z] - YYYY-MM-DD`.
 
+## [0.25.0] - 2026-09-30
+
+### Added
+
+- **New models show up on their own.** DevOps Studio now reads each connected provider's own model list, so a model released today appears in the model picker without waiting for an app update. Lists refresh every 12 hours and whenever you change a key. Settings → Models shows when they were last checked, says so if a provider couldn't be reached, and has a **Check now** button. The picker shows each provider's five newest additions; type to search the rest. For OpenRouter, only routes your key can use and that support tools are listed. Free, batch and very small-context routes are left out.
+- New models in the built-in list: Claude Fable 5.1, Claude Opus 5.5 and Claude Sonnet 5.5; GPT-6 Astra, GPT-6.1 Sol and GPT-6 Luna; Gemini 3.8 Flash; Grok 4.7 and Grok 4.3; DeepSeek V4.1 Flash; Qwen 3.8 27B on Cerebras; GPT-OSS 120B on Groq; and OpenRouter routes for Claude Opus 5.5, Claude Sonnet 5.5, GPT-6.1 Sol and Grok 4.7.
+- Long runs on Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 keep going after the app trims old tool results. For Anthropic accounts created on or after August 31, these models reject a conversation that has been trimmed. The app now asks Anthropic to skip the affected reasoning instead.
+
+### Fixed
+
+- **DeepSeek failed every structured run** with "This response_format type is unavailable now". The app asked DeepSeek for a JSON mode it doesn't offer; it now uses the one it does.
+- **Gemini 3 Flash was sent a temperature of 0.** Google warns this can make Gemini 3 loop or give weaker answers. No Gemini 3 model is sent a temperature now.
+- **The Test button on an OpenAI key always said it couldn't fully verify the key.** It asked for fewer output tokens than OpenAI allows.
+- Cost readouts used wrong prices for several models. For example, GPT-5.5 output is $30 per million tokens, not $15. Mistral's context windows were also understated: 256K, not 32K or 128K.
+- Models the providers have shut down are gone from the list: DeepSeek Reasoner, DeepSeek V4 Flash (now V4.1 Flash), Grok 4 Fast, Groq's Llama 3.3 70B and R1 Distill 70B, Cerebras's Llama 3.3 70B and Qwen 3 32B, and five OpenRouter routes that were renamed or removed. If one of them was your default, a favorite or a recent pick, it moves to that provider's replacement. The same goes for a saved draft, a Commit Review tab or a Suite Chat thread that used one. Before, it reset to a model you might have no key for. An interrupted run on a retired model no longer offers **Resume**, since it can only be continued on the model it started on.
+- A tab that fails to open now shows an error inside that tab, with **Try again** and **Close tab**, instead of blanking the whole window.
+- The background transcript summarizer no longer picks a reasoning model or a code-completion model when a better choice exists. When every model you have a key for is a reasoning model (Google only, for example), it now gets enough room to think and still write the summary. A summary that ran out of room is thrown away instead of used.
+- The release script now links to the build of the release it just pushed, not the previous one.
+
+### Changed
+
+- The **Test** button on a provider key now tests with a cheap, stable model from that provider instead of its newest flagship.
+- The AI SDK provider libraries are updated to their latest AI SDK 6 releases.
+
 ## [0.24.0] - 2026-09-03
 
 ### Added
