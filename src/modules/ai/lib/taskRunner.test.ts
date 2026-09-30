@@ -223,6 +223,59 @@ describe("per-model output caps (maxOutputTokens)", () => {
   });
 });
 
+// Claude 5.5 / Fable 5.1 reject a replayed thinking block whose conversation
+// prefix changed, and eviction changes it by design. The fix is one request
+// field; these pin that every path sends it to those models and that no other
+// model's request changes by a byte.
+describe("preserved thinking (drop_block)", () => {
+  const DROP = {
+    anthropic: {
+      thinking: {
+        type: "adaptive",
+        blockBinding: { prefixMismatchBehavior: "drop_block" },
+      },
+    },
+  };
+  const preserving = { ...baseInput, modelId: "claude-opus-5-5" as never };
+
+  it("the agentic path asks Anthropic to drop invalidated blocks", async () => {
+    generateText.mockResolvedValue({ text: "prose" });
+    await runTask(preserving);
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.providerOptions).toEqual(DROP);
+  });
+
+  it("the streaming path does too", async () => {
+    streamText.mockReturnValue({
+      textStream: (async function* () {
+        yield "x";
+      })(),
+    });
+    await streamTask({ ...preserving, onText: () => {} });
+    const arg = streamText.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.providerOptions).toEqual(DROP);
+  });
+
+  it("and the structured tool-less path", async () => {
+    generateObject.mockResolvedValue({ object: { a: 1 } });
+    await runTask({ ...preserving, schema: z.object({ a: z.number() }) });
+    const arg = generateObject.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.providerOptions).toEqual(DROP);
+  });
+
+  it.each([
+    ["claude-sonnet-5", "Claude 5 doesn't check the prefix"],
+    ["claude-haiku-4-5", "Haiku has no adaptive thinking to name"],
+    ["gpt-6.1-sol", "not Anthropic"],
+    ["anthropic/claude-opus-5.5", "OpenRouter doesn't replay signed thinking"],
+  ])("%s sends no providerOptions (%s)", async (modelId) => {
+    generateText.mockResolvedValue({ text: "prose" });
+    await runTask({ ...baseInput, modelId: modelId as never });
+    const arg = generateText.mock.calls[0][0] as Record<string, unknown>;
+    expect("providerOptions" in arg).toBe(false);
+  });
+});
+
 // The custom OpenAI-compatible route can never have a config-table entry — one
 // model id stands for every endpoint a user might point it at — so "send
 // nothing, let the endpoint decide" was its permanent answer. That is not
