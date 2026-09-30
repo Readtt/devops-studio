@@ -7,6 +7,7 @@ import { create } from "zustand";
 import {
   getModelOutputCeiling,
   isKnownModelId,
+  restoreModelId,
   RESUME_TOPUP_TOKENS,
   SURFACE_STEP_CAPS,
   SURFACE_TOKEN_BUDGETS,
@@ -229,6 +230,8 @@ export type CommitReviewSlice = {
      *  CLOSED without it, which is why a truncated review offered no resume at
      *  all while the generator, which passes it, offered one. */
     outputCapRaisable: boolean;
+    /** The run's model has been retired — see ResumeProgress.modelRetired. */
+    modelRetired?: boolean;
     totalTokens: number | null;
     updatedAt: string;
     outcome: CheckpointOutcome | null;
@@ -672,6 +675,7 @@ async function adoptInterruptedRun(
         stepsUsed: p.transcript?.stepsUsed ?? 0,
         hasTranscript: hasReplayableTranscript(p.transcript),
         outputCapRaisable: canRaiseOutputCap(p.modelId, p.lastOutcome),
+        modelRetired: !isKnownModelId(p.modelId),
       })
     ) {
       continue;
@@ -821,11 +825,8 @@ export const useCommitReview = create<State>((set, get) => ({
       const next = new Map(s.byTab);
       // The tab's persisted modelId can name a model retired since it was
       // saved — feeding that into the picker/runner would throw at getModel.
-      // Degrade to "use the global default" instead.
-      next.set(
-        tabId,
-        emptySlice(modelId && isKnownModelId(modelId) ? modelId : null),
-      );
+      // Carry it to its successor, else degrade to "use the global default".
+      next.set(tabId, emptySlice(restoreModelId(modelId)));
       return { byTab: next };
     });
 
@@ -933,6 +934,8 @@ export const useCommitReview = create<State>((set, get) => ({
                     p.modelId,
                     p.lastOutcome,
                   ),
+                  // A retired model gets the Discard-only card, with why.
+                  modelRetired: !isKnownModelId(p.modelId),
                   totalTokens: p.transcript?.usage?.totalTokens ?? null,
                   updatedAt: cp.updatedAt,
                   outcome: p.lastOutcome,

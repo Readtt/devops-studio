@@ -520,7 +520,21 @@ pub async fn ai_http_stream(
     let client = build_safe_client(allow_private, &[(host, safe_ips)])?;
 
     let req = build_request(&client, &method, parsed, headers, body)?;
-    let resp = match req.send().await {
+    // The cancel is honoured while waiting for the response headers too, not
+    // only once the body streams. A provider that accepts the connection and
+    // then says nothing would otherwise hold this task and its socket until
+    // the peer gave up — however long the frontend had already stopped caring
+    // (a model-list check times out at 20 s and cancels).
+    let sent = match &cancel {
+        Some(notify) => {
+            tokio::select! {
+                _ = notify.notified() => return Ok(()),
+                r = req.send() => r,
+            }
+        }
+        None => req.send().await,
+    };
+    let resp = match sent {
         Ok(r) => r,
         Err(e) => {
             let _ = on_event.send(AiStreamEvent::Error {

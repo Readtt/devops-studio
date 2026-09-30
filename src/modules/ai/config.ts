@@ -157,6 +157,20 @@ export type ModelInfo = {
    *  against the conversation prefix it was produced under, and rejects the
    *  request when that prefix changed. See `preservesThinking`. */
   preservesThinking?: boolean;
+
+  // ── Set only on models discovered from a provider's live list ────────────
+  // Curated entries keep these decisions in the side tables below, where the
+  // release guard (config.test.ts) can check them.
+
+  /** The id sent to the provider, when it differs from `id`. */
+  apiId?: string;
+  /** Came from the provider's live model list rather than this file. */
+  discovered?: true;
+  /** Epoch ms the provider says the model was created; orders newest first. */
+  createdAt?: number;
+  contextWindow?: number;
+  outputLimits?: { cap: number; ceiling: number };
+  pricing?: ModelPricing;
 };
 
 export const MODELS = [
@@ -171,9 +185,9 @@ export const MODELS = [
   // on its native one — one prefix rule in someone else's release away from the
   // 400 that flag exists to prevent.
   //
-  // GPT-6 is where that stops being hypothetical: @ai-sdk/openai before
-  // 3.0.109 classes only `gpt-5*` and the o-series as reasoning models, so it
-  // forwards `temperature` to every gpt-6 id, and Astra and 6.1 Sol refuse it.
+  // GPT-6 is where that stopped being hypothetical: @ai-sdk/openai before
+  // 3.0.109 classed only `gpt-5*` and the o-series as reasoning models, so it
+  // forwarded `temperature` to every gpt-6 id, and Astra and 6.1 Sol refuse it.
   {
     id: "gpt-6-astra",
     provider: "openai",
@@ -192,6 +206,16 @@ export const MODELS = [
     description: "Near-Astra quality at a fifth of the price.",
     capabilities: { intelligence: 5, speed: 4, cost: 3 },
     tags: ["vision", "reasoning", "tools", "coding"],
+    rejectsSamplingParams: true,
+  },
+  {
+    id: "gpt-6-luna",
+    provider: "openai",
+    label: "GPT-6 Luna",
+    hint: "Fastest",
+    description: "Cheapest GPT-6, for quick high-volume work.",
+    capabilities: { intelligence: 4, speed: 5, cost: 5 },
+    tags: ["vision", "reasoning", "tools"],
     rejectsSamplingParams: true,
   },
   {
@@ -218,10 +242,10 @@ export const MODELS = [
     id: "gpt-5.4-nano",
     provider: "openai",
     label: "GPT-5.4 nano",
-    hint: "Fastest",
+    hint: "Tiny",
     description: "Tiny and instant — great for autocomplete.",
     capabilities: { intelligence: 3, speed: 5, cost: 5 },
-    tags: ["tools"],
+    tags: ["vision", "tools"],
     rejectsSamplingParams: true,
   },
   {
@@ -308,6 +332,12 @@ export const MODELS = [
   },
 
   // ── Google ────────────────────────────────────────────────────────────────
+  //
+  // Every Gemini 3.x model takes no temperature from us. Google: "keep
+  // temperature at its default value of 1.0 … setting it below 1.0 may lead to
+  // … looping or degraded performance" — and we were sending 0 to 3 Flash,
+  // which wasn't tagged as the thinking model it is. From 3.6 Flash on the
+  // param is ignored, and Google says a future generation will 400 on it.
   {
     id: "gemini-3.1-pro-preview",
     provider: "google",
@@ -316,10 +346,8 @@ export const MODELS = [
     description: "Strong reasoning, 1M context.",
     capabilities: { intelligence: 5, speed: 3, cost: 2 },
     tags: ["vision", "reasoning", "tools", "coding"],
+    rejectsSamplingParams: true,
   },
-  // Google: keep Gemini 3's temperature at its 1.0 default — "setting it below
-  // 1.0 may lead to … looping or degraded performance". From 3.6 Flash on the
-  // param is ignored, and Google says a future generation will 400 on it.
   {
     id: "gemini-3.8-flash",
     provider: "google",
@@ -337,10 +365,15 @@ export const MODELS = [
     hint: "Previous",
     description: "Earlier Flash preview, 1M context.",
     capabilities: { intelligence: 4, speed: 5, cost: 4 },
-    tags: ["vision", "tools"],
+    tags: ["vision", "reasoning", "tools"],
+    rejectsSamplingParams: true,
   },
 
   // ── xAI ───────────────────────────────────────────────────────────────────
+  //
+  // `grok-4-fast-reasoning` was retired 2026-05-15; xAI now silently serves
+  // that slug with grok-4.3 at low effort, so it's gone rather than kept as a
+  // label for a model the user wouldn't be getting.
   {
     id: "grok-4.7",
     provider: "xai",
@@ -365,8 +398,8 @@ export const MODELS = [
     label: "Grok 4.20 Reasoning",
     hint: "Reasoning",
     description: "Frontier reasoning with extended thinking.",
-    capabilities: { intelligence: 5, speed: 2, cost: 2 },
-    tags: ["reasoning", "tools", "coding"],
+    capabilities: { intelligence: 5, speed: 2, cost: 4 },
+    tags: ["vision", "reasoning", "tools", "coding"],
   },
   {
     id: "grok-4.20-non-reasoning",
@@ -374,20 +407,24 @@ export const MODELS = [
     label: "Grok 4.20",
     hint: "Quick",
     description: "Grok 4.20 without reasoning, for chat and tools.",
-    capabilities: { intelligence: 4, speed: 4, cost: 3 },
-    tags: ["tools"],
-  },
-  {
-    id: "grok-4-fast-reasoning",
-    provider: "xai",
-    label: "Grok 4 Fast",
-    hint: "Reasoning",
-    description: "Cheaper Grok 4 with vision and reasoning.",
     capabilities: { intelligence: 4, speed: 4, cost: 4 },
-    tags: ["vision", "reasoning", "tools"],
+    tags: ["vision", "tools"],
   },
 
   // ── DeepSeek ──────────────────────────────────────────────────────────────
+  //
+  // DeepSeek retired `deepseek-reasoner` and `deepseek-chat` (2026-07-24) and
+  // renamed V4 Flash to `deepseek-flash` (V4.1). Both current models think by
+  // default, where temperature "has no effect".
+  {
+    id: "deepseek-flash",
+    provider: "deepseek",
+    label: "DeepSeek V4.1 Flash",
+    hint: "Fast",
+    description: "Newest DeepSeek — beats V4 Pro at a fraction of the price.",
+    capabilities: { intelligence: 5, speed: 4, cost: 5 },
+    tags: ["vision", "reasoning", "tools", "coding"],
+  },
   {
     id: "deepseek-v4-pro",
     provider: "deepseek",
@@ -397,43 +434,28 @@ export const MODELS = [
     capabilities: { intelligence: 5, speed: 3, cost: 4 },
     tags: ["reasoning", "tools", "coding"],
   },
-  {
-    id: "deepseek-v4-flash",
-    provider: "deepseek",
-    label: "DeepSeek V4 Flash",
-    hint: "Fast",
-    description: "Cheap and fast everyday tier.",
-    capabilities: { intelligence: 4, speed: 5, cost: 5 },
-    tags: ["tools"],
-  },
-  {
-    id: "deepseek-reasoner",
-    provider: "deepseek",
-    label: "DeepSeek Reasoner",
-    hint: "Thinking",
-    description: "Chain-of-thought at open-weight prices.",
-    capabilities: { intelligence: 5, speed: 2, cost: 4 },
-    tags: ["reasoning", "coding"],
-  },
 
   // ── Mistral ────────────────────────────────────────────────────────────────
-  {
-    id: "mistral-large-latest",
-    provider: "mistral",
-    label: "Mistral Large 3",
-    hint: "Best",
-    description: "Flagship Mistral model with 128K context.",
-    capabilities: { intelligence: 5, speed: 3, cost: 3 },
-    tags: ["vision", "tools", "coding"],
-  },
+  //
+  // Medium 3.5 replaced Medium 3.1, Magistral and Devstral 2 as the flagship;
+  // Large 3 is the cheaper open-weight MoE.
   {
     id: "mistral-medium-latest",
     provider: "mistral",
     label: "Mistral Medium 3.5",
-    hint: "Balanced",
-    description: "Good balance of speed and intelligence.",
+    hint: "Flagship",
+    description: "Mistral's flagship — vision and reasoning, 256K context.",
+    capabilities: { intelligence: 5, speed: 3, cost: 3 },
+    tags: ["vision", "tools", "coding"],
+  },
+  {
+    id: "mistral-large-latest",
+    provider: "mistral",
+    label: "Mistral Large 3",
+    hint: "Open",
+    description: "Open-weight Large 3 — cheap, 256K context.",
     capabilities: { intelligence: 4, speed: 4, cost: 4 },
-    tags: ["vision", "tools"],
+    tags: ["vision", "tools", "coding"],
   },
   {
     id: "codestral-latest",
@@ -441,11 +463,14 @@ export const MODELS = [
     label: "Codestral",
     hint: "Code",
     description: "Purpose-built coding model from Mistral.",
-    capabilities: { intelligence: 4, speed: 4, cost: 4 },
+    capabilities: { intelligence: 4, speed: 4, cost: 5 },
     tags: ["coding"],
   },
 
   // ── Cerebras (autocomplete-tier) ──────────────────────────────────────────
+  //
+  // Cerebras deprecated llama-3.3-70b and qwen-3-32b; its shared inference now
+  // serves just these two.
   {
     id: "gpt-oss-120b",
     provider: "cerebras",
@@ -464,26 +489,11 @@ export const MODELS = [
     capabilities: { intelligence: 4, speed: 5, cost: 3 },
     tags: ["vision", "tools", "coding"],
   },
-  {
-    id: "llama3.3-70b",
-    provider: "cerebras",
-    label: "Llama 3.3 70B",
-    hint: "Fast",
-    description: "Meta's open model on wafer-scale silicon.",
-    capabilities: { intelligence: 3, speed: 5, cost: 5 },
-    tags: ["tools"],
-  },
-  {
-    id: "qwen-3-32b",
-    provider: "cerebras",
-    label: "Qwen 3 32B",
-    hint: "Fast",
-    description: "Multilingual model at extreme speed.",
-    capabilities: { intelligence: 3, speed: 5, cost: 5 },
-    tags: ["tools", "coding"],
-  },
 
   // ── Groq (autocomplete-tier) ──────────────────────────────────────────────
+  //
+  // Groq shut down deepseek-r1-distill-llama-70b (2025-10-02) and took
+  // llama-3.3-70b-versatile off its free and developer tiers (2026-08-16).
   {
     id: "openai/gpt-oss-120b",
     provider: "groq",
@@ -501,24 +511,6 @@ export const MODELS = [
     description: "Sub-second responses on Groq LPU.",
     capabilities: { intelligence: 3, speed: 5, cost: 5 },
     tags: ["tools", "coding"],
-  },
-  {
-    id: "llama-3.3-70b-versatile",
-    provider: "groq",
-    label: "Llama 3.3 70B",
-    hint: "Versatile",
-    description: "Fast and broadly capable.",
-    capabilities: { intelligence: 4, speed: 5, cost: 5 },
-    tags: ["tools"],
-  },
-  {
-    id: "deepseek-r1-distill-llama-70b",
-    provider: "groq",
-    label: "DeepSeek R1 Distill 70B",
-    hint: "Thinking",
-    description: "Reasoning-distilled Llama on Groq.",
-    capabilities: { intelligence: 4, speed: 5, cost: 5 },
-    tags: ["reasoning", "tools"],
   },
 
   // ── OpenRouter (gateway — curated cross-provider routes) ──────────────────
@@ -612,6 +604,7 @@ export const MODELS = [
     description: "Google flagship via OpenRouter.",
     capabilities: { intelligence: 5, speed: 3, cost: 2 },
     tags: ["vision", "reasoning", "tools", "coding"],
+    rejectsSamplingParams: true,
   },
   {
     id: "x-ai/grok-4.7",
@@ -623,15 +616,6 @@ export const MODELS = [
     tags: ["vision", "reasoning", "tools", "coding"],
   },
   {
-    id: "x-ai/grok-4.20-reasoning",
-    provider: "openrouter",
-    label: "Grok 4.20 Reasoning",
-    hint: "OpenRouter",
-    description: "xAI reasoning via OpenRouter.",
-    capabilities: { intelligence: 5, speed: 2, cost: 2 },
-    tags: ["reasoning", "tools", "coding"],
-  },
-  {
     id: "deepseek/deepseek-v4-pro",
     provider: "openrouter",
     label: "DeepSeek V4 Pro",
@@ -641,16 +625,7 @@ export const MODELS = [
     tags: ["reasoning", "tools", "coding"],
   },
   {
-    id: "deepseek/deepseek-reasoner",
-    provider: "openrouter",
-    label: "DeepSeek Reasoner",
-    hint: "OpenRouter",
-    description: "Cheap chain-of-thought reasoner.",
-    capabilities: { intelligence: 5, speed: 2, cost: 5 },
-    tags: ["reasoning", "coding"],
-  },
-  {
-    id: "meta-llama/llama-4-scout-17b-16e-instruct",
+    id: "meta-llama/llama-4-scout",
     provider: "openrouter",
     label: "Llama 4 Scout",
     hint: "OpenRouter",
@@ -677,15 +652,6 @@ export const MODELS = [
     tags: ["vision", "tools", "coding"],
   },
   {
-    id: "qwen/qwen3-max",
-    provider: "openrouter",
-    label: "Qwen 3 Max",
-    hint: "OpenRouter",
-    description: "Alibaba's multilingual reasoner.",
-    capabilities: { intelligence: 5, speed: 3, cost: 4 },
-    tags: ["reasoning", "tools", "coding"],
-  },
-  {
     id: "qwen/qwen3-coder",
     provider: "openrouter",
     label: "Qwen 3 Coder",
@@ -695,13 +661,13 @@ export const MODELS = [
     tags: ["tools", "coding"],
   },
   {
-    id: "mistralai/mistral-large-latest",
+    id: "mistralai/mistral-large-2512",
     provider: "openrouter",
-    label: "Mistral Large",
+    label: "Mistral Large 3",
     hint: "OpenRouter",
     description: "EU-hosted general-purpose flagship.",
-    capabilities: { intelligence: 4, speed: 4, cost: 3 },
-    tags: ["tools", "coding"],
+    capabilities: { intelligence: 4, speed: 4, cost: 4 },
+    tags: ["vision", "tools", "coding"],
   },
   {
     id: "z-ai/glm-4.6",
@@ -754,19 +720,478 @@ export const MODELS = [
   },
 ] as const satisfies readonly ModelInfo[];
 
-export type ModelId = (typeof MODELS)[number]["id"];
+/** An id from the curated list above. */
+export type CatalogModelId = (typeof MODELS)[number]["id"];
+
+/** Any model the app can run: a curated id, or a discovered one
+ *  (`<provider>:<apiId>`, see {@link discoveredModelId}). */
+export type ModelId = string;
+
+// ── Discovered models ───────────────────────────────────────────────────────
+//
+// New models reach the picker without a release: each connected provider's own
+// `/models` endpoint is read with the user's key (modelDiscovery.ts) and every
+// listing becomes a ModelInfo here. The request-shaping decisions for them
+// live in `modelInfoFromListing`, below, for the same reason the curated ones
+// live in this file: a provider SDK's model table ships a release behind every
+// launch, and a model this app has never seen is by definition past it.
+
+/** Providers whose `/models` endpoint says what the user's key can call. The
+ *  local servers and the custom endpoint have their own model-id settings. */
+export const DISCOVERABLE_PROVIDERS = [
+  "anthropic",
+  "openai",
+  "google",
+  "xai",
+  "deepseek",
+  "mistral",
+  "groq",
+  "cerebras",
+  "openrouter",
+] as const satisfies readonly ProviderId[];
+
+export type DiscoverableProvider = (typeof DISCOVERABLE_PROVIDERS)[number];
+
+export function isDiscoverableProvider(p: string): p is DiscoverableProvider {
+  return (DISCOVERABLE_PROVIDERS as readonly string[]).includes(p);
+}
+
+/** One model as a provider's list describes it. Only the ids are guaranteed:
+ *  OpenAI publishes nothing else, OpenRouter publishes nearly everything. */
+export type ModelListing = {
+  provider: DiscoverableProvider;
+  apiId: string;
+  label?: string;
+  /** Other ids the provider answers to for this model (xAI, Mistral). */
+  aliases?: string[];
+  /** Epoch ms. */
+  createdAt?: number;
+  /** Epoch ms the provider stops serving it (OpenRouter). */
+  expiresAt?: number;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  vision?: boolean;
+  /** Anthropic: whether the model takes `thinking: {type: "adaptive"}`. */
+  adaptiveThinking?: boolean;
+  pricing?: ModelPricing;
+};
+
+/** Registry id of a discovered model. Curated ids never contain `:`, so the
+ *  two can't collide — and a saved discovered id still resolves (from the id
+ *  alone) on a launch where the provider's list hasn't loaded yet. */
+export function discoveredModelId(
+  provider: DiscoverableProvider,
+  apiId: string,
+): ModelId {
+  return `${provider}:${apiId}`;
+}
+
+export function parseDiscoveredModelId(
+  id: string,
+): { provider: DiscoverableProvider; apiId: string } | null {
+  const i = id.indexOf(":");
+  if (i <= 0) return null;
+  const provider = id.slice(0, i);
+  const apiId = id.slice(i + 1);
+  if (!apiId.trim() || !isDiscoverableProvider(provider)) return null;
+  return { provider, apiId };
+}
+
+const CURATED_BY_ID: ReadonlyMap<string, ModelInfo> = new Map(
+  MODELS.map((m) => [m.id, m as ModelInfo]),
+);
+let discovered: ReadonlyMap<string, ModelInfo> = new Map();
+const synthesized = new Map<string, ModelInfo>();
+
+/** Replace this window's discovered models — called whenever the persisted
+ *  model catalogue changes (settings/preferences.ts). */
+export function setDiscoveredModels(models: readonly ModelInfo[]): void {
+  discovered = new Map(models.map((m) => [m.id, m]));
+}
+
+export function listDiscoveredModels(): readonly ModelInfo[] {
+  return [...discovered.values()];
+}
+
+/** The curated model a provider lists as `apiId` — under its own id or a
+ *  dated snapshot of it — or undefined. Same provider only: Groq's and
+ *  OpenRouter's `openai/gpt-oss-120b` are two different routes. */
+function curatedListedAs(provider: ProviderId, apiId: string): ModelInfo | undefined {
+  const m = CURATED_BY_ID.get(apiId) ?? CURATED_BY_ID.get(withoutDateStamp(apiId));
+  return m && m.provider === provider ? m : undefined;
+}
+
+/** The id a model is filed under. A discovered id for a model that has since
+ *  been curated — `openai:gpt-6-sol`, saved while it was only on OpenAI's
+ *  list, once a release adds `gpt-6-sol` to MODELS — is that curated entry,
+ *  with its vetted decisions and its place in the picker. Without this the
+ *  saved pick would degrade to a copy built from the id alone the day its
+ *  model got curated. */
+export function canonicalModelId(id: ModelId): ModelId {
+  if (CURATED_BY_ID.has(id)) return id;
+  const parsed = parseDiscoveredModelId(id);
+  return (parsed && curatedListedAs(parsed.provider, parsed.apiId)?.id) ?? id;
+}
+
+/** A model that isn't curated: its live listing when this window has one,
+ *  else what the id alone implies. Undefined for curated and unknown ids. */
+function uncatalogued(id: string): ModelInfo | undefined {
+  if (CURATED_BY_ID.has(canonicalModelId(id))) return undefined;
+  const live = discovered.get(id);
+  if (live) return live;
+  const parsed = parseDiscoveredModelId(id);
+  if (!parsed) return undefined;
+  let m = synthesized.get(id);
+  if (!m) {
+    m = modelInfoFromListing(parsed);
+    synthesized.set(id, m);
+  }
+  return m;
+}
 
 export function getModel(id: ModelId): ModelInfo {
-  const m = MODELS.find((x) => x.id === id);
+  const m = findModel(id);
   if (!m) throw new Error(`Unknown model: ${id}`);
   return m;
 }
 
-/** Whether `id` is a currently-registered model. Used to sanitize persisted
- *  selections (default/favorites/recents) after a model is retired — a stale id
- *  would otherwise crash `getModel` at the picker/runner. */
+/** `getModel` for an id that may not resolve: undefined instead of a throw. */
+export function findModel(id: ModelId | null | undefined): ModelInfo | undefined {
+  if (!id) return undefined;
+  return CURATED_BY_ID.get(canonicalModelId(id)) ?? uncatalogued(id);
+}
+
+/** The id a model is called by on the wire. */
+export function apiModelId(id: ModelId): string {
+  const m = getModel(id);
+  return m.apiId ?? m.id;
+}
+
+/** Anthropic's own API, or an Anthropic model through OpenRouter. */
+function isClaudeRoute(provider: ProviderId, apiId: string): boolean {
+  return (
+    provider === "anthropic" ||
+    (provider === "openrouter" && apiId.startsWith("anthropic/"))
+  );
+}
+
+/** `[major, minor]` of a Claude id — `claude-opus-5-5`, `claude-sonnet-5.5`,
+ *  `claude-fable-5-1-20260901` — or null. The minor is one or two digits so a
+ *  date stamp (`claude-opus-5-20260101`) never reads as a version. */
+function claudeVersion(apiId: string): [number, number] | null {
+  const m = /claude-(?:opus|sonnet|haiku|fable|mythos)-(\d+)(?:[.-](\d{1,2}))?(?=$|\D)/.exec(
+    apiId,
+  );
+  return m ? [Number(m[1]), m[2] ? Number(m[2]) : 0] : null;
+}
+
+/** Output ceiling for a Claude id the listing gave no number for — only ever
+ *  reached for an id synthesized before its provider's list loaded, since
+ *  Anthropic's and OpenRouter's lists both carry one. Every Claude 5 model
+ *  takes 128k; below that the safe floor is 32k (Opus 4.1's limit). */
+function claudeFallbackCeiling(apiId: string): number {
+  const v = claudeVersion(apiId);
+  if (v && v[0] >= 5) return 128_000;
+  return /haiku-4/.test(apiId) ? 64_000 : 32_000;
+}
+
+const ACRONYMS = new Set(["gpt", "oss", "glm", "qwq", "ai", "vl", "moe"]);
+
+/** A readable name for an id nobody labelled (OpenAI, Groq and Cerebras list
+ *  bare ids): `gpt-6.2-sol` → "GPT-6.2 Sol", `gpt-oss-120b` → "GPT-OSS 120B". */
+export function prettifyModelId(apiId: string): string {
+  const bare = apiId.includes("/") ? apiId.slice(apiId.lastIndexOf("/") + 1) : apiId;
+  const words = bare
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((w) => {
+      const lower = w.toLowerCase();
+      if (ACRONYMS.has(lower)) return lower.toUpperCase();
+      if (/^\d+(\.\d+)?[a-z]$/.test(lower)) return lower.toUpperCase();
+      if (/^v\d/.test(lower)) return lower.toUpperCase();
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    });
+  return words
+    .join(" ")
+    .replace(/^GPT OSS\b/, "GPT-OSS")
+    .replace(/^GPT (\d)/, "GPT-$1");
+}
+
+/** One word for the picker, from the id's own vocabulary. Heuristic by nature;
+ *  "New" when the id says nothing, which for a model this build doesn't know
+ *  is usually true. */
+function inferHint(apiId: string): string {
+  const id = apiId.toLowerCase();
+  if (id.includes("non-reasoning")) return "Quick";
+  const words = new Set(id.split(/[^a-z0-9.]+/));
+  const has = (...ws: string[]) => ws.some((w) => words.has(w));
+  if (has("nano", "lite", "luna", "haiku", "mini", "flash", "instant", "small")) {
+    return "Fast";
+  }
+  if (has("codex", "coder", "codestral", "devstral", "code")) return "Coding";
+  if (has("reasoning", "reasoner", "thinking", "r1")) return "Reasoning";
+  if (has("opus", "pro", "max", "large", "ultra", "astra", "fable", "mythos")) {
+    return "Flagship";
+  }
+  if (has("sonnet", "medium", "sol", "terra")) return "Balanced";
+  return "New";
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) {
+    // Floor, so GPT-6's 1,050,000 reads "1M" rather than "1.1M".
+    const m = Math.floor(n / 100_000) / 10;
+    return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
+  }
+  return `${Math.round(n / 1_000)}K`;
+}
+
+function describeListing(l: Partial<ModelListing>, providerLabel: string): string {
+  const source =
+    l.provider === "openrouter"
+      ? "Via OpenRouter"
+      : `From your ${providerLabel} account`;
+  return l.contextWindow
+    ? `${source} · ${formatTokens(l.contextWindow)} context`
+    : source;
+}
+
+/** Every decision for a model this build has never seen. Deliberately
+ *  conservative — each default below is the one that can't produce a 400:
+ *
+ *  - **No temperature, ever.** Every API accepts its absence; frontier tiers
+ *    (Claude 4.7+, GPT-5+, Gemini 3) refuse or degrade on its presence, and a
+ *    model new enough to be missing from this file is overwhelmingly frontier.
+ *    Provider metadata can't overrule this: OpenRouter lists `temperature` for
+ *    Claude Opus 5.5 because one of its hosts accepts it.
+ *  - **An explicit output cap for Claude routes only**, from the listing's own
+ *    ceiling: @ai-sdk/anthropic invents one for an id it doesn't know, and the
+ *    upstream API demands one. Same shape as the curated caps — half the
+ *    ceiling, at most 64k, so a truncation resume has headroom to raise into.
+ *    Every other provider gets nothing sent, as before.
+ *  - **Preserved thinking** for Claude past 5.0, the generation that checks it.
+ *  - Context, vision and price only when the listing states them; otherwise the
+ *    long-standing defaults (128k window, text-only, no cost shown).
+ *  - Tool calling assumed: OpenRouter's list is filtered to routes that take
+ *    tools, and every other provider's chat models do. */
+export function modelInfoFromListing(
+  l: Pick<ModelListing, "provider" | "apiId"> & Partial<ModelListing>,
+): ModelInfo {
+  const claude = isClaudeRoute(l.provider, l.apiId);
+  const version = claude ? claudeVersion(l.apiId) : null;
+  const ceiling = claude
+    ? l.maxOutputTokens && l.maxOutputTokens > 0
+      ? l.maxOutputTokens
+      : claudeFallbackCeiling(l.apiId)
+    : undefined;
+  return {
+    id: discoveredModelId(l.provider, l.apiId),
+    apiId: l.apiId,
+    provider: l.provider,
+    label: l.label?.trim() || prettifyModelId(l.apiId),
+    hint: inferHint(l.apiId),
+    description: describeListing(l, getProvider(l.provider).label),
+    capabilities: { intelligence: 3, speed: 3, cost: 3 },
+    tags: l.vision ? ["vision", "tools"] : ["tools"],
+    rejectsSamplingParams: true,
+    // The version says which generation checks the prefix; Anthropic's own
+    // list says whether this model takes the adaptive `thinking` config the
+    // binding rides on, and a model that doesn't would 400 every request.
+    preservesThinking:
+      version !== null &&
+      (version[0] > 5 || (version[0] === 5 && version[1] >= 1)) &&
+      l.adaptiveThinking !== false,
+    discovered: true,
+    ...(l.createdAt ? { createdAt: l.createdAt } : {}),
+    ...(l.contextWindow ? { contextWindow: l.contextWindow } : {}),
+    ...(ceiling
+      ? {
+          outputLimits: {
+            cap: Math.min(64_000, Math.floor(ceiling / 2)),
+            ceiling,
+          },
+        }
+      : {}),
+    ...(l.pricing ? { pricing: l.pricing } : {}),
+  };
+}
+
+/** `claude-haiku-4-5-20251001` → `claude-haiku-4-5`; `gpt-5.5-2026-04-23` →
+ *  `gpt-5.5`. Only for matching a listing against the curated list. */
+function withoutDateStamp(apiId: string): string {
+  return apiId.replace(/-(\d{8}|\d{4}-\d{2}-\d{2})$/, "");
+}
+
+/** One provider's slice of the persisted catalogue. */
+export type ProviderCatalog = {
+  /** When a refresh last ran, success or not — the staleness clock. */
+  checkedAt: number;
+  /** When the list last came back. Absent until the first success. */
+  fetchedAt?: number;
+  /** The last good list — kept through a failed refresh. */
+  models: ModelListing[];
+  /** Why the last refresh failed, when it did. */
+  error?: string;
+};
+
+/** What every connected provider last said it serves, persisted in its own
+ *  store file (modelCatalogStore.ts) so both windows share it and a launch
+ *  doesn't wait on the network to show a model the user picked yesterday. */
+export type ModelCatalog = Partial<Record<DiscoverableProvider, ProviderCatalog>>;
+
+const asFinite = (v: unknown): number | undefined =>
+  typeof v === "number" && Number.isFinite(v) ? v : undefined;
+
+function normalizeListing(
+  provider: DiscoverableProvider,
+  raw: unknown,
+): ModelListing | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.apiId !== "string" || !r.apiId.trim()) return null;
+  const p = r.pricing as Record<string, unknown> | undefined;
+  const input = asFinite(p?.input);
+  const output = asFinite(p?.output);
+  const cacheRead = asFinite(p?.cacheRead);
+  const aliases = Array.isArray(r.aliases)
+    ? r.aliases.filter((a): a is string => typeof a === "string" && !!a.trim())
+    : [];
+  return {
+    provider,
+    apiId: r.apiId,
+    ...(typeof r.label === "string" ? { label: r.label } : {}),
+    ...(aliases.length ? { aliases } : {}),
+    ...(asFinite(r.createdAt) ? { createdAt: r.createdAt as number } : {}),
+    ...(asFinite(r.expiresAt) ? { expiresAt: r.expiresAt as number } : {}),
+    ...(asFinite(r.contextWindow) ? { contextWindow: r.contextWindow as number } : {}),
+    ...(asFinite(r.maxOutputTokens)
+      ? { maxOutputTokens: r.maxOutputTokens as number }
+      : {}),
+    ...(typeof r.vision === "boolean" ? { vision: r.vision } : {}),
+    ...(typeof r.adaptiveThinking === "boolean"
+      ? { adaptiveThinking: r.adaptiveThinking }
+      : {}),
+    ...(input !== undefined && output !== undefined
+      ? { pricing: { input, output, ...(cacheRead !== undefined ? { cacheRead } : {}) } }
+      : {}),
+  };
+}
+
+/** The persisted catalogue, re-validated on load: a hand-edited or
+ *  half-written settings file costs its bad entries, never the launch. */
+export function normalizeModelCatalog(raw: unknown): ModelCatalog {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: ModelCatalog = {};
+  for (const [provider, entry] of Object.entries(raw as Record<string, unknown>)) {
+    if (!isDiscoverableProvider(provider)) continue;
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    const checkedAt = asFinite(e.checkedAt);
+    if (checkedAt === undefined) continue;
+    const models = Array.isArray(e.models)
+      ? e.models.flatMap((m) => normalizeListing(provider, m) ?? [])
+      : [];
+    out[provider] = {
+      checkedAt,
+      models,
+      ...(asFinite(e.fetchedAt) ? { fetchedAt: e.fetchedAt as number } : {}),
+      ...(typeof e.error === "string" ? { error: e.error } : {}),
+    };
+  }
+  return out;
+}
+
+const discoveredByCatalog = new WeakMap<ModelCatalog, ModelInfo[]>();
+
+/** The discovered models a catalogue offers, computed once per catalogue
+ *  object — the picker asks on every render, and OpenRouter alone lists
+ *  hundreds. Providers in `DISCOVERABLE_PROVIDERS` order. */
+export function discoveredModelsForCatalog(catalog: ModelCatalog): ModelInfo[] {
+  let models = discoveredByCatalog.get(catalog);
+  if (!models) {
+    models = discoveredModelsFrom(
+      DISCOVERABLE_PROVIDERS.flatMap((p) => catalog[p]?.models ?? []),
+    );
+    discoveredByCatalog.set(catalog, models);
+  }
+  return models;
+}
+
+/** The discovered models worth offering: every listing, minus the ones that
+ *  are a curated model under the same id, a dated snapshot of it, or an alias
+ *  of it (curated wins — it carries vetted decisions; xAI lists Grok 4.20 as
+ *  `grok-4.20-0309-reasoning` with the curated `grok-4.20-reasoning` as an
+ *  alias), minus routes past their expiry date, minus repeats. */
+export function discoveredModelsFrom(
+  listings: readonly ModelListing[],
+  now: number = Date.now(),
+): ModelInfo[] {
+  const seen = new Set<string>();
+  const out: ModelInfo[] = [];
+  for (const l of listings) {
+    const key = `${l.provider}:${l.apiId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (l.expiresAt !== undefined && l.expiresAt <= now) continue;
+    if ([l.apiId, ...(l.aliases ?? [])].some((id) => curatedListedAs(l.provider, id))) {
+      continue;
+    }
+    out.push(modelInfoFromListing(l));
+  }
+  return out;
+}
+
+/** Curated ids removed because the provider shut the model down, mapped to the
+ *  same provider's successor. A saved default pointing at one moves to its
+ *  successor rather than to DEFAULT_MODEL_ID — which is an Anthropic model, and
+ *  a Groq-only or DeepSeek-only user has no key for it. */
+export const RETIRED_MODEL_REPLACEMENTS: Readonly<Record<string, string>> = {
+  "grok-4-fast-reasoning": "grok-4.3",
+  "deepseek-v4-flash": "deepseek-flash",
+  "deepseek-reasoner": "deepseek-v4-pro",
+  "llama3.3-70b": "gpt-oss-120b",
+  "qwen-3-32b": "qwen-3.8-27b",
+  "llama-3.3-70b-versatile": "openai/gpt-oss-120b",
+  "deepseek-r1-distill-llama-70b": "openai/gpt-oss-120b",
+  "x-ai/grok-4.20-reasoning": "x-ai/grok-4.7",
+  "deepseek/deepseek-reasoner": "deepseek/deepseek-v4-pro",
+  "meta-llama/llama-4-scout-17b-16e-instruct": "meta-llama/llama-4-scout",
+  "qwen/qwen3-max": "qwen/qwen3-coder",
+  "mistralai/mistral-large-latest": "mistralai/mistral-large-2512",
+};
+
+/** A persisted id, carried past a retirement when the model has a successor,
+ *  and onto the curated entry when a discovered model has since been curated. */
+export function migrateModelId(id: string): string {
+  return canonicalModelId(RETIRED_MODEL_REPLACEMENTS[id] ?? id);
+}
+
+/** A persisted model id made safe for state that renders: migrated, or null
+ *  when nothing resolves it. Every restore of a saved id goes through here —
+ *  `getModel` throws on an unknown id, the pickers and panes call it during
+ *  render, and a throw there takes the whole window down on every launch that
+ *  rehydrates the tab. */
+export function restoreModelId(id: string | null | undefined): ModelId | null {
+  if (!id) return null;
+  const current = migrateModelId(id);
+  return isKnownModelId(current) ? current : null;
+}
+
+/** Whether `id` names a model `getModel` can resolve: a curated one, or a
+ *  well-formed discovered one. Used to sanitize persisted selections
+ *  (default/favorites/recents, checkpoints, chat threads) after a model is
+ *  retired — a stale id would otherwise crash `getModel` at the picker/runner.
+ *
+ *  A discovered id is accepted on its shape alone, not on being in this
+ *  window's list: a saved default mustn't reset on a launch where the provider
+ *  hasn't answered yet (or is down). If the model is really gone, the provider
+ *  says so on the first run — the same answer a retired curated model gave. */
 export function isKnownModelId(id: string): id is ModelId {
-  return MODELS.some((x) => x.id === id);
+  return (
+    CURATED_BY_ID.has(id) ||
+    discovered.has(id) ||
+    parseDiscoveredModelId(id) !== null
+  );
 }
 
 /** Whether a model accepts image input. Used to gate sending image
@@ -835,12 +1260,16 @@ export function supportsTemperature(id: ModelId | string): boolean {
  *  without its request-only nudge. Each of those would invalidate every later
  *  thinking block.
  *
- *  So the runner asks the API to DROP an invalidated block instead of failing
- *  the request (`prefix_mismatch_behavior: "drop_block"`). A dropped block is
- *  unbilled and the model re-plans without that reasoning — the same thing
- *  eviction already costs it — where the default is a run that dies on its
- *  first step after an eviction. Only the native Anthropic transport replays
- *  signed thinking blocks, so only it acts on this. */
+ *  So the runner asks the API to DROP invalidated blocks instead of failing
+ *  the request (`prefix_mismatch_behavior: "drop_block"`). What that costs,
+ *  stated plainly: the API drops the first mismatched block AND every thinking
+ *  block after it, on every later request that carries the edited history —
+ *  after an eviction the model continues without its earlier reasoning — and
+ *  setting the field also turns the check on for accounts created before
+ *  2026-08-31, which would otherwise have been sent the stale blocks. Dropped
+ *  blocks are unbilled. The alternative is a run that dies on its first step
+ *  after an eviction, for every new account. Only the native Anthropic
+ *  transport replays signed thinking blocks, so only it acts on this. */
 export function preservesThinking(id: ModelId | string): boolean {
   try {
     return getModel(id as ModelId).preservesThinking === true;
@@ -849,7 +1278,7 @@ export function preservesThinking(id: ModelId | string): boolean {
   }
 }
 
-export const DEFAULT_MODEL_ID: ModelId = "claude-sonnet-5";
+export const DEFAULT_MODEL_ID: CatalogModelId = "claude-sonnet-5";
 
 /** Approximate context window (in tokens) per model. Used for the
  *  context-usage indicator in the AI mini-window header. Conservative
@@ -857,6 +1286,7 @@ export const DEFAULT_MODEL_ID: ModelId = "claude-sonnet-5";
 export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "gpt-6-astra": 1_050_000,
   "gpt-6.1-sol": 1_050_000,
+  "gpt-6-luna": 1_050_000,
   "gpt-5.5": 1_050_000,
   "gpt-5.4-mini": 400_000,
   "gpt-5.4-nano": 400_000,
@@ -872,22 +1302,16 @@ export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "gemini-3-flash-preview": 1_000_000,
   "grok-4.7": 500_000,
   "grok-4.3": 1_000_000,
-  "grok-4.20-reasoning": 2_000_000,
-  "grok-4.20-non-reasoning": 2_000_000,
-  "grok-4-fast-reasoning": 2_000_000,
+  "grok-4.20-reasoning": 1_000_000,
+  "grok-4.20-non-reasoning": 1_000_000,
+  "deepseek-flash": 1_000_000,
   "deepseek-v4-pro": 1_000_000,
-  "deepseek-v4-flash": 1_000_000,
-  "deepseek-reasoner": 128_000,
   "gpt-oss-120b": 128_000,
   // The free tier's window; paid keys get 128k, but a free-tier run that
   // trusts 128k overflows at 64k.
   "qwen-3.8-27b": 65_536,
-  "llama3.3-70b": 128_000,
-  "qwen-3-32b": 32_000,
   "openai/gpt-oss-120b": 128_000,
   "openai/gpt-oss-20b": 128_000,
-  "llama-3.3-70b-versatile": 128_000,
-  "deepseek-r1-distill-llama-70b": 128_000,
   "anthropic/claude-sonnet-5.5": 1_000_000,
   "anthropic/claude-opus-5.5": 1_000_000,
   "anthropic/claude-opus-5": 1_000_000,
@@ -897,23 +1321,22 @@ export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "openai/gpt-5.4-mini": 400_000,
   "google/gemini-3.1-pro-preview": 1_000_000,
   "x-ai/grok-4.7": 500_000,
-  "x-ai/grok-4.20-reasoning": 2_000_000,
   "deepseek/deepseek-v4-pro": 1_000_000,
-  "deepseek/deepseek-reasoner": 128_000,
-  "meta-llama/llama-4-scout-17b-16e-instruct": 1_000_000,
+  "meta-llama/llama-4-scout": 1_000_000,
   "meta-llama/llama-4-maverick": 1_000_000,
   "moonshotai/kimi-k2.5": 256_000,
-  "qwen/qwen3-max": 256_000,
   "qwen/qwen3-coder": 256_000,
-  "mistralai/mistral-large-latest": 128_000,
+  "mistralai/mistral-large-2512": 256_000,
   "z-ai/glm-4.6": 200_000,
   "openai-compatible-custom": 128_000,
   "lmstudio-local": 32_000,
   "mlx-local": 32_000,
   "ollama-local": 32_000,
-  "mistral-large-latest": 128_000,
-  "mistral-medium-latest": 32_768,
-  "codestral-latest": 256_000,
+  "mistral-medium-latest": 256_000,
+  "mistral-large-latest": 256_000,
+  // Mistral's docs page says 128k where its API card said 256k; the smaller
+  // one can't overflow.
+  "codestral-latest": 128_000,
 };
 
 export function getModelContextLimit(
@@ -923,7 +1346,11 @@ export function getModelContextLimit(
   if (!modelId) return 128_000;
   if (modelId === "openai-compatible-custom" && compatOverride)
     return compatOverride;
-  return MODEL_CONTEXT_LIMITS[modelId] ?? 128_000;
+  return (
+    MODEL_CONTEXT_LIMITS[canonicalModelId(modelId)] ??
+    uncatalogued(modelId)?.contextWindow ??
+    128_000
+  );
 }
 
 /** Per-model OUTPUT-token policy, decided here — not delegated to the provider
@@ -979,13 +1406,19 @@ export const MODEL_OUTPUT_LIMITS: Record<
 /** The output cap every request for this model asks for, or undefined to send
  *  nothing and let the endpoint decide (unknown / local / custom models). */
 export function getModelOutputCap(id: string): number | undefined {
-  return MODEL_OUTPUT_LIMITS[id]?.cap;
+  return (
+    MODEL_OUTPUT_LIMITS[canonicalModelId(id)]?.cap ??
+    uncatalogued(id)?.outputLimits?.cap
+  );
 }
 
 /** The model's hard output ceiling, when we know it. Only consulted by the
  *  truncation-resume path — ordinary runs ask for `cap`. */
 export function getModelOutputCeiling(id: string): number | undefined {
-  return MODEL_OUTPUT_LIMITS[id]?.ceiling;
+  return (
+    MODEL_OUTPUT_LIMITS[canonicalModelId(id)]?.ceiling ??
+    uncatalogued(id)?.outputLimits?.ceiling
+  );
 }
 
 export type ModelPricing = {
@@ -994,31 +1427,38 @@ export type ModelPricing = {
   cacheRead?: number;
 };
 
+/** $ per 1M tokens, from each provider's pricing page (2026-09-29). Where a
+ *  provider charges more past a prompt-length threshold, this is the price
+ *  below it. */
 export const MODEL_PRICING: Record<string, ModelPricing> = {
   "gpt-6-astra": { input: 10, output: 50, cacheRead: 1 },
   "gpt-6.1-sol": { input: 2, output: 10, cacheRead: 0.1 },
-  "gpt-5.5": { input: 5, output: 15, cacheRead: 0.5 },
-  "gpt-5.4-mini": { input: 0.4, output: 1.6, cacheRead: 0.04 },
-  "gpt-5.4-nano": { input: 0.1, output: 0.4, cacheRead: 0.01 },
-  "gpt-5.3-codex": { input: 1.5, output: 6, cacheRead: 0.15 },
+  "gpt-6-luna": { input: 0.1, output: 0.5, cacheRead: 0.01 },
+  "gpt-5.5": { input: 5, output: 30, cacheRead: 0.5 },
+  "gpt-5.4-mini": { input: 0.75, output: 4.5, cacheRead: 0.075 },
+  "gpt-5.4-nano": { input: 0.2, output: 1.25, cacheRead: 0.02 },
+  "gpt-5.3-codex": { input: 1.75, output: 14, cacheRead: 0.175 },
   "claude-fable-5-1": { input: 10, output: 50, cacheRead: 0.25 },
   "claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.2 },
   "claude-sonnet-5-5": { input: 2, output: 10, cacheRead: 0.2 },
   "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5 },
-  "claude-sonnet-5": { input: 3, output: 15, cacheRead: 0.3 },
+  "claude-sonnet-5": { input: 2, output: 10, cacheRead: 0.2 },
   "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1 },
-  "gemini-3.1-pro-preview": { input: 1.25, output: 10, cacheRead: 0.31 },
+  "gemini-3.1-pro-preview": { input: 2, output: 12, cacheRead: 0.2 },
   // Introductory until 2026-12-31, then double.
   "gemini-3.8-flash": { input: 0.75, output: 3.75, cacheRead: 0.075 },
-  "gemini-3-flash-preview": { input: 0.3, output: 2.5, cacheRead: 0.075 },
+  "gemini-3-flash-preview": { input: 0.5, output: 3, cacheRead: 0.05 },
   "grok-4.7": { input: 2, output: 6, cacheRead: 0.5 },
   "grok-4.3": { input: 1.25, output: 2.5, cacheRead: 0.2 },
-  "grok-4.20-reasoning": { input: 3, output: 15 },
-  "grok-4.20-non-reasoning": { input: 1, output: 5 },
-  "grok-4-fast-reasoning": { input: 0.2, output: 0.5 },
-  "deepseek-v4-pro": { input: 0.28, output: 1.1, cacheRead: 0.028 },
-  "deepseek-v4-flash": { input: 0.07, output: 0.27, cacheRead: 0.007 },
-  "deepseek-reasoner": { input: 0.55, output: 2.19, cacheRead: 0.14 },
+  "grok-4.20-reasoning": { input: 1.25, output: 2.5, cacheRead: 0.2 },
+  "grok-4.20-non-reasoning": { input: 1.25, output: 2.5, cacheRead: 0.2 },
+  // Off-peak; DeepSeek doubles these 01:00–04:00 and 06:00–10:00 UTC on
+  // weekdays.
+  "deepseek-flash": { input: 0.15, output: 0.6, cacheRead: 0.003 },
+  "deepseek-v4-pro": { input: 0.66, output: 1.98, cacheRead: 0.022 },
+  "mistral-medium-latest": { input: 1.5, output: 7.5, cacheRead: 0.15 },
+  "mistral-large-latest": { input: 0.5, output: 1.5, cacheRead: 0.05 },
+  "codestral-latest": { input: 0.3, output: 0.9, cacheRead: 0.03 },
 };
 
 export function estimateCost(
@@ -1026,7 +1466,8 @@ export function estimateCost(
   usage: { inputTokens: number; outputTokens: number; cachedInputTokens: number },
 ): number | null {
   if (!modelId) return null;
-  const p = MODEL_PRICING[modelId];
+  const p =
+    MODEL_PRICING[canonicalModelId(modelId)] ?? uncatalogued(modelId)?.pricing;
   if (!p) return null;
   const fresh = Math.max(0, usage.inputTokens - usage.cachedInputTokens);
   const cached = usage.cachedInputTokens;

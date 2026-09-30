@@ -31,6 +31,7 @@ import {
   DEFAULT_TOKEN_BUDGET,
   getModel,
   getModelOutputCap,
+  isReasoningModel,
   MAX_AGENT_STEPS,
   preservesThinking,
   supportsTemperature,
@@ -66,6 +67,7 @@ import {
   summaryMessage,
   SUMMARIZER_SYSTEM_PROMPT,
   SUMMARY_MAX_OUTPUT_TOKENS,
+  SUMMARY_MAX_OUTPUT_TOKENS_REASONING,
 } from "./summarizeTranscript";
 import { buildUserTurn } from "./visionMessage";
 import {
@@ -439,13 +441,15 @@ function makeSummarizer(
         input.local ?? {},
       );
       const summarizerOptions = requestProviderOptions(summarizerId);
-      const { text } = await generateText({
+      const { text, finishReason } = await generateText({
         model,
         system: SUMMARIZER_SYSTEM_PROMPT,
         prompt: plan.source,
         ...(supportsTemperature(summarizerId) ? { temperature: 0 } : {}),
         ...(summarizerOptions ? { providerOptions: summarizerOptions } : {}),
-        maxOutputTokens: SUMMARY_MAX_OUTPUT_TOKENS,
+        maxOutputTokens: isReasoningModel(summarizerId)
+          ? SUMMARY_MAX_OUTPUT_TOKENS_REASONING
+          : SUMMARY_MAX_OUTPUT_TOKENS,
         // One attempt, not TASK_MAX_RETRIES: the run is inside its compaction
         // buffer and waiting out a rate-limit window here just moves the
         // failure. No summary is a survivable outcome; a two-minute stall
@@ -453,6 +457,10 @@ function makeSummarizer(
         maxRetries: 1,
         abortSignal: input.signal,
       });
+      // A summary cut off at its cap has lost its tail — usually the most
+      // recent work — and would replace the turns it summarised anyway. None
+      // is the survivable outcome; a truncated one is silent damage.
+      if (finishReason === "length") return null;
       const summary = text?.trim();
       if (!summary) return null;
       return {

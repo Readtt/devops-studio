@@ -1,6 +1,7 @@
 import {
   DEFAULT_MODEL_ID,
   isKnownModelId,
+  migrateModelId,
   LMSTUDIO_DEFAULT_BASE_URL,
   MLX_DEFAULT_BASE_URL,
   OLLAMA_DEFAULT_BASE_URL,
@@ -305,7 +306,21 @@ async function writePref<T>(key: string, value: T): Promise<void> {
 }
 
 function sanitizeModelId(id: string | undefined, fallback: ModelId): ModelId {
-  return id && isKnownModelId(id) ? id : fallback;
+  if (!id) return fallback;
+  const current = migrateModelId(id);
+  return isKnownModelId(current) ? current : fallback;
+}
+
+/** Favorites / recents after a retirement: successors in place of retired ids,
+ *  unknown ids dropped, and no id twice (a retired id and its successor can
+ *  both be in the list). */
+function sanitizeModelIds(ids: string[]): string[] {
+  const out: string[] = [];
+  for (const id of ids) {
+    const current = migrateModelId(id);
+    if (isKnownModelId(current) && !out.includes(current)) out.push(current);
+  }
+  return out;
 }
 
 /** Mint a repo id. Same shape as newAttachmentId — crypto.randomUUID exists in
@@ -590,13 +605,13 @@ export async function loadPreferences(): Promise<Preferences> {
       get<number>(KEY_OPENAI_COMPAT_MAX_OUTPUT) ??
       DEFAULT_PREFERENCES.openaiCompatibleMaxOutputTokens,
     // Drop any retired ids so they don't linger in the picker's Recent/Favorites.
-    favoriteModelIds: (
+    favoriteModelIds: sanitizeModelIds(
       get<string[]>(KEY_FAVORITE_MODELS) ??
-      DEFAULT_PREFERENCES.favoriteModelIds
-    ).filter(isKnownModelId),
-    recentModelIds: (
-      get<string[]>(KEY_RECENT_MODELS) ?? DEFAULT_PREFERENCES.recentModelIds
-    ).filter(isKnownModelId),
+        DEFAULT_PREFERENCES.favoriteModelIds,
+    ),
+    recentModelIds: sanitizeModelIds(
+      get<string[]>(KEY_RECENT_MODELS) ?? DEFAULT_PREFERENCES.recentModelIds,
+    ),
     terminalWebglEnabled:
       get<boolean>(KEY_TERMINAL_WEBGL_ENABLED) ??
       DEFAULT_PREFERENCES.terminalWebglEnabled,

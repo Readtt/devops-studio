@@ -20,6 +20,7 @@ import {
   MODEL_OUTPUT_LIMITS,
   MODEL_PRICING,
   PROVIDERS,
+  RETIRED_MODEL_REPLACEMENTS,
   getModelOutputCap,
   getModelOutputCeiling,
   isKnownModelId,
@@ -62,6 +63,49 @@ describe("model catalogue: structure", () => {
   it("every model has a context limit (no silent 128k fallback)", () => {
     const missing = MODELS.filter((m) => !(m.id in MODEL_CONTEXT_LIMITS));
     expect(missing.map((m) => m.id)).toEqual([]);
+  });
+
+  // A retired id that is still catalogued would never be migrated, and a
+  // successor that isn't catalogued would migrate a saved default into an id
+  // the next check throws away.
+  it("every retired id is gone, and its successor is live", () => {
+    const broken: string[] = [];
+    for (const [retired, successor] of Object.entries(
+      RETIRED_MODEL_REPLACEMENTS,
+    )) {
+      if (ids.has(retired)) broken.push(`${retired} is still catalogued`);
+      if (!ids.has(successor)) broken.push(`${retired} → ${successor} (unknown)`);
+    }
+    expect(broken).toEqual([]);
+  });
+
+  // The map exists so a Groq-only user whose model was retired lands on a Groq
+  // model they have a key for. A successor on another provider defeats that
+  // silently. Retired ids are gone from MODELS, so their providers are
+  // recorded here — add one when you retire a model.
+  it("every retired id's successor is on the same provider", () => {
+    const retiredProvider: Record<string, string> = {
+      "grok-4-fast-reasoning": "xai",
+      "deepseek-v4-flash": "deepseek",
+      "deepseek-reasoner": "deepseek",
+      "llama3.3-70b": "cerebras",
+      "qwen-3-32b": "cerebras",
+      "llama-3.3-70b-versatile": "groq",
+      "deepseek-r1-distill-llama-70b": "groq",
+      "x-ai/grok-4.20-reasoning": "openrouter",
+      "deepseek/deepseek-reasoner": "openrouter",
+      "meta-llama/llama-4-scout-17b-16e-instruct": "openrouter",
+      "qwen/qwen3-max": "openrouter",
+      "mistralai/mistral-large-latest": "openrouter",
+    };
+    expect(Object.keys(retiredProvider).sort()).toEqual(
+      Object.keys(RETIRED_MODEL_REPLACEMENTS).sort(),
+    );
+    const crossed = Object.entries(RETIRED_MODEL_REPLACEMENTS).filter(
+      ([retired, successor]) =>
+        MODELS.find((m) => m.id === successor)?.provider !== retiredProvider[retired],
+    );
+    expect(crossed).toEqual([]);
   });
 
   // A stale key is a decision that stopped applying to anything: the model was
@@ -149,6 +193,16 @@ describe("model catalogue: request-shaping decisions", () => {
       (m) => /claude/.test(m.id) && getModelOutputCap(m.id) === undefined,
     );
     expect(uncapped.map((m) => m.id)).toEqual([]);
+  });
+
+  // Google: leave Gemini 3's temperature at its 1.0 default — "setting it below
+  // 1.0 may lead to … looping or degraded performance". We were sending 0 to 3
+  // Flash for as long as it wasn't tagged as the thinking model it is.
+  it("no Gemini 3.x route is sent a temperature", () => {
+    const sent = MODELS.filter(
+      (m) => /gemini-[3-9]/.test(m.id) && supportsTemperature(m.id),
+    );
+    expect(sent.map((m) => m.id)).toEqual([]);
   });
 
   // Claude after 5.0 checks every replayed thinking block against the

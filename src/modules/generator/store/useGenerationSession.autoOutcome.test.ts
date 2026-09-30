@@ -164,6 +164,7 @@ describe("useGenerationSession — loadCheckpoint / discardCheckpoint", () => {
       hasTranscript: false,
       // step_cap outcomes carry no recorded output cap, so no raise exists.
       outputCapRaisable: false,
+      modelRetired: false,
       totalTokens: null,
       updatedAt: "2026-06-11T00:05:00.000Z",
       outcome: { at: "2026-06-11T00:05:00.000Z", kind: "step_cap" },

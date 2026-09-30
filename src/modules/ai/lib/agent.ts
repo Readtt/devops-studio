@@ -34,6 +34,28 @@ export type BuildModelOptions = {
 // Never evicted, deliberately: there is nothing per-run in the key.
 const modelCache = new Map<string, LanguageModel>();
 
+/** Mistral answers a message field it doesn't know with a 422 ("Extra inputs
+ *  are not permitted"), and @ai-sdk/openai-compatible (since 2.0.74) replays a
+ *  reasoning model's earlier thinking as `reasoning_content` on each assistant
+ *  turn — so a reasoning Mistral model would fail on the second step of every
+ *  tool loop. Drop the field; the model re-plans without it, as it did before
+ *  the SDK started reading Mistral's thinking. (Not for DeepSeek, which
+ *  requires that field back.) */
+export function withoutReasoningContent(
+  body: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!Array.isArray(body.messages)) return body;
+  return {
+    ...body,
+    messages: body.messages.map((m: unknown) => {
+      if (!m || typeof m !== "object" || !("reasoning_content" in m)) return m;
+      const rest = { ...(m as Record<string, unknown>) };
+      delete rest.reasoning_content;
+      return rest;
+    }),
+  };
+}
+
 export async function buildLanguageModel(
   provider: ProviderId,
   keys: ProviderKeys,
@@ -118,10 +140,14 @@ export async function buildLanguageModel(
         baseURL: "https://api.deepseek.com",
         apiKey: key,
         fetch: cloudProxyFetch,
-        // Without this, generateObject falls back to weak json_object mode (no
-        // schema sent) and these endpoints often return prose/fenced JSON →
-        // empty results. DeepSeek/Mistral/OpenRouter support strict json_schema.
-        supportsStructuredOutputs: true,
+        // DeepSeek accepts `response_format` of `text` or `json_object` ONLY
+        // (api-docs.deepseek.com, create-chat-completion); `json_schema` is a
+        // 400, "This response_format type is unavailable now", so claiming
+        // structured-output support failed every schema run outright. In
+        // json_object mode the schema isn't sent — the prompts already spell
+        // out the JSON shape (the tool-bearing path validates against it with
+        // no SDK help) — and generateObject's repairText strips any fences.
+        supportsStructuredOutputs: false,
       })(resolvedModelId);
       break;
     }
@@ -133,7 +159,11 @@ export async function buildLanguageModel(
         baseURL: "https://api.mistral.ai/v1",
         apiKey: key,
         fetch: cloudProxyFetch,
+        // Mistral and OpenRouter take strict `json_schema`. Without it
+        // generateObject falls back to json_object mode, sends no schema, and
+        // these endpoints often answer with prose or fenced JSON.
         supportsStructuredOutputs: true,
+        transformRequestBody: withoutReasoningContent,
       })(resolvedModelId);
       break;
     }
@@ -237,7 +267,9 @@ export function buildConfiguredLanguageModel(
   local: LocalProviderConfig = {},
 ): Promise<LanguageModel> {
   const m = getModel(modelId);
-  let resolvedId: string = m.id;
+  // A discovered model's registry id is `<provider>:<apiId>`; the provider is
+  // only ever sent the part after the colon.
+  let resolvedId: string = m.apiId ?? m.id;
   if (m.id === "lmstudio-local") {
     if (!local.lmstudioModelId?.trim()) {
       throw new Error(

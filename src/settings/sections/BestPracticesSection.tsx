@@ -16,7 +16,7 @@ import {
   setCustomInstructions,
   type BestPracticeFile,
 } from "@/modules/settings/store";
-import { MODELS, estimateCost, getModelContextLimit } from "@/modules/ai/config";
+import { estimateCost, findModel, getModelContextLimit } from "@/modules/ai/config";
 import { BEST_PRACTICE_FILE_CAP } from "@/modules/ai/lib/bestPractices";
 import { useContextBaseline } from "@/modules/ai/lib/useContextBaseline";
 import { formatCostUsd, formatTokens } from "@/modules/ai/lib/contextEstimate";
@@ -231,7 +231,7 @@ function ContextBudgetCard() {
     (s) => s.openaiCompatibleContextLimit,
   );
   const windowTokens = getModelContextLimit(defaultModelId, compatOverride);
-  const defaultModel = MODELS.find((m) => m.id === defaultModelId);
+  const defaultModel = findModel(defaultModelId);
   const rawPct = Math.round((baseline.tokens / windowTokens) * 100);
   const pctLabel = baseline.tokens > 0 && rawPct < 1 ? "<1%" : `${rawPct}%`;
   const cost = estimateCost(defaultModelId, {

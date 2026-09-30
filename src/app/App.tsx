@@ -77,6 +77,8 @@ import {
   type WorkItemRef,
 } from "@/modules/ado";
 import { autoBindRepos } from "@/modules/ado/repoBinding";
+import { startModelCatalogSync } from "@/modules/ai/lib/modelCatalogSync";
+import { useModelCatalogStore } from "@/modules/ai/store/modelCatalogStore";
 import { ActionToast } from "@/components/ActionToast";
 import { useActionToast } from "@/components/actionToastStore";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -231,9 +233,14 @@ function AppShell() {
       if (cancelled) un();
       else unlistenKeys = un;
     });
+    // Re-read each connected provider's model list when it's stale or its key
+    // changes, so new models reach every picker without a release.
+    void useModelCatalogStore.getState().init();
+    const stopCatalogSync = startModelCatalogSync();
     return () => {
       cancelled = true;
       unlistenKeys?.();
+      stopCatalogSync();
     };
   }, [initPrefs, initApiKeys]);
 

@@ -82,9 +82,10 @@ function cacheReadsOf(usage: SpendUsage): number {
 /** What a cached input token costs relative to a fresh one.
  *
  *  A flat factor rather than each model's own `MODEL_PRICING.cacheRead / input`
- *  ratio, deliberately. Every priced model in the table sits at 0.1 (5→0.5,
- *  3→0.3, 0.4→0.04, 0.28→0.028) bar one outlier, so per-model precision buys
- *  almost nothing — and it costs two things worth more than it. `MODEL_PRICING`
+ *  ratio, deliberately. Most priced models sit at or near 0.1, but the spread
+ *  is real (Claude Fable 5.1 0.025, DeepSeek 0.02–0.03, Grok 0.16–0.25), so
+ *  this is an approximation of cost, not a quote — and per-model precision
+ *  would cost two things worth more than it. `MODEL_PRICING`
  *  covers about a third of `MODEL_CONTEXT_LIMITS`, so budgets would silently
  *  mean something different on the other two thirds; and the same run against
  *  two models would consume different fractions of the same budget for a reason

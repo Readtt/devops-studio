@@ -1487,6 +1487,48 @@ describe("context summarization (the last resort)", () => {
     expect(summaryCount(prepared[1]!.messages)).toBe(0);
   });
 
+  // A summary that hit its cap lost its tail — usually the most recent work —
+  // and would still replace the turns it summarised.
+  it("a summary cut off at its cap is discarded, not installed", async () => {
+    const t = spentTranscript(6);
+    const prepared: Prepared[] = [];
+    let summarized = 0;
+    generateText.mockImplementation(
+      async (opts: {
+        prepareStep?: (i: { messages: Msg[]; stepNumber: number }) => Prepared | Promise<Prepared>;
+        onStepFinish?: (s: FakeStep) => void;
+      }) => {
+        if (!opts.onStepFinish) {
+          summarized++;
+          return { text: "PARTIAL NOTE", finishReason: "length" };
+        }
+        const steps = [step("s1", "tool-calls", TIGHT), step("s2", "stop", TIGHT)];
+        for (let i = 0; i < steps.length; i++) {
+          prepared.push(await opts.prepareStep?.({ messages: t, stepNumber: i }));
+          opts.onStepFinish?.(steps[i]);
+        }
+        return { text: "done" };
+      },
+    );
+    await runTask(haiku);
+    expect(summarized).toBe(1);
+    expect(JSON.stringify(prepared)).not.toContain("PARTIAL NOTE");
+  });
+
+  // Every Google model reasons, so a Google-only user's summarizer does too —
+  // and its thinking bills against the same cap. At 3k it runs out before it
+  // writes, and the cut-off summary is (rightly) thrown away every time.
+  it("gives a reasoning summarizer room to think before it writes", async () => {
+    const t = spentTranscript(6);
+    const { summarizerCalls } = loopWithSummarizer(
+      [step("s1", "tool-calls", TIGHT), step("s2", "stop", TIGHT)],
+      [t, t],
+    );
+    await runTask({ ...haiku, keys: { google: "k" } as never });
+    expect(summarizerCalls).toHaveLength(1);
+    expect(summarizerCalls[0].maxOutputTokens).toBe(16_000);
+  });
+
   it("a summarizer that throws degrades to no summary, never to a failed run", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const t = spentTranscript(6);

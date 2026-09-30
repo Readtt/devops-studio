@@ -611,35 +611,35 @@ describe("refine — a round that can't apply its result leaves nothing behind",
 });
 
 describe("probeRefineCheckpoint — resurfacing a round after a restart", () => {
-  it("adopts an interrupted follow-up belonging to this draft", async () => {
-    const payload: GeneratorRefineCheckpointV2 = {
-      v: 2,
-      surface: "generator-refine",
-      runId: "rfn-abc",
-      sessionRunId: SESSION_RUN_ID,
-      createdAt: "2026-08-01T00:00:00.000Z",
-      modelId: "claude-sonnet-5",
-      repos: [],
-      round: {
-        instruction: "add negative paths",
-        startedAt: "2026-08-01T00:00:00.000Z",
-        beforeCases: 1,
-        beforeBugs: 0,
-      },
-      prepared: { userPrompt: "prompt", attachments: [] },
-      activity: [],
-      transcript: { messages: [], stepsUsed: 4, usage: { totalTokens: 10 } },
-      lastOutcome: { at: "2026-08-01T00:05:00.000Z", kind: "cancelled" },
-    };
+  const interrupted = (modelId: string): GeneratorRefineCheckpointV2 => ({
+    v: 2,
+    surface: "generator-refine",
+    runId: "rfn-abc",
+    sessionRunId: SESSION_RUN_ID,
+    createdAt: "2026-08-01T00:00:00.000Z",
+    modelId: modelId as ModelId,
+    repos: [],
+    round: {
+      instruction: "add negative paths",
+      startedAt: "2026-08-01T00:00:00.000Z",
+      beforeCases: 1,
+      beforeBugs: 0,
+    },
+    prepared: { userPrompt: "prompt", attachments: [] },
+    activity: [],
+    transcript: { messages: [], stepsUsed: 4, usage: { totalTokens: 10 } },
+    lastOutcome: { at: "2026-08-01T00:05:00.000Z", kind: "cancelled" },
+  });
+  const serve = (payload: GeneratorRefineCheckpointV2) =>
     invoke.mockImplementation(async (cmd: unknown) => {
       if (cmd === "ai_checkpoint_list") {
         return [
-          { runId: "rfn-abc", cwd: null, createdAt: "t0", updatedAt: "t1" },
+          { runId: payload.runId, cwd: null, createdAt: "t0", updatedAt: "t1" },
         ];
       }
       if (cmd === "ai_checkpoint_get") {
         return {
-          runId: "rfn-abc",
+          runId: payload.runId,
           surface: "generator-refine",
           cwd: null,
           payload: JSON.stringify(payload),
@@ -650,6 +650,9 @@ describe("probeRefineCheckpoint — resurfacing a round after a restart", () => 
       return undefined;
     });
 
+  it("adopts an interrupted follow-up belonging to this draft", async () => {
+    serve(interrupted("claude-sonnet-5"));
+
     const store = reviewStore();
     await store.getState().probeRefineCheckpoint();
 
@@ -658,6 +661,17 @@ describe("probeRefineCheckpoint — resurfacing a round after a restart", () => 
       instruction: "add negative paths",
       stepsUsed: 4,
     });
+  });
+
+  // The round's transcript is pinned to a model nobody serves any more:
+  // surfacing it would offer a Resume that can only fail.
+  it("doesn't resurface a round pinned to a retired model", async () => {
+    serve(interrupted("retired-model-x"));
+
+    const store = reviewStore();
+    await store.getState().probeRefineCheckpoint();
+
+    expect(store.getState().refineResumable).toBeNull();
   });
 
   it("ignores a row that belongs to a different draft", async () => {

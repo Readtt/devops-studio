@@ -9,6 +9,7 @@ import {
   SUMMARY_MARKER,
 } from "./summarizeTranscript";
 import { EVICTION_STUB_MARKER } from "./compactTranscript";
+import { isReasoningModel } from "../config";
 
 const user = (text: string): ModelMessage => ({ role: "user", content: text });
 const say = (text: string): ModelMessage => ({
@@ -255,5 +256,38 @@ describe("pickSummarizerModel", () => {
 
   it("keeps the run's own model when nothing configured is cheaper", () => {
     expect(pickSummarizerModel("gpt-5.4-nano", keys, 5_000)).toBe("gpt-5.4-nano");
+  });
+
+  // GPT-6 Luna is the cheapest OpenAI model and a reasoner: its thinking would
+  // spend the 3k-token cap the summary has to fit in.
+  it("never picks a reasoning model, however cheap", () => {
+    const picked = pickSummarizerModel("claude-opus-5", { openai: "k" }, 5_000);
+    expect(picked).toBe("gpt-5.4-nano");
+    expect(isReasoningModel(picked)).toBe(false);
+  });
+
+  // The "reuse the run's own model on a tie" shortcut used to skip that rule.
+  it("doesn't reuse a reasoning run model just because it's cheapest", () => {
+    expect(pickSummarizerModel("gpt-6-luna", { openai: "k" }, 5_000)).toBe("gpt-5.4-nano");
+  });
+
+  // Every current Google model reasons. The cheapest of them still beats
+  // summarizing with the run's own model at several times the price.
+  it("falls back to the cheapest reasoner before the run's own model", () => {
+    expect(pickSummarizerModel("gemini-3.1-pro-preview", { google: "k" }, 5_000)).toBe(
+      "gemini-3.8-flash",
+    );
+  });
+
+  // Gemini 3 Flash Preview is cheaper, but previews are the first models a
+  // provider shuts down — and a summarizer that 404s is no summarizer.
+  it("takes a stable model over a cheaper preview", () => {
+    const picked = pickSummarizerModel("gemini-3.1-pro-preview", { google: "k" }, 5_000);
+    expect(picked).not.toMatch(/preview/);
+  });
+
+  it("never picks a code-completion model", () => {
+    const picked = pickSummarizerModel("claude-opus-5", { anthropic: "k", mistral: "k" }, 5_000);
+    expect(picked).not.toBe("codestral-latest");
   });
 });

@@ -7,6 +7,7 @@ import { windowDragPropsFixed } from "@/lib/windowDrag";
 import { useGlobalShortcuts } from "@/modules/shortcuts";
 import type { SettingsTab } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { useModelCatalogStore } from "@/modules/ai/store/modelCatalogStore";
 import {
   AiScanIcon,
   CommandLineIcon,
@@ -110,6 +111,8 @@ export function SettingsApp() {
 
   useEffect(() => {
     void init();
+    // Settings only reads the model catalogue; the main window writes it.
+    void useModelCatalogStore.getState().init();
   }, [init]);
 
   useEffect(() => {

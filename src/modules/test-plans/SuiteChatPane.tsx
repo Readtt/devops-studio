@@ -72,7 +72,7 @@ import {
   type SuiteType,
 } from "@/modules/ado";
 import { stripHtml } from "@/modules/ado/lib/bugContextBlock";
-import { MODELS, type ModelId } from "@/modules/ai/config";
+import { findModel, type ModelId } from "@/modules/ai/config";
 import { ModelPicker } from "@/modules/ai/components/ModelPicker";
 import { ProviderIcon } from "@/modules/ai/components/ProviderIcon";
 import { useChatStore } from "@/modules/ai/store/chatStore";
@@ -701,7 +701,7 @@ export function SuiteChatPane({ planId, suiteId, boundThreadId }: Props) {
   const { messages, busy, error, modelId } = thread;
 
   const activeModelId = modelId ?? globalModelId;
-  const activeModel = MODELS.find((m) => m.id === activeModelId);
+  const activeModel = findModel(activeModelId);
   const titleParts = [...suitePath, suiteName ?? `#${suiteId}`];
   // Exactly what the next turn will hand the model — computed with the same
   // helpers the runner uses (applyCaseFilter + collectLinkedBugIds) so the
