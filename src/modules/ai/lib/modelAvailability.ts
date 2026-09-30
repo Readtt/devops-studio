@@ -15,11 +15,12 @@ import {
 } from "../config";
 import { getAllKeys, type ProviderKeys } from "./keyring";
 import { onKeysChanged } from "@/modules/settings/store";
+import { useModelCatalogStore } from "../store/modelCatalogStore";
 
 /** Every model a picker can offer: the curated list, then whatever the
  *  connected providers' own lists add. Re-renders when a list refresh lands. */
 export function useSelectableModels(): readonly ModelInfo[] {
-  const catalog = usePreferencesStore((s) => s.modelCatalog);
+  const catalog = useModelCatalogStore((s) => s.catalog);
   return useMemo(
     () => [...(MODELS as readonly ModelInfo[]), ...discoveredModelsForCatalog(catalog)],
     [catalog],

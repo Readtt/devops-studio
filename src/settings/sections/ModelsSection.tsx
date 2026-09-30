@@ -34,7 +34,11 @@ import {
   useModelAvailability,
   useSelectableModels,
 } from "@/modules/ai/lib/modelAvailability";
-import { refreshModelCatalog } from "@/modules/ai/lib/modelCatalog";
+import { describeListError } from "@/modules/ai/lib/modelCatalog";
+import {
+  requestModelCatalogCheck,
+  useModelCatalogStore,
+} from "@/modules/ai/store/modelCatalogStore";
 import { relativeTime } from "@/modules/ai/components/ResumeCard";
 import {
   localProviderConfig,
@@ -285,7 +289,7 @@ export function ModelsSection() {
       {/* One single default-model selector for the whole app — it adapts to
           which providers are connected, so the picker is the only place the
           user ever has to think about "which model". */}
-      <DefaultModelBlock defaultModel={defaultModel} />
+      <DefaultModelBlock defaultModel={defaultModel} keys={keys} />
 
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
@@ -436,8 +440,10 @@ function ProviderMenuItem({
  */
 function DefaultModelBlock({
   defaultModel,
+  keys,
 }: {
   defaultModel: ModelId;
+  keys: KeysMap;
 }) {
   const availability = useModelAvailability();
   const current = getModel(defaultModel);
@@ -557,7 +563,7 @@ function DefaultModelBlock({
         <p className="text-[10.5px] leading-relaxed text-muted-foreground">
           {engineHint}
         </p>
-        <ModelListStatus />
+        <ModelListStatus keys={keys} />
         {defaultUnavailable ? (
           <p className="flex items-center gap-1.5 text-[10.5px] text-amber-700 dark:text-amber-300">
             <HugeiconsIcon
@@ -583,33 +589,51 @@ function DefaultModelBlock({
  * user doesn't want to wait. A provider that failed keeps its last good list,
  * so the line says so rather than letting a stale list pass as current.
  */
-function ModelListStatus() {
-  const catalog = usePreferencesStore((s) => s.modelCatalog);
-  const [checking, setChecking] = useState(false);
-  const [failed, setFailed] = useState<string | null>(null);
+function ModelListStatus({ keys }: { keys: KeysMap }) {
+  const catalog = useModelCatalogStore((s) => s.catalog);
+  const [requestedAt, setRequestedAt] = useState<number | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  // "2 h ago" has to keep moving while Settings stays open.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = window.setInterval(() => setTick((n) => n + 1), 60_000);
+    return () => window.clearInterval(t);
+  }, []);
 
-  const entries = DISCOVERABLE_PROVIDERS.flatMap((p) => {
-    const entry = catalog[p];
-    return entry ? [{ provider: p, entry }] : [];
+  const connected = DISCOVERABLE_PROVIDERS.filter((p) => keys[p]);
+  // The main window runs the check and writes the result; it's done here when
+  // every connected provider has been checked since the request.
+  const checking =
+    requestedAt !== null &&
+    connected.some((p) => (catalog[p]?.checkedAt ?? 0) < requestedAt);
+  useEffect(() => {
+    if (requestedAt === null) return;
+    // Past the per-provider timeout, stop spinning whatever happened.
+    const t = window.setTimeout(() => setRequestedAt(null), 30_000);
+    return () => window.clearTimeout(t);
+  }, [requestedAt]);
+
+  // The OLDEST list, not the newest: one key change re-reading one provider
+  // mustn't make eleven-hour-old lists read as "just now".
+  const fetched = connected.flatMap((p) => catalog[p]?.fetchedAt ?? []);
+  const oldest = fetched.length ? Math.min(...fetched) : 0;
+  const failures = connected.flatMap((p) => {
+    const error = catalog[p]?.error;
+    return error ? [{ provider: p, error }] : [];
   });
-  const lastChecked = Math.max(0, ...entries.map((e) => e.entry.checkedAt));
-  const failures = entries.filter((e) => e.entry.error);
 
   const checkNow = async () => {
-    setChecking(true);
-    setFailed(null);
+    setNotice(null);
+    if (connected.length === 0) {
+      setNotice("Connect a cloud provider below first.");
+      return;
+    }
+    setRequestedAt(Date.now());
     try {
-      const keys = await getAllKeys();
-      const connected = DISCOVERABLE_PROVIDERS.some((p) => keys[p]);
-      if (!connected) {
-        setFailed("Connect a cloud provider below first.");
-        return;
-      }
-      await refreshModelCatalog({ keys, force: true });
+      await requestModelCatalogCheck();
     } catch (e) {
-      setFailed(e instanceof Error ? e.message : String(e));
-    } finally {
-      setChecking(false);
+      setRequestedAt(null);
+      setNotice(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -625,8 +649,8 @@ function ModelListStatus() {
           <span>
             New models from your connected providers show up in this list on
             their own.
-            {lastChecked > 0
-              ? ` Last checked ${relativeTime(new Date(lastChecked).toISOString())}.`
+            {oldest > 0
+              ? ` Last checked ${relativeTime(new Date(oldest).toISOString())}.`
               : ""}
           </span>
         )}
@@ -649,19 +673,20 @@ function ModelListStatus() {
           </TooltipContent>
         </Tooltip>
       </div>
-      {failed ? (
-        <p className="text-[10.5px] text-amber-700 dark:text-amber-300">{failed}</p>
+      {notice ? (
+        <p className="text-[10.5px] text-amber-700 dark:text-amber-300">{notice}</p>
       ) : null}
       {!checking
-        ? failures.map(({ provider, entry }) => (
+        ? failures.map(({ provider, error }) => (
             <p
               key={provider}
+              title={error}
               className="flex items-start gap-1 text-[10.5px] text-amber-700 dark:text-amber-300"
             >
               <ProviderIcon provider={provider} size={11} className="mt-px shrink-0" />
               <span>
-                Couldn't get {getProvider(provider).label}'s model list (
-                {entry.error}), so its models may be out of date.
+                Couldn't refresh {getProvider(provider).label}'s model list
+                because {describeListError(error)}, so it may be out of date.
               </span>
             </p>
           ))

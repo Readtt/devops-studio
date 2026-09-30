@@ -1,15 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 
-// The refresh pass is pure apart from its injected `list`; the store and
-// keychain modules it imports for the live wiring are stubbed out.
-vi.mock("@/modules/settings/preferences", () => ({
-  usePreferencesStore: { getState: () => ({ modelCatalog: {} }) },
+// The refresh pass is pure apart from its injected `list`; the store it
+// persists through is stubbed out.
+vi.mock("../store/modelCatalogStore", () => ({
+  useModelCatalogStore: { getState: () => ({ catalog: {} }) },
+  saveModelCatalog: async () => {},
 }));
-vi.mock("@/modules/settings/store", () => ({ setModelCatalog: async () => {} }));
-
 
 import type { DiscoverableProvider, ModelCatalog, ModelListing } from "../config";
-import { CATALOG_STALE_AFTER_MS, nextModelCatalog } from "./modelCatalog";
+import {
+  CATALOG_RETRY_FAILED_AFTER_MS,
+  CATALOG_STALE_AFTER_MS,
+  describeListError,
+  nextModelCatalog,
+} from "./modelCatalog";
 
 const NOW = 1_800_000_000_000;
 const listing = (provider: DiscoverableProvider, apiId: string): ModelListing => ({
@@ -102,10 +106,53 @@ describe("nextModelCatalog", () => {
     const { list, calls } = lister({});
     const next = await nextModelCatalog(
       { deepseek: { checkedAt: NOW, fetchedAt: NOW, models: [] } },
-      { keys: { deepseek: null }, now: NOW, list },
+      { keys: { deepseek: null }, drop: ["deepseek"], now: NOW, list },
     );
     expect(next.deepseek).toBeUndefined();
     expect(calls).toEqual([]);
+  });
+
+  // A locked or unreadable keychain reads as "no keys"; that must not wipe
+  // every saved list.
+  it("keeps the list of a provider whose key merely didn't load", async () => {
+    const current: ModelCatalog = {
+      openai: { checkedAt: 1, fetchedAt: 1, models: [listing("openai", "gpt-7")] },
+    };
+    const { list, calls } = lister({});
+    const next = await nextModelCatalog(current, { keys: {}, force: true, now: NOW, list });
+    expect(next).toBe(current);
+    expect(calls).toEqual([]);
+  });
+
+  // A laptop that starts before its network does shouldn't wait twelve hours
+  // for its lists — but a provider that keeps failing isn't asked every tick.
+  it("retries a failed provider after an hour, not before", async () => {
+    const failed = (checkedAgo: number): ModelCatalog => ({
+      xai: { checkedAt: NOW - checkedAgo, models: [], error: "Timed out" },
+    });
+    const soon = lister({ xai: [listing("xai", "grok-5")] });
+    await nextModelCatalog(failed(CATALOG_RETRY_FAILED_AFTER_MS - 1), { keys: { xai: "k" }, now: NOW, list: soon.list });
+    expect(soon.calls).toEqual([]);
+    const later = lister({ xai: [listing("xai", "grok-5")] });
+    const next = await nextModelCatalog(failed(CATALOG_RETRY_FAILED_AFTER_MS), { keys: { xai: "k" }, now: NOW, list: later.list });
+    expect(later.calls).toEqual(["xai"]);
+    expect(next.xai).toEqual({ checkedAt: NOW, fetchedAt: NOW, models: [listing("xai", "grok-5")] });
+  });
+
+  it("counts staleness from the last success, not the last attempt", async () => {
+    const { list, calls } = lister({ groq: [listing("groq", "x")] });
+    await nextModelCatalog(
+      {
+        groq: {
+          checkedAt: NOW - CATALOG_RETRY_FAILED_AFTER_MS,
+          fetchedAt: NOW - CATALOG_STALE_AFTER_MS,
+          models: [],
+          error: "HTTP 500",
+        },
+      },
+      { keys: { groq: "k" }, now: NOW, list },
+    );
+    expect(calls).toEqual(["groq"]);
   });
 
   // The caller skips the settings write on an unchanged object.
@@ -118,4 +165,16 @@ describe("nextModelCatalog", () => {
       current,
     );
   });
+});
+
+describe("describeListError", () => {
+  it.each([
+    ["HTTP 401: Invalid API key", "it refused the key"],
+    ["HTTP 403", "it refused the key"],
+    ["HTTP 429", "it was rate-limiting requests"],
+    ["HTTP 503", "it had a server error"],
+    ["Timed out", "it didn't answer in time"],
+    ["The provider listed no models.", "its answer had no models in it"],
+    ["error sending request for url", "it couldn't be reached"],
+  ])("%s → %s", (raw, plain) => expect(describeListError(raw)).toBe(plain));
 });

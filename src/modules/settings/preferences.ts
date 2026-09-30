@@ -1,8 +1,4 @@
 import { create } from "zustand";
-import {
-  discoveredModelsForCatalog,
-  setDiscoveredModels,
-} from "@/modules/ai/config";
 import type { LocalProviderConfig } from "@/modules/ai/lib/agent";
 import {
   DEFAULT_PREFERENCES,
@@ -52,15 +48,6 @@ export const usePreferencesStore = create<State>((set) => ({
     });
   },
 }));
-
-// Every window keeps config.ts's discovered-model registry in step with the
-// persisted catalogue, so `getModel` answers for a live-listed model the moment
-// its list lands — whichever window fetched it.
-usePreferencesStore.subscribe((state, prev) => {
-  if (state.modelCatalog !== prev.modelCatalog) {
-    setDiscoveredModels(discoveredModelsForCatalog(state.modelCatalog));
-  }
-});
 
 /** The registry, outside React — event handlers and module-level helpers. */
 export function getRepos(): WorkspaceRepo[] {
