@@ -31,6 +31,7 @@ import {
   type GeneratorCheckpointV2,
 } from "@/modules/ai/lib/checkpointApi";
 import { canOfferResume, canRaiseOutputCap } from "@/modules/ai/lib/errorClass";
+import { isKnownModelId } from "@/modules/ai/config";
 import { useTabsStore } from "@/modules/tabs/store/useTabsStore";
 import { useTestPlans } from "@/modules/test-plans";
 import { CopyableSectionHeader } from "@/components/CopyableSectionHeader";
@@ -100,6 +101,7 @@ async function loadInterruptedRuns(): Promise<InterruptedGenRun[]> {
           stepsUsed: t?.stepsUsed ?? 0,
           hasTranscript: hasReplayableTranscript(t),
           outputCapRaisable: canRaiseOutputCap(cp.payload.modelId, outcome),
+          modelRetired: !isKnownModelId(cp.payload.modelId),
         })
       ) {
         continue;

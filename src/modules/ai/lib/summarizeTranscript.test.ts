@@ -272,11 +272,18 @@ describe("pickSummarizerModel", () => {
   });
 
   // Every current Google model reasons. The cheapest of them still beats
-  // summarizing with the run's own model at four times the price.
+  // summarizing with the run's own model at several times the price.
   it("falls back to the cheapest reasoner before the run's own model", () => {
     expect(pickSummarizerModel("gemini-3.1-pro-preview", { google: "k" }, 5_000)).toBe(
-      "gemini-3-flash-preview",
+      "gemini-3.8-flash",
     );
+  });
+
+  // Gemini 3 Flash Preview is cheaper, but previews are the first models a
+  // provider shuts down — and a summarizer that 404s is no summarizer.
+  it("takes a stable model over a cheaper preview", () => {
+    const picked = pickSummarizerModel("gemini-3.1-pro-preview", { google: "k" }, 5_000);
+    expect(picked).not.toMatch(/preview/);
   });
 
   it("never picks a code-completion model", () => {

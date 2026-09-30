@@ -230,6 +230,8 @@ export type CommitReviewSlice = {
      *  CLOSED without it, which is why a truncated review offered no resume at
      *  all while the generator, which passes it, offered one. */
     outputCapRaisable: boolean;
+    /** The run's model has been retired — see ResumeProgress.modelRetired. */
+    modelRetired?: boolean;
     totalTokens: number | null;
     updatedAt: string;
     outcome: CheckpointOutcome | null;
@@ -673,6 +675,7 @@ async function adoptInterruptedRun(
         stepsUsed: p.transcript?.stepsUsed ?? 0,
         hasTranscript: hasReplayableTranscript(p.transcript),
         outputCapRaisable: canRaiseOutputCap(p.modelId, p.lastOutcome),
+        modelRetired: !isKnownModelId(p.modelId),
       })
     ) {
       continue;
@@ -921,8 +924,7 @@ export const useCommitReview = create<State>((set, get) => ({
             // might: `canOfferResume` (via the pane) decides on what the
             // attempt banked, so this only has to hand it the checkpoint —
             // which is also the handle Discard hangs off.
-            // …and a retired model can't take the replay at all.
-            resumable: done || !isKnownModelId(p.modelId)
+            resumable: done
               ? null
               : {
                   stage: p.stage,
@@ -932,6 +934,8 @@ export const useCommitReview = create<State>((set, get) => ({
                     p.modelId,
                     p.lastOutcome,
                   ),
+                  // A retired model gets the Discard-only card, with why.
+                  modelRetired: !isKnownModelId(p.modelId),
                   totalTokens: p.transcript?.usage?.totalTokens ?? null,
                   updatedAt: cp.updatedAt,
                   outcome: p.lastOutcome,

@@ -35,9 +35,14 @@ export function probeModelId(provider: ProviderId): ModelId | null {
   // By published input price where there is one — the 1–5 cost score ties
   // too often to break toward the cheaper model — else by that score.
   const price = (id: string) => MODEL_PRICING[id]?.input ?? Infinity;
+  // Previews last: they're the first a provider shuts down, and a probe model
+  // that 404s makes every key test for that provider "inconclusive".
+  const preview = (id: string) => (/preview/.test(id) ? 1 : 0);
   const pick = [...pool].sort(
     (a, b) =>
-      price(a.id) - price(b.id) || b.capabilities.cost - a.capabilities.cost,
+      preview(a.id) - preview(b.id) ||
+      price(a.id) - price(b.id) ||
+      b.capabilities.cost - a.capabilities.cost,
   )[0];
   return (pick?.id as ModelId) ?? null;
 }

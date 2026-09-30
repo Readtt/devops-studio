@@ -72,7 +72,7 @@ describe("model catalogue store", () => {
     await useModelCatalogStore.getState().init();
     await saveModelCatalog(catalog);
     expect(file()?.get("catalog")).toMatchObject({ catalog });
-    expect(h.files.get("devops-studio-settings.json")).toBeUndefined();
+    expect([...h.files.keys()]).toEqual(["devops-studio-models.json"]);
     expect(h.emitted.map((e) => e.event)).toEqual([
       "devops-studio://model-catalog-changed",
     ]);

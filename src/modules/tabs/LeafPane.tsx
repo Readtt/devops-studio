@@ -134,7 +134,11 @@ export const LeafPane = memo(function LeafPane({ leaf, emptyState }: Props) {
                   style={{ visibility: visible ? "visible" : "hidden" }}
                   aria-hidden={!visible}
                 >
-                  <TabErrorBoundary onClose={() => onClose(t.id)}>
+                  <TabErrorBoundary
+                    // Forced: a pinned tab whose saved state throws would
+                    // otherwise have no way out of the error screen.
+                    onClose={() => useTabsStore.getState().closeTab(t.id, { force: true })}
+                  >
                     <TabContent tab={t} />
                   </TabErrorBoundary>
                 </div>

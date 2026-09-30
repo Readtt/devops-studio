@@ -54,6 +54,7 @@ describe("matchErrorKind", () => {
         "unsupported parameter: 'max_tokens'",
         // Claude Fable 5.1 from a zero-data-retention organization.
         "claude-fable-5-1 requires your organization to have data retention enabled",
+        "permission_error: this model is not available without data retention",
       ],
     ],
   ];

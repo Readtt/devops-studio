@@ -23,6 +23,13 @@ describe("probeModelId", () => {
     expect(probeModelId("deepseek")).not.toBeNull();
   });
 
+  // Gemini 3 Flash Preview is cheaper, but a preview is the first model a
+  // provider shuts down — and a probe that 404s makes every Google key test
+  // come back "inconclusive".
+  it("probes with a stable model over a cheaper preview", () => {
+    expect(probeModelId("google")).toBe("gemini-3.8-flash");
+  });
+
   it("has a probe for every provider that takes a key", () => {
     const missing = PROVIDERS.filter(
       (p) => providerNeedsKey(p.id) && probeModelId(p.id) === null,

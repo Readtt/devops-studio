@@ -1070,6 +1070,7 @@ describe("ensure — checkpoint probe", () => {
       // A cancel isn't a truncation, and this fixture's outcome carries no
       // outputCap — the gate fails closed, as it must.
       outputCapRaisable: false,
+      modelRetired: false,
       totalTokens: 100,
       updatedAt: "2026-01-01T00:02:00.000Z",
       outcome: { at: "2026-01-01T00:01:00.000Z", kind: "cancelled" },

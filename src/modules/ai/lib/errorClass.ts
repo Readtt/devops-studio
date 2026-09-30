@@ -77,6 +77,11 @@ const PATTERNS: ReadonlyArray<readonly [ResumeErrorKind, RegExp]> = [
     "overloaded",
     /over.?loaded|\b529\b|\b503\b|\b502\b|service unavailable/,
   ],
+  // Claude Fable 5.1 refuses an organization without 30-day data retention (a
+  // zero-data-retention org), every time — a resume can only repeat it. Ahead
+  // of auth because the refusal can arrive worded as a permission error, and
+  // "check your key" is the wrong advice for it.
+  ["capability", /data retention/],
   [
     "auth",
     /\b401\b|unauthorized|invalid.*api.?key|invalid x-api-key|bad.?pat|forbidden|permission|authentication|configure an api key|no api key configured|missing.*api.?key|api key.*not.*set|sso/,
@@ -92,13 +97,9 @@ const PATTERNS: ReadonlyArray<readonly [ResumeErrorKind, RegExp]> = [
   // one model launch behind us — "`temperature` is deprecated for this model",
   // "this model does not support assistant message prefill" — and getting it
   // wrong in the loose direction would silently make a rate limit unresumable.
-  //
-  // "data retention": Claude Fable 5.1 refuses an organization without 30-day
-  // retention (a zero-data-retention org), every time — a resume can only
-  // repeat that 400.
   [
     "capability",
-    /does not support|(?:is|are) not supported|unsupported (?:value|parameter|setting|feature|model)|deprecated for this model|data retention/,
+    /does not support|(?:is|are) not supported|unsupported (?:value|parameter|setting|feature|model)|deprecated for this model/,
   ],
   [
     "context-overflow",
@@ -179,6 +180,9 @@ export type ResumeProgress = {
    *  a call site that hasn't been taught to pass it fails closed, exactly like
    *  the two fields above. */
   outputCapRaisable?: boolean;
+  /** The model the run was pinned to has since been retired. The transcript
+   *  can only be replayed on that model, so there is nothing to resume on. */
+  modelRetired?: boolean;
 };
 
 /** Whether a truncated (`finish: length`) answer has anywhere to go on retry:
@@ -280,6 +284,9 @@ export function resumeUnavailableReason(
     | undefined,
   progress?: ResumeProgress | null,
 ): string {
+  if (progress?.modelRetired) {
+    return "The model this run used has been retired, so it can't be continued — re-run it with a current model.";
+  }
   // Named before the storage/answer branches below: a capability refusal is
   // about the MODEL, not about how much work survived, so "the model returned
   // nothing to continue from" would send the user to re-run the exact request
@@ -348,6 +355,7 @@ export function canOfferResume(
   errorMessage?: string | null,
   progress?: ResumeProgress | null,
 ): boolean {
+  if (progress?.modelRetired) return false;
   if (!outcome) return true;
   switch (outcome.kind) {
     case "step_cap":

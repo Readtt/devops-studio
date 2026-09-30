@@ -1034,9 +1034,9 @@ export type ProviderCatalog = {
   error?: string;
 };
 
-/** What every connected provider last said it serves, persisted (preference
- *  `modelCatalog`) so both windows share it and a launch doesn't wait on the
- *  network to show a model the user picked yesterday. */
+/** What every connected provider last said it serves, persisted in its own
+ *  store file (modelCatalogStore.ts) so both windows share it and a launch
+ *  doesn't wait on the network to show a model the user picked yesterday. */
 export type ModelCatalog = Partial<Record<DiscoverableProvider, ProviderCatalog>>;
 
 const asFinite = (v: unknown): number | undefined =>

@@ -10,6 +10,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(undef
 import { createGenerationSessionStore } from "./useGenerationSession";
 import type { GeneratorCheckpointV2 } from "@/modules/ai/lib/checkpointApi";
 import type { GenerationRun } from "../lib/history";
+import { canOfferResume, resumeUnavailableReason } from "@/modules/ai/lib/errorClass";
 
 const draft = (overrideModelId: string | null): GenerationRun =>
   ({
@@ -71,16 +72,22 @@ describe("restoring a run whose model was retired", () => {
     expect(store.getState().overrideModelId).toBeNull();
   });
 
-  it("a checkpoint restores its form but offers no Resume it can't honour", () => {
+  // The transcript is pinned to the model that produced it. The card stays —
+  // Discard is the way out of a checkpoint — but Resume isn't offered, and
+  // the reason says why.
+  it("a checkpoint restores its form, keeps Discard, and offers no Resume", () => {
     store.getState().loadCheckpoint(checkpoint("llama-3.3-70b-versatile"), "2026-09-01T00:00:00Z");
     expect(store.getState().overrideModelId).toBe("openai/gpt-oss-120b");
-    // The transcript is pinned to the model that produced it.
-    expect(store.getState().resumable).toBeNull();
+    const resumable = store.getState().resumable;
+    expect(resumable).not.toBeNull();
+    expect(canOfferResume(resumable!.outcome, null, resumable)).toBe(false);
+    expect(resumeUnavailableReason(resumable!.outcome, resumable)).toMatch(/retired/);
   });
 
   it("a live model's checkpoint still offers Resume", () => {
     store.getState().loadCheckpoint(checkpoint("claude-sonnet-5"), "2026-09-01T00:00:00Z");
     expect(store.getState().overrideModelId).toBe("claude-sonnet-5");
-    expect(store.getState().resumable).not.toBeNull();
+    const resumable = store.getState().resumable;
+    expect(canOfferResume(resumable!.outcome, null, resumable)).toBe(true);
   });
 });

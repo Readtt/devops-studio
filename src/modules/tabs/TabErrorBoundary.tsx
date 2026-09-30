@@ -7,7 +7,7 @@ type Props = {
   children: ReactNode;
 };
 
-type State = { error: Error | null };
+type State = { failed: boolean; error: unknown };
 
 /**
  * Keeps one tab's render failure inside that tab. Without it, a throw while
@@ -17,19 +17,22 @@ type State = { error: Error | null };
  * hand. Fixing a known cause doesn't cover the next one; this does.
  */
 export class TabErrorBoundary extends Component<Props, State> {
-  state: State = { error: null };
+  state: State = { failed: false, error: null };
 
-  static getDerivedStateFromError(error: Error): State {
-    return { error };
+  // A flag, not the error itself: a throw of `undefined` or `null` is still a
+  // failed render.
+  static getDerivedStateFromError(error: unknown): State {
+    return { failed: true, error };
   }
 
-  componentDidCatch(error: Error, info: ErrorInfo): void {
+  componentDidCatch(error: unknown, info: ErrorInfo): void {
     console.error("[tabs] a tab failed to render", error, info.componentStack);
   }
 
   render() {
-    const { error } = this.state;
-    if (!error) return this.props.children;
+    const { failed, error } = this.state;
+    if (!failed) return this.props.children;
+    const message = error instanceof Error ? error.message : String(error);
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
         <div className="max-w-[420px]">
@@ -39,14 +42,14 @@ export class TabErrorBoundary extends Component<Props, State> {
             again, or close the tab and open it fresh.
           </p>
           <p className="mt-2 font-mono text-[10.5px] break-words text-muted-foreground/80">
-            {error.message}
+            {message}
           </p>
         </div>
         <div className="flex gap-2">
           <Button
             size="sm"
             variant="outline"
-            onClick={() => this.setState({ error: null })}
+            onClick={() => this.setState({ failed: false, error: null })}
           >
             Try again
           </Button>

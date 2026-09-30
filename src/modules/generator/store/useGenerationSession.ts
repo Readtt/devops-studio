@@ -329,6 +329,8 @@ export type SessionState = {
     /** Whether a `finish: length` outcome has output headroom to retry with —
      *  same carry-it-for-the-gate reason as `hasTranscript`. */
     outputCapRaisable: boolean;
+    /** The run's model has been retired — see ResumeProgress.modelRetired. */
+    modelRetired?: boolean;
     totalTokens: number | null;
     updatedAt: string;
     outcome: CheckpointOutcome | null;
@@ -2311,12 +2313,13 @@ export function createGenerationSessionStore(): GenerationSessionStore {
       runId: payload.runId,
       activityLog: payload.activity,
       stepsUsed: payload.transcript?.stepsUsed ?? null,
-      // The transcript is pinned to the model that produced it; a retired one
-      // can't be resumed, so don't offer a button that could only fail.
-      resumable: !isKnownModelId(payload.modelId) ? null : {
+      resumable: {
         stepsUsed: payload.transcript?.stepsUsed ?? 0,
         hasTranscript: hasReplayableTranscript(payload.transcript),
         outputCapRaisable: canRaiseOutputCap(payload.modelId, payload.lastOutcome),
+        // The transcript is pinned to the model that produced it: a retired one
+        // gets the Discard-only card, with the reason, not a Resume that fails.
+        modelRetired: !isKnownModelId(payload.modelId),
         totalTokens: payload.transcript?.usage?.totalTokens ?? null,
         updatedAt,
         outcome: payload.lastOutcome,
@@ -3499,6 +3502,7 @@ export function createGenerationSessionStore(): GenerationSessionStore {
         stepsUsed: p.transcript?.stepsUsed ?? 0,
         hasTranscript: hasReplayableTranscript(p.transcript),
         outputCapRaisable: canRaiseOutputCap(p.modelId, p.lastOutcome),
+        modelRetired: !isKnownModelId(p.modelId),
       };
       if (
         !canOfferResume(p.lastOutcome, p.lastOutcome?.message ?? null, progress)

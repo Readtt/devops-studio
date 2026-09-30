@@ -75,6 +75,12 @@ const SOURCE_CHAR_CAP = 240_000;
 /** Roughly Anthropic's "1,000–2,000 tokens back to the parent", with slack. */
 export const SUMMARY_MAX_OUTPUT_TOKENS = 3_000;
 
+/** The same summary from a reasoning model, plus room for the thinking that
+ *  bills against the same cap — at 3k it spends the cap before writing, and
+ *  the truncated result is (rightly) discarded. Only reached when a user's
+ *  providers offer nothing that doesn't reason. */
+export const SUMMARY_MAX_OUTPUT_TOKENS_REASONING = 16_000;
+
 export const SUMMARIZER_SYSTEM_PROMPT = `You are compacting the middle of an AI agent's working transcript so the agent can keep going in a smaller context window. You are not answering the agent's task and you are not judging its work.
 
 Write a dense handover note for the agent, addressed to it, covering everything it would otherwise have to re-derive:
@@ -318,6 +324,11 @@ function stableString(v: unknown): string {
   }
 }
 
+/** 1 for a preview model (sorts after), 0 otherwise. */
+function isPreview(id: string): number {
+  return /preview/.test(id) ? 1 : 0;
+}
+
 /** A code-completion model: tagged for code and nothing else. */
 function isCodeOnly(tags: readonly string[] | undefined): boolean {
   return !!tags && tags.length > 0 && tags.every((t) => t === "coding");
@@ -353,9 +364,19 @@ export function pickSummarizerModel(
   keys: Partial<Record<string, string | null>>,
   sourceTokens: number,
 ): ModelId {
-  const needed = Math.ceil(sourceTokens * 1.3) + SUMMARY_MAX_OUTPUT_TOKENS + 2_000;
+  const input = Math.ceil(sourceTokens * 1.3) + 2_000;
   let best: { id: ModelId; price: number } | null = null;
   let bestReasoner: { id: ModelId; price: number } | null = null;
+  // Previews go last at any price: they're the first models a provider
+  // shuts down, and a summarizer that 404s is no summarizer.
+  const cheaper = (
+    id: string,
+    price: number,
+    than: { id: ModelId; price: number } | null,
+  ) =>
+    !than ||
+    isPreview(id) < isPreview(than.id) ||
+    (isPreview(id) === isPreview(than.id) && price < than.price);
   for (const m of MODELS) {
     const price = MODEL_PRICING[m.id]?.input;
     if (typeof price !== "number") continue;
@@ -364,14 +385,18 @@ export function pickSummarizerModel(
     // the tier below this reliably drops file paths and line numbers.
     if (m.capabilities.intelligence < 3) continue;
     if (isCodeOnly((m as ModelInfo).tags)) continue;
-    if (getModelContextLimit(m.id) < needed) continue;
-    if (isReasoningModel(m.id)) {
-      if (!bestReasoner || price < bestReasoner.price) {
+    const reasons = isReasoningModel(m.id);
+    const output = reasons
+      ? SUMMARY_MAX_OUTPUT_TOKENS_REASONING
+      : SUMMARY_MAX_OUTPUT_TOKENS;
+    if (getModelContextLimit(m.id) < input + output) continue;
+    if (reasons) {
+      if (cheaper(m.id, price, bestReasoner)) {
         bestReasoner = { id: m.id as ModelId, price };
       }
       continue;
     }
-    if (!best || price < best.price) best = { id: m.id as ModelId, price };
+    if (cheaper(m.id, price, best)) best = { id: m.id as ModelId, price };
   }
   if (!best) return bestReasoner?.id ?? runModelId;
   // A tie with the run's own model isn't a tie — reusing it keeps the request on

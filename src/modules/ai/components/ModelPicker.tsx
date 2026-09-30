@@ -16,6 +16,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   PROVIDERS,
+  canonicalModelId,
   findModel,
   getModel,
   type ModelId,
@@ -82,17 +83,20 @@ export function ModelPicker({
   const favorites = usePreferencesStore((s) => s.favoriteModelIds);
   const models = useSelectableModels();
   const current = getModel(value);
+  // What the rows are compared against: a provider-listed id for a model the
+  // app already knows is that model, not a second row beside it.
+  const selectedId = canonicalModelId(value);
 
   const visibleModels = useMemo(() => {
     const shown = models.filter((m) => (filter ? filter(m.id) : true));
     // The selected model always has a row, even when no list carries it any
     // more (a saved discovered pick whose provider hasn't answered yet).
-    if (!shown.some((m) => m.id === value) && (!filter || filter(value))) {
+    if (!shown.some((m) => m.id === selectedId) && (!filter || filter(value))) {
       const selected = findModel(value);
       if (selected) shown.push(selected);
     }
     return shown;
-  }, [models, filter, value]);
+  }, [models, filter, value, selectedId]);
 
   // Curated first in catalogue order, then the provider's own list newest
   // first — the order `useSelectableModels` already hands them over in.
@@ -207,7 +211,7 @@ export function ModelPicker({
                       // so each row is its own identity.
                       section="recent"
                       model={m}
-                      selected={m.id === value}
+                      selected={m.id === selectedId}
                       favorite={favorites.includes(m.id)}
                       onPick={onPick}
                     />
@@ -224,7 +228,7 @@ export function ModelPicker({
                       key={`fav-${m.id}`}
                       section="favorite"
                       model={m}
-                      selected={m.id === value}
+                      selected={m.id === selectedId}
                       favorite
                       onPick={onPick}
                     />
@@ -240,7 +244,7 @@ export function ModelPicker({
               const rows = searching
                 ? g.models
                 : g.models.filter((m) => {
-                    if (!m.discovered || m.id === value) return true;
+                    if (!m.discovered || m.id === selectedId) return true;
                     return ++discoveredShown <= DISCOVERED_PREVIEW;
                   });
               const hidden = g.models.length - rows.length;
@@ -251,7 +255,7 @@ export function ModelPicker({
                       key={m.id}
                       section={`provider:${g.provider.id}`}
                       model={m}
-                      selected={m.id === value}
+                      selected={m.id === selectedId}
                       favorite={favorites.includes(m.id)}
                       onPick={onPick}
                     />
