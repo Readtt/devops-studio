@@ -265,4 +265,22 @@ describe("pickSummarizerModel", () => {
     expect(picked).toBe("gpt-5.4-nano");
     expect(isReasoningModel(picked)).toBe(false);
   });
+
+  // The "reuse the run's own model on a tie" shortcut used to skip that rule.
+  it("doesn't reuse a reasoning run model just because it's cheapest", () => {
+    expect(pickSummarizerModel("gpt-6-luna", { openai: "k" }, 5_000)).toBe("gpt-5.4-nano");
+  });
+
+  // Every current Google model reasons. The cheapest of them still beats
+  // summarizing with the run's own model at four times the price.
+  it("falls back to the cheapest reasoner before the run's own model", () => {
+    expect(pickSummarizerModel("gemini-3.1-pro-preview", { google: "k" }, 5_000)).toBe(
+      "gemini-3-flash-preview",
+    );
+  });
+
+  it("never picks a code-completion model", () => {
+    const picked = pickSummarizerModel("claude-opus-5", { anthropic: "k", mistral: "k" }, 5_000);
+    expect(picked).not.toBe("codestral-latest");
+  });
 });

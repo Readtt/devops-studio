@@ -6,7 +6,13 @@
 // as a real run (so there's no CORS issue) and maps the outcome to a verdict.
 
 import { generateText } from "ai";
-import { isReasoningModel, MODELS, type ModelId, type ProviderId } from "../config";
+import {
+  isReasoningModel,
+  MODEL_PRICING,
+  MODELS,
+  type ModelId,
+  type ProviderId,
+} from "../config";
 import { EMPTY_PROVIDER_KEYS } from "./keyring";
 import { buildConfiguredLanguageModel, type LocalProviderConfig } from "./agent";
 
@@ -26,8 +32,12 @@ export function probeModelId(provider: ProviderId): ModelId | null {
   const forProvider = MODELS.filter((m) => m.provider === provider);
   const plain = forProvider.filter((m) => !isReasoningModel(m.id));
   const pool = plain.length > 0 ? plain : forProvider;
+  // By published input price where there is one — the 1–5 cost score ties
+  // too often to break toward the cheaper model — else by that score.
+  const price = (id: string) => MODEL_PRICING[id]?.input ?? Infinity;
   const pick = [...pool].sort(
-    (a, b) => b.capabilities.cost - a.capabilities.cost,
+    (a, b) =>
+      price(a.id) - price(b.id) || b.capabilities.cost - a.capabilities.cost,
   )[0];
   return (pick?.id as ModelId) ?? null;
 }
@@ -51,9 +61,11 @@ export async function testProviderKey(
       { ...EMPTY_PROVIDER_KEYS, [provider]: key },
       local,
     );
-    // maxOutputTokens: 1 — auth is validated before token-limit processing, so
-    // this is enough to confirm the key without paying for a real generation.
-    await generateText({ model: built, prompt: "ping", maxOutputTokens: 1 });
+    // A tiny cap: auth is validated before any generation, so this confirms
+    // the key without paying for one. 16, not 1 — OpenAI's Responses API
+    // rejects anything below 16 ("Expected a value >= 16"), which made every
+    // OpenAI key test "inconclusive".
+    await generateText({ model: built, prompt: "ping", maxOutputTokens: 16 });
     return { ok: true, kind: "valid", message: "Key works." };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

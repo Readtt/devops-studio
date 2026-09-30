@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
 import {
   Command,
   CommandEmpty,
@@ -16,6 +16,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   PROVIDERS,
+  findModel,
   getModel,
   type ModelId,
   type ModelInfo,
@@ -83,8 +84,15 @@ export function ModelPicker({
   const current = getModel(value);
 
   const visibleModels = useMemo(() => {
-    return models.filter((m) => (filter ? filter(m.id) : true));
-  }, [models, filter]);
+    const shown = models.filter((m) => (filter ? filter(m.id) : true));
+    // The selected model always has a row, even when no list carries it any
+    // more (a saved discovered pick whose provider hasn't answered yet).
+    if (!shown.some((m) => m.id === value) && (!filter || filter(value))) {
+      const selected = findModel(value);
+      if (selected) shown.push(selected);
+    }
+    return shown;
+  }, [models, filter, value]);
 
   // Curated first in catalogue order, then the provider's own list newest
   // first — the order `useSelectableModels` already hands them over in.
@@ -109,11 +117,14 @@ export function ModelPicker({
     .map((id) => visibleModels.find((m) => m.id === id))
     .filter((m): m is ModelInfo => Boolean(m));
 
-  const onPick = (id: string) => {
+  // Stable, so memoised rows don't all re-render on every keystroke.
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const onPick = useCallback((id: string) => {
     setOpen(false);
-    onChange(id as ModelId);
+    onChangeRef.current(id as ModelId);
     void pushRecentModel(id);
-  };
+  }, []);
 
   const isEmpty = visibleModels.length === 0;
   const searching = query.trim().length > 0;
@@ -123,8 +134,10 @@ export function ModelPicker({
       open={open}
       onOpenChange={(next) => {
         if (disabled) return;
+        // Reset on OPEN: a pick closes the popover without passing through
+        // here, so resetting on close left the last search in the box.
+        if (next) setQuery("");
         setOpen(next);
-        if (!next) setQuery("");
       }}
     >
       <PopoverTrigger asChild disabled={disabled}>
@@ -196,7 +209,7 @@ export function ModelPicker({
                       model={m}
                       selected={m.id === value}
                       favorite={favorites.includes(m.id)}
-                      onPick={() => onPick(m.id)}
+                      onPick={onPick}
                     />
                   ))}
                 </CommandGroup>
@@ -213,7 +226,7 @@ export function ModelPicker({
                       model={m}
                       selected={m.id === value}
                       favorite
-                      onPick={() => onPick(m.id)}
+                      onPick={onPick}
                     />
                   ))}
                 </CommandGroup>
@@ -240,7 +253,7 @@ export function ModelPicker({
                       model={m}
                       selected={m.id === value}
                       favorite={favorites.includes(m.id)}
-                      onPick={() => onPick(m.id)}
+                      onPick={onPick}
                     />
                   ))}
                   {hidden > 0 ? (
@@ -263,7 +276,7 @@ export function ModelPicker({
   );
 }
 
-function ModelRow({
+const ModelRow = memo(function ModelRow({
   section,
   model,
   selected,
@@ -277,7 +290,7 @@ function ModelRow({
   model: ModelInfo;
   selected: boolean;
   favorite: boolean;
-  onPick: () => void;
+  onPick: (id: string) => void;
 }) {
   return (
     <CommandItem
@@ -286,7 +299,7 @@ function ModelRow({
       // discriminator, not the searchable surface — typing "sonnet" still
       // surfaces both Recent and Provider rows independently.
       value={`${section}::${model.label} ${model.id} ${model.provider} ${model.hint} ${model.description}`}
-      onSelect={onPick}
+      onSelect={() => onPick(model.id)}
       className={cn("items-start", selected && "bg-primary/[0.07]")}
     >
       <ProviderIcon
@@ -326,4 +339,4 @@ function ModelRow({
       </button>
     </CommandItem>
   );
-}
+});

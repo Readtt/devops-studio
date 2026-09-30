@@ -1260,12 +1260,16 @@ export function supportsTemperature(id: ModelId | string): boolean {
  *  without its request-only nudge. Each of those would invalidate every later
  *  thinking block.
  *
- *  So the runner asks the API to DROP an invalidated block instead of failing
- *  the request (`prefix_mismatch_behavior: "drop_block"`). A dropped block is
- *  unbilled and the model re-plans without that reasoning — the same thing
- *  eviction already costs it — where the default is a run that dies on its
- *  first step after an eviction. Only the native Anthropic transport replays
- *  signed thinking blocks, so only it acts on this. */
+ *  So the runner asks the API to DROP invalidated blocks instead of failing
+ *  the request (`prefix_mismatch_behavior: "drop_block"`). What that costs,
+ *  stated plainly: the API drops the first mismatched block AND every thinking
+ *  block after it, on every later request that carries the edited history —
+ *  after an eviction the model continues without its earlier reasoning — and
+ *  setting the field also turns the check on for accounts created before
+ *  2026-08-31, which would otherwise have been sent the stale blocks. Dropped
+ *  blocks are unbilled. The alternative is a run that dies on its first step
+ *  after an eviction, for every new account. Only the native Anthropic
+ *  transport replays signed thinking blocks, so only it acts on this. */
 export function preservesThinking(id: ModelId | string): boolean {
   try {
     return getModel(id as ModelId).preservesThinking === true;

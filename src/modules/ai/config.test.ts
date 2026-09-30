@@ -79,6 +79,35 @@ describe("model catalogue: structure", () => {
     expect(broken).toEqual([]);
   });
 
+  // The map exists so a Groq-only user whose model was retired lands on a Groq
+  // model they have a key for. A successor on another provider defeats that
+  // silently. Retired ids are gone from MODELS, so their providers are
+  // recorded here — add one when you retire a model.
+  it("every retired id's successor is on the same provider", () => {
+    const retiredProvider: Record<string, string> = {
+      "grok-4-fast-reasoning": "xai",
+      "deepseek-v4-flash": "deepseek",
+      "deepseek-reasoner": "deepseek",
+      "llama3.3-70b": "cerebras",
+      "qwen-3-32b": "cerebras",
+      "llama-3.3-70b-versatile": "groq",
+      "deepseek-r1-distill-llama-70b": "groq",
+      "x-ai/grok-4.20-reasoning": "openrouter",
+      "deepseek/deepseek-reasoner": "openrouter",
+      "meta-llama/llama-4-scout-17b-16e-instruct": "openrouter",
+      "qwen/qwen3-max": "openrouter",
+      "mistralai/mistral-large-latest": "openrouter",
+    };
+    expect(Object.keys(retiredProvider).sort()).toEqual(
+      Object.keys(RETIRED_MODEL_REPLACEMENTS).sort(),
+    );
+    const crossed = Object.entries(RETIRED_MODEL_REPLACEMENTS).filter(
+      ([retired, successor]) =>
+        MODELS.find((m) => m.id === successor)?.provider !== retiredProvider[retired],
+    );
+    expect(crossed).toEqual([]);
+  });
+
   // A stale key is a decision that stopped applying to anything: the model was
   // renamed or retired and its cap/price/limit silently stopped being used.
   it("no side table names a model that doesn't exist", () => {

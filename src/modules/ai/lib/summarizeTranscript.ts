@@ -43,6 +43,7 @@ import {
   MODEL_PRICING,
   MODELS,
   type ModelId,
+  type ModelInfo,
 } from "../config";
 
 /** Kill switch, matching {@link CONTEXT_COMPACTION_ENABLED}'s pattern: this is
@@ -317,6 +318,11 @@ function stableString(v: unknown): string {
   }
 }
 
+/** A code-completion model: tagged for code and nothing else. */
+function isCodeOnly(tags: readonly string[] | undefined): boolean {
+  return !!tags && tags.length > 0 && tags.every((t) => t === "coding");
+}
+
 /** Cheapest model that can actually do this job right now.
  *
  *  Three filters, in order of how badly getting them wrong hurts:
@@ -327,9 +333,15 @@ function stableString(v: unknown): string {
  *     which is deliberate rather than a side effect — they're free, but "is LM
  *     Studio running right now" is not a question worth betting the run on.
  *   • Its window must hold the source with room to answer.
- *   • It must not be a reasoning model. Reasoning spends the same small output
- *     cap the summary has to fit in, so the cheapest reasoner (GPT-6 Luna, at
- *     half gpt-5.4-nano's price) would hand back a truncated or empty summary.
+ *   • It should not be a reasoning model. Reasoning spends the same small
+ *     output cap the summary has to fit in, so the cheapest reasoner (GPT-6
+ *     Luna, at half gpt-5.4-nano's price) tends to hand back a truncated or
+ *     empty summary — which the caller discards (a cut-off summary is worse
+ *     than none). When a user's providers offer nothing else (every current
+ *     Google and DeepSeek model reasons), the cheapest reasoner still beats
+ *     summarizing with the run's own, usually pricier, model.
+ *   • It must not be a code-completion model (Codestral): summarizing an
+ *     agent's transcript is prose work.
  *
  *  Curated models only, on purpose: a live-listed model has no vetted price or
  *  intelligence score, and the cheapest one on OpenRouter is not a summarizer
@@ -343,6 +355,7 @@ export function pickSummarizerModel(
 ): ModelId {
   const needed = Math.ceil(sourceTokens * 1.3) + SUMMARY_MAX_OUTPUT_TOKENS + 2_000;
   let best: { id: ModelId; price: number } | null = null;
+  let bestReasoner: { id: ModelId; price: number } | null = null;
   for (const m of MODELS) {
     const price = MODEL_PRICING[m.id]?.input;
     if (typeof price !== "number") continue;
@@ -350,15 +363,28 @@ export function pickSummarizerModel(
     // Summarizing a technical transcript badly is worse than not summarizing:
     // the tier below this reliably drops file paths and line numbers.
     if (m.capabilities.intelligence < 3) continue;
-    if (isReasoningModel(m.id)) continue;
+    if (isCodeOnly((m as ModelInfo).tags)) continue;
     if (getModelContextLimit(m.id) < needed) continue;
+    if (isReasoningModel(m.id)) {
+      if (!bestReasoner || price < bestReasoner.price) {
+        bestReasoner = { id: m.id as ModelId, price };
+      }
+      continue;
+    }
     if (!best || price < best.price) best = { id: m.id as ModelId, price };
   }
-  if (!best) return runModelId;
+  if (!best) return bestReasoner?.id ?? runModelId;
   // A tie with the run's own model isn't a tie — reusing it keeps the request on
-  // a provider we already know is answering.
+  // a provider we already know is answering. Not for a reasoning run model,
+  // though: that is the truncation this whole filter exists to avoid.
   const runPrice = MODEL_PRICING[runModelId]?.input;
-  if (typeof runPrice === "number" && runPrice <= best.price) return runModelId;
+  if (
+    typeof runPrice === "number" &&
+    runPrice <= best.price &&
+    !isReasoningModel(runModelId)
+  ) {
+    return runModelId;
+  }
   return best.id;
 }
 

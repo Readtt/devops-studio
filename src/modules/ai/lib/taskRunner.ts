@@ -439,7 +439,7 @@ function makeSummarizer(
         input.local ?? {},
       );
       const summarizerOptions = requestProviderOptions(summarizerId);
-      const { text } = await generateText({
+      const { text, finishReason } = await generateText({
         model,
         system: SUMMARIZER_SYSTEM_PROMPT,
         prompt: plan.source,
@@ -453,6 +453,10 @@ function makeSummarizer(
         maxRetries: 1,
         abortSignal: input.signal,
       });
+      // A summary cut off at its cap has lost its tail — usually the most
+      // recent work — and would replace the turns it summarised anyway. None
+      // is the survivable outcome; a truncated one is silent damage.
+      if (finishReason === "length") return null;
       const summary = text?.trim();
       if (!summary) return null;
       return {

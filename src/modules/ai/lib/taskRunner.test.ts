@@ -1487,6 +1487,29 @@ describe("context summarization (the last resort)", () => {
     expect(summaryCount(prepared[1]!.messages)).toBe(0);
   });
 
+  // A summary that hit its cap lost its tail — usually the most recent work —
+  // and would still replace the turns it summarised.
+  it("a summary cut off at its cap is discarded, not installed", async () => {
+    const t = spentTranscript(6);
+    const prepared: Prepared[] = [];
+    generateText.mockImplementation(
+      async (opts: {
+        prepareStep?: (i: { messages: Msg[]; stepNumber: number }) => Prepared | Promise<Prepared>;
+        onStepFinish?: (s: FakeStep) => void;
+      }) => {
+        if (!opts.onStepFinish) return { text: "PARTIAL NOTE", finishReason: "length" };
+        const steps = [step("s1", "tool-calls", TIGHT), step("s2", "stop", TIGHT)];
+        for (let i = 0; i < steps.length; i++) {
+          prepared.push(await opts.prepareStep?.({ messages: t, stepNumber: i }));
+          opts.onStepFinish?.(steps[i]);
+        }
+        return { text: "done" };
+      },
+    );
+    await runTask(haiku);
+    expect(JSON.stringify(prepared)).not.toContain("PARTIAL NOTE");
+  });
+
   it("a summarizer that throws degrades to no summary, never to a failed run", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const t = spentTranscript(6);

@@ -33,7 +33,7 @@ vi.mock("./proxyFetch", () => {
   return { proxyFetch: fake, createProxyFetch: () => fake };
 });
 
-import { generateObject } from "ai";
+import { generateObject, generateText } from "ai";
 import { z } from "zod";
 import { buildLanguageModel } from "./agent";
 import { EMPTY_PROVIDER_KEYS } from "./keyring";
@@ -72,5 +72,44 @@ describe("structured output: what goes on the wire", () => {
   it("OpenRouter keeps strict json_schema", async () => {
     const body = await schemaRunBody("openrouter", "moonshotai/kimi-k2.5");
     expect((body.response_format as { type: string }).type).toBe("json_schema");
+  });
+});
+
+// A reasoning model's earlier thinking comes back on each assistant turn as
+// `reasoning_content`. Mistral 422s on the unknown field; DeepSeek requires it.
+describe("replayed reasoning", () => {
+  const history = [
+    { role: "user" as const, content: "look at the auth module" },
+    {
+      role: "assistant" as const,
+      content: [
+        { type: "reasoning" as const, text: "The caller graph starts at login." },
+        { type: "text" as const, text: "Reading it now." },
+      ],
+    },
+    { role: "user" as const, content: "and now?" },
+  ];
+
+  async function replayBody(provider: ProviderId, modelId: string) {
+    const model = await buildLanguageModel(
+      provider,
+      { ...EMPTY_PROVIDER_KEYS, [provider]: "k" },
+      modelId,
+    );
+    await generateText({ model, messages: history });
+    return bodies[bodies.length - 1] as { messages: Record<string, unknown>[] };
+  }
+
+  it("is dropped for Mistral", async () => {
+    const body = await replayBody("mistral", "mistral-medium-latest");
+    expect(body.messages.some((m) => "reasoning_content" in m)).toBe(false);
+    expect(body.messages.find((m) => m.role === "assistant")?.content).toBe(
+      "Reading it now.",
+    );
+  });
+
+  it("is kept for DeepSeek", async () => {
+    const body = await replayBody("deepseek", "deepseek-flash");
+    expect(body.messages.some((m) => "reasoning_content" in m)).toBe(true);
   });
 });

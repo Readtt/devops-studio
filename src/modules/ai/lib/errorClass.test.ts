@@ -52,6 +52,8 @@ describe("matchErrorKind", () => {
         "Unsupported value: 'temperature' does not support 0 with this model",
         "Streaming is not supported for this model",
         "unsupported parameter: 'max_tokens'",
+        // Claude Fable 5.1 from a zero-data-retention organization.
+        "claude-fable-5-1 requires your organization to have data retention enabled",
       ],
     ],
   ];

@@ -34,6 +34,28 @@ export type BuildModelOptions = {
 // Never evicted, deliberately: there is nothing per-run in the key.
 const modelCache = new Map<string, LanguageModel>();
 
+/** Mistral answers a message field it doesn't know with a 422 ("Extra inputs
+ *  are not permitted"), and @ai-sdk/openai-compatible (since 2.0.74) replays a
+ *  reasoning model's earlier thinking as `reasoning_content` on each assistant
+ *  turn — so a reasoning Mistral model would fail on the second step of every
+ *  tool loop. Drop the field; the model re-plans without it, as it did before
+ *  the SDK started reading Mistral's thinking. (Not for DeepSeek, which
+ *  requires that field back.) */
+export function withoutReasoningContent(
+  body: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!Array.isArray(body.messages)) return body;
+  return {
+    ...body,
+    messages: body.messages.map((m: unknown) => {
+      if (!m || typeof m !== "object" || !("reasoning_content" in m)) return m;
+      const rest = { ...(m as Record<string, unknown>) };
+      delete rest.reasoning_content;
+      return rest;
+    }),
+  };
+}
+
 export async function buildLanguageModel(
   provider: ProviderId,
   keys: ProviderKeys,
@@ -141,6 +163,7 @@ export async function buildLanguageModel(
         // generateObject falls back to json_object mode, sends no schema, and
         // these endpoints often answer with prose or fenced JSON.
         supportsStructuredOutputs: true,
+        transformRequestBody: withoutReasoningContent,
       })(resolvedModelId);
       break;
     }

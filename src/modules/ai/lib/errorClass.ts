@@ -92,9 +92,13 @@ const PATTERNS: ReadonlyArray<readonly [ResumeErrorKind, RegExp]> = [
   // one model launch behind us — "`temperature` is deprecated for this model",
   // "this model does not support assistant message prefill" — and getting it
   // wrong in the loose direction would silently make a rate limit unresumable.
+  //
+  // "data retention": Claude Fable 5.1 refuses an organization without 30-day
+  // retention (a zero-data-retention org), every time — a resume can only
+  // repeat that 400.
   [
     "capability",
-    /does not support|(?:is|are) not supported|unsupported (?:value|parameter|setting|feature|model)|deprecated for this model/,
+    /does not support|(?:is|are) not supported|unsupported (?:value|parameter|setting|feature|model)|deprecated for this model|data retention/,
   ],
   [
     "context-overflow",
